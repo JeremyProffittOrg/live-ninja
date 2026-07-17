@@ -10,7 +10,7 @@ Live Ninja is one AWS backend serving three LWA-gated client surfaces — a resp
 
 ## 1. Overview & how to read this plan
 
-This plan is organized into **parallel workstreams** executed by **agentic teams of subagents**, sequenced across **milestones M0–M8**. Each milestone has a **Definition of Done** and an ordered task list. Every milestone and task carries a **status marker** and a **model-routing** annotation. Tasks cross-reference **FR IDs** from the PRD where natural.
+This plan is organized into **parallel workstreams** executed by **agentic teams of subagents**, sequenced across **milestones M0–M10** — M0–M8 build the core platform (three surfaces, auth, realtime voice, programmable wake words, hardening, launch), **M9** adds the **Deliverables Store**, and **M10** adds the **Memory Layer including Guide Entities**. Each milestone has a **Definition of Done** and an ordered task list. Every milestone and task carries a **status marker** and a **model-routing** annotation. Tasks cross-reference **FR IDs** from the PRD where natural.
 
 ### 1.1 Status markers (updated in place as work proceeds)
 
@@ -112,8 +112,10 @@ gantt
 | **M6** Programmable wake + sync | | | | ○ | ○ | ○ | ● |
 | **M7** Hardening/observability/cost/privacy | ○ | ○ | ○ | ○ | ○ | ○ | ● |
 | **M8** Launch | ● | ○ | ○ | ○ | ○ | ○ | ● |
+| **M9** Deliverables Store | ○ | | ● | ○ | ○ | ○ | ○ |
+| **M10** Memory Layer + Guide Entities | ○ | ○ | ● | ○ | ○ | ○ | ● |
 
-● = lead workstream · ○ = contributing
+● = lead workstream · ○ = contributing · M9–M10 are v1.1 capability additions layered on the core platform.
 
 ---
 

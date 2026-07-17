@@ -1,10 +1,12 @@
 # Live Ninja — Product Requirements Document
 
-**Version:** 1.0 · **Date:** 2026-07-17 · **Owner:** Jeremy Proffitt · **Status:** Draft
+**Version:** 1.1 · **Date:** 2026-07-17 · **Owner:** Jeremy Proffitt · **Status:** Draft
 
 ## Executive Summary
 
 Live Ninja is a personal, always-available speech-to-speech AI assistant delivered across three Login-with-Amazon-gated surfaces — an Android app that becomes the phone's default voice assistant, a responsive web application, and an ambient M5Stack Tab5 embedded voice terminal on the desk — all sharing a single serverless AWS backend built on Go-Fiber (Lambda Web Adapter, arm64/Graviton) and OpenAI's GPT Realtime engine. The backend's core responsibilities are to broker short-lived OpenAI Realtime ephemeral tokens so the API key never touches a client, run the LWA OAuth exchange and mint first-party session credentials with surface-specific lifetimes (30 days for web/Android, 10 years for the M5Stack), persist users/devices/sessions/wake-word configs/usage in a single-table DynamoDB with strict Query/GetItem-only access, and serve the web UI and device config assets. Wake-word detection is always on-device on every surface — a hard architectural privacy invariant — and is user-programmable ("Hey Live Ninja" by default). This document specifies the vision, personas, functional and non-functional requirements per surface, UX rules, system architecture, voice experience, authentication, data model, security/privacy posture, KPIs, risks, and the baked-in decision for every open question.
+
+**Version 1.1 additions (fully specified below).** Beyond the three core surfaces, the platform adds: (1) a **Deliverables Store** — the assistant can create files, zip them, and deliver them as separate, durable, per-user downloadables on S3 (indexed in DynamoDB), reachable identically from the website Download Center and the Android Files tab (see FR-DLV-01..06, milestone M9); (2) a **Memory Layer** — a structured personal memory organized by **people, places, and information** with **organizational** (projects/lists) and **planning** (goals/tasks) capabilities, backed by a DynamoDB entity/relationship graph + S3 Vectors semantic recall with an optional local RAG sidecar (see FR-MEM-01..06, milestone M10); and (3) **Guide Entities** — standing guidance injected into *every* session on every surface, shipping with a default guide that treats AI as a fast-moving field and prefers sources published/updated within the last 30 days or the official technical docs of leading AI providers such as Anthropic and OpenAI (see FR-MEM-07..09).
 
 | Metadata | Value |
 |---|---|
