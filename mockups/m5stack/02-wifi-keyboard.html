@@ -1,0 +1,1206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>M5Stack · Wi-Fi Setup (Keyboard)</title>
+<style>
+:root {
+  /* ============================================================
+     LIVE NINJA — DESIGN SYSTEM TOKENS
+     Primarily-dark, techy-premium: deep navy + electric teal
+     ============================================================ */
+
+  /* Brand — navy family */
+  --ln-navy: #0a1424;
+  --ln-navy-900: #060d18;
+  --ln-navy-800: #0f1e35;
+  --ln-navy-700: #16294a;
+  --ln-navy-600: #1e3860;
+
+  /* Brand — electric teal / cyan accent */
+  --ln-teal: #22e0d0;
+  --ln-teal-600: #12b6b0;
+  --ln-teal-700: #0c8f8c;
+  --ln-teal-glow: rgba(34, 224, 208, 0.45);
+  --ln-cyan: #38d0ff;
+
+  /* Neutrals */
+  --ln-white: #f4f8fb;
+  --ln-gray-100: #dbe4ef;
+  --ln-gray-300: #9fb0c4;
+  --ln-gray-500: #6b7d94;
+  --ln-gray-700: #3a4a60;
+  --ln-black: #04070d;
+
+  /* Semantic status */
+  --ln-success: #34e39b;
+  --ln-warn: #ffca4a;
+  --ln-error: #ff5c72;
+
+  /* Surface / background / text tokens (dark theme) */
+  --ln-bg: var(--ln-navy-900);
+  --ln-bg-grad: radial-gradient(1200px 700px at 70% -10%, #12294a 0%, var(--ln-navy-900) 55%);
+  --ln-surface: rgba(20, 38, 66, 0.72);
+  --ln-surface-2: rgba(28, 50, 84, 0.85);
+  --ln-surface-raised: #142544;
+  --ln-border: rgba(122, 160, 205, 0.16);
+  --ln-border-strong: rgba(122, 160, 205, 0.30);
+
+  --ln-text: var(--ln-white);
+  --ln-text-muted: var(--ln-gray-300);
+  --ln-text-dim: var(--ln-gray-500);
+  --ln-text-on-teal: #052220;
+
+  /* Type scale (1.25 modular) */
+  --ln-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", Arial, sans-serif;
+  --ln-mono: "SF Mono", "JetBrains Mono", "Fira Code", Consolas, "Roboto Mono", monospace;
+  --ln-fs-xs: 12px;
+  --ln-fs-sm: 14px;
+  --ln-fs-md: 16px;
+  --ln-fs-lg: 20px;
+  --ln-fs-xl: 25px;
+  --ln-fs-2xl: 31px;
+  --ln-fs-3xl: 39px;
+  --ln-fs-4xl: 49px;
+  --ln-lh: 1.5;
+  --ln-lh-tight: 1.2;
+
+  /* Spacing scale (4px base) */
+  --ln-sp-1: 4px;
+  --ln-sp-2: 8px;
+  --ln-sp-3: 12px;
+  --ln-sp-4: 16px;
+  --ln-sp-5: 24px;
+  --ln-sp-6: 32px;
+  --ln-sp-7: 48px;
+  --ln-sp-8: 64px;
+
+  /* Radius */
+  --ln-r-sm: 8px;
+  --ln-r-md: 12px;
+  --ln-r-lg: 18px;
+  --ln-r-xl: 28px;
+  --ln-r-pill: 999px;
+
+  /* Shadows */
+  --ln-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --ln-shadow-md: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --ln-shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.55);
+  --ln-shadow-teal: 0 0 0 1px rgba(34, 224, 208, 0.35), 0 0 28px var(--ln-teal-glow);
+
+  /* Focus ring */
+  --ln-focus: 0 0 0 3px rgba(56, 208, 255, 0.55);
+
+  /* Touch target minimum */
+  --ln-touch: 44px;
+}
+
+/* ================================================================
+   BASE RESET + TYPOGRAPHY
+   ================================================================ */
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  font-family: var(--ln-font);
+  font-size: var(--ln-fs-md);
+  line-height: var(--ln-lh);
+  color: var(--ln-text);
+  background: var(--ln-bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+h1, h2, h3, h4 { margin: 0 0 var(--ln-sp-3); line-height: var(--ln-lh-tight); font-weight: 700; letter-spacing: -0.01em; }
+h1 { font-size: var(--ln-fs-3xl); }
+h2 { font-size: var(--ln-fs-2xl); }
+h3 { font-size: var(--ln-fs-xl); }
+h4 { font-size: var(--ln-fs-lg); }
+p { margin: 0 0 var(--ln-sp-4); }
+a { color: var(--ln-teal); text-decoration: none; }
+a:hover { text-decoration: underline; }
+small { font-size: var(--ln-fs-sm); color: var(--ln-text-muted); }
+code, kbd { font-family: var(--ln-mono); font-size: 0.9em; }
+img { max-width: 100%; display: block; }
+
+/* Visible focus for everything focusable */
+:focus-visible { outline: none; box-shadow: var(--ln-focus); border-radius: var(--ln-r-sm); }
+
+.ln-muted { color: var(--ln-text-muted); }
+.ln-dim { color: var(--ln-text-dim); }
+.ln-mono { font-family: var(--ln-mono); }
+.ln-eyebrow { font-size: var(--ln-fs-xs); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ln-teal); font-weight: 700; }
+.ln-stack > * + * { margin-top: var(--ln-sp-4); }
+
+/* ================================================================
+   BUTTONS
+   ================================================================ */
+.ln-btn {
+  --_bg: var(--ln-surface-2);
+  --_fg: var(--ln-text);
+  --_bd: var(--ln-border-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ln-sp-2);
+  min-height: var(--ln-touch);
+  padding: 0 var(--ln-sp-5);
+  font: inherit;
+  font-weight: 650;
+  font-size: var(--ln-fs-md);
+  color: var(--_fg);
+  background: var(--_bg);
+  border: 1px solid var(--_bd);
+  border-radius: var(--ln-r-pill);
+  cursor: pointer;
+  transition: transform .08s ease, box-shadow .15s ease, background .15s ease, filter .15s ease;
+  user-select: none;
+}
+.ln-btn:hover { filter: brightness(1.08); }
+.ln-btn:active { transform: translateY(1px); }
+.ln-btn:focus-visible { box-shadow: var(--ln-focus); }
+.ln-btn[disabled], .ln-btn:disabled { opacity: .45; cursor: not-allowed; }
+.ln-btn--primary {
+  --_bg: linear-gradient(135deg, var(--ln-teal) 0%, var(--ln-teal-600) 100%);
+  --_fg: var(--ln-text-on-teal);
+  --_bd: transparent;
+  box-shadow: var(--ln-shadow-teal);
+  font-weight: 750;
+}
+.ln-btn--ghost {
+  --_bg: transparent;
+  --_fg: var(--ln-text);
+  --_bd: var(--ln-border-strong);
+}
+.ln-btn--danger {
+  --_bg: transparent;
+  --_fg: var(--ln-error);
+  --_bd: rgba(255, 92, 114, 0.5);
+}
+.ln-btn--block { display: flex; width: 100%; }
+.ln-btn--lg { min-height: 56px; font-size: var(--ln-fs-lg); padding: 0 var(--ln-sp-6); }
+
+/* Login with Amazon button */
+.ln-btn--amazon {
+  --_bg: #ff9900;
+  --_fg: #0a0a0a;
+  --_bd: #e88b00;
+  font-weight: 700;
+}
+
+/* ================================================================
+   FORM CONTROLS — input, select, field, toggle
+   ================================================================ */
+.ln-field { display: block; margin-bottom: var(--ln-sp-4); }
+.ln-field > label,
+.ln-label {
+  display: block;
+  margin-bottom: var(--ln-sp-2);
+  font-size: var(--ln-fs-sm);
+  font-weight: 650;
+  color: var(--ln-text-muted);
+}
+.ln-field .ln-hint { margin-top: var(--ln-sp-2); font-size: var(--ln-fs-xs); color: var(--ln-text-dim); }
+.ln-field .ln-error-text { margin-top: var(--ln-sp-2); font-size: var(--ln-fs-xs); color: var(--ln-error); font-weight: 600; }
+
+.ln-input, .ln-select {
+  display: block;
+  width: 100%;
+  min-height: var(--ln-touch);
+  padding: var(--ln-sp-3) var(--ln-sp-4);
+  font: inherit;
+  color: var(--ln-text);
+  background: var(--ln-navy-800);
+  border: 1px solid var(--ln-border-strong);
+  border-radius: var(--ln-r-md);
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.ln-input::placeholder { color: var(--ln-text-dim); }
+.ln-input:focus, .ln-select:focus { outline: none; border-color: var(--ln-teal); box-shadow: var(--ln-focus); }
+.ln-input:disabled, .ln-select:disabled { opacity: .5; }
+
+.ln-select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: var(--ln-sp-7);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239fb0c4' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right var(--ln-sp-4) center;
+}
+
+/* Toggle switch */
+.ln-toggle { position: relative; display: inline-flex; align-items: center; gap: var(--ln-sp-3); cursor: pointer; min-height: var(--ln-touch); }
+.ln-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+.ln-toggle .ln-toggle-track {
+  width: 52px; height: 30px; flex: none;
+  background: var(--ln-navy-700);
+  border: 1px solid var(--ln-border-strong);
+  border-radius: var(--ln-r-pill);
+  transition: background .2s ease;
+  position: relative;
+}
+.ln-toggle .ln-toggle-thumb {
+  position: absolute; top: 3px; left: 3px;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--ln-gray-100);
+  transition: transform .2s ease, background .2s ease;
+}
+.ln-toggle input:checked + .ln-toggle-track { background: linear-gradient(135deg, var(--ln-teal), var(--ln-teal-600)); border-color: transparent; }
+.ln-toggle input:checked + .ln-toggle-track .ln-toggle-thumb { transform: translateX(22px); background: var(--ln-text-on-teal); }
+.ln-toggle input:focus-visible + .ln-toggle-track { box-shadow: var(--ln-focus); }
+
+/* ================================================================
+   CARD
+   ================================================================ */
+.ln-card {
+  background: var(--ln-surface);
+  border: 1px solid var(--ln-border);
+  border-radius: var(--ln-r-lg);
+  padding: var(--ln-sp-5);
+  box-shadow: var(--ln-shadow-md);
+  backdrop-filter: blur(12px);
+}
+.ln-card--flush { padding: 0; overflow: hidden; }
+.ln-card__header { display: flex; align-items: center; justify-content: space-between; gap: var(--ln-sp-3); margin-bottom: var(--ln-sp-4); }
+.ln-card__title { font-size: var(--ln-fs-lg); font-weight: 700; margin: 0; }
+
+/* ================================================================
+   LIST
+   ================================================================ */
+.ln-list { list-style: none; margin: 0; padding: 0; border-radius: var(--ln-r-lg); overflow: hidden; border: 1px solid var(--ln-border); }
+.ln-list-item {
+  display: flex; align-items: center; gap: var(--ln-sp-4);
+  padding: var(--ln-sp-4) var(--ln-sp-5);
+  min-height: 56px;
+  background: var(--ln-surface);
+  border-bottom: 1px solid var(--ln-border);
+}
+.ln-list-item:last-child { border-bottom: none; }
+.ln-list-item__body { flex: 1 1 auto; min-width: 0; }
+.ln-list-item__title { font-weight: 650; }
+.ln-list-item__sub { font-size: var(--ln-fs-sm); color: var(--ln-text-muted); }
+.ln-list-item__end { flex: none; color: var(--ln-text-muted); }
+.ln-list-item--button { cursor: pointer; transition: background .12s ease; width: 100%; text-align: left; font: inherit; color: inherit; border: none; border-bottom: 1px solid var(--ln-border); }
+.ln-list-item--button:hover { background: var(--ln-surface-2); }
+
+/* ================================================================
+   BADGE
+   ================================================================ */
+.ln-badge {
+  display: inline-flex; align-items: center; gap: var(--ln-sp-1);
+  padding: 3px var(--ln-sp-3);
+  font-size: var(--ln-fs-xs); font-weight: 700; letter-spacing: 0.03em;
+  border-radius: var(--ln-r-pill);
+  background: var(--ln-navy-700); color: var(--ln-text-muted);
+  border: 1px solid var(--ln-border-strong);
+}
+.ln-badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .9; }
+.ln-badge--active { background: rgba(52, 227, 155, 0.14); color: var(--ln-success); border-color: rgba(52, 227, 155, 0.4); }
+.ln-badge--muted { background: var(--ln-navy-700); color: var(--ln-text-dim); }
+.ln-badge--warn { background: rgba(255, 202, 74, 0.14); color: var(--ln-warn); border-color: rgba(255, 202, 74, 0.4); }
+.ln-badge--error { background: rgba(255, 92, 114, 0.14); color: var(--ln-error); border-color: rgba(255, 92, 114, 0.4); }
+.ln-badge--teal { background: rgba(34, 224, 208, 0.14); color: var(--ln-teal); border-color: rgba(34, 224, 208, 0.4); }
+.ln-badge--dot-none::before { display: none; }
+
+/* ================================================================
+   APP BAR (top) + TAB BAR (bottom nav)
+   ================================================================ */
+.ln-appbar {
+  display: flex; align-items: center; gap: var(--ln-sp-3);
+  min-height: 56px;
+  padding: var(--ln-sp-3) var(--ln-sp-4);
+  background: linear-gradient(180deg, rgba(15, 30, 53, 0.95), rgba(10, 20, 36, 0.75));
+  border-bottom: 1px solid var(--ln-border);
+  backdrop-filter: blur(10px);
+  position: sticky; top: 0; z-index: 10;
+}
+.ln-appbar__title { font-size: var(--ln-fs-lg); font-weight: 700; margin: 0; flex: 1 1 auto; }
+.ln-appbar__btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: var(--ln-touch); height: var(--ln-touch); flex: none;
+  background: transparent; border: none; color: var(--ln-text);
+  border-radius: var(--ln-r-md); cursor: pointer; font-size: var(--ln-fs-lg);
+}
+.ln-appbar__btn:hover { background: var(--ln-surface-2); }
+.ln-brand { display: inline-flex; align-items: center; gap: var(--ln-sp-2); font-weight: 800; letter-spacing: -0.01em; }
+.ln-brand__dot { width: 12px; height: 12px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #eafffb, var(--ln-teal) 55%, var(--ln-teal-700)); box-shadow: 0 0 12px var(--ln-teal-glow); }
+
+.ln-tabbar {
+  display: flex; align-items: stretch;
+  background: linear-gradient(0deg, rgba(6, 13, 24, 0.98), rgba(15, 30, 53, 0.9));
+  border-top: 1px solid var(--ln-border);
+  padding: var(--ln-sp-1) var(--ln-sp-2);
+  backdrop-filter: blur(10px);
+}
+.ln-tab {
+  flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  min-height: 56px; padding: var(--ln-sp-2);
+  background: transparent; border: none; cursor: pointer;
+  color: var(--ln-text-dim); font-size: var(--ln-fs-xs); font-weight: 600;
+  border-radius: var(--ln-r-md);
+}
+.ln-tab__icon { font-size: 20px; line-height: 1; }
+.ln-tab:hover { color: var(--ln-text-muted); }
+.ln-tab[aria-current="page"], .ln-tab.is-active { color: var(--ln-teal); }
+.ln-tab[aria-current="page"] .ln-tab__icon { filter: drop-shadow(0 0 8px var(--ln-teal-glow)); }
+
+/* ================================================================
+   LISTENING ORB — the brand motif
+   ================================================================ */
+.ln-orb {
+  position: relative;
+  width: 200px; height: 200px;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  isolation: isolate;
+}
+.ln-orb__core {
+  position: absolute; inset: 0;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(234, 255, 251, 0.95) 0%, rgba(34, 224, 208, 0.85) 22%, rgba(18, 182, 176, 0.5) 48%, rgba(10, 20, 36, 0) 72%),
+    conic-gradient(from 0deg, var(--ln-teal), var(--ln-cyan), var(--ln-teal-700), var(--ln-teal));
+  filter: blur(2px);
+  animation: ln-orb-spin 8s linear infinite;
+}
+.ln-orb__ring {
+  position: absolute; inset: -6%;
+  border-radius: 50%;
+  border: 2px solid var(--ln-teal-glow);
+  animation: ln-orb-pulse 2.4s ease-out infinite;
+}
+.ln-orb__ring--2 { animation-delay: .8s; }
+.ln-orb__ring--3 { animation-delay: 1.6s; }
+.ln-orb__glow { position: absolute; inset: 8%; border-radius: 50%; box-shadow: 0 0 60px 12px var(--ln-teal-glow); z-index: -1; }
+.ln-orb__label { position: relative; z-index: 2; font-weight: 700; color: var(--ln-text-on-teal); font-size: var(--ln-fs-sm); text-shadow: 0 1px 4px rgba(255,255,255,0.4); }
+.ln-orb--lg { width: 280px; height: 280px; }
+.ln-orb--sm { width: 96px; height: 96px; }
+.ln-orb--idle .ln-orb__core { animation-duration: 24s; opacity: .7; }
+.ln-orb--idle .ln-orb__ring { animation: none; opacity: .3; }
+
+@keyframes ln-orb-spin { to { transform: rotate(360deg); } }
+@keyframes ln-orb-pulse {
+  0% { transform: scale(0.9); opacity: .7; }
+  100% { transform: scale(1.35); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ln-orb__core, .ln-orb__ring { animation: none !important; }
+}
+
+/* ================================================================
+   TRANSCRIPT — chat-style bubbles
+   ================================================================ */
+.ln-transcript { display: flex; flex-direction: column; gap: var(--ln-sp-3); padding: var(--ln-sp-4); }
+.ln-bubble {
+  max-width: 78%;
+  padding: var(--ln-sp-3) var(--ln-sp-4);
+  border-radius: var(--ln-r-lg);
+  line-height: 1.45;
+  font-size: var(--ln-fs-md);
+  position: relative;
+}
+.ln-bubble__role { display: block; font-size: var(--ln-fs-xs); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: var(--ln-sp-1); opacity: .7; }
+.ln-bubble--user {
+  align-self: flex-end;
+  background: linear-gradient(135deg, var(--ln-teal), var(--ln-teal-600));
+  color: var(--ln-text-on-teal);
+  border-bottom-right-radius: var(--ln-r-sm);
+}
+.ln-bubble--assistant {
+  align-self: flex-start;
+  background: var(--ln-surface-2);
+  color: var(--ln-text);
+  border: 1px solid var(--ln-border);
+  border-bottom-left-radius: var(--ln-r-sm);
+}
+.ln-bubble--typing { display: inline-flex; gap: 5px; }
+.ln-bubble--typing span { width: 8px; height: 8px; border-radius: 50%; background: var(--ln-teal); animation: ln-typing 1.2s infinite ease-in-out; }
+.ln-bubble--typing span:nth-child(2) { animation-delay: .15s; }
+.ln-bubble--typing span:nth-child(3) { animation-delay: .3s; }
+@keyframes ln-typing { 0%, 60%, 100% { transform: translateY(0); opacity: .5; } 30% { transform: translateY(-5px); opacity: 1; } }
+
+/* ================================================================
+   KPI
+   ================================================================ */
+.ln-kpi {
+  display: flex; flex-direction: column; gap: var(--ln-sp-1);
+  padding: var(--ln-sp-4) var(--ln-sp-5);
+  background: var(--ln-surface);
+  border: 1px solid var(--ln-border);
+  border-radius: var(--ln-r-lg);
+}
+.ln-kpi__label { font-size: var(--ln-fs-xs); text-transform: uppercase; letter-spacing: 0.08em; color: var(--ln-text-dim); font-weight: 700; }
+.ln-kpi__value { font-size: var(--ln-fs-2xl); font-weight: 800; line-height: 1; color: var(--ln-text); font-variant-numeric: tabular-nums; }
+.ln-kpi__value--teal { color: var(--ln-teal); }
+.ln-kpi__delta { font-size: var(--ln-fs-sm); font-weight: 650; }
+.ln-kpi__delta--up { color: var(--ln-success); }
+.ln-kpi__delta--down { color: var(--ln-error); }
+.ln-kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--ln-sp-3); }
+
+/* ================================================================
+   DEVICE FRAMES
+   ================================================================ */
+.frame-stage {
+  min-height: 100vh;
+  display: grid; place-items: center;
+  padding: var(--ln-sp-6);
+  background:
+    radial-gradient(900px 500px at 50% -5%, #10203a 0%, transparent 60%),
+    #05080f;
+}
+
+/* ---- PHONE (Android/iOS style) 393x852 ---- */
+.frame-phone {
+  position: relative;
+  width: 393px; height: 852px;
+  background: #05080f;
+  border-radius: 54px;
+  padding: 12px;
+  box-shadow:
+    0 0 0 12px #12161d,
+    0 0 0 13px #2a2f38,
+    var(--ln-shadow-lg);
+  flex: none;
+}
+.frame-phone__screen {
+  position: relative;
+  width: 100%; height: 100%;
+  border-radius: 42px;
+  overflow: hidden;
+  background: var(--ln-bg-grad);
+  display: flex; flex-direction: column;
+}
+.frame-phone__statusbar {
+  height: 44px; flex: none;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 26px 0 30px;
+  font-size: var(--ln-fs-sm); font-weight: 650; color: var(--ln-text);
+  position: relative; z-index: 5;
+}
+.frame-phone__statusbar .ln-sb-icons { display: inline-flex; gap: 6px; align-items: center; }
+.frame-phone__notch {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+  width: 120px; height: 30px; background: #05080f; border-radius: var(--ln-r-pill); z-index: 6;
+}
+.frame-phone__body { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; }
+.frame-phone__home { height: 5px; width: 134px; background: var(--ln-gray-100); opacity: .6; border-radius: var(--ln-r-pill); margin: 6px auto 8px; flex: none; }
+
+/* ---- M5STACK LCD 1280x720 landscape ---- */
+.frame-m5 {
+  position: relative;
+  width: 1280px; height: 720px;
+  flex: none;
+  background: #0c0e12;
+  border-radius: 22px;
+  padding: 26px 30px;
+  box-shadow: 0 0 0 3px #23272f, 0 0 0 10px #14161b, var(--ln-shadow-lg);
+  /* Scale down responsively to fit viewport / print page */
+  transform: scale(var(--m5-scale, 1));
+  transform-origin: top center;
+}
+.frame-m5::after {
+  /* M5Stack-style brand strip / speaker grille hint */
+  content: "M5Stack · Live Ninja";
+  position: absolute; bottom: 6px; left: 0; right: 0;
+  text-align: center; font-size: 11px; letter-spacing: 0.18em;
+  color: #3a4150; text-transform: uppercase;
+}
+.frame-m5__screen {
+  width: 1280px; height: 720px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--ln-bg-grad);
+  display: flex; flex-direction: column;
+  box-shadow: inset 0 0 0 1px rgba(122,160,205,0.12), inset 0 0 80px rgba(0,0,0,0.5);
+}
+/* Auto-fit helper: wrap .frame-m5 in .frame-m5-fit to scale to container width */
+.frame-m5-fit {
+  width: 100%; overflow: hidden;
+  display: flex; justify-content: center;
+}
+/* Responsive scale via clamp on viewport width (1340 = frame + bezel) */
+@media (max-width: 1360px) { .frame-m5 { --m5-scale: calc((100vw - 24px) / 1340); } }
+
+/* ---- WEB browser chrome ---- */
+.frame-web {
+  width: 100%; max-width: 1200px;
+  background: var(--ln-navy-800);
+  border-radius: var(--ln-r-lg);
+  overflow: hidden;
+  box-shadow: var(--ln-shadow-lg);
+  border: 1px solid var(--ln-border);
+  display: flex; flex-direction: column;
+  flex: none;
+}
+.frame-web__chrome {
+  display: flex; align-items: center; gap: var(--ln-sp-3);
+  padding: var(--ln-sp-3) var(--ln-sp-4);
+  background: #0b1626;
+  border-bottom: 1px solid var(--ln-border);
+}
+.frame-web__dots { display: inline-flex; gap: 7px; flex: none; }
+.frame-web__dots i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+.frame-web__dots i:nth-child(1) { background: #ff5f57; }
+.frame-web__dots i:nth-child(2) { background: #febc2e; }
+.frame-web__dots i:nth-child(3) { background: #28c840; }
+.frame-web__addr {
+  flex: 1 1 auto;
+  display: flex; align-items: center; gap: var(--ln-sp-2);
+  height: 34px; padding: 0 var(--ln-sp-4);
+  background: var(--ln-navy-900);
+  border: 1px solid var(--ln-border);
+  border-radius: var(--ln-r-pill);
+  font-size: var(--ln-fs-sm); color: var(--ln-text-muted);
+}
+.frame-web__addr::before { content: "🔒"; font-size: 12px; }
+.frame-web__body { background: var(--ln-bg-grad); min-height: 600px; }
+
+/* ================================================================
+   EMBEDDED (M5) HELPERS — segmented, roller, list-select, page indicator
+   ================================================================ */
+
+/* Segmented button row — mutually-exclusive small set */
+.m5-segmented {
+  display: inline-flex; padding: 6px;
+  background: var(--ln-navy-800);
+  border: 1px solid var(--ln-border-strong);
+  border-radius: var(--ln-r-pill);
+  gap: 4px;
+}
+.m5-segmented button {
+  min-height: 56px; padding: 0 var(--ln-sp-6);
+  font: inherit; font-size: var(--ln-fs-lg); font-weight: 700;
+  color: var(--ln-text-muted);
+  background: transparent; border: none; border-radius: var(--ln-r-pill);
+  cursor: pointer; transition: background .12s ease, color .12s ease;
+}
+.m5-segmented button[aria-pressed="true"], .m5-segmented button.is-active {
+  background: linear-gradient(135deg, var(--ln-teal), var(--ln-teal-600));
+  color: var(--ln-text-on-teal);
+  box-shadow: var(--ln-shadow-teal);
+}
+
+/* Roller / spinbox — bounded number, big +/- */
+.m5-roller { display: inline-flex; align-items: center; gap: var(--ln-sp-4); }
+.m5-roller button {
+  width: 72px; height: 72px; flex: none;
+  font-size: 34px; font-weight: 800; line-height: 1;
+  color: var(--ln-text); background: var(--ln-surface-2);
+  border: 1px solid var(--ln-border-strong); border-radius: var(--ln-r-lg);
+  cursor: pointer;
+}
+.m5-roller button:active { background: var(--ln-navy-700); }
+.m5-roller__value {
+  min-width: 160px; text-align: center;
+  font-size: var(--ln-fs-4xl); font-weight: 800; font-variant-numeric: tabular-nums;
+  color: var(--ln-teal);
+}
+.m5-roller__unit { font-size: var(--ln-fs-lg); color: var(--ln-text-muted); font-weight: 650; }
+
+/* Full-width list-select — big rows for touch */
+.m5-listselect { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--ln-sp-3); }
+.m5-listselect > li { margin: 0; }
+.m5-listselect button {
+  display: flex; align-items: center; gap: var(--ln-sp-4);
+  width: 100%; min-height: 72px;
+  padding: var(--ln-sp-4) var(--ln-sp-6);
+  font: inherit; font-size: var(--ln-fs-xl); font-weight: 650; text-align: left;
+  color: var(--ln-text);
+  background: var(--ln-surface-2);
+  border: 1px solid var(--ln-border-strong);
+  border-radius: var(--ln-r-lg);
+  cursor: pointer; transition: border-color .12s ease, background .12s ease;
+}
+.m5-listselect button:hover { background: var(--ln-surface-raised); }
+.m5-listselect button[aria-selected="true"], .m5-listselect button.is-selected {
+  border-color: var(--ln-teal);
+  box-shadow: var(--ln-shadow-teal);
+}
+.m5-listselect button[aria-selected="true"]::after,
+.m5-listselect button.is-selected::after {
+  content: "✓"; margin-left: auto; color: var(--ln-teal); font-size: var(--ln-fs-2xl); font-weight: 800;
+}
+.m5-listselect__icon { font-size: 28px; flex: none; }
+
+/* Page indicator — "3 of 12" */
+.m5-pageindicator {
+  display: inline-flex; align-items: center; gap: var(--ln-sp-3);
+  font-size: var(--ln-fs-lg); font-weight: 700; color: var(--ln-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.m5-pageindicator__dots { display: inline-flex; gap: 6px; }
+.m5-pageindicator__dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--ln-gray-700); display: block; }
+.m5-pageindicator__dots i.is-active { background: var(--ln-teal); box-shadow: 0 0 8px var(--ln-teal-glow); }
+
+/* ================================================================
+   PRINT — friendly PDF rendering
+   ================================================================ */
+@media print {
+  @page { margin: 12mm; }
+  body { background: #fff; }
+  .frame-stage { min-height: auto; padding: 0; background: none; display: block; }
+  .frame-phone, .frame-m5, .frame-web { box-shadow: 0 0 0 1px #ccc; page-break-inside: avoid; margin: 0 auto 14mm; }
+  .frame-m5 { --m5-scale: 0.56; transform: scale(var(--m5-scale)); transform-origin: top left; }
+  /* Preserve dark UI colors in PDF */
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  .ln-orb__core, .ln-orb__ring, .ln-bubble--typing span { animation: none !important; }
+}
+
+/* ================================================================
+   UTILITIES
+   ================================================================ */
+.ln-flex { display: flex; }
+.ln-flex-col { display: flex; flex-direction: column; }
+.ln-items-center { align-items: center; }
+.ln-justify-between { justify-content: space-between; }
+.ln-gap-2 { gap: var(--ln-sp-2); }
+.ln-gap-3 { gap: var(--ln-sp-3); }
+.ln-gap-4 { gap: var(--ln-sp-4); }
+.ln-grow { flex: 1 1 auto; }
+.ln-center { text-align: center; }
+.ln-p-4 { padding: var(--ln-sp-4); }
+.ln-p-5 { padding: var(--ln-sp-5); }
+.ln-p-6 { padding: var(--ln-sp-6); }
+.ln-mt-4 { margin-top: var(--ln-sp-4); }
+.ln-mt-6 { margin-top: var(--ln-sp-6); }
+.ln-full { width: 100%; }
+.ln-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+/* === END DESIGN SYSTEM === */
+
+/* ================================================================
+   SCREEN-SPECIFIC — Wi-Fi Setup / On-screen keyboard (M5Stack)
+   ================================================================ */
+.wk-main {
+  flex: 1 1 auto;
+  display: flex; flex-direction: column;
+  gap: var(--ln-sp-4);
+  padding: var(--ln-sp-5) var(--ln-sp-6);
+  min-height: 0;
+}
+
+/* --- Nearby networks hint strip --- */
+.nearby-strip { flex: none; display: flex; align-items: center; gap: var(--ln-sp-4); }
+.nearby-strip__label {
+  flex: none; font-size: var(--ln-fs-xs); text-transform: uppercase;
+  letter-spacing: 0.09em; color: var(--ln-text-dim); font-weight: 700;
+}
+.nearby-chips {
+  flex: 1 1 auto; display: flex; gap: var(--ln-sp-3);
+  overflow-x: auto; padding: 2px 2px 6px;
+  scrollbar-width: thin;
+}
+.nearby-chip {
+  flex: none; display: inline-flex; align-items: center; gap: var(--ln-sp-2);
+  min-height: 44px; padding: 0 var(--ln-sp-4);
+  background: var(--ln-surface);
+  border: 1px solid var(--ln-border);
+  border-radius: var(--ln-r-pill);
+  font-size: var(--ln-fs-sm); font-weight: 650; color: var(--ln-text-dim);
+  white-space: nowrap;
+}
+.nearby-chip.is-selected {
+  color: var(--ln-text);
+  background: var(--ln-surface-2);
+  border-color: var(--ln-teal);
+  box-shadow: var(--ln-shadow-teal);
+}
+.nearby-chip.is-selected::after { content: "✓"; color: var(--ln-teal); font-weight: 800; margin-left: 2px; }
+.nearby-chip__bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 13px; flex: none; }
+.nearby-chip__bars i { width: 3px; display: block; background: var(--ln-gray-700); border-radius: 1px; }
+.nearby-chip__bars i:nth-child(1) { height: 4px; }
+.nearby-chip__bars i:nth-child(2) { height: 7px; }
+.nearby-chip__bars i:nth-child(3) { height: 10px; }
+.nearby-chip__bars i:nth-child(4) { height: 13px; }
+.nearby-chip__bars i.on { background: var(--ln-gray-300); }
+.nearby-chip.is-selected .nearby-chip__bars i.on { background: var(--ln-teal); }
+.nearby-chip__lock { flex: none; opacity: .8; font-size: 12px; }
+
+/* --- Two-column working area --- */
+.wk-columns { flex: 1 1 auto; display: flex; gap: var(--ln-sp-5); min-height: 0; }
+
+/* Left: selected network + password entry */
+.wk-left { width: 400px; flex: none; display: flex; flex-direction: column; gap: var(--ln-sp-4); min-height: 0; }
+
+.network-card { flex: none; }
+.network-card__row { display: flex; align-items: center; gap: var(--ln-sp-3); margin-bottom: var(--ln-sp-4); }
+.network-card__icon {
+  flex: none; width: 44px; height: 44px; display: grid; place-items: center;
+  color: var(--ln-teal); background: rgba(34, 224, 208, 0.1);
+  border: 1px solid rgba(34, 224, 208, 0.3); border-radius: var(--ln-r-md);
+}
+.network-card__icon svg { width: 26px; height: 26px; }
+.network-card__body { flex: 1 1 auto; min-width: 0; }
+.network-card__ssid { font-weight: 750; font-size: var(--ln-fs-lg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.network-card__meta { font-size: var(--ln-fs-xs); color: var(--ln-text-muted); margin-top: 2px; }
+
+.pw-field { position: relative; }
+.pw-field .ln-input {
+  padding-right: 56px;
+  font-family: var(--ln-mono);
+  font-size: var(--ln-fs-lg);
+  letter-spacing: 0.1em;
+  cursor: default;
+}
+.pw-eye-btn {
+  position: absolute; right: 6px; top: 6px;
+  width: 44px; height: 44px;
+  display: grid; place-items: center;
+  background: transparent; border: none; border-radius: var(--ln-r-md);
+  color: var(--ln-text-muted); cursor: pointer;
+}
+.pw-eye-btn:hover { background: var(--ln-surface-2); color: var(--ln-text); }
+.pw-eye-btn.is-active { color: var(--ln-teal); }
+.pw-eye-btn svg { width: 22px; height: 22px; }
+.pw-meta-row { display: flex; align-items: center; justify-content: space-between; margin-top: var(--ln-sp-2); }
+.pw-meta-row .ln-hint { margin: 0; }
+.pw-count { font-size: var(--ln-fs-xs); color: var(--ln-text-dim); font-variant-numeric: tabular-nums; }
+.pw-count.is-ok { color: var(--ln-success); font-weight: 700; }
+
+.status-card {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--ln-sp-3);
+  text-align: center;
+}
+.status-card__icon {
+  width: 52px; height: 52px; flex: none; display: grid; place-items: center;
+  border-radius: 50%;
+  background: var(--ln-surface-2);
+  color: var(--ln-text-dim);
+  font-size: 24px;
+  transition: color .2s ease, background .2s ease;
+}
+.status-card__icon svg { width: 26px; height: 26px; }
+.status-card__title { font-weight: 700; font-size: var(--ln-fs-md); color: var(--ln-text-muted); }
+.status-card__sub { font-size: var(--ln-fs-sm); color: var(--ln-text-dim); max-width: 32ch; }
+.status-card.is-connecting .status-card__icon { color: var(--ln-warn); background: rgba(255,202,74,0.12); }
+.status-card.is-connecting .status-card__icon svg { animation: wk-spin 0.9s linear infinite; }
+.status-card.is-connecting .status-card__title { color: var(--ln-warn); }
+.status-card.is-success .status-card__icon { color: var(--ln-success); background: rgba(52,227,155,0.14); }
+.status-card.is-success .status-card__title { color: var(--ln-success); }
+@keyframes wk-spin { to { transform: rotate(360deg); } }
+
+/* Right: keyboard */
+.wk-right { flex: 1 1 auto; min-height: 0; display: flex; }
+.keyboard-card { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+.keyboard-card__header { flex: none; display: flex; align-items: baseline; justify-content: space-between; margin-bottom: var(--ln-sp-3); }
+
+.kb-rows { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: center; gap: 13px; min-height: 0; }
+.kb-row { display: flex; gap: 9px; }
+.kb-row--letters2 { margin: 0 34px; }
+
+.kb-key {
+  flex: 1 1 0;
+  min-height: 60px;
+  display: flex; align-items: center; justify-content: center;
+  font: inherit; font-weight: 650; font-size: var(--ln-fs-lg);
+  color: var(--ln-text);
+  background: var(--ln-surface-2);
+  border: 1px solid var(--ln-border-strong);
+  border-radius: var(--ln-r-md);
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: background .08s ease, border-color .12s ease, transform .05s ease;
+}
+.kb-key:hover { background: var(--ln-surface-raised); }
+.kb-key:active, .kb-key.is-pressed {
+  background: var(--ln-navy-700);
+  border-color: var(--ln-teal);
+  transform: translateY(2px) scale(.97);
+}
+.kb-key--fn {
+  flex-grow: 1.5;
+  font-size: var(--ln-fs-md);
+  color: var(--ln-text-muted);
+  background: var(--ln-navy-800);
+}
+.kb-key--shift.is-shifted {
+  background: linear-gradient(135deg, var(--ln-teal), var(--ln-teal-600));
+  color: var(--ln-text-on-teal);
+  border-color: transparent;
+}
+.kb-key--shift.is-disabled, .kb-key--backspace.is-disabled { opacity: .4; pointer-events: none; }
+.kb-key--toggle { flex-grow: 1.3; font-size: var(--ln-fs-sm); font-weight: 700; color: var(--ln-teal); background: var(--ln-navy-800); }
+.kb-key--space {
+  flex-grow: 6;
+  font-size: var(--ln-fs-xs); font-weight: 700; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ln-text-dim);
+}
+.kb-key--connect {
+  flex-grow: 2.4;
+  gap: 8px;
+  background: linear-gradient(135deg, var(--ln-teal), var(--ln-teal-600));
+  color: var(--ln-text-on-teal);
+  border-color: transparent;
+  box-shadow: var(--ln-shadow-teal);
+  font-weight: 800; font-size: var(--ln-fs-lg);
+}
+.kb-key--connect:hover { filter: brightness(1.06); background: linear-gradient(135deg, var(--ln-teal), var(--ln-teal-600)); }
+.kb-key--connect:active { transform: translateY(2px) scale(.98); }
+.kb-key--connect[disabled] { opacity: .4; cursor: not-allowed; box-shadow: none; pointer-events: none; }
+.kb-key--connect svg { width: 20px; height: 20px; }
+.kb-key--num { color: var(--ln-text-muted); font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="frame-stage">
+  <div class="frame-m5">
+    <div class="frame-m5__screen">
+
+      <!-- App bar -->
+      <header class="ln-appbar">
+        <span class="ln-brand"><span class="ln-brand__dot"></span> Live Ninja</span>
+        <h1 class="ln-appbar__title" style="text-align:center; font-size: var(--ln-fs-md); color: var(--ln-text-muted); font-weight:650;">Device Setup · Wi&#8209;Fi</h1>
+        <span class="ln-mono ln-dim" id="clock" style="margin-right: var(--ln-sp-3);">09:41</span>
+        <span class="ln-badge ln-badge--teal">STEP 2 OF 3</span>
+      </header>
+
+      <!-- Main body -->
+      <div class="wk-main">
+
+        <!-- Nearby networks hint (compact list-select context from the previous step) -->
+        <div class="nearby-strip">
+          <span class="nearby-strip__label">Nearby&nbsp;networks</span>
+          <div class="nearby-chips" id="nearbyChips">
+            <!-- populated by JS -->
+          </div>
+        </div>
+
+        <!-- Two-column work area -->
+        <div class="wk-columns">
+
+          <!-- Left: chosen network + password field -->
+          <div class="wk-left">
+            <div class="ln-card network-card">
+              <div class="network-card__row">
+                <span class="network-card__icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M5 12.5a11 11 0 0 1 14 0" />
+                    <path d="M8.5 16a6.5 6.5 0 0 1 7 0" />
+                    <circle cx="12" cy="19.5" r="1.1" fill="currentColor" stroke="none" />
+                  </svg>
+                </span>
+                <div class="network-card__body">
+                  <div class="network-card__ssid" id="ssidLabel">LiveNinja-Home-5G</div>
+                  <div class="network-card__meta">🔒 WPA2 &nbsp;·&nbsp; Signal strong</div>
+                </div>
+              </div>
+
+              <div class="ln-field" style="margin-bottom:0;">
+                <label for="pwInput">Wi&#8209;Fi password</label>
+                <div class="pw-field">
+                  <input
+                    class="ln-input" id="pwInput" type="password"
+                    value="" placeholder="Tap keys below to type…"
+                    readonly inputmode="none" autocomplete="off" spellcheck="false"
+                  >
+                  <button class="pw-eye-btn" id="eyeBtn" type="button" aria-label="Show password" aria-pressed="false">
+                    <svg id="eyeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M1.5 12S5 5 12 5s10.5 7 10.5 7-3.5 7-10.5 7S1.5 12 1.5 12Z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  </button>
+                </div>
+                <div class="pw-meta-row">
+                  <span class="ln-hint">Only the on-screen keyboard can enter this field.</span>
+                  <span class="pw-count" id="pwCount">0 / 8 min</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="ln-card status-card" id="statusCard">
+              <span class="status-card__icon" id="statusIcon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M5 12.5a11 11 0 0 1 14 0" />
+                  <path d="M8.5 16a6.5 6.5 0 0 1 7 0" />
+                  <circle cx="12" cy="19.5" r="1.1" fill="currentColor" stroke="none" />
+                </svg>
+              </span>
+              <div>
+                <div class="status-card__title" id="statusTitle">Enter the password to continue</div>
+                <div class="status-card__sub" id="statusSub">Use the keyboard on the right, then tap Connect.</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: on-screen keyboard -->
+          <div class="wk-right">
+            <div class="ln-card keyboard-card">
+              <div class="keyboard-card__header">
+                <span class="ln-eyebrow">On-screen keyboard</span>
+                <span class="ln-dim" style="font-size: var(--ln-fs-xs);">Passphrase entry only</span>
+              </div>
+
+              <div class="kb-rows" id="kbRows">
+                <!-- Row 0: numbers -->
+                <div class="kb-row" id="rowNumbers"></div>
+                <!-- Row 1: QWERTYUIOP -->
+                <div class="kb-row" id="rowLetters1"></div>
+                <!-- Row 2: ASDFGHJKL (indented) -->
+                <div class="kb-row kb-row--letters2" id="rowLetters2"></div>
+                <!-- Row 3: shift + ZXCVBNM + backspace -->
+                <div class="kb-row" id="rowLetters3"></div>
+                <!-- Row 4: symbols toggle, comma, space, period, connect -->
+                <div class="kb-row" id="rowAction"></div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <footer class="ln-appbar" style="border-top: 1px solid var(--ln-border); border-bottom:none; position: static; box-shadow:none;">
+        <button class="ln-btn ln-btn--ghost" type="button" style="min-height:40px; padding:0 var(--ln-sp-4); font-size: var(--ln-fs-sm);">&larr; Back</button>
+        <span class="ln-grow"></span>
+        <div class="m5-pageindicator">
+          <span>Step 2 of 3 · Wi&#8209;Fi</span>
+          <span class="m5-pageindicator__dots">
+            <i></i><i class="is-active"></i><i></i>
+          </span>
+        </div>
+      </footer>
+
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var SSID = 'LiveNinja-Home-5G';
+  var MIN_LEN = 8;
+
+  /* ---------- clock ---------- */
+  var clockEl = document.getElementById('clock');
+  function tickClock() {
+    var d = new Date();
+    var h = String(d.getHours()).padStart(2, '0');
+    var m = String(d.getMinutes()).padStart(2, '0');
+    clockEl.textContent = h + ':' + m;
+  }
+  tickClock();
+  setInterval(tickClock, 30000);
+
+  /* ---------- nearby networks hint strip ---------- */
+  var networks = [
+    { ssid: SSID, bars: 4, locked: true, selected: true },
+    { ssid: 'NETGEAR91', bars: 3, locked: true, selected: false },
+    { ssid: 'Pixel_7429', bars: 3, locked: true, selected: false },
+    { ssid: 'xfinitywifi', bars: 1, locked: false, selected: false },
+    { ssid: 'Office-Guest', bars: 2, locked: true, selected: false }
+  ];
+  var chipsWrap = document.getElementById('nearbyChips');
+  chipsWrap.innerHTML = networks.map(function (n) {
+    var bars = '';
+    for (var i = 1; i <= 4; i++) { bars += '<i class="' + (i <= n.bars ? 'on' : '') + '"></i>'; }
+    return '' +
+      '<span class="nearby-chip' + (n.selected ? ' is-selected' : '') + '">' +
+        '<span class="nearby-chip__bars">' + bars + '</span>' +
+        (n.locked ? '<span class="nearby-chip__lock">🔒</span>' : '') +
+        '<span>' + n.ssid + '</span>' +
+      '</span>';
+  }).join('');
+
+  /* ---------- password field + show/hide ---------- */
+  var pwInput = document.getElementById('pwInput');
+  var eyeBtn = document.getElementById('eyeBtn');
+  var eyeIcon = document.getElementById('eyeIcon');
+  var pwCount = document.getElementById('pwCount');
+  var connectKey; // assigned after keyboard build
+
+  var EYE_OPEN = '<path d="M1.5 12S5 5 12 5s10.5 7 10.5 7-3.5 7-10.5 7S1.5 12 1.5 12Z"/><circle cx="12" cy="12" r="3"/>';
+  var EYE_OFF = '<path d="M3 3l18 18"/><path d="M10.6 5.2A10.9 10.9 0 0 1 12 5c7 0 10.5 7 10.5 7a13.6 13.6 0 0 1-3.1 4.1M6.6 6.6C3.6 8.5 1.5 12 1.5 12s3.5 7 10.5 7c1.4 0 2.7-.28 3.9-.75"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>';
+
+  var showing = false;
+  eyeBtn.addEventListener('click', function () {
+    showing = !showing;
+    pwInput.type = showing ? 'text' : 'password';
+    eyeIcon.innerHTML = showing ? EYE_OFF : EYE_OPEN;
+    eyeBtn.classList.toggle('is-active', showing);
+    eyeBtn.setAttribute('aria-pressed', String(showing));
+    eyeBtn.setAttribute('aria-label', showing ? 'Hide password' : 'Show password');
+  });
+
+  function updatePwMeta() {
+    var len = pwInput.value.length;
+    pwCount.textContent = len + ' / ' + MIN_LEN + (len >= MIN_LEN ? ' ✓' : ' min');
+    pwCount.classList.toggle('is-ok', len >= MIN_LEN);
+    if (connectKey) connectKey.disabled = len < MIN_LEN || connecting || connected;
+  }
+
+  /* ---------- keyboard build ---------- */
+  var rowNumbers = document.getElementById('rowNumbers');
+  var rowLetters1 = document.getElementById('rowLetters1');
+  var rowLetters2 = document.getElementById('rowLetters2');
+  var rowLetters3 = document.getElementById('rowLetters3');
+  var rowAction = document.getElementById('rowAction');
+
+  var numberChars = ['1','2','3','4','5','6','7','8','9','0'];
+
+  var row1Alpha = ['q','w','e','r','t','y','u','i','o','p'];
+  var row1Sym   = ['-','_','=','+','[',']','{','}','\\','|'];
+
+  var row2Alpha = ['a','s','d','f','g','h','j','k','l'];
+  var row2Sym   = [';',':','\'','"',',','.','/','?','~'];
+
+  var row3Alpha = ['z','x','c','v','b','n','m'];
+  var row3Sym   = ['`','<','>','$','%','^','&'];
+
+  var shiftOn = false;
+  var symbolMode = false;
+  var connecting = false;
+  var connected = false;
+
+  function makeKey(opts) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'kb-key' + (opts.extraClass ? ' ' + opts.extraClass : '');
+    if (opts.id) btn.id = opts.id;
+    btn.textContent = opts.label;
+    if (opts.onClick) btn.addEventListener('click', opts.onClick);
+    return btn;
+  }
+
+  function insertChar(ch) {
+    if (connecting || connected) return;
+    pwInput.value += ch;
+    updatePwMeta();
+    if (shiftOn && !symbolMode) { shiftOn = false; renderLetterKeys(); }
+  }
+
+  /* Numbers row — always visible, unaffected by shift/symbol mode */
+  numberChars.forEach(function (ch) {
+    rowNumbers.appendChild(makeKey({
+      label: ch,
+      extraClass: 'kb-key--num',
+      onClick: function () { insertChar(ch); }
+    }));
+  });
+
+  /* Letter/symbol keys — rebuilt in place via renderLetterKeys() */
+  var letterKeyEls = { row1: [], row2: [], row3mid: [] };
+
+  function buildLetterKey(alphaCh, symCh, store) {
+    var btn = makeKey({
+      label: alphaCh,
+      onClick: function () {
+        var ch = symbolMode ? btn.dataset.sym : (shiftOn ? btn.dataset.alpha.toUpperCase() : btn.dataset.alpha);
+        insertChar(ch);
+      }
+    });
+    btn.dataset.alpha = alphaCh;
+    btn.dataset.sym = symCh;
+    store.push(btn);
+    return btn;
+  }
+
+  row1Alpha.forEach(function (ch, i) { rowLetters1.appendChild(buildLetterKey(ch, row1Sym[i], letterKeyEls.row1)); });
+  row2Alpha.forEach(function (ch, i) { rowLetters2.appendChild(buildLetterKey(ch, row2Sym[i], letterKeyEls.row2)); });
+
+  var shiftKey = makeKey({
+    id: 'shiftKey',
+    label: '⇧ Shift',
+    extraClass: 'kb-key--fn kb-key--shift',
+    onClick: function () {
+      if (symbolMode || connecting || connected) return;
+      shiftOn = !shiftOn;
+      renderLetterKeys();
+    }
+  });
+  rowLetters3.appendChild(shiftKey);
+  row3Alpha.forEach(function (ch, i) { rowLetters3.appendChild(buildLetterKey(ch, row3Sym[i], letterKeyEls.row3mid)); });
+  var backspaceKey = makeKey({
+    id: 'backspaceKey',
+    label: '⌫',
+    extraClass: 'kb-key--fn kb-key--backspace',
+    onClick: function () {
+      if (connecting || connected) return;
+      pwInput.value = pwInput.value.slice(0, -1);
+      updatePwMeta();
+    }
+  });
+  rowLetters3.appendChild(backspaceKey);
+
+  var symToggleKey = makeKey({
+    id: 'symToggleKey',
+    label: '!@#',
+    extraClass: 'kb-key--fn kb-key--toggle',
+    onClick: function () {
+      if (connecting || connected) return;
+      symbolMode = !symbolMode;
+      shiftOn = false;
+      renderLetterKeys();
+    }
+  });
+  rowAction.appendChild(symToggleKey);
+  rowAction.appendChild(makeKey({ label: ',', onClick: function () { insertChar(','); } }));
+  rowAction.appendChild(makeKey({
+    label: 'Space', extraClass: 'kb-key--space',
+    onClick: function () { insertChar(' '); }
+  }));
+  rowAction.appendChild(makeKey({ label: '.', onClick: function () { insertChar('.'); } }));
+
+  connectKey = makeKey({
+    id: 'connectKey',
+    label: '',
+    extraClass: 'kb-key--connect',
+    onClick: onConnect
+  });
+  connectKey.innerHTML =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M5 12.5a11 11 0 0 1 14 0"/><path d="M8.5 16a6.5 6.5 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1.1" fill="currentColor" stroke="none"/>' +
+    '</svg><span>Connect</span>';
+  connectKey.disabled = true;
+  rowAction.appendChild(connectKey);
+
+  function renderLetterKeys() {
+    [letterKeyEls.row1, letterKeyEls.row2, letterKeyEls.row3mid].forEach(function (list) {
+      list.forEach(function (btn) {
+        btn.textContent = symbolMode ? btn.dataset.sym : (shiftOn ? btn.dataset.alpha.toUpperCase() : btn.dataset.alpha);
+      });
+    });
+    shiftKey.classList.toggle('is-shifted', shiftOn && !symbolMode);
+    shiftKey.classList.toggle('is-disabled', symbolMode);
+    shiftKey.setAttribute('aria-pressed', String(shiftOn));
+    symToggleKey.textContent = symbolMode ? 'ABC' : '!@#';
+  }
+  renderLetterKeys();
+  updatePwMeta();
+
+  /* ---------- Connect simulation ---------- */
+  var statusCard = document.getElementById('statusCard');
+  var statusIcon = document.getElementById('statusIcon');
+  var statusTitle = document.getElementById('statusTitle');
+  var statusSub = document.getElementById('statusSub');
+
+  var WIFI_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5a11 11 0 0 1 14 0"/><path d="M8.5 16a6.5 6.5 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1.1" fill="currentColor" stroke="none"/></svg>';
+  var SPIN_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 3a9 9 0 1 0 9 9"/></svg>';
+  var CHECK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5.5 5.5L20 6"/></svg>';
+
+  function onConnect() {
+    if (connecting || connected || pwInput.value.length < MIN_LEN) return;
+    connecting = true;
+    connectKey.disabled = true;
+    connectKey.querySelector('span').textContent = 'Connecting…';
+
+    statusCard.classList.add('is-connecting');
+    statusIcon.innerHTML = SPIN_ICON;
+    statusTitle.textContent = 'Connecting to ' + SSID + '…';
+    statusSub.textContent = 'Verifying the password and joining the network.';
+
+    setTimeout(function () {
+      connecting = false;
+      connected = true;
+      statusCard.classList.remove('is-connecting');
+      statusCard.classList.add('is-success');
+      statusIcon.innerHTML = CHECK_ICON;
+      statusTitle.textContent = 'Connected';
+      statusSub.textContent = 'Wi‑Fi joined successfully. Continuing setup…';
+      connectKey.querySelector('span').textContent = 'Connected';
+    }, 1600);
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,1226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Ninja · Conversation History</title>
+<style>
+:root {
+  /* ============================================================
+     LIVE NINJA — DESIGN SYSTEM TOKENS
+     Primarily-dark, techy-premium: deep navy + electric teal
+     ============================================================ */
+
+  /* Brand — navy family */
+  --ln-navy: #0a1424;
+  --ln-navy-900: #060d18;
+  --ln-navy-800: #0f1e35;
+  --ln-navy-700: #16294a;
+  --ln-navy-600: #1e3860;
+
+  /* Brand — electric teal / cyan accent */
+  --ln-teal: #22e0d0;
+  --ln-teal-600: #12b6b0;
+  --ln-teal-700: #0c8f8c;
+  --ln-teal-glow: rgba(34, 224, 208, 0.45);
+  --ln-cyan: #38d0ff;
+
+  /* Neutrals */
+  --ln-white: #f4f8fb;
+  --ln-gray-100: #dbe4ef;
+  --ln-gray-300: #9fb0c4;
+  --ln-gray-500: #6b7d94;
+  --ln-gray-700: #3a4a60;
+  --ln-black: #04070d;
+
+  /* Semantic status */
+  --ln-success: #34e39b;
+  --ln-warn: #ffca4a;
+  --ln-error: #ff5c72;
+
+  /* Surface / background / text tokens (dark theme) */
+  --ln-bg: var(--ln-navy-900);
+  --ln-bg-grad: radial-gradient(1200px 700px at 70% -10%, #12294a 0%, var(--ln-navy-900) 55%);
+  --ln-surface: rgba(20, 38, 66, 0.72);
+  --ln-surface-2: rgba(28, 50, 84, 0.85);
+  --ln-surface-raised: #142544;
+  --ln-border: rgba(122, 160, 205, 0.16);
+  --ln-border-strong: rgba(122, 160, 205, 0.30);
+
+  --ln-text: var(--ln-white);
+  --ln-text-muted: var(--ln-gray-300);
+  --ln-text-dim: var(--ln-gray-500);
+  --ln-text-on-teal: #052220;
+
+  /* Type scale (1.25 modular) */
+  --ln-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", Arial, sans-serif;
+  --ln-mono: "SF Mono", "JetBrains Mono", "Fira Code", Consolas, "Roboto Mono", monospace;
+  --ln-fs-xs: 12px;
+  --ln-fs-sm: 14px;
+  --ln-fs-md: 16px;
+  --ln-fs-lg: 20px;
+  --ln-fs-xl: 25px;
+  --ln-fs-2xl: 31px;
+  --ln-fs-3xl: 39px;
+  --ln-fs-4xl: 49px;
+  --ln-lh: 1.5;
+  --ln-lh-tight: 1.2;
+
+  /* Spacing scale (4px base) */
+  --ln-sp-1: 4px;
+  --ln-sp-2: 8px;
+  --ln-sp-3: 12px;
+  --ln-sp-4: 16px;
+  --ln-sp-5: 24px;
+  --ln-sp-6: 32px;
+  --ln-sp-7: 48px;
+  --ln-sp-8: 64px;
+
+  /* Radius */
+  --ln-r-sm: 8px;
+  --ln-r-md: 12px;
+  --ln-r-lg: 18px;
+  --ln-r-xl: 28px;
+  --ln-r-pill: 999px;
+
+  /* Shadows */
+  --ln-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --ln-shadow-md: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --ln-shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.55);
+  --ln-shadow-teal: 0 0 0 1px rgba(34, 224, 208, 0.35), 0 0 28px var(--ln-teal-glow);
+
+  /* Focus ring */
+  --ln-focus: 0 0 0 3px rgba(56, 208, 255, 0.55);
+
+  /* Touch target minimum */
+  --ln-touch: 44px;
+}
+
+/* ================================================================
+   BASE RESET + TYPOGRAPHY
+   ================================================================ */
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  font-family: var(--ln-font);
+  font-size: var(--ln-fs-md);
+  line-height: var(--ln-lh);
+  color: var(--ln-text);
+  background: var(--ln-bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+h1, h2, h3, h4 { margin: 0 0 var(--ln-sp-3); line-height: var(--ln-lh-tight); font-weight: 700; letter-spacing: -0.01em; }
+h1 { font-size: var(--ln-fs-3xl); }
+h2 { font-size: var(--ln-fs-2xl); }
+h3 { font-size: var(--ln-fs-xl); }
+h4 { font-size: var(--ln-fs-lg); }
+p { margin: 0 0 var(--ln-sp-4); }
+a { color: var(--ln-teal); text-decoration: none; }
+a:hover { text-decoration: underline; }
+small { font-size: var(--ln-fs-sm); color: var(--ln-text-muted); }
+code, kbd { font-family: var(--ln-mono); font-size: 0.9em; }
+img { max-width: 100%; display: block; }
+
+/* Visible focus for everything focusable */
+:focus-visible { outline: none; box-shadow: var(--ln-focus); border-radius: var(--ln-r-sm); }
+
+.ln-muted { color: var(--ln-text-muted); }
+.ln-dim { color: var(--ln-text-dim); }
+.ln-mono { font-family: var(--ln-mono); }
+.ln-eyebrow { font-size: var(--ln-fs-xs); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ln-teal); font-weight: 700; }
+.ln-stack > * + * { margin-top: var(--ln-sp-4); }
+
+/* ================================================================
+   BUTTONS
+   ================================================================ */
+.ln-btn {
+  --_bg: var(--ln-surface-2);
+  --_fg: var(--ln-text);
+  --_bd: var(--ln-border-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ln-sp-2);
+  min-height: var(--ln-touch);
+  padding: 0 var(--ln-sp-5);
+  font: inherit;
+  font-weight: 650;
+  font-size: var(--ln-fs-md);
+  color: var(--_fg);
+  background: var(--_bg);
+  border: 1px solid var(--_bd);
+  border-radius: var(--ln-r-pill);
+  cursor: pointer;
+  transition: transform .08s ease, box-shadow .15s ease, background .15s ease, filter .15s ease;
+  user-select: none;
+}
+.ln-btn:hover { filter: brightness(1.08); }
+.ln-btn:active { transform: translateY(1px); }
+.ln-btn:focus-visible { box-shadow: var(--ln-focus); }
+.ln-btn[disabled], .ln-btn:disabled { opacity: .45; cursor: not-allowed; }
+.ln-btn--primary {
+  --_bg: linear-gradient(135deg, var(--ln-teal) 0%, var(--ln-teal-600) 100%);
+  --_fg: var(--ln-text-on-teal);
+  --_bd: transparent;
+  box-shadow: var(--ln-shadow-teal);
+  font-weight: 750;
+}
+.ln-btn--ghost {
+  --_bg: transparent;
+  --_fg: var(--ln-text);
+  --_bd: var(--ln-border-strong);
+}
+.ln-btn--danger {
+  --_bg: transparent;
+  --_fg: var(--ln-error);
+  --_bd: rgba(255, 92, 114, 0.5);
+}
+.ln-btn--block { display: flex; width: 100%; }
+.ln-btn--lg { min-height: 56px; font-size: var(--ln-fs-lg); padding: 0 var(--ln-sp-6); }
+
+/* Login with Amazon button */
+.ln-btn--amazon {
+  --_bg: #ff9900;
+  --_fg: #0a0a0a;
+  --_bd: #e88b00;
+  font-weight: 700;
+}
+
+/* ================================================================
+   FORM CONTROLS — input, select, field, toggle
+   ================================================================ */
+.ln-field { display: block; margin-bottom: var(--ln-sp-4); }
+.ln-field > label,
+.ln-label {
+  display: block;
+  margin-bottom: var(--ln-sp-2);
+  font-size: var(--ln-fs-sm);
+  font-weight: 650;
+  color: var(--ln-text-muted);
+}
+.ln-field .ln-hint { margin-top: var(--ln-sp-2); font-size: var(--ln-fs-xs); color: var(--ln-text-dim); }
+.ln-field .ln-error-text { margin-top: var(--ln-sp-2); font-size: var(--ln-fs-xs); color: var(--ln-error); font-weight: 600; }
+
+.ln-input, .ln-select {
+  display: block;
+  width: 100%;
+  min-height: var(--ln-touch);
+  padding: var(--ln-sp-3) var(--ln-sp-4);
+  font: inherit;
+  color: var(--ln-text);
+  background: var(--ln-navy-800);
+  border: 1px solid var(--ln-border-strong);
+  border-radius: var(--ln-r-md);
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.ln-input::placeholder { color: var(--ln-text-dim); }
+.ln-input:focus, .ln-select:focus { outline: none; border-color: var(--ln-teal); box-shadow: var(--ln-focus); }
+.ln-input:disabled, .ln-select:disabled { opacity: .5; }
+
+.ln-select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: var(--ln-sp-7);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239fb0c4' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right var(--ln-sp-4) center;
+}
+
+/* Toggle switch */
+.ln-toggle { position: relative; display: inline-flex; align-items: center; gap: var(--ln-sp-3); cursor: pointer; min-height: var(--ln-touch); }
+.ln-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+.ln-toggle .ln-toggle-track {
+  width: 52px; height: 30px; flex: none;
+  background: var(--ln-navy-700);
+  border: 1px solid var(--ln-border-strong);
+  border-radius: var(--ln-r-pill);
+  transition: background .2s ease;
+  position: relative;
+}
+.ln-toggle .ln-toggle-thumb {
+  position: absolute; top: 3px; left: 3px;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--ln-gray-100);
+  transition: transform .2s ease, background .2s ease;
+}
+.ln-toggle input:checked + .ln-toggle-track { background: linear-gradient(135deg, var(--ln-teal), var(--ln-teal-600)); border-color: transparent; }
+.ln-toggle input:checked + .ln-toggle-track .ln-toggle-thumb { transform: translateX(22px); background: var(--ln-text-on-teal); }
+.ln-toggle input:focus-visible + .ln-toggle-track { box-shadow: var(--ln-focus); }
+
+/* ================================================================
+   CARD
+   ================================================================ */
+.ln-card {
+  background: var(--ln-surface);
+  border: 1px solid var(--ln-border);
+  border-radius: var(--ln-r-lg);
+  padding: var(--ln-sp-5);
+  box-shadow: var(--ln-shadow-md);
+  backdrop-filter: blur(12px);
+}
+.ln-card--flush { padding: 0; overflow: hidden; }
+.ln-card__header { display: flex; align-items: center; justify-content: space-between; gap: var(--ln-sp-3); margin-bottom: var(--ln-sp-4); }
+.ln-card__title { font-size: var(--ln-fs-lg); font-weight: 700; margin: 0; }
+
+/* ================================================================
+   LIST
+   ================================================================ */
+.ln-list { list-style: none; margin: 0; padding: 0; border-radius: var(--ln-r-lg); overflow: hidden; border: 1px solid var(--ln-border); }
+.ln-list-item {
+  display: flex; align-items: center; gap: var(--ln-sp-4);
+  padding: var(--ln-sp-4) var(--ln-sp-5);
+  min-height: 56px;
+  background: var(--ln-surface);
+  border-bottom: 1px solid var(--ln-border);
+}
+.ln-list-item:last-child { border-bottom: none; }
+.ln-list-item__body { flex: 1 1 auto; min-width: 0; }
+.ln-list-item__title { font-weight: 650; }
+.ln-list-item__sub { font-size: var(--ln-fs-sm); color: var(--ln-text-muted); }
+.ln-list-item__end { flex: none; color: var(--ln-text-muted); }
+.ln-list-item--button { cursor: pointer; transition: background .12s ease; width: 100%; text-align: left; font: inherit; color: inherit; border: none; border-bottom: 1px solid var(--ln-border); }
+.ln-list-item--button:hover { background: var(--ln-surface-2); }
+
+/* ================================================================
+   BADGE
+   ================================================================ */
+.ln-badge {
+  display: inline-flex; align-items: center; gap: var(--ln-sp-1);
+  padding: 3px var(--ln-sp-3);
+  font-size: var(--ln-fs-xs); font-weight: 700; letter-spacing: 0.03em;
+  border-radius: var(--ln-r-pill);
+  background: var(--ln-navy-700); color: var(--ln-text-muted);
+  border: 1px solid var(--ln-border-strong);
+}
+.ln-badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .9; }
+.ln-badge--active { background: rgba(52, 227, 155, 0.14); color: var(--ln-success); border-color: rgba(52, 227, 155, 0.4); }
+.ln-badge--muted { background: var(--ln-navy-700); color: var(--ln-text-dim); }
+.ln-badge--warn { background: rgba(255, 202, 74, 0.14); color: var(--ln-warn); border-color: rgba(255, 202, 74, 0.4); }
+.ln-badge--error { background: rgba(255, 92, 114, 0.14); color: var(--ln-error); border-color: rgba(255, 92, 114, 0.4); }
+.ln-badge--teal { background: rgba(34, 224, 208, 0.14); color: var(--ln-teal); border-color: rgba(34, 224, 208, 0.4); }
+.ln-badge--dot-none::before { display: none; }
+
+/* ================================================================
+   APP BAR (top) + TAB BAR (bottom nav)
+   ================================================================ */
+.ln-appbar {
+  display: flex; align-items: center; gap: var(--ln-sp-3);
+  min-height: 56px;
+  padding: var(--ln-sp-3) var(--ln-sp-4);
+  background: linear-gradient(180deg, rgba(15, 30, 53, 0.95), rgba(10, 20, 36, 0.75));
+  border-bottom: 1px solid var(--ln-border);
+  backdrop-filter: blur(10px);
+  position: sticky; top: 0; z-index: 10;
+}
+.ln-appbar__title { font-size: var(--ln-fs-lg); font-weight: 700; margin: 0; flex: 1 1 auto; }
+.ln-appbar__btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: var(--ln-touch); height: var(--ln-touch); flex: none;
+  background: transparent; border: none; color: var(--ln-text);
+  border-radius: var(--ln-r-md); cursor: pointer; font-size: var(--ln-fs-lg);
+}
+.ln-appbar__btn:hover { background: var(--ln-surface-2); }
+.ln-brand { display: inline-flex; align-items: center; gap: var(--ln-sp-2); font-weight: 800; letter-spacing: -0.01em; }
+.ln-brand__dot { width: 12px; height: 12px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #eafffb, var(--ln-teal) 55%, var(--ln-teal-700)); box-shadow: 0 0 12px var(--ln-teal-glow); }
+
+.ln-tabbar {
+  display: flex; align-items: stretch;
+  background: linear-gradient(0deg, rgba(6, 13, 24, 0.98), rgba(15, 30, 53, 0.9));
+  border-top: 1px solid var(--ln-border);
+  padding: var(--ln-sp-1) var(--ln-sp-2);
+  backdrop-filter: blur(10px);
+}
+.ln-tab {
+  flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  min-height: 56px; padding: var(--ln-sp-2);
+  background: transparent; border: none; cursor: pointer;
+  color: var(--ln-text-dim); font-size: var(--ln-fs-xs); font-weight: 600;
+  border-radius: var(--ln-r-md);
+}
+.ln-tab__icon { font-size: 20px; line-height: 1; }
+.ln-tab:hover { color: var(--ln-text-muted); }
+.ln-tab[aria-current="page"], .ln-tab.is-active { color: var(--ln-teal); }
+.ln-tab[aria-current="page"] .ln-tab__icon { filter: drop-shadow(0 0 8px var(--ln-teal-glow)); }
+
+/* ================================================================
+   LISTENING ORB — the brand motif
+   ================================================================ */
+.ln-orb {
+  position: relative;
+  width: 200px; height: 200px;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  isolation: isolate;
+}
+.ln-orb__core {
+  position: absolute; inset: 0;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(234, 255, 251, 0.95) 0%, rgba(34, 224, 208, 0.85) 22%, rgba(18, 182, 176, 0.5) 48%, rgba(10, 20, 36, 0) 72%),
+    conic-gradient(from 0deg, var(--ln-teal), var(--ln-cyan), var(--ln-teal-700), var(--ln-teal));
+  filter: blur(2px);
+  animation: ln-orb-spin 8s linear infinite;
+}
+.ln-orb__ring {
+  position: absolute; inset: -6%;
+  border-radius: 50%;
+  border: 2px solid var(--ln-teal-glow);
+  animation: ln-orb-pulse 2.4s ease-out infinite;
+}
+.ln-orb__ring--2 { animation-delay: .8s; }
+.ln-orb__ring--3 { animation-delay: 1.6s; }
+.ln-orb__glow { position: absolute; inset: 8%; border-radius: 50%; box-shadow: 0 0 60px 12px var(--ln-teal-glow); z-index: -1; }
+.ln-orb__label { position: relative; z-index: 2; font-weight: 700; color: var(--ln-text-on-teal); font-size: var(--ln-fs-sm); text-shadow: 0 1px 4px rgba(255,255,255,0.4); }
+.ln-orb--lg { width: 280px; height: 280px; }
+.ln-orb--sm { width: 96px; height: 96px; }
+.ln-orb--idle .ln-orb__core { animation-duration: 24s; opacity: .7; }
+.ln-orb--idle .ln-orb__ring { animation: none; opacity: .3; }
+
+@keyframes ln-orb-spin { to { transform: rotate(360deg); } }
+@keyframes ln-orb-pulse {
+  0% { transform: scale(0.9); opacity: .7; }
+  100% { transform: scale(1.35); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ln-orb__core, .ln-orb__ring { animation: none !important; }
+}
+
+/* ================================================================
+   TRANSCRIPT — chat-style bubbles
+   ================================================================ */
+.ln-transcript { display: flex; flex-direction: column; gap: var(--ln-sp-3); padding: var(--ln-sp-4); }
+.ln-bubble {
+  max-width: 78%;
+  padding: var(--ln-sp-3) var(--ln-sp-4);
+  border-radius: var(--ln-r-lg);
+  line-height: 1.45;
+  font-size: var(--ln-fs-md);
+  position: relative;
+}
+.ln-bubble__role { display: block; font-size: var(--ln-fs-xs); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: var(--ln-sp-1); opacity: .7; }
+.ln-bubble--user {
+  align-self: flex-end;
+  background: linear-gradient(135deg, var(--ln-teal), var(--ln-teal-600));
+  color: var(--ln-text-on-teal);
+  border-bottom-right-radius: var(--ln-r-sm);
+}
+.ln-bubble--assistant {
+  align-self: flex-start;
+  background: var(--ln-surface-2);
+  color: var(--ln-text);
+  border: 1px solid var(--ln-border);
+  border-bottom-left-radius: var(--ln-r-sm);
+}
+.ln-bubble--typing { display: inline-flex; gap: 5px; }
+.ln-bubble--typing span { width: 8px; height: 8px; border-radius: 50%; background: var(--ln-teal); animation: ln-typing 1.2s infinite ease-in-out; }
+.ln-bubble--typing span:nth-child(2) { animation-delay: .15s; }
+.ln-bubble--typing span:nth-child(3) { animation-delay: .3s; }
+@keyframes ln-typing { 0%, 60%, 100% { transform: translateY(0); opacity: .5; } 30% { transform: translateY(-5px); opacity: 1; } }
+
+/* ================================================================
+   KPI
+   ================================================================ */
+.ln-kpi {
+  display: flex; flex-direction: column; gap: var(--ln-sp-1);
+  padding: var(--ln-sp-4) var(--ln-sp-5);
+  background: var(--ln-surface);
+  border: 1px solid var(--ln-border);
+  border-radius: var(--ln-r-lg);
+}
+.ln-kpi__label { font-size: var(--ln-fs-xs); text-transform: uppercase; letter-spacing: 0.08em; color: var(--ln-text-dim); font-weight: 700; }
+.ln-kpi__value { font-size: var(--ln-fs-2xl); font-weight: 800; line-height: 1; color: var(--ln-text); font-variant-numeric: tabular-nums; }
+.ln-kpi__value--teal { color: var(--ln-teal); }
+.ln-kpi__delta { font-size: var(--ln-fs-sm); font-weight: 650; }
+.ln-kpi__delta--up { color: var(--ln-success); }
+.ln-kpi__delta--down { color: var(--ln-error); }
+.ln-kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--ln-sp-3); }
+
+/* ================================================================
+   DEVICE FRAMES
+   ================================================================ */
+.frame-stage {
+  min-height: 100vh;
+  display: grid; place-items: center;
+  padding: var(--ln-sp-6);
+  background:
+    radial-gradient(900px 500px at 50% -5%, #10203a 0%, transparent 60%),
+    #05080f;
+}
+
+/* ---- PHONE (Android/iOS style) 393x852 ---- */
+.frame-phone {
+  position: relative;
+  width: 393px; height: 852px;
+  background: #05080f;
+  border-radius: 54px;
+  padding: 12px;
+  box-shadow:
+    0 0 0 12px #12161d,
+    0 0 0 13px #2a2f38,
+    var(--ln-shadow-lg);
+  flex: none;
+}
+.frame-phone__screen {
+  position: relative;
+  width: 100%; height: 100%;
+  border-radius: 42px;
+  overflow: hidden;
+  background: var(--ln-bg-grad);
+  display: flex; flex-direction: column;
+}
+.frame-phone__statusbar {
+  height: 44px; flex: none;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 26px 0 30px;
+  font-size: var(--ln-fs-sm); font-weight: 650; color: var(--ln-text);
+  position: relative; z-index: 5;
+}
+.frame-phone__statusbar .ln-sb-icons { display: inline-flex; gap: 6px; align-items: center; }
+.frame-phone__notch {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+  width: 120px; height: 30px; background: #05080f; border-radius: var(--ln-r-pill); z-index: 6;
+}
+.frame-phone__body { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; }
+.frame-phone__home { height: 5px; width: 134px; background: var(--ln-gray-100); opacity: .6; border-radius: var(--ln-r-pill); margin: 6px auto 8px; flex: none; }
+
+/* ---- M5STACK LCD 1280x720 landscape ---- */
+.frame-m5 {
+  position: relative;
+  width: 1280px; height: 720px;
+  flex: none;
+  background: #0c0e12;
+  border-radius: 22px;
+  padding: 26px 30px;
+  box-shadow: 0 0 0 3px #23272f, 0 0 0 10px #14161b, var(--ln-shadow-lg);
+  /* Scale down responsively to fit viewport / print page */
+  transform: scale(var(--m5-scale, 1));
+  transform-origin: top center;
+}
+.frame-m5::after {
+  /* M5Stack-style brand strip / speaker grille hint */
+  content: "M5Stack · Live Ninja";
+  position: absolute; bottom: 6px; left: 0; right: 0;
+  text-align: center; font-size: 11px; letter-spacing: 0.18em;
+  color: #3a4150; text-transform: uppercase;
+}
+.frame-m5__screen {
+  width: 1280px; height: 720px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--ln-bg-grad);
+  display: flex; flex-direction: column;
+  box-shadow: inset 0 0 0 1px rgba(122,160,205,0.12), inset 0 0 80px rgba(0,0,0,0.5);
+}
+/* Auto-fit helper: wrap .frame-m5 in .frame-m5-fit to scale to container width */
+.frame-m5-fit {
+  width: 100%; overflow: hidden;
+  display: flex; justify-content: center;
+}
+/* Responsive scale via clamp on viewport width (1340 = frame + bezel) */
+@media (max-width: 1360px) { .frame-m5 { --m5-scale: calc((100vw - 24px) / 1340); } }
+
+/* ---- WEB browser chrome ---- */
+.frame-web {
+  width: 100%; max-width: 1200px;
+  background: var(--ln-navy-800);
+  border-radius: var(--ln-r-lg);
+  overflow: hidden;
+  box-shadow: var(--ln-shadow-lg);
+  border: 1px solid var(--ln-border);
+  display: flex; flex-direction: column;
+  flex: none;
+}
+.frame-web__chrome {
+  display: flex; align-items: center; gap: var(--ln-sp-3);
+  padding: var(--ln-sp-3) var(--ln-sp-4);
+  background: #0b1626;
+  border-bottom: 1px solid var(--ln-border);
+}
+.frame-web__dots { display: inline-flex; gap: 7px; flex: none; }
+.frame-web__dots i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+.frame-web__dots i:nth-child(1) { background: #ff5f57; }
+.frame-web__dots i:nth-child(2) { background: #febc2e; }
+.frame-web__dots i:nth-child(3) { background: #28c840; }
+.frame-web__addr {
+  flex: 1 1 auto;
+  display: flex; align-items: center; gap: var(--ln-sp-2);
+  height: 34px; padding: 0 var(--ln-sp-4);
+  background: var(--ln-navy-900);
+  border: 1px solid var(--ln-border);
+  border-radius: var(--ln-r-pill);
+  font-size: var(--ln-fs-sm); color: var(--ln-text-muted);
+}
+.frame-web__addr::before { content: "🔒"; font-size: 12px; }
+.frame-web__body { background: var(--ln-bg-grad); min-height: 600px; }
+
+/* ================================================================
+   EMBEDDED (M5) HELPERS — segmented, roller, list-select, page indicator
+   ================================================================ */
+
+/* Segmented button row — mutually-exclusive small set */
+.m5-segmented {
+  display: inline-flex; padding: 6px;
+  background: var(--ln-navy-800);
+  border: 1px solid var(--ln-border-strong);
+  border-radius: var(--ln-r-pill);
+  gap: 4px;
+}
+.m5-segmented button {
+  min-height: 56px; padding: 0 var(--ln-sp-6);
+  font: inherit; font-size: var(--ln-fs-lg); font-weight: 700;
+  color: var(--ln-text-muted);
+  background: transparent; border: none; border-radius: var(--ln-r-pill);
+  cursor: pointer; transition: background .12s ease, color .12s ease;
+}
+.m5-segmented button[aria-pressed="true"], .m5-segmented button.is-active {
+  background: linear-gradient(135deg, var(--ln-teal), var(--ln-teal-600));
+  color: var(--ln-text-on-teal);
+  box-shadow: var(--ln-shadow-teal);
+}
+
+/* Roller / spinbox — bounded number, big +/- */
+.m5-roller { display: inline-flex; align-items: center; gap: var(--ln-sp-4); }
+.m5-roller button {
+  width: 72px; height: 72px; flex: none;
+  font-size: 34px; font-weight: 800; line-height: 1;
+  color: var(--ln-text); background: var(--ln-surface-2);
+  border: 1px solid var(--ln-border-strong); border-radius: var(--ln-r-lg);
+  cursor: pointer;
+}
+.m5-roller button:active { background: var(--ln-navy-700); }
+.m5-roller__value {
+  min-width: 160px; text-align: center;
+  font-size: var(--ln-fs-4xl); font-weight: 800; font-variant-numeric: tabular-nums;
+  color: var(--ln-teal);
+}
+.m5-roller__unit { font-size: var(--ln-fs-lg); color: var(--ln-text-muted); font-weight: 650; }
+
+/* Full-width list-select — big rows for touch */
+.m5-listselect { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--ln-sp-3); }
+.m5-listselect > li { margin: 0; }
+.m5-listselect button {
+  display: flex; align-items: center; gap: var(--ln-sp-4);
+  width: 100%; min-height: 72px;
+  padding: var(--ln-sp-4) var(--ln-sp-6);
+  font: inherit; font-size: var(--ln-fs-xl); font-weight: 650; text-align: left;
+  color: var(--ln-text);
+  background: var(--ln-surface-2);
+  border: 1px solid var(--ln-border-strong);
+  border-radius: var(--ln-r-lg);
+  cursor: pointer; transition: border-color .12s ease, background .12s ease;
+}
+.m5-listselect button:hover { background: var(--ln-surface-raised); }
+.m5-listselect button[aria-selected="true"], .m5-listselect button.is-selected {
+  border-color: var(--ln-teal);
+  box-shadow: var(--ln-shadow-teal);
+}
+.m5-listselect button[aria-selected="true"]::after,
+.m5-listselect button.is-selected::after {
+  content: "✓"; margin-left: auto; color: var(--ln-teal); font-size: var(--ln-fs-2xl); font-weight: 800;
+}
+.m5-listselect__icon { font-size: 28px; flex: none; }
+
+/* Page indicator — "3 of 12" */
+.m5-pageindicator {
+  display: inline-flex; align-items: center; gap: var(--ln-sp-3);
+  font-size: var(--ln-fs-lg); font-weight: 700; color: var(--ln-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.m5-pageindicator__dots { display: inline-flex; gap: 6px; }
+.m5-pageindicator__dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--ln-gray-700); display: block; }
+.m5-pageindicator__dots i.is-active { background: var(--ln-teal); box-shadow: 0 0 8px var(--ln-teal-glow); }
+
+/* ================================================================
+   PRINT — friendly PDF rendering
+   ================================================================ */
+@media print {
+  @page { margin: 12mm; }
+  body { background: #fff; }
+  .frame-stage { min-height: auto; padding: 0; background: none; display: block; }
+  .frame-phone, .frame-m5, .frame-web { box-shadow: 0 0 0 1px #ccc; page-break-inside: avoid; margin: 0 auto 14mm; }
+  .frame-m5 { --m5-scale: 0.56; transform: scale(var(--m5-scale)); transform-origin: top left; }
+  /* Preserve dark UI colors in PDF */
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  .ln-orb__core, .ln-orb__ring, .ln-bubble--typing span { animation: none !important; }
+}
+
+/* ================================================================
+   UTILITIES
+   ================================================================ */
+.ln-flex { display: flex; }
+.ln-flex-col { display: flex; flex-direction: column; }
+.ln-items-center { align-items: center; }
+.ln-justify-between { justify-content: space-between; }
+.ln-gap-2 { gap: var(--ln-sp-2); }
+.ln-gap-3 { gap: var(--ln-sp-3); }
+.ln-gap-4 { gap: var(--ln-sp-4); }
+.ln-grow { flex: 1 1 auto; }
+.ln-center { text-align: center; }
+.ln-p-4 { padding: var(--ln-sp-4); }
+.ln-p-5 { padding: var(--ln-sp-5); }
+.ln-p-6 { padding: var(--ln-sp-6); }
+.ln-mt-4 { margin-top: var(--ln-sp-4); }
+.ln-mt-6 { margin-top: var(--ln-sp-6); }
+.ln-full { width: 100%; }
+.ln-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+/* ================================================================
+   SCREEN-SPECIFIC — Conversation History (06-history)
+   ================================================================ */
+.hist-page {
+  min-height: 600px;
+  display: flex;
+  flex-direction: column;
+}
+.hist-body {
+  flex: 1 1 auto;
+  padding: var(--ln-sp-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ln-sp-5);
+}
+.hist-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--ln-sp-4);
+}
+.hist-toolbar .ln-field { margin-bottom: 0; }
+.hist-search { flex: 1 1 260px; min-width: 220px; }
+.hist-filter { flex: 0 1 200px; min-width: 160px; }
+
+.hist-table-wrap {
+  position: relative;
+  overflow-x: auto;
+  border-radius: var(--ln-r-lg);
+  border: 1px solid var(--ln-border);
+}
+table.ln-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--ln-surface);
+  min-width: 760px;
+}
+table.ln-table caption {
+  text-align: left;
+  padding: var(--ln-sp-4) var(--ln-sp-5) 0;
+  font-size: var(--ln-fs-sm);
+  color: var(--ln-text-muted);
+}
+table.ln-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--ln-navy-800);
+  color: var(--ln-text-muted);
+  font-size: var(--ln-fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  text-align: left;
+  padding: var(--ln-sp-3) var(--ln-sp-4);
+  border-bottom: 1px solid var(--ln-border-strong);
+  white-space: nowrap;
+}
+table.ln-table thead th.is-numeric { text-align: right; }
+table.ln-table thead th button.th-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  font: inherit;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: inherit;
+  cursor: pointer;
+  padding: var(--ln-sp-1);
+  border-radius: var(--ln-r-sm);
+}
+table.ln-table thead th button.th-sort:hover { color: var(--ln-text); }
+table.ln-table thead th button.th-sort .sort-arrow { font-size: 10px; opacity: .6; }
+table.ln-table tbody tr {
+  border-bottom: 1px solid var(--ln-border);
+  cursor: pointer;
+  transition: background .12s ease;
+}
+table.ln-table tbody tr:nth-child(even) { background: rgba(122, 160, 205, 0.045); }
+table.ln-table tbody tr:hover,
+table.ln-table tbody tr:focus-visible { background: var(--ln-surface-2); }
+table.ln-table tbody tr:last-child { border-bottom: none; }
+table.ln-table tbody tr.is-open { background: rgba(34, 224, 208, 0.10); }
+table.ln-table td {
+  padding: var(--ln-sp-4);
+  vertical-align: top;
+  font-size: var(--ln-fs-sm);
+}
+table.ln-table td.is-numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+td.col-date { white-space: nowrap; color: var(--ln-text-muted); }
+td.col-title .title-main { display: block; font-weight: 650; color: var(--ln-text); font-size: var(--ln-fs-md); }
+td.col-title .title-sub { display: block; color: var(--ln-text-muted); margin-top: 2px; }
+td.col-actions { min-width: 200px; }
+.badge-row { display: flex; flex-wrap: wrap; gap: var(--ln-sp-2); }
+td.col-rowaction { text-align: right; white-space: nowrap; }
+.row-open-btn {
+  min-height: 36px;
+  padding: 0 var(--ln-sp-4);
+  font-size: var(--ln-fs-sm);
+}
+
+.hist-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ln-sp-4);
+  flex-wrap: wrap;
+  padding-top: var(--ln-sp-2);
+}
+.hist-footer .pager-btns { display: inline-flex; gap: var(--ln-sp-2); }
+.pager-btn {
+  min-height: 36px;
+  padding: 0 var(--ln-sp-4);
+  font-size: var(--ln-fs-sm);
+}
+
+/* Right-hand detail drawer */
+.hist-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 8, 14, 0.55);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .18s ease;
+  z-index: 20;
+}
+.hist-page.drawer-open .hist-overlay { opacity: 1; pointer-events: auto; }
+
+.hist-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(440px, 92%);
+  background: var(--ln-navy-800);
+  border-left: 1px solid var(--ln-border-strong);
+  box-shadow: var(--ln-shadow-lg);
+  transform: translateX(100%);
+  transition: transform .22s ease;
+  z-index: 21;
+  display: flex;
+  flex-direction: column;
+}
+.hist-page.drawer-open .hist-drawer { transform: translateX(0); }
+
+.hist-drawer__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--ln-sp-3);
+  padding: var(--ln-sp-5) var(--ln-sp-5) var(--ln-sp-4);
+  border-bottom: 1px solid var(--ln-border);
+  flex: none;
+}
+.hist-drawer__head h3 { margin: 0 0 4px; }
+.hist-drawer__meta { display: flex; flex-wrap: wrap; gap: var(--ln-sp-3); font-size: var(--ln-fs-sm); color: var(--ln-text-muted); }
+.hist-drawer__close {
+  flex: none;
+  width: var(--ln-touch); height: var(--ln-touch);
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid var(--ln-border-strong);
+  border-radius: 50%; color: var(--ln-text); cursor: pointer; font-size: 18px;
+}
+.hist-drawer__close:hover { background: var(--ln-surface-2); }
+.hist-drawer__actions {
+  padding: var(--ln-sp-4) var(--ln-sp-5) 0;
+  display: flex; flex-wrap: wrap; gap: var(--ln-sp-2);
+  flex: none;
+}
+.hist-drawer__body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+}
+.hist-drawer__foot {
+  flex: none;
+  padding: var(--ln-sp-4) var(--ln-sp-5);
+  border-top: 1px solid var(--ln-border);
+  display: flex; gap: var(--ln-sp-3); justify-content: flex-end;
+}
+
+@media (max-width: 720px) {
+  .hist-body { padding: var(--ln-sp-4); }
+  .hist-toolbar { flex-direction: column; align-items: stretch; }
+  .hist-filter { flex-basis: auto; }
+}
+</style>
+</head>
+<body>
+<div class="frame-stage">
+  <div class="frame-web" style="max-width:1200px;">
+    <div class="frame-web__chrome">
+      <div class="frame-web__dots"><i></i><i></i><i></i></div>
+      <div class="frame-web__addr">liveninja.app/history</div>
+      <div style="flex:none; color:var(--ln-text-dim); font-size:12px;">★</div>
+    </div>
+
+    <div class="frame-web__body">
+      <div class="hist-page" id="histPage">
+
+        <header class="ln-appbar">
+          <span class="ln-brand"><span class="ln-brand__dot"></span> Live Ninja</span>
+          <nav style="display:flex; gap:4px; flex:1 1 auto; margin-left:var(--ln-sp-5);" aria-label="Primary">
+            <a class="ln-btn ln-btn--ghost" style="border:none; min-height:36px;" href="#">Dashboard</a>
+            <a class="ln-btn ln-btn--ghost" style="border:none; min-height:36px; color:var(--ln-teal);" href="#" aria-current="page">History</a>
+            <a class="ln-btn ln-btn--ghost" style="border:none; min-height:36px;" href="#">Routines</a>
+            <a class="ln-btn ln-btn--ghost" style="border:none; min-height:36px;" href="#">Devices</a>
+            <a class="ln-btn ln-btn--ghost" style="border:none; min-height:36px;" href="#">Settings</a>
+          </nav>
+          <button class="ln-appbar__btn" aria-label="Notifications">🔔</button>
+          <button class="ln-appbar__btn" aria-label="Account menu" style="width:auto; padding:0 8px; gap:6px;">
+            <span style="width:28px;height:28px;border-radius:50%;background:var(--ln-navy-700);display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:var(--ln-teal);">JP</span>
+          </button>
+        </header>
+
+        <main class="hist-body">
+          <div class="ln-flex ln-items-center ln-justify-between" style="flex-wrap:wrap; gap:var(--ln-sp-3);">
+            <div>
+              <p class="ln-eyebrow" style="margin-bottom:4px;">Your assistant</p>
+              <h1 style="margin-bottom:0;">Conversation history</h1>
+            </div>
+            <div class="ln-kpi-row" style="min-width:280px;">
+              <div class="ln-kpi">
+                <span class="ln-kpi__label">This week</span>
+                <span class="ln-kpi__value ln-kpi__value--teal">47</span>
+              </div>
+              <div class="ln-kpi">
+                <span class="ln-kpi__label">Avg. duration</span>
+                <span class="ln-kpi__value">1m 42s</span>
+              </div>
+              <div class="ln-kpi">
+                <span class="ln-kpi__label">Actions taken</span>
+                <span class="ln-kpi__value">312</span>
+              </div>
+            </div>
+          </div>
+
+          <section class="ln-card ln-card--flush" aria-labelledby="histTableCaption">
+            <div style="padding:var(--ln-sp-5) var(--ln-sp-5) 0;">
+              <form class="hist-toolbar" role="search" onsubmit="return false;">
+                <div class="ln-field hist-search">
+                  <label for="histSearch">Search conversations</label>
+                  <input class="ln-input" type="search" id="histSearch" name="histSearch"
+                         placeholder="Search by title, keyword, or action…">
+                </div>
+                <div class="ln-field hist-filter">
+                  <label for="histRange">Date range</label>
+                  <select class="ln-select" id="histRange" name="histRange">
+                    <option value="7">Last 7 days</option>
+                    <option value="30" selected>Last 30 days</option>
+                    <option value="90">Last 3 months</option>
+                    <option value="365">Last year</option>
+                    <option value="all">All time</option>
+                  </select>
+                </div>
+                <div class="ln-field hist-filter">
+                  <label for="histVoice">Voice / persona</label>
+                  <select class="ln-select" id="histVoice" name="histVoice">
+                    <option value="all" selected>All personas</option>
+                    <option value="sable">Sable — Calm &amp; low</option>
+                    <option value="ember">Ember — Warm &amp; energetic</option>
+                    <option value="lumen">Lumen — Bright &amp; crisp</option>
+                    <option value="quartz">Quartz — Neutral narrator</option>
+                  </select>
+                </div>
+                <div class="ln-field" style="flex:none;">
+                  <span class="ln-sr-only" id="exportLabel">Export options</span>
+                  <button type="button" class="ln-btn ln-btn--ghost" aria-labelledby="exportLabel">⬇ Export CSV</button>
+                </div>
+              </form>
+            </div>
+
+            <div class="hist-table-wrap">
+              <table class="ln-table">
+                <caption id="histTableCaption">Past voice conversations — click any row to view the full transcript</caption>
+                <thead>
+                  <tr>
+                    <th scope="col"><button class="th-sort" type="button">Date <span class="sort-arrow">▾</span></button></th>
+                    <th scope="col">Title / summary</th>
+                    <th scope="col" class="is-numeric"><button class="th-sort" type="button" style="justify-content:flex-end;">Duration <span class="sort-arrow">▾</span></button></th>
+                    <th scope="col">Actions taken</th>
+                    <th scope="col"><span class="ln-sr-only">Row actions</span></th>
+                  </tr>
+                </thead>
+                <tbody id="histTbody">
+                  <tr tabindex="0" data-conv="1">
+                    <td class="col-date">Jul 17, 2026<br><span class="ln-dim">8:42 AM</span></td>
+                    <td class="col-title">
+                      <span class="title-main">Morning briefing + calendar check</span>
+                      <span class="title-sub">Asked for weather, first meeting, and traffic to office</span>
+                    </td>
+                    <td class="is-numeric">1m 12s</td>
+                    <td class="col-actions">
+                      <div class="badge-row">
+                        <span class="ln-badge ln-badge--teal">Calendar read</span>
+                        <span class="ln-badge ln-badge--muted">Weather lookup</span>
+                      </div>
+                    </td>
+                    <td class="col-rowaction"><button class="ln-btn ln-btn--ghost row-open-btn" type="button">Open ›</button></td>
+                  </tr>
+                  <tr tabindex="0" data-conv="2">
+                    <td class="col-date">Jul 16, 2026<br><span class="ln-dim">7:05 PM</span></td>
+                    <td class="col-title">
+                      <span class="title-main">Email Sarah about the Q3 deck</span>
+                      <span class="title-sub">Dictated a follow-up email and confirmed send</span>
+                    </td>
+                    <td class="is-numeric">2m 38s</td>
+                    <td class="col-actions">
+                      <div class="badge-row">
+                        <span class="ln-badge ln-badge--active">Email sent</span>
+                      </div>
+                    </td>
+                    <td class="col-rowaction"><button class="ln-btn ln-btn--ghost row-open-btn" type="button">Open ›</button></td>
+                  </tr>
+                  <tr tabindex="0" data-conv="3">
+                    <td class="col-date">Jul 16, 2026<br><span class="ln-dim">6:20 PM</span></td>
+                    <td class="col-title">
+                      <span class="title-main">Set a pasta timer</span>
+                      <span class="title-sub">12-minute timer for dinner, plus a reminder to salt the water</span>
+                    </td>
+                    <td class="is-numeric">0m 24s</td>
+                    <td class="col-actions">
+                      <div class="badge-row">
+                        <span class="ln-badge ln-badge--warn">Timer set</span>
+                      </div>
+                    </td>
+                    <td class="col-rowaction"><button class="ln-btn ln-btn--ghost row-open-btn" type="button">Open ›</button></td>
+                  </tr>
+                  <tr tabindex="0" data-conv="4">
+                    <td class="col-date">Jul 15, 2026<br><span class="ln-dim">9:58 AM</span></td>
+                    <td class="col-title">
+                      <span class="title-main">Reschedule dentist appointment</span>
+                      <span class="title-sub">Moved Thursday's 3pm to next Monday, sent confirmation text</span>
+                    </td>
+                    <td class="is-numeric">3m 05s</td>
+                    <td class="col-actions">
+                      <div class="badge-row">
+                        <span class="ln-badge ln-badge--teal">Calendar updated</span>
+                        <span class="ln-badge ln-badge--active">Text sent</span>
+                      </div>
+                    </td>
+                    <td class="col-rowaction"><button class="ln-btn ln-btn--ghost row-open-btn" type="button">Open ›</button></td>
+                  </tr>
+                  <tr tabindex="0" data-conv="5">
+                    <td class="col-date">Jul 14, 2026<br><span class="ln-dim">11:30 PM</span></td>
+                    <td class="col-title">
+                      <span class="title-main">Bedtime routine — lights &amp; lock check</span>
+                      <span class="title-sub">Dimmed living room, confirmed front door locked</span>
+                    </td>
+                    <td class="is-numeric">0m 51s</td>
+                    <td class="col-actions">
+                      <div class="badge-row">
+                        <span class="ln-badge ln-badge--muted">Lights dimmed</span>
+                        <span class="ln-badge ln-badge--muted">Lock checked</span>
+                      </div>
+                    </td>
+                    <td class="col-rowaction"><button class="ln-btn ln-btn--ghost row-open-btn" type="button">Open ›</button></td>
+                  </tr>
+                  <tr tabindex="0" data-conv="6">
+                    <td class="col-date">Jul 13, 2026<br><span class="ln-dim">4:12 PM</span></td>
+                    <td class="col-title">
+                      <span class="title-main">Add milk, eggs, coffee to grocery list</span>
+                      <span class="title-sub">Quick add to shared household list</span>
+                    </td>
+                    <td class="is-numeric">0m 33s</td>
+                    <td class="col-actions">
+                      <div class="badge-row">
+                        <span class="ln-badge ln-badge--teal">List updated</span>
+                      </div>
+                    </td>
+                    <td class="col-rowaction"><button class="ln-btn ln-btn--ghost row-open-btn" type="button">Open ›</button></td>
+                  </tr>
+                  <tr tabindex="0" data-conv="7">
+                    <td class="col-date">Jul 12, 2026<br><span class="ln-dim">1:47 PM</span></td>
+                    <td class="col-title">
+                      <span class="title-main">What's my afternoon look like?</span>
+                      <span class="title-sub">Read back 3 meetings, flagged a scheduling conflict</span>
+                    </td>
+                    <td class="is-numeric">1m 58s</td>
+                    <td class="col-actions">
+                      <div class="badge-row">
+                        <span class="ln-badge ln-badge--teal">Calendar read</span>
+                        <span class="ln-badge ln-badge--error">Conflict flagged</span>
+                      </div>
+                    </td>
+                    <td class="col-rowaction"><button class="ln-btn ln-btn--ghost row-open-btn" type="button">Open ›</button></td>
+                  </tr>
+                  <tr tabindex="0" data-conv="8">
+                    <td class="col-date">Jul 10, 2026<br><span class="ln-dim">6:03 AM</span></td>
+                    <td class="col-title">
+                      <span class="title-main">Play focus playlist and set do-not-disturb</span>
+                      <span class="title-sub">Started "Deep Focus" on speaker, silenced notifications for 2 hours</span>
+                    </td>
+                    <td class="is-numeric">0m 40s</td>
+                    <td class="col-actions">
+                      <div class="badge-row">
+                        <span class="ln-badge ln-badge--active">Music started</span>
+                        <span class="ln-badge ln-badge--muted">DND enabled</span>
+                      </div>
+                    </td>
+                    <td class="col-rowaction"><button class="ln-btn ln-btn--ghost row-open-btn" type="button">Open ›</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="hist-footer">
+              <p class="ln-muted" style="margin:0; font-size:var(--ln-fs-sm);">Showing 1–25 of 342</p>
+              <nav class="pager-btns" aria-label="Pagination">
+                <button class="ln-btn ln-btn--ghost pager-btn" type="button" disabled>‹ Previous</button>
+                <button class="ln-btn ln-btn--ghost pager-btn" type="button" aria-current="page" style="border-color:var(--ln-teal); color:var(--ln-teal);">1</button>
+                <button class="ln-btn ln-btn--ghost pager-btn" type="button">2</button>
+                <button class="ln-btn ln-btn--ghost pager-btn" type="button">3</button>
+                <span class="ln-dim" style="padding:0 4px;">…</span>
+                <button class="ln-btn ln-btn--ghost pager-btn" type="button">14</button>
+                <button class="ln-btn ln-btn--ghost pager-btn" type="button">Next ›</button>
+              </nav>
+            </div>
+          </section>
+        </main>
+
+        <div class="hist-overlay" id="histOverlay" tabindex="-1"></div>
+
+        <aside class="hist-drawer" id="histDrawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" aria-hidden="true">
+          <div class="hist-drawer__head">
+            <div>
+              <h3 id="drawerTitle">Email Sarah about the Q3 deck</h3>
+              <div class="hist-drawer__meta">
+                <span>Jul 16, 2026 · 7:05 PM</span>
+                <span>·</span>
+                <span>2m 38s</span>
+                <span>·</span>
+                <span>Ember voice</span>
+              </div>
+            </div>
+            <button class="hist-drawer__close" id="histDrawerClose" type="button" aria-label="Close transcript">✕</button>
+          </div>
+          <div class="hist-drawer__actions">
+            <span class="ln-badge ln-badge--active">Email sent</span>
+            <button class="ln-btn ln-btn--ghost" style="min-height:36px; font-size:var(--ln-fs-sm);" type="button">↻ Replay audio</button>
+            <button class="ln-btn ln-btn--ghost" style="min-height:36px; font-size:var(--ln-fs-sm);" type="button">⬇ Download transcript</button>
+          </div>
+          <div class="hist-drawer__body">
+            <div class="ln-transcript">
+              <div class="ln-bubble ln-bubble--user">
+                <span class="ln-bubble__role">You</span>
+                Hey, can you email Sarah about the Q3 deck? Tell her I'll have the revised slides to her by Friday morning.
+              </div>
+              <div class="ln-bubble ln-bubble--assistant">
+                <span class="ln-bubble__role">Live Ninja</span>
+                Got it. Drafting an email to Sarah Chen — want me to read it back before I send?
+              </div>
+              <div class="ln-bubble ln-bubble--user">
+                <span class="ln-bubble__role">You</span>
+                Yes, go ahead.
+              </div>
+              <div class="ln-bubble ln-bubble--assistant">
+                <span class="ln-bubble__role">Live Ninja</span>
+                "Hi Sarah — quick update on the Q3 deck: I'll have the revised slides over to you by Friday morning. Let me know if that timeline works. Thanks!" Should I send this as-is?
+              </div>
+              <div class="ln-bubble ln-bubble--user">
+                <span class="ln-bubble__role">You</span>
+                Perfect, send it.
+              </div>
+              <div class="ln-bubble ln-bubble--assistant">
+                <span class="ln-bubble__role">Live Ninja</span>
+                Sent to Sarah Chen at 7:07 PM. Anything else?
+              </div>
+              <div class="ln-bubble ln-bubble--user">
+                <span class="ln-bubble__role">You</span>
+                No, that's all. Thanks.
+              </div>
+            </div>
+          </div>
+          <div class="hist-drawer__foot">
+            <button class="ln-btn ln-btn--ghost" type="button">Delete conversation</button>
+            <button class="ln-btn ln-btn--primary" id="histDrawerDone" type="button">Done</button>
+          </div>
+        </aside>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var page = document.getElementById('histPage');
+  var overlay = document.getElementById('histOverlay');
+  var drawer = document.getElementById('histDrawer');
+  var closeBtn = document.getElementById('histDrawerClose');
+  var doneBtn = document.getElementById('histDrawerDone');
+  var rows = document.querySelectorAll('#histTbody tr[data-conv]');
+  var lastFocused = null;
+
+  var titleEl = document.getElementById('drawerTitle');
+  var metaEl = drawer.querySelector('.hist-drawer__meta');
+
+  function openDrawer(row) {
+    lastFocused = row;
+    var main = row.querySelector('.title-main');
+    var dateCell = row.querySelector('.col-date');
+    var dur = row.querySelector('.is-numeric');
+    if (main) titleEl.textContent = main.textContent;
+    if (dateCell && dur) {
+      var dateText = dateCell.textContent.trim().replace(/\s+/g, ' ');
+      metaEl.innerHTML = '<span>' + dateText + '</span><span>&middot;</span><span>' + dur.textContent + '</span><span>&middot;</span><span>Ember voice</span>';
+    }
+    document.querySelectorAll('#histTbody tr').forEach(function (r) { r.classList.remove('is-open'); });
+    row.classList.add('is-open');
+
+    page.classList.add('drawer-open');
+    drawer.setAttribute('aria-hidden', 'false');
+    closeBtn.focus();
+  }
+
+  function closeDrawer() {
+    page.classList.remove('drawer-open');
+    drawer.setAttribute('aria-hidden', 'true');
+    if (lastFocused) lastFocused.focus();
+  }
+
+  rows.forEach(function (row) {
+    row.addEventListener('click', function (e) {
+      if (e.target.closest('.row-open-btn')) return;
+      openDrawer(row);
+    });
+    row.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openDrawer(row);
+      }
+    });
+    var openBtn = row.querySelector('.row-open-btn');
+    if (openBtn) {
+      openBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        openDrawer(row);
+      });
+    }
+  });
+
+  overlay.addEventListener('click', closeDrawer);
+  closeBtn.addEventListener('click', closeDrawer);
+  doneBtn.addEventListener('click', closeDrawer);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && page.classList.contains('drawer-open')) closeDrawer();
+  });
+})();
+</script>
+</body>
+</html>

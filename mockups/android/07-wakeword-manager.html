@@ -1,0 +1,1141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Android · Wake-Word Manager</title>
+<style>
+:root {
+  /* ============================================================
+     LIVE NINJA — DESIGN SYSTEM TOKENS
+     Primarily-dark, techy-premium: deep navy + electric teal
+     ============================================================ */
+
+  /* Brand — navy family */
+  --ln-navy: #0a1424;
+  --ln-navy-900: #060d18;
+  --ln-navy-800: #0f1e35;
+  --ln-navy-700: #16294a;
+  --ln-navy-600: #1e3860;
+
+  /* Brand — electric teal / cyan accent */
+  --ln-teal: #22e0d0;
+  --ln-teal-600: #12b6b0;
+  --ln-teal-700: #0c8f8c;
+  --ln-teal-glow: rgba(34, 224, 208, 0.45);
+  --ln-cyan: #38d0ff;
+
+  /* Neutrals */
+  --ln-white: #f4f8fb;
+  --ln-gray-100: #dbe4ef;
+  --ln-gray-300: #9fb0c4;
+  --ln-gray-500: #6b7d94;
+  --ln-gray-700: #3a4a60;
+  --ln-black: #04070d;
+
+  /* Semantic status */
+  --ln-success: #34e39b;
+  --ln-warn: #ffca4a;
+  --ln-error: #ff5c72;
+
+  /* Surface / background / text tokens (dark theme) */
+  --ln-bg: var(--ln-navy-900);
+  --ln-bg-grad: radial-gradient(1200px 700px at 70% -10%, #12294a 0%, var(--ln-navy-900) 55%);
+  --ln-surface: rgba(20, 38, 66, 0.72);
+  --ln-surface-2: rgba(28, 50, 84, 0.85);
+  --ln-surface-raised: #142544;
+  --ln-border: rgba(122, 160, 205, 0.16);
+  --ln-border-strong: rgba(122, 160, 205, 0.30);
+
+  --ln-text: var(--ln-white);
+  --ln-text-muted: var(--ln-gray-300);
+  --ln-text-dim: var(--ln-gray-500);
+  --ln-text-on-teal: #052220;
+
+  /* Type scale (1.25 modular) */
+  --ln-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", Arial, sans-serif;
+  --ln-mono: "SF Mono", "JetBrains Mono", "Fira Code", Consolas, "Roboto Mono", monospace;
+  --ln-fs-xs: 12px;
+  --ln-fs-sm: 14px;
+  --ln-fs-md: 16px;
+  --ln-fs-lg: 20px;
+  --ln-fs-xl: 25px;
+  --ln-fs-2xl: 31px;
+  --ln-fs-3xl: 39px;
+  --ln-fs-4xl: 49px;
+  --ln-lh: 1.5;
+  --ln-lh-tight: 1.2;
+
+  /* Spacing scale (4px base) */
+  --ln-sp-1: 4px;
+  --ln-sp-2: 8px;
+  --ln-sp-3: 12px;
+  --ln-sp-4: 16px;
+  --ln-sp-5: 24px;
+  --ln-sp-6: 32px;
+  --ln-sp-7: 48px;
+  --ln-sp-8: 64px;
+
+  /* Radius */
+  --ln-r-sm: 8px;
+  --ln-r-md: 12px;
+  --ln-r-lg: 18px;
+  --ln-r-xl: 28px;
+  --ln-r-pill: 999px;
+
+  /* Shadows */
+  --ln-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --ln-shadow-md: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --ln-shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.55);
+  --ln-shadow-teal: 0 0 0 1px rgba(34, 224, 208, 0.35), 0 0 28px var(--ln-teal-glow);
+
+  /* Focus ring */
+  --ln-focus: 0 0 0 3px rgba(56, 208, 255, 0.55);
+
+  /* Touch target minimum */
+  --ln-touch: 44px;
+}
+
+/* ================================================================
+   BASE RESET + TYPOGRAPHY
+   ================================================================ */
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  font-family: var(--ln-font);
+  font-size: var(--ln-fs-md);
+  line-height: var(--ln-lh);
+  color: var(--ln-text);
+  background: var(--ln-bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+h1, h2, h3, h4 { margin: 0 0 var(--ln-sp-3); line-height: var(--ln-lh-tight); font-weight: 700; letter-spacing: -0.01em; }
+h1 { font-size: var(--ln-fs-3xl); }
+h2 { font-size: var(--ln-fs-2xl); }
+h3 { font-size: var(--ln-fs-xl); }
+h4 { font-size: var(--ln-fs-lg); }
+p { margin: 0 0 var(--ln-sp-4); }
+a { color: var(--ln-teal); text-decoration: none; }
+a:hover { text-decoration: underline; }
+small { font-size: var(--ln-fs-sm); color: var(--ln-text-muted); }
+code, kbd { font-family: var(--ln-mono); font-size: 0.9em; }
+img { max-width: 100%; display: block; }
+
+/* Visible focus for everything focusable */
+:focus-visible { outline: none; box-shadow: var(--ln-focus); border-radius: var(--ln-r-sm); }
+
+.ln-muted { color: var(--ln-text-muted); }
+.ln-dim { color: var(--ln-text-dim); }
+.ln-mono { font-family: var(--ln-mono); }
+.ln-eyebrow { font-size: var(--ln-fs-xs); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ln-teal); font-weight: 700; }
+.ln-stack > * + * { margin-top: var(--ln-sp-4); }
+
+/* ================================================================
+   BUTTONS
+   ================================================================ */
+.ln-btn {
+  --_bg: var(--ln-surface-2);
+  --_fg: var(--ln-text);
+  --_bd: var(--ln-border-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ln-sp-2);
+  min-height: var(--ln-touch);
+  padding: 0 var(--ln-sp-5);
+  font: inherit;
+  font-weight: 650;
+  font-size: var(--ln-fs-md);
+  color: var(--_fg);
+  background: var(--_bg);
+  border: 1px solid var(--_bd);
+  border-radius: var(--ln-r-pill);
+  cursor: pointer;
+  transition: transform .08s ease, box-shadow .15s ease, background .15s ease, filter .15s ease;
+  user-select: none;
+}
+.ln-btn:hover { filter: brightness(1.08); }
+.ln-btn:active { transform: translateY(1px); }
+.ln-btn:focus-visible { box-shadow: var(--ln-focus); }
+.ln-btn[disabled], .ln-btn:disabled { opacity: .45; cursor: not-allowed; }
+.ln-btn--primary {
+  --_bg: linear-gradient(135deg, var(--ln-teal) 0%, var(--ln-teal-600) 100%);
+  --_fg: var(--ln-text-on-teal);
+  --_bd: transparent;
+  box-shadow: var(--ln-shadow-teal);
+  font-weight: 750;
+}
+.ln-btn--ghost {
+  --_bg: transparent;
+  --_fg: var(--ln-text);
+  --_bd: var(--ln-border-strong);
+}
+.ln-btn--danger {
+  --_bg: transparent;
+  --_fg: var(--ln-error);
+  --_bd: rgba(255, 92, 114, 0.5);
+}
+.ln-btn--block { display: flex; width: 100%; }
+.ln-btn--lg { min-height: 56px; font-size: var(--ln-fs-lg); padding: 0 var(--ln-sp-6); }
+
+/* Login with Amazon button */
+.ln-btn--amazon {
+  --_bg: #ff9900;
+  --_fg: #0a0a0a;
+  --_bd: #e88b00;
+  font-weight: 700;
+}
+
+/* ================================================================
+   FORM CONTROLS — input, select, field, toggle
+   ================================================================ */
+.ln-field { display: block; margin-bottom: var(--ln-sp-4); }
+.ln-field > label,
+.ln-label {
+  display: block;
+  margin-bottom: var(--ln-sp-2);
+  font-size: var(--ln-fs-sm);
+  font-weight: 650;
+  color: var(--ln-text-muted);
+}
+.ln-field .ln-hint { margin-top: var(--ln-sp-2); font-size: var(--ln-fs-xs); color: var(--ln-text-dim); }
+.ln-field .ln-error-text { margin-top: var(--ln-sp-2); font-size: var(--ln-fs-xs); color: var(--ln-error); font-weight: 600; }
+
+.ln-input, .ln-select {
+  display: block;
+  width: 100%;
+  min-height: var(--ln-touch);
+  padding: var(--ln-sp-3) var(--ln-sp-4);
+  font: inherit;
+  color: var(--ln-text);
+  background: var(--ln-navy-800);
+  border: 1px solid var(--ln-border-strong);
+  border-radius: var(--ln-r-md);
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.ln-input::placeholder { color: var(--ln-text-dim); }
+.ln-input:focus, .ln-select:focus { outline: none; border-color: var(--ln-teal); box-shadow: var(--ln-focus); }
+.ln-input:disabled, .ln-select:disabled { opacity: .5; }
+
+.ln-select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: var(--ln-sp-7);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239fb0c4' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right var(--ln-sp-4) center;
+}
+
+/* Toggle switch */
+.ln-toggle { position: relative; display: inline-flex; align-items: center; gap: var(--ln-sp-3); cursor: pointer; min-height: var(--ln-touch); }
+.ln-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+.ln-toggle .ln-toggle-track {
+  width: 52px; height: 30px; flex: none;
+  background: var(--ln-navy-700);
+  border: 1px solid var(--ln-border-strong);
+  border-radius: var(--ln-r-pill);
+  transition: background .2s ease;
+  position: relative;
+}
+.ln-toggle .ln-toggle-thumb {
+  position: absolute; top: 3px; left: 3px;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--ln-gray-100);
+  transition: transform .2s ease, background .2s ease;
+}
+.ln-toggle input:checked + .ln-toggle-track { background: linear-gradient(135deg, var(--ln-teal), var(--ln-teal-600)); border-color: transparent; }
+.ln-toggle input:checked + .ln-toggle-track .ln-toggle-thumb { transform: translateX(22px); background: var(--ln-text-on-teal); }
+.ln-toggle input:focus-visible + .ln-toggle-track { box-shadow: var(--ln-focus); }
+.ln-toggle input:disabled + .ln-toggle-track { opacity: .4; cursor: not-allowed; }
+
+/* ================================================================
+   CARD
+   ================================================================ */
+.ln-card {
+  background: var(--ln-surface);
+  border: 1px solid var(--ln-border);
+  border-radius: var(--ln-r-lg);
+  padding: var(--ln-sp-5);
+  box-shadow: var(--ln-shadow-md);
+  backdrop-filter: blur(12px);
+}
+.ln-card--flush { padding: 0; overflow: hidden; }
+.ln-card__header { display: flex; align-items: center; justify-content: space-between; gap: var(--ln-sp-3); margin-bottom: var(--ln-sp-4); }
+.ln-card__title { font-size: var(--ln-fs-lg); font-weight: 700; margin: 0; }
+
+/* ================================================================
+   LIST
+   ================================================================ */
+.ln-list { list-style: none; margin: 0; padding: 0; border-radius: var(--ln-r-lg); overflow: hidden; border: 1px solid var(--ln-border); }
+.ln-list-item {
+  display: flex; align-items: center; gap: var(--ln-sp-4);
+  padding: var(--ln-sp-4) var(--ln-sp-5);
+  min-height: 56px;
+  background: var(--ln-surface);
+  border-bottom: 1px solid var(--ln-border);
+}
+.ln-list-item:last-child { border-bottom: none; }
+.ln-list-item__body { flex: 1 1 auto; min-width: 0; }
+.ln-list-item__title { font-weight: 650; }
+.ln-list-item__sub { font-size: var(--ln-fs-sm); color: var(--ln-text-muted); }
+.ln-list-item__end { flex: none; color: var(--ln-text-muted); }
+.ln-list-item--button { cursor: pointer; transition: background .12s ease; width: 100%; text-align: left; font: inherit; color: inherit; border: none; border-bottom: 1px solid var(--ln-border); }
+.ln-list-item--button:hover { background: var(--ln-surface-2); }
+
+/* ================================================================
+   BADGE
+   ================================================================ */
+.ln-badge {
+  display: inline-flex; align-items: center; gap: var(--ln-sp-1);
+  padding: 3px var(--ln-sp-3);
+  font-size: var(--ln-fs-xs); font-weight: 700; letter-spacing: 0.03em;
+  border-radius: var(--ln-r-pill);
+  background: var(--ln-navy-700); color: var(--ln-text-muted);
+  border: 1px solid var(--ln-border-strong);
+}
+.ln-badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .9; }
+.ln-badge--active { background: rgba(52, 227, 155, 0.14); color: var(--ln-success); border-color: rgba(52, 227, 155, 0.4); }
+.ln-badge--muted { background: var(--ln-navy-700); color: var(--ln-text-dim); }
+.ln-badge--warn { background: rgba(255, 202, 74, 0.14); color: var(--ln-warn); border-color: rgba(255, 202, 74, 0.4); }
+.ln-badge--error { background: rgba(255, 92, 114, 0.14); color: var(--ln-error); border-color: rgba(255, 92, 114, 0.4); }
+.ln-badge--teal { background: rgba(34, 224, 208, 0.14); color: var(--ln-teal); border-color: rgba(34, 224, 208, 0.4); }
+.ln-badge--dot-none::before { display: none; }
+
+/* ================================================================
+   APP BAR (top) + TAB BAR (bottom nav)
+   ================================================================ */
+.ln-appbar {
+  display: flex; align-items: center; gap: var(--ln-sp-3);
+  min-height: 56px;
+  padding: var(--ln-sp-3) var(--ln-sp-4);
+  background: linear-gradient(180deg, rgba(15, 30, 53, 0.95), rgba(10, 20, 36, 0.75));
+  border-bottom: 1px solid var(--ln-border);
+  backdrop-filter: blur(10px);
+  position: sticky; top: 0; z-index: 10;
+}
+.ln-appbar__title { font-size: var(--ln-fs-lg); font-weight: 700; margin: 0; flex: 1 1 auto; }
+.ln-appbar__btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: var(--ln-touch); height: var(--ln-touch); flex: none;
+  background: transparent; border: none; color: var(--ln-text);
+  border-radius: var(--ln-r-md); cursor: pointer; font-size: var(--ln-fs-lg);
+}
+.ln-appbar__btn:hover { background: var(--ln-surface-2); }
+.ln-brand { display: inline-flex; align-items: center; gap: var(--ln-sp-2); font-weight: 800; letter-spacing: -0.01em; }
+.ln-brand__dot { width: 12px; height: 12px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #eafffb, var(--ln-teal) 55%, var(--ln-teal-700)); box-shadow: 0 0 12px var(--ln-teal-glow); }
+
+.ln-tabbar {
+  display: flex; align-items: stretch;
+  background: linear-gradient(0deg, rgba(6, 13, 24, 0.98), rgba(15, 30, 53, 0.9));
+  border-top: 1px solid var(--ln-border);
+  padding: var(--ln-sp-1) var(--ln-sp-2);
+  backdrop-filter: blur(10px);
+}
+.ln-tab {
+  flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  min-height: 56px; padding: var(--ln-sp-2);
+  background: transparent; border: none; cursor: pointer;
+  color: var(--ln-text-dim); font-size: var(--ln-fs-xs); font-weight: 600;
+  border-radius: var(--ln-r-md);
+}
+.ln-tab__icon { font-size: 20px; line-height: 1; }
+.ln-tab:hover { color: var(--ln-text-muted); }
+.ln-tab[aria-current="page"], .ln-tab.is-active { color: var(--ln-teal); }
+.ln-tab[aria-current="page"] .ln-tab__icon { filter: drop-shadow(0 0 8px var(--ln-teal-glow)); }
+
+/* ================================================================
+   LISTENING ORB — the brand motif
+   ================================================================ */
+.ln-orb {
+  position: relative;
+  width: 200px; height: 200px;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  isolation: isolate;
+}
+.ln-orb__core {
+  position: absolute; inset: 0;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(234, 255, 251, 0.95) 0%, rgba(34, 224, 208, 0.85) 22%, rgba(18, 182, 176, 0.5) 48%, rgba(10, 20, 36, 0) 72%),
+    conic-gradient(from 0deg, var(--ln-teal), var(--ln-cyan), var(--ln-teal-700), var(--ln-teal));
+  filter: blur(2px);
+  animation: ln-orb-spin 8s linear infinite;
+}
+.ln-orb__ring {
+  position: absolute; inset: -6%;
+  border-radius: 50%;
+  border: 2px solid var(--ln-teal-glow);
+  animation: ln-orb-pulse 2.4s ease-out infinite;
+}
+.ln-orb__ring--2 { animation-delay: .8s; }
+.ln-orb__ring--3 { animation-delay: 1.6s; }
+.ln-orb__glow { position: absolute; inset: 8%; border-radius: 50%; box-shadow: 0 0 60px 12px var(--ln-teal-glow); z-index: -1; }
+.ln-orb__label { position: relative; z-index: 2; font-weight: 700; color: var(--ln-text-on-teal); font-size: var(--ln-fs-sm); text-shadow: 0 1px 4px rgba(255,255,255,0.4); }
+.ln-orb--lg { width: 280px; height: 280px; }
+.ln-orb--sm { width: 96px; height: 96px; }
+.ln-orb--idle .ln-orb__core { animation-duration: 24s; opacity: .7; }
+.ln-orb--idle .ln-orb__ring { animation: none; opacity: .3; }
+
+@keyframes ln-orb-spin { to { transform: rotate(360deg); } }
+@keyframes ln-orb-pulse {
+  0% { transform: scale(0.9); opacity: .7; }
+  100% { transform: scale(1.35); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ln-orb__core, .ln-orb__ring { animation: none !important; }
+}
+
+/* ================================================================
+   TRANSCRIPT — chat-style bubbles
+   ================================================================ */
+.ln-transcript { display: flex; flex-direction: column; gap: var(--ln-sp-3); padding: var(--ln-sp-4); }
+.ln-bubble {
+  max-width: 78%;
+  padding: var(--ln-sp-3) var(--ln-sp-4);
+  border-radius: var(--ln-r-lg);
+  line-height: 1.45;
+  font-size: var(--ln-fs-md);
+  position: relative;
+}
+.ln-bubble__role { display: block; font-size: var(--ln-fs-xs); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: var(--ln-sp-1); opacity: .7; }
+.ln-bubble--user {
+  align-self: flex-end;
+  background: linear-gradient(135deg, var(--ln-teal), var(--ln-teal-600));
+  color: var(--ln-text-on-teal);
+  border-bottom-right-radius: var(--ln-r-sm);
+}
+.ln-bubble--assistant {
+  align-self: flex-start;
+  background: var(--ln-surface-2);
+  color: var(--ln-text);
+  border: 1px solid var(--ln-border);
+  border-bottom-left-radius: var(--ln-r-sm);
+}
+.ln-bubble--typing { display: inline-flex; gap: 5px; }
+.ln-bubble--typing span { width: 8px; height: 8px; border-radius: 50%; background: var(--ln-teal); animation: ln-typing 1.2s infinite ease-in-out; }
+.ln-bubble--typing span:nth-child(2) { animation-delay: .15s; }
+.ln-bubble--typing span:nth-child(3) { animation-delay: .3s; }
+@keyframes ln-typing { 0%, 60%, 100% { transform: translateY(0); opacity: .5; } 30% { transform: translateY(-5px); opacity: 1; } }
+
+/* ================================================================
+   KPI
+   ================================================================ */
+.ln-kpi {
+  display: flex; flex-direction: column; gap: var(--ln-sp-1);
+  padding: var(--ln-sp-4) var(--ln-sp-5);
+  background: var(--ln-surface);
+  border: 1px solid var(--ln-border);
+  border-radius: var(--ln-r-lg);
+}
+.ln-kpi__label { font-size: var(--ln-fs-xs); text-transform: uppercase; letter-spacing: 0.08em; color: var(--ln-text-dim); font-weight: 700; }
+.ln-kpi__value { font-size: var(--ln-fs-2xl); font-weight: 800; line-height: 1; color: var(--ln-text); font-variant-numeric: tabular-nums; }
+.ln-kpi__value--teal { color: var(--ln-teal); }
+.ln-kpi__delta { font-size: var(--ln-fs-sm); font-weight: 650; }
+.ln-kpi__delta--up { color: var(--ln-success); }
+.ln-kpi__delta--down { color: var(--ln-error); }
+.ln-kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--ln-sp-3); }
+
+/* ================================================================
+   DEVICE FRAMES
+   ================================================================ */
+.frame-stage {
+  min-height: 100vh;
+  display: grid; place-items: center;
+  padding: var(--ln-sp-6);
+  background:
+    radial-gradient(900px 500px at 50% -5%, #10203a 0%, transparent 60%),
+    #05080f;
+}
+
+/* ---- PHONE (Android/iOS style) 393x852 ---- */
+.frame-phone {
+  position: relative;
+  width: 393px; height: 852px;
+  background: #05080f;
+  border-radius: 54px;
+  padding: 12px;
+  box-shadow:
+    0 0 0 12px #12161d,
+    0 0 0 13px #2a2f38,
+    var(--ln-shadow-lg);
+  flex: none;
+}
+.frame-phone__screen {
+  position: relative;
+  width: 100%; height: 100%;
+  border-radius: 42px;
+  overflow: hidden;
+  background: var(--ln-bg-grad);
+  display: flex; flex-direction: column;
+}
+.frame-phone__statusbar {
+  height: 44px; flex: none;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 26px 0 30px;
+  font-size: var(--ln-fs-sm); font-weight: 650; color: var(--ln-text);
+  position: relative; z-index: 5;
+}
+.frame-phone__statusbar .ln-sb-icons { display: inline-flex; gap: 6px; align-items: center; }
+.frame-phone__notch {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+  width: 120px; height: 30px; background: #05080f; border-radius: var(--ln-r-pill); z-index: 6;
+}
+.frame-phone__body { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; }
+.frame-phone__home { height: 5px; width: 134px; background: var(--ln-gray-100); opacity: .6; border-radius: var(--ln-r-pill); margin: 6px auto 8px; flex: none; }
+
+/* ---- M5STACK LCD 1280x720 landscape ---- */
+.frame-m5 {
+  position: relative;
+  width: 1280px; height: 720px;
+  flex: none;
+  background: #0c0e12;
+  border-radius: 22px;
+  padding: 26px 30px;
+  box-shadow: 0 0 0 3px #23272f, 0 0 0 10px #14161b, var(--ln-shadow-lg);
+  /* Scale down responsively to fit viewport / print page */
+  transform: scale(var(--m5-scale, 1));
+  transform-origin: top center;
+}
+.frame-m5::after {
+  /* M5Stack-style brand strip / speaker grille hint */
+  content: "M5Stack · Live Ninja";
+  position: absolute; bottom: 6px; left: 0; right: 0;
+  text-align: center; font-size: 11px; letter-spacing: 0.18em;
+  color: #3a4150; text-transform: uppercase;
+}
+.frame-m5__screen {
+  width: 1280px; height: 720px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--ln-bg-grad);
+  display: flex; flex-direction: column;
+  box-shadow: inset 0 0 0 1px rgba(122,160,205,0.12), inset 0 0 80px rgba(0,0,0,0.5);
+}
+/* Auto-fit helper: wrap .frame-m5 in .frame-m5-fit to scale to container width */
+.frame-m5-fit {
+  width: 100%; overflow: hidden;
+  display: flex; justify-content: center;
+}
+/* Responsive scale via clamp on viewport width (1340 = frame + bezel) */
+@media (max-width: 1360px) { .frame-m5 { --m5-scale: calc((100vw - 24px) / 1340); } }
+
+/* ---- WEB browser chrome ---- */
+.frame-web {
+  width: 100%; max-width: 1200px;
+  background: var(--ln-navy-800);
+  border-radius: var(--ln-r-lg);
+  overflow: hidden;
+  box-shadow: var(--ln-shadow-lg);
+  border: 1px solid var(--ln-border);
+  display: flex; flex-direction: column;
+  flex: none;
+}
+.frame-web__chrome {
+  display: flex; align-items: center; gap: var(--ln-sp-3);
+  padding: var(--ln-sp-3) var(--ln-sp-4);
+  background: #0b1626;
+  border-bottom: 1px solid var(--ln-border);
+}
+.frame-web__dots { display: inline-flex; gap: 7px; flex: none; }
+.frame-web__dots i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+.frame-web__dots i:nth-child(1) { background: #ff5f57; }
+.frame-web__dots i:nth-child(2) { background: #febc2e; }
+.frame-web__dots i:nth-child(3) { background: #28c840; }
+.frame-web__addr {
+  flex: 1 1 auto;
+  display: flex; align-items: center; gap: var(--ln-sp-2);
+  height: 34px; padding: 0 var(--ln-sp-4);
+  background: var(--ln-navy-900);
+  border: 1px solid var(--ln-border);
+  border-radius: var(--ln-r-pill);
+  font-size: var(--ln-fs-sm); color: var(--ln-text-muted);
+}
+.frame-web__addr::before { content: "🔒"; font-size: 12px; }
+.frame-web__body { background: var(--ln-bg-grad); min-height: 600px; }
+
+/* ================================================================
+   EMBEDDED (M5) HELPERS — segmented, roller, list-select, page indicator
+   ================================================================ */
+
+/* Segmented button row — mutually-exclusive small set */
+.m5-segmented {
+  display: inline-flex; padding: 6px;
+  background: var(--ln-navy-800);
+  border: 1px solid var(--ln-border-strong);
+  border-radius: var(--ln-r-pill);
+  gap: 4px;
+}
+.m5-segmented button {
+  min-height: 56px; padding: 0 var(--ln-sp-6);
+  font: inherit; font-size: var(--ln-fs-lg); font-weight: 700;
+  color: var(--ln-text-muted);
+  background: transparent; border: none; border-radius: var(--ln-r-pill);
+  cursor: pointer; transition: background .12s ease, color .12s ease;
+}
+.m5-segmented button[aria-pressed="true"], .m5-segmented button.is-active {
+  background: linear-gradient(135deg, var(--ln-teal), var(--ln-teal-600));
+  color: var(--ln-text-on-teal);
+  box-shadow: var(--ln-shadow-teal);
+}
+
+/* Roller / spinbox — bounded number, big +/- */
+.m5-roller { display: inline-flex; align-items: center; gap: var(--ln-sp-4); }
+.m5-roller button {
+  width: 72px; height: 72px; flex: none;
+  font-size: 34px; font-weight: 800; line-height: 1;
+  color: var(--ln-text); background: var(--ln-surface-2);
+  border: 1px solid var(--ln-border-strong); border-radius: var(--ln-r-lg);
+  cursor: pointer;
+}
+.m5-roller button:active { background: var(--ln-navy-700); }
+.m5-roller__value {
+  min-width: 160px; text-align: center;
+  font-size: var(--ln-fs-4xl); font-weight: 800; font-variant-numeric: tabular-nums;
+  color: var(--ln-teal);
+}
+.m5-roller__unit { font-size: var(--ln-fs-lg); color: var(--ln-text-muted); font-weight: 650; }
+
+/* Full-width list-select — big rows for touch */
+.m5-listselect { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--ln-sp-3); }
+.m5-listselect > li { margin: 0; }
+.m5-listselect button {
+  display: flex; align-items: center; gap: var(--ln-sp-4);
+  width: 100%; min-height: 72px;
+  padding: var(--ln-sp-4) var(--ln-sp-6);
+  font: inherit; font-size: var(--ln-fs-xl); font-weight: 650; text-align: left;
+  color: var(--ln-text);
+  background: var(--ln-surface-2);
+  border: 1px solid var(--ln-border-strong);
+  border-radius: var(--ln-r-lg);
+  cursor: pointer; transition: border-color .12s ease, background .12s ease;
+}
+.m5-listselect button:hover { background: var(--ln-surface-raised); }
+.m5-listselect button[aria-selected="true"], .m5-listselect button.is-selected {
+  border-color: var(--ln-teal);
+  box-shadow: var(--ln-shadow-teal);
+}
+.m5-listselect button[aria-selected="true"]::after,
+.m5-listselect button.is-selected::after {
+  content: "✓"; margin-left: auto; color: var(--ln-teal); font-size: var(--ln-fs-2xl); font-weight: 800;
+}
+.m5-listselect__icon { font-size: 28px; flex: none; }
+
+/* Page indicator — "3 of 12" */
+.m5-pageindicator {
+  display: inline-flex; align-items: center; gap: var(--ln-sp-3);
+  font-size: var(--ln-fs-lg); font-weight: 700; color: var(--ln-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.m5-pageindicator__dots { display: inline-flex; gap: 6px; }
+.m5-pageindicator__dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--ln-gray-700); display: block; }
+.m5-pageindicator__dots i.is-active { background: var(--ln-teal); box-shadow: 0 0 8px var(--ln-teal-glow); }
+
+/* ================================================================
+   PRINT — friendly PDF rendering
+   ================================================================ */
+@media print {
+  @page { margin: 12mm; }
+  body { background: #fff; }
+  .frame-stage { min-height: auto; padding: 0; background: none; display: block; }
+  .frame-phone, .frame-m5, .frame-web { box-shadow: 0 0 0 1px #ccc; page-break-inside: avoid; margin: 0 auto 14mm; }
+  .frame-m5 { --m5-scale: 0.56; transform: scale(var(--m5-scale)); transform-origin: top left; }
+  /* Preserve dark UI colors in PDF */
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  .ln-orb__core, .ln-orb__ring, .ln-bubble--typing span { animation: none !important; }
+}
+
+/* ================================================================
+   UTILITIES
+   ================================================================ */
+.ln-flex { display: flex; }
+.ln-flex-col { display: flex; flex-direction: column; }
+.ln-items-center { align-items: center; }
+.ln-justify-between { justify-content: space-between; }
+.ln-gap-2 { gap: var(--ln-sp-2); }
+.ln-gap-3 { gap: var(--ln-sp-3); }
+.ln-gap-4 { gap: var(--ln-sp-4); }
+.ln-grow { flex: 1 1 auto; }
+.ln-center { text-align: center; }
+.ln-p-4 { padding: var(--ln-sp-4); }
+.ln-p-5 { padding: var(--ln-sp-5); }
+.ln-p-6 { padding: var(--ln-sp-6); }
+.ln-mt-4 { margin-top: var(--ln-sp-4); }
+.ln-mt-6 { margin-top: var(--ln-sp-6); }
+.ln-full { width: 100%; }
+.ln-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+/* ================================================================
+   SCREEN-SPECIFIC — Wake-Word Manager
+   ================================================================ */
+.wwm-body { padding: var(--ln-sp-4) var(--ln-sp-4) var(--ln-sp-6); flex: 1 1 auto; }
+.wwm-intro { font-size: var(--ln-fs-sm); color: var(--ln-text-muted); margin: 0 0 var(--ln-sp-5); }
+.wwm-list { display: flex; flex-direction: column; gap: var(--ln-sp-4); }
+
+.wwm-card { position: relative; }
+.wwm-card__row1 { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--ln-sp-3); }
+.wwm-card__name { display: flex; align-items: center; gap: var(--ln-sp-2); font-size: var(--ln-fs-lg); font-weight: 750; margin: 0; }
+.wwm-card__quote { color: var(--ln-teal); }
+.wwm-card__sub { font-size: var(--ln-fs-sm); color: var(--ln-text-muted); margin-top: 2px; }
+.wwm-card__row2 { display: flex; align-items: center; justify-content: space-between; gap: var(--ln-sp-3); margin-top: var(--ln-sp-4); padding-top: var(--ln-sp-4); border-top: 1px solid var(--ln-border); }
+.wwm-sens-btn { border: none; cursor: pointer; font: inherit; }
+.wwm-sens-btn:focus-visible { box-shadow: var(--ln-focus); border-radius: var(--ln-r-pill); }
+.wwm-card__actions { display: flex; align-items: center; gap: var(--ln-sp-2); }
+.wwm-test-btn { min-height: 40px; padding: 0 var(--ln-sp-4); font-size: var(--ln-fs-sm); }
+.wwm-test-btn.is-testing { --_bg: var(--ln-navy-700); --_fg: var(--ln-teal); }
+.wwm-remove-btn { min-height: 40px; padding: 0 var(--ln-sp-3); font-size: var(--ln-fs-sm); }
+.wwm-toggle-label { display: flex; align-items: center; gap: var(--ln-sp-2); font-size: var(--ln-fs-sm); font-weight: 650; color: var(--ln-text-muted); }
+
+.wwm-hint-row { display: flex; align-items: center; gap: 6px; margin-top: var(--ln-sp-2); font-size: var(--ln-fs-xs); color: var(--ln-text-dim); }
+
+.wwm-create-btn { margin-top: var(--ln-sp-5); }
+
+.wwm-count-strip { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--ln-sp-4); }
+.wwm-count-strip__n { font-size: var(--ln-fs-sm); color: var(--ln-text-dim); font-variant-numeric: tabular-nums; }
+
+/* Toast */
+.wwm-toast {
+  position: absolute; left: 50%; bottom: 96px;
+  transform: translateX(-50%) translateY(12px);
+  min-width: 240px; max-width: 320px;
+  display: flex; align-items: center; gap: var(--ln-sp-3);
+  padding: var(--ln-sp-3) var(--ln-sp-4);
+  background: var(--ln-surface-raised);
+  border: 1px solid var(--ln-teal);
+  box-shadow: var(--ln-shadow-lg), 0 0 24px rgba(34,224,208,.25);
+  border-radius: var(--ln-r-lg);
+  opacity: 0; pointer-events: none;
+  transition: opacity .2s ease, transform .2s ease;
+  z-index: 50;
+}
+.wwm-toast.is-visible { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+.wwm-toast__icon {
+  flex: none; width: 34px; height: 34px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: rgba(34,224,208,0.15); color: var(--ln-teal); font-size: 16px; font-weight: 800;
+}
+.wwm-toast__body { min-width: 0; }
+.wwm-toast__title { font-weight: 700; font-size: var(--ln-fs-sm); }
+.wwm-toast__sub { font-size: var(--ln-fs-xs); color: var(--ln-text-muted); }
+
+/* Modal (create custom wake word) */
+.wwm-modal-scrim {
+  position: absolute; inset: 0; z-index: 60;
+  background: rgba(4, 8, 15, 0.72);
+  backdrop-filter: blur(4px);
+  display: flex; align-items: flex-end;
+  opacity: 0; pointer-events: none;
+  transition: opacity .18s ease;
+}
+.wwm-modal-scrim.is-open { opacity: 1; pointer-events: auto; }
+.wwm-modal {
+  width: 100%;
+  max-height: 82%;
+  background: var(--ln-navy-800);
+  border: 1px solid var(--ln-border);
+  border-bottom: none;
+  border-radius: 24px 24px 0 0;
+  box-shadow: var(--ln-shadow-lg);
+  display: flex; flex-direction: column;
+  transform: translateY(24px);
+  transition: transform .2s ease;
+}
+.wwm-modal-scrim.is-open .wwm-modal { transform: translateY(0); }
+.wwm-modal__grabber { width: 40px; height: 5px; border-radius: var(--ln-r-pill); background: var(--ln-gray-700); margin: 10px auto 4px; flex: none; }
+.wwm-modal__head { padding: var(--ln-sp-3) var(--ln-sp-5) var(--ln-sp-2); flex: none; }
+.wwm-modal__title { font-size: var(--ln-fs-lg); font-weight: 750; margin: 0 0 4px; }
+.wwm-modal__sub { font-size: var(--ln-fs-sm); color: var(--ln-text-muted); margin: 0; }
+.wwm-modal__body { padding: 0 var(--ln-sp-5) var(--ln-sp-5); overflow-y: auto; }
+.wwm-model-list { list-style: none; margin: var(--ln-sp-3) 0 0; padding: 0; display: flex; flex-direction: column; gap: var(--ln-sp-3); }
+.wwm-model-opt {
+  width: 100%; text-align: left; font: inherit; cursor: pointer;
+  display: flex; align-items: center; gap: var(--ln-sp-3);
+  min-height: 64px; padding: var(--ln-sp-3) var(--ln-sp-4);
+  background: var(--ln-surface-2);
+  border: 1px solid var(--ln-border-strong);
+  border-radius: var(--ln-r-md);
+  color: var(--ln-text);
+}
+.wwm-model-opt:hover { background: var(--ln-surface-raised); }
+.wwm-model-opt:disabled { opacity: .4; cursor: not-allowed; }
+.wwm-model-opt__icon { font-size: 22px; flex: none; }
+.wwm-model-opt__body { flex: 1 1 auto; min-width: 0; }
+.wwm-model-opt__name { font-weight: 700; }
+.wwm-model-opt__sub { font-size: var(--ln-fs-xs); color: var(--ln-text-dim); }
+.wwm-modal__footer-note { display: flex; gap: var(--ln-sp-2); align-items: flex-start; margin-top: var(--ln-sp-4); padding: var(--ln-sp-3) var(--ln-sp-4); background: rgba(56,208,255,0.08); border: 1px solid rgba(56,208,255,0.25); border-radius: var(--ln-r-md); font-size: var(--ln-fs-xs); color: var(--ln-text-muted); }
+
+@media (prefers-reduced-motion: reduce) {
+  .wwm-toast, .wwm-modal, .wwm-modal-scrim { transition: none !important; }
+}
+</style>
+</head>
+<body>
+<div class="frame-stage">
+  <div class="frame-phone">
+    <div class="frame-phone__screen">
+      <div class="frame-phone__notch"></div>
+      <div class="frame-phone__statusbar">
+        <span>9:41</span>
+        <span class="ln-sb-icons" aria-hidden="true">📶 🔋</span>
+      </div>
+
+      <div class="ln-appbar">
+        <button class="ln-appbar__btn" type="button" aria-label="Back">←</button>
+        <h1 class="ln-appbar__title">Wake Words</h1>
+        <button class="ln-appbar__btn" type="button" aria-label="What are wake words?" id="wwm-info-btn">ⓘ</button>
+      </div>
+
+      <div class="frame-phone__body">
+        <div class="wwm-body">
+          <p class="wwm-intro">Live Ninja listens locally for these phrases and only streams audio to the assistant after one is detected. Test a phrase before relying on it in a noisy room.</p>
+
+          <div class="wwm-count-strip">
+            <span class="ln-eyebrow">Configured phrases</span>
+            <span class="wwm-count-strip__n" id="wwm-count">5 of 8 available</span>
+          </div>
+
+          <div class="wwm-list" id="wwm-list">
+
+            <!-- Card 1: Primary, always on -->
+            <div class="ln-card wwm-card" data-name="Hey Live Ninja">
+              <div class="wwm-card__row1">
+                <div>
+                  <h3 class="wwm-card__name"><span class="wwm-card__quote">“</span>Hey Live Ninja<span class="wwm-card__quote">”</span></h3>
+                  <div class="wwm-card__sub">Primary phrase · trained on-device, cannot be removed</div>
+                </div>
+                <span class="ln-badge ln-badge--teal">Primary</span>
+              </div>
+              <div class="wwm-hint-row">
+                <span aria-hidden="true">🔊</span>
+                <span>Sensitivity fixed at Medium for reliability</span>
+              </div>
+              <div class="wwm-card__row2">
+                <label class="ln-toggle" aria-label="Hey Live Ninja active, always on">
+                  <input type="checkbox" checked disabled>
+                  <span class="ln-toggle-track"><span class="ln-toggle-thumb"></span></span>
+                  <span class="wwm-toggle-label">Always on</span>
+                </label>
+                <div class="wwm-card__actions">
+                  <button class="ln-btn ln-btn--ghost wwm-test-btn" type="button" data-test="Hey Live Ninja">▶ Test</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Card 2: Ninja, active -->
+            <div class="ln-card wwm-card" data-name="Ninja">
+              <div class="wwm-card__row1">
+                <div>
+                  <h3 class="wwm-card__name"><span class="wwm-card__quote">“</span>Ninja<span class="wwm-card__quote">”</span></h3>
+                  <div class="wwm-card__sub">Short alternate · faster to say mid-conversation</div>
+                </div>
+                <button class="ln-badge ln-badge--warn wwm-sens-btn" type="button" data-sens-cycle data-level="High" aria-label="Sensitivity: High. Tap to change.">High</button>
+              </div>
+              <div class="wwm-hint-row">
+                <span aria-hidden="true">⚠️</span>
+                <span>High sensitivity may trigger on similar-sounding words</span>
+              </div>
+              <div class="wwm-card__row2">
+                <label class="ln-toggle">
+                  <input type="checkbox" checked>
+                  <span class="ln-toggle-track"><span class="ln-toggle-thumb"></span></span>
+                  <span class="wwm-toggle-label">Active</span>
+                </label>
+                <div class="wwm-card__actions">
+                  <button class="ln-btn ln-btn--ghost wwm-test-btn" type="button" data-test="Ninja">▶ Test</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Card 3: Computer, active, medium -->
+            <div class="ln-card wwm-card" data-name="Computer">
+              <div class="wwm-card__row1">
+                <div>
+                  <h3 class="wwm-card__name"><span class="wwm-card__quote">“</span>Computer<span class="wwm-card__quote">”</span></h3>
+                  <div class="wwm-card__sub">Classic sci-fi style · works well in quiet rooms</div>
+                </div>
+                <button class="ln-badge ln-badge--teal wwm-sens-btn" type="button" data-sens-cycle data-level="Medium" aria-label="Sensitivity: Medium. Tap to change.">Medium</button>
+              </div>
+              <div class="wwm-hint-row">
+                <span aria-hidden="true">🔊</span>
+                <span>Balanced — good default for most environments</span>
+              </div>
+              <div class="wwm-card__row2">
+                <label class="ln-toggle">
+                  <input type="checkbox" checked>
+                  <span class="ln-toggle-track"><span class="ln-toggle-thumb"></span></span>
+                  <span class="wwm-toggle-label">Active</span>
+                </label>
+                <div class="wwm-card__actions">
+                  <button class="ln-btn ln-btn--ghost wwm-test-btn" type="button" data-test="Computer">▶ Test</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Card 4: Hey Assistant, inactive, low -->
+            <div class="ln-card wwm-card" data-name="Hey Assistant">
+              <div class="wwm-card__row1">
+                <div>
+                  <h3 class="wwm-card__name"><span class="wwm-card__quote">“</span>Hey Assistant<span class="wwm-card__quote">”</span></h3>
+                  <div class="wwm-card__sub">Formal address · disabled since Jun 2</div>
+                </div>
+                <button class="ln-badge ln-badge--muted wwm-sens-btn" type="button" data-sens-cycle data-level="Low" aria-label="Sensitivity: Low. Tap to change.">Low</button>
+              </div>
+              <div class="wwm-hint-row">
+                <span aria-hidden="true">🔈</span>
+                <span>Low sensitivity — requires a clear, close-up phrase</span>
+              </div>
+              <div class="wwm-card__row2">
+                <label class="ln-toggle">
+                  <input type="checkbox">
+                  <span class="ln-toggle-track"><span class="ln-toggle-thumb"></span></span>
+                  <span class="wwm-toggle-label">Off</span>
+                </label>
+                <div class="wwm-card__actions">
+                  <button class="ln-btn ln-btn--ghost wwm-test-btn" type="button" data-test="Hey Assistant">▶ Test</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Card 5: Custom, active, removable -->
+            <div class="ln-card wwm-card" data-name="Yo Ninja">
+              <div class="wwm-card__row1">
+                <div>
+                  <h3 class="wwm-card__name"><span class="wwm-card__quote">“</span>Yo Ninja<span class="wwm-card__quote">”</span></h3>
+                  <div class="wwm-card__sub">Custom phrase · added Jul 12 from wake-word model library</div>
+                </div>
+                <button class="ln-badge ln-badge--teal wwm-sens-btn" type="button" data-sens-cycle data-level="Medium" aria-label="Sensitivity: Medium. Tap to change.">Medium</button>
+              </div>
+              <div class="wwm-hint-row">
+                <span aria-hidden="true">🔊</span>
+                <span>Balanced — good default for most environments</span>
+              </div>
+              <div class="wwm-card__row2">
+                <label class="ln-toggle">
+                  <input type="checkbox" checked>
+                  <span class="ln-toggle-track"><span class="ln-toggle-thumb"></span></span>
+                  <span class="wwm-toggle-label">Active</span>
+                </label>
+                <div class="wwm-card__actions">
+                  <button class="ln-btn ln-btn--ghost wwm-test-btn" type="button" data-test="Yo Ninja">▶ Test</button>
+                  <button class="ln-btn ln-btn--danger wwm-remove-btn" type="button" data-remove aria-label="Remove Yo Ninja">Remove</button>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <button class="ln-btn ln-btn--primary ln-btn--block wwm-create-btn" type="button" id="wwm-create-btn">
+            <span aria-hidden="true">+</span> Create custom wake word
+          </button>
+        </div>
+      </div>
+
+      <div class="ln-tabbar">
+        <button class="ln-tab" type="button"><span class="ln-tab__icon">🏠</span>Home</button>
+        <button class="ln-tab is-active" type="button" aria-current="page"><span class="ln-tab__icon">🎙️</span>Wake Words</button>
+        <button class="ln-tab" type="button"><span class="ln-tab__icon">🗣️</span>Voices</button>
+        <button class="ln-tab" type="button"><span class="ln-tab__icon">🕘</span>History</button>
+        <button class="ln-tab" type="button"><span class="ln-tab__icon">⚙️</span>Settings</button>
+      </div>
+
+      <!-- Toast -->
+      <div class="wwm-toast" id="wwm-toast" role="status" aria-live="polite">
+        <div class="wwm-toast__icon" aria-hidden="true">✓</div>
+        <div class="wwm-toast__body">
+          <div class="wwm-toast__title" id="wwm-toast-title">Detected “Ninja”</div>
+          <div class="wwm-toast__sub" id="wwm-toast-sub">94% confidence · 180ms</div>
+        </div>
+      </div>
+
+      <!-- Create custom wake word modal -->
+      <div class="wwm-modal-scrim" id="wwm-modal-scrim">
+        <div class="wwm-modal" role="dialog" aria-modal="true" aria-labelledby="wwm-modal-title">
+          <div class="wwm-modal__grabber"></div>
+          <div class="wwm-modal__head">
+            <h2 class="wwm-modal__title" id="wwm-modal-title">Add a wake-word model</h2>
+            <p class="wwm-modal__sub">Choose from pre-trained models — Live Ninja can't reliably detect a phrase that hasn't been trained on-device.</p>
+          </div>
+          <div class="wwm-modal__body">
+            <ul class="wwm-model-list" id="wwm-model-list">
+              <li><button class="wwm-model-opt" type="button" data-model="Hey Ninja"><span class="wwm-model-opt__icon">🎙️</span><span class="wwm-model-opt__body"><span class="wwm-model-opt__name">"Hey Ninja"</span><span class="wwm-model-opt__sub">Casual short form · English (US)</span></span></button></li>
+              <li><button class="wwm-model-opt" type="button" data-model="Wake Up Ninja"><span class="wwm-model-opt__icon">🎙️</span><span class="wwm-model-opt__body"><span class="wwm-model-opt__name">"Wake Up Ninja"</span><span class="wwm-model-opt__sub">Playful · English (US)</span></span></button></li>
+              <li><button class="wwm-model-opt" type="button" data-model="Ninja Go"><span class="wwm-model-opt__icon">🎙️</span><span class="wwm-model-opt__body"><span class="wwm-model-opt__name">"Ninja Go"</span><span class="wwm-model-opt__sub">Two-syllable, low false-trigger rate</span></span></button></li>
+              <li><button class="wwm-model-opt" type="button" data-model="Hey Assistant Pro"><span class="wwm-model-opt__icon">🎙️</span><span class="wwm-model-opt__body"><span class="wwm-model-opt__name">"Hey Assistant Pro"</span><span class="wwm-model-opt__sub">Formal · English (US)</span></span></button></li>
+              <li><button class="wwm-model-opt" type="button" data-model="Yo Ninja" disabled><span class="wwm-model-opt__icon">✓</span><span class="wwm-model-opt__body"><span class="wwm-model-opt__name">"Yo Ninja"</span><span class="wwm-model-opt__sub">Already added</span></span></button></li>
+              <li><button class="wwm-model-opt" type="button" data-model="Okay Dojo"><span class="wwm-model-opt__icon">🎙️</span><span class="wwm-model-opt__body"><span class="wwm-model-opt__name">"Okay Dojo"</span><span class="wwm-model-opt__sub">Themed alternate · English (US)</span></span></button></li>
+            </ul>
+            <div class="wwm-modal__footer-note">
+              <span aria-hidden="true">🛠️</span>
+              <span>Don't see a phrase you want? Request a custom-trained model from Settings → Voice Engine — training takes about 2 weeks and requires 50 sample recordings.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="frame-phone__home"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var sensLevels = ["Low", "Medium", "High"];
+  var sensClass = { Low: "ln-badge--muted", Medium: "ln-badge--teal", High: "ln-badge--warn" };
+  var sensHint = {
+    Low: { icon: "🔈", text: "Low sensitivity — requires a clear, close-up phrase" },
+    Medium: { icon: "🔊", text: "Balanced — good default for most environments" },
+    High: { icon: "⚠️", text: "High sensitivity may trigger on similar-sounding words" }
+  };
+
+  // Sensitivity badge cycling
+  document.querySelectorAll("[data-sens-cycle]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var cur = btn.getAttribute("data-level");
+      var idx = (sensLevels.indexOf(cur) + 1) % sensLevels.length;
+      var next = sensLevels[idx];
+      btn.classList.remove("ln-badge--muted", "ln-badge--teal", "ln-badge--warn");
+      btn.classList.add(sensClass[next]);
+      btn.setAttribute("data-level", next);
+      btn.textContent = next;
+      btn.setAttribute("aria-label", "Sensitivity: " + next + ". Tap to change.");
+      var hintRow = btn.closest(".wwm-card").querySelector(".wwm-hint-row");
+      if (hintRow) {
+        hintRow.innerHTML = '<span aria-hidden="true">' + sensHint[next].icon + "</span><span>" + sensHint[next].text + "</span>";
+      }
+    });
+  });
+
+  // Active toggle label sync
+  document.querySelectorAll(".ln-toggle input[type=checkbox]:not([disabled])").forEach(function (input) {
+    input.addEventListener("change", function () {
+      var label = input.closest(".ln-toggle").querySelector(".wwm-toggle-label");
+      if (label) label.textContent = input.checked ? "Active" : "Off";
+      updateCount();
+    });
+  });
+
+  function updateCount() {
+    var total = document.querySelectorAll(".wwm-card").length;
+    var countEl = document.getElementById("wwm-count");
+    countEl.textContent = total + " of 8 available";
+  }
+
+  // Test button — simulate wake-word detection
+  var toast = document.getElementById("wwm-toast");
+  var toastTitle = document.getElementById("wwm-toast-title");
+  var toastSub = document.getElementById("wwm-toast-sub");
+  var toastTimer = null;
+
+  document.getElementById("wwm-list").addEventListener("click", function (e) {
+    var testBtn = e.target.closest("[data-test]");
+    if (testBtn) {
+      var name = testBtn.getAttribute("data-test");
+      testBtn.classList.add("is-testing");
+      testBtn.textContent = "● Listening…";
+      testBtn.disabled = true;
+      setTimeout(function () {
+        var confidence = 90 + Math.floor(Math.random() * 9);
+        var ms = 150 + Math.floor(Math.random() * 90);
+        toastTitle.textContent = 'Detected “' + name + '”';
+        toastSub.textContent = confidence + "% confidence · " + ms + "ms";
+        toast.classList.add("is-visible");
+        testBtn.classList.remove("is-testing");
+        testBtn.textContent = "▶ Test";
+        testBtn.disabled = false;
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(function () { toast.classList.remove("is-visible"); }, 2200);
+      }, 900);
+      return;
+    }
+    var removeBtn = e.target.closest("[data-remove]");
+    if (removeBtn) {
+      var card = removeBtn.closest(".wwm-card");
+      var cardName = card.getAttribute("data-name");
+      card.style.transition = "opacity .18s ease, transform .18s ease";
+      card.style.opacity = "0";
+      card.style.transform = "scale(0.97)";
+      setTimeout(function () {
+        card.remove();
+        updateCount();
+        var opt = document.querySelector('.wwm-model-opt[data-model="' + cardName + '"]');
+        if (opt) {
+          opt.disabled = false;
+          opt.querySelector(".wwm-model-opt__icon").textContent = "🎙️";
+          opt.querySelector(".wwm-model-opt__sub").textContent = "Available to add";
+        }
+      }, 200);
+    }
+  });
+
+  // Create custom wake word modal
+  var scrim = document.getElementById("wwm-modal-scrim");
+  var createBtn = document.getElementById("wwm-create-btn");
+  var infoBtn = document.getElementById("wwm-info-btn");
+
+  function openModal() { scrim.classList.add("is-open"); }
+  function closeModal() { scrim.classList.remove("is-open"); }
+
+  createBtn.addEventListener("click", openModal);
+  infoBtn.addEventListener("click", openModal);
+  scrim.addEventListener("click", function (e) {
+    if (e.target === scrim) closeModal();
+  });
+
+  document.getElementById("wwm-model-list").addEventListener("click", function (e) {
+    var opt = e.target.closest(".wwm-model-opt");
+    if (!opt || opt.disabled) return;
+    var modelName = opt.getAttribute("data-model");
+
+    var card = document.createElement("div");
+    card.className = "ln-card wwm-card";
+    card.setAttribute("data-name", modelName);
+    card.innerHTML =
+      '<div class="wwm-card__row1">' +
+        '<div>' +
+          '<h3 class="wwm-card__name"><span class="wwm-card__quote">“</span>' + modelName + '<span class="wwm-card__quote">”</span></h3>' +
+          '<div class="wwm-card__sub">Custom phrase · added just now from wake-word model library</div>' +
+        '</div>' +
+        '<button class="ln-badge ln-badge--teal wwm-sens-btn" type="button" data-sens-cycle data-level="Medium" aria-label="Sensitivity: Medium. Tap to change.">Medium</button>' +
+      '</div>' +
+      '<div class="wwm-hint-row"><span aria-hidden="true">🔊</span><span>Balanced — good default for most environments</span></div>' +
+      '<div class="wwm-card__row2">' +
+        '<label class="ln-toggle"><input type="checkbox" checked><span class="ln-toggle-track"><span class="ln-toggle-thumb"></span></span><span class="wwm-toggle-label">Active</span></label>' +
+        '<div class="wwm-card__actions">' +
+          '<button class="ln-btn ln-btn--ghost wwm-test-btn" type="button" data-test="' + modelName + '">▶ Test</button>' +
+          '<button class="ln-btn ln-btn--danger wwm-remove-btn" type="button" data-remove aria-label="Remove ' + modelName + '">Remove</button>' +
+        '</div>' +
+      '</div>';
+
+    document.getElementById("wwm-list").appendChild(card);
+    card.querySelector("[data-sens-cycle]").addEventListener("click", function () {
+      var btn = this;
+      var cur = btn.getAttribute("data-level");
+      var idx = (sensLevels.indexOf(cur) + 1) % sensLevels.length;
+      var next = sensLevels[idx];
+      btn.classList.remove("ln-badge--muted", "ln-badge--teal", "ln-badge--warn");
+      btn.classList.add(sensClass[next]);
+      btn.setAttribute("data-level", next);
+      btn.textContent = next;
+      var hintRow = btn.closest(".wwm-card").querySelector(".wwm-hint-row");
+      if (hintRow) hintRow.innerHTML = '<span aria-hidden="true">' + sensHint[next].icon + "</span><span>" + sensHint[next].text + "</span>";
+    });
+    card.querySelector(".ln-toggle input").addEventListener("change", function () {
+      var label = this.closest(".ln-toggle").querySelector(".wwm-toggle-label");
+      if (label) label.textContent = this.checked ? "Active" : "Off";
+      updateCount();
+    });
+
+    opt.disabled = true;
+    opt.querySelector(".wwm-model-opt__icon").textContent = "✓";
+    opt.querySelector(".wwm-model-opt__sub").textContent = "Already added";
+
+    updateCount();
+    closeModal();
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+})();
+</script>
+</body>
+</html>
