@@ -185,7 +185,7 @@ Ordered tasks:
 - `[ ]` **H** — **User action gate:** document the one-time manual steps (SSM `put-parameter` values; activate Cost Allocation Tags). _(house rule: agents never see secret values)_
 - `[ ]` **O** — **Contract freeze (WS-G):** publish the six integration-seam contracts (settings JSON-schema+`version`, shadow doc, wake-word manifest `GET /wakeword/<id>/model?platform=`, telemetry event schema, `X-LN-Client`/`X-LN-Server` headers, metering/quota gate) into `/contracts` and reconcile FR IDs. _(Crosscut §closing)_
 
-### M1 — Auth (LWA BFF + first-party sessions)  `[ ]`  (WS-B lead)
+### M1 — Auth (LWA BFF + first-party sessions)  `[~]`  (WS-B lead)
 
 **Definition of Done:** All three surfaces can complete Login with Amazon through the backend BFF; the backend mints a first-party **ES256 access JWT (15 min, KMS-signed)** + **opaque rotating refresh token (hash-only in Dynamo, reuse-detected)**; web gets a `__Host-` HttpOnly cookie (30-day sliding), Android gets JWT+refresh (30-day sliding), M5Stack gets the device 10-year credential lineage; the Lambda authorizer validates JWTs against JWKS with a `tokensValidAfter` kill-switch; logout + "log out everywhere" + device revoke all work; a new-sign-in SES alert fires. _(FR `[AUTH]`)_
 
@@ -226,7 +226,7 @@ Ordered tasks:
 - `[ ]` **S** — `email-dispatch` + SES templates for `new-device-login`/`security-alert`; enqueue via SQS off request path; `IDEMP#` idempotency. _(§6 backend)_
 - `[ ]` **F** — Auth tests: PKCE, `aud` substitution rejection, refresh reuse-detection, `tokensValidAfter` kill within 60s, cookie flags, device claim binding. `dynamodb-local` + mocked LWA. _(Crosscut §7)_
 
-### M2 — Realtime voice backend (broker + tool-calling)  `[ ]`  (WS-C lead)
+### M2 — Realtime voice backend (broker + tool-calling)  `[~]`  (WS-C lead)
 
 **Definition of Done:** An authenticated client can `GET /api/v1/realtime/session` and receive a **config-bound OpenAI ephemeral token** (~60s) plus the resolved persona/tool manifest; the OpenAI key lives only in SSM read by the broker's isolated role; server-side **tool router** (`POST /api/v1/tools/invoke`) executes tools re-authorized per call with idempotency; the **metering/quota gate** rejects over-cap mints pre-spend; the **fallback cascade** (retry → chained STT→LLM→TTS → text-only) is implemented; all surfaces (web, Android, M5Stack) are served directly by the broker with no audio relay. _(FR `[RT]`)_
 
@@ -551,10 +551,24 @@ Cross-cutting gates (all milestones): `golangci-lint` + `go vet` clean; unit tes
 - Verified locally: `go mod tidy && go build ./... && go vet ./...` clean; `sam validate --lint` passes; arm64 cross-build of cmd/web with exact CI flags OK. No local deploys (pipeline only).
 
 ### M1 — Auth
-_(no notes yet)_
+
+**2026-07-17 16:10–17:15 EDT — authored by 10 parallel agents + integrator + test author (workflow `wf_1aba42cc`), dictated-interface pattern (item shapes + Go signatures fixed in the workflow spec so authors ran fully parallel).**
+- `internal/store/`: full single-table layer (users/sessions/oauth/devices/usage + types) — `RotateRefresh` is a `TransactWriteItems` rotate-on-use with reuse detection (`prevHash` match ⇒ family revoke + `ErrRefreshReuse`); owner binding via conditional Put; allowlist under `CONFIG/ALLOW#`. Zero `Scan`s.
+- `internal/auth/`: `lwa.go` (two-check validation: `/auth/o2/tokeninfo` aud + `/user/profile`), `session.go` (KMS ES256, DER→raw r‖s conversion, `kid` from key ARN, test seam `kmsAPI`), `jwks.go` (JWK from `GetPublicKey` DER SPKI, 24h cache, pure-Go `VerifyJWT`), `refresh.go`, `device.go` (PAIR nonce → browser claim with S256 code_verifier binding → 10-yr `surface=device` family; `ProvisionIoT` hook var = M5 integration point), `access.go` (first-sign-in binds owner; owner+allowlist only).
+- `internal/webapp/`: `deps.go`/`middleware.go` (ExtractAuthContext reads API-GW authorizer context w/ local JWT fallback; CSRF double-submit `__Host-ln_csrf`), `auth_routes.go` (web cookie flow `__Host-ln_rt` 30-day sliding; Android exchange; device register/claim/poll; logout/logout-all; SES new-sign-in alert via SQS).
+- `cmd/authorizer/`: JWKS-cached verify, `tokensValidAfter` 60s-cached kill-switch, public-path allowlist (reconciled against `contracts/api.md` incl. `/api/v1` pre-auth aliases — integrator caught 4 dead routes), context injection `userId/sessionId/surface/deviceId/role`.
+- Template: authorizer attached as DefaultAuthorizer (payload 2.0 simple responses, **no Identity block** so public routes reach the authorizer instead of being 401'd at the gateway).
+- Tests (79 funcs, all green): PKCE, aud-substitution rejection, refresh-reuse family revoke, owner-bind race, JWT round-trip vs fake KMS, authorizer path table; `internal/testutil/ddbfake.go` = in-memory DynamoDB implementing exactly the expression grammar the code emits (unsupported expressions panic loudly).
 
 ### M2 — Realtime voice backend
-_(no notes yet)_
+
+**Same workflow/window as M1.**
+- `cmd/realtime-broker/`: 4-mode direct-invoke Lambda (`session-mint`|`fallback-turn`|`fallback-stt`|`fallback-tts`) — sole holder of the OpenAI key (SSM read in isolated role). Mint: quota gate FIRST (pre-spend), persona resolved server-side (IDs only from clients), `POST /v1/realtime/client_secrets` config-bound (model/voice/instructions/`semantic_vad interrupt_response`/tools/pcm16), ~60s expiry; default voice **cedar**.
+- `internal/realtime/`: personas, mint, quota (month/day caps + token bucket 1-mint/5s burst 3 via conditional updates; 402 `quota_exceeded`/429), fallback (chat-completions text turn, STT `gpt-4o-transcribe`, TTS `gpt-4o-mini-tts`).
+- `internal/tools/`: registry w/ enum-validated args, per-call re-authz, `IDEMP#` dedup, audit `LOG#` writes; tools: `send_email` (SQS→SES, confirm-before-send external), `set_timer`/`set_reminder` (EventBridge Scheduler one-shots→email queue), `device_control` (iot:Publish, ownership-checked; awaits `IOT_DATA_ENDPOINT` in M5), `get_weather` (open-meteo), `web_lookup` (Wikipedia), `remember_note`/`recall_note` (single-partition Query).
+- `internal/webapp/api_routes.go`: `/api/v1` group — me/devices/admin-allowlist (owner-only), `realtime/session` (broker invoke), `tools/invoke`, `transcript` (LOG# + `ACTIVEUSER#` marker), `fallback/*` proxied through broker modes.
+- `cmd/usage-rollup/`: hourly Query of today's `ACTIVEUSER#` markers → day/month USAGE rollups (no Scan).
+- Deploy fixes carried in this push: org OIDC trust now accepts ID-qualified subs (fixed in `credential-rotation` d489274 + bootstrap-stack update — new-2026 repos emit `repo:Org@id/Repo@id:...`); `sam build` step removed (SAM's default provided.* builder wants per-CodeUri Makefiles; we deploy prebuilt `.build/` artifacts).
 
 ### M3 — Web client
 _(no notes yet)_

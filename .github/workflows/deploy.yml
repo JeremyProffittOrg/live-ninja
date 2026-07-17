@@ -105,12 +105,13 @@ jobs:
               --value "$GENERATED_PEPPER" >/dev/null
           fi
 
-      - name: SAM build
-        run: sam build
-
+      # No `sam build`: binaries are prebuilt by `make build` into .build/<fn>/
+      # (SAM's default builder for provided.* runtimes would demand a Makefile
+      # inside each CodeUri dir). `sam deploy` zips the CodeUri dirs directly.
       - name: SAM deploy
         run: |
           sam deploy \
+            --template-file template.yaml \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
             --s3-bucket "${{ vars.CLOUDFORMATION_S3_BUCKET }}" \
@@ -118,7 +119,8 @@ jobs:
             --parameter-overrides \
               DomainName=${{ vars.DOMAIN_NAME }} \
               CertificateArn=${{ vars.CERTIFICATE_ARN }} \
-              HostedZoneId=${{ vars.HOSTED_ZONE_ID }}
+              HostedZoneId=${{ vars.HOSTED_ZONE_ID }} \
+              OpenAIRealtimeModel=${{ vars.OPENAI_REALTIME_MODEL || 'gpt-realtime' }}
 
       # Allowed to fail on the very first deploy while DNS/CloudFront propagate;
       # subsequent runs should pass reliably.

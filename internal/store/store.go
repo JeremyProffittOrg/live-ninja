@@ -31,6 +31,9 @@ type ddbAPI interface {
 	PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
 	Query(ctx context.Context, params *dynamodb.QueryInput, optFns ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
 	GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
+	UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
+	DeleteItem(ctx context.Context, params *dynamodb.DeleteItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error)
+	TransactWriteItems(ctx context.Context, params *dynamodb.TransactWriteItemsInput, optFns ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
 }
 
 // Store is a thin, typed wrapper around the live-ninja DynamoDB table.
@@ -172,6 +175,24 @@ func (s *Store) QueryUsageToday(ctx context.Context, day string) ([]map[string]a
 		items = append(items, m)
 	}
 	return items, nil
+}
+
+// queryAllPages runs a Query to exhaustion, following LastEvaluatedKey
+// pagination, and returns the concatenated raw items. Every caller passes
+// a single-partition KeyConditionExpression (table or GSI) — never a Scan.
+func (s *Store) queryAllPages(ctx context.Context, in *dynamodb.QueryInput) ([]map[string]types.AttributeValue, error) {
+	var items []map[string]types.AttributeValue
+	for {
+		out, err := s.client.Query(ctx, in)
+		if err != nil {
+			return nil, fmt.Errorf("store: query: %w", err)
+		}
+		items = append(items, out.Items...)
+		if out.LastEvaluatedKey == nil || len(out.LastEvaluatedKey) == 0 {
+			return items, nil
+		}
+		in.ExclusiveStartKey = out.LastEvaluatedKey
+	}
 }
 
 // GetItem fetches a single item by its full key. Exposed for callers that
