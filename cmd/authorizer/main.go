@@ -73,6 +73,17 @@ var (
 		"/api/v1/auth/refresh":         true,
 		"/api/v1/auth/device/register": true,
 		"/api/v1/auth/device/poll":     true,
+
+		// SSR pages: auth is enforced server-side by the Fiber page handlers
+		// (cookie check → login redirect); the API-GW layer must let the HTML
+		// request through or a signed-in browser gets a bare 403 JSON.
+		"/conversation": true,
+		"/settings":     true,
+		"/downloads":    true,
+
+		// Root-scoped PWA assets (served by Fiber outside /static/).
+		"/sw.js":       true,
+		"/favicon.ico": true,
 	}
 
 	publicPrefixes = []string{
