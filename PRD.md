@@ -48,7 +48,7 @@ Live Ninja is a single, coherent voice assistant that follows the user across ev
 - **N-3:** No on-device ASR/LLM/TTS — all conversation runs through OpenAI Realtime (with a server-side chained fallback).
 - **N-4:** No staging/dev environment — production-only, guarded by local smoke tests, alarms, and canary rollouts.
 - **N-5:** No third-party analytics SDKs (privacy + cost); analytics derive from the self-hosted Athena event lake.
-- **N-6:** No relaying of WebRTC/browser/Android audio through AWS — audio is direct to OpenAI.
+- **N-6:** No relaying of any surface's audio (web, Android, or M5Stack) through AWS — all audio is direct client↔OpenAI; AWS is never in the media path.
 - **N-7:** No secrets manager (SSM Parameter Store SecureString / KMS only).
 
 ---
@@ -65,7 +65,7 @@ Wei uses Live Ninja in the browser at his desk. He signs in with Amazon, clicks 
 
 ### 2.3 Ambient M5Stack-on-desk user (Maya)
 
-Maya has an M5Stack Tab5 sitting on her desk, paired once via its config page and persisting for years. It shows an idle "Say 'Hey Live Ninja'" screen. She speaks to it hands-free; the device does on-device wake + AEC, streams Opus audio over IoT Core MQTT to a Fargate relay that brokers the OpenAI session, and plays the response back with instant local barge-in. Primary use cases: glanceable ambient assistant, quick questions/timers/device actions without touching a phone, a persistent household terminal.
+Maya has an M5Stack Tab5 sitting on her desk, paired once via its config page and persisting for years. It shows an idle "Say 'Hey Live Ninja'" screen. She speaks to it hands-free; the device does on-device wake + AEC, fetches a short-lived ephemeral token from the broker Lambda, connects directly to the OpenAI Realtime API (WebRTC on the ESP32-P4, WSS + Opus/PCM16 fallback), and plays the response back with instant local barge-in. IoT Core carries only control/telemetry, never audio. Primary use cases: glanceable ambient assistant, quick questions/timers/device actions without touching a phone, a persistent household terminal.
 
 ---
 
@@ -93,9 +93,9 @@ Acceptance criteria (AC) are testable. IDs are stable references.
 | ID | Requirement | Acceptance Criteria |
 |---|---|---|
 | FR-V01 | Speech-to-speech via `gpt-realtime`, config-bound session at mint. | Session object (model, voice, instructions, tools, `semantic_vad`, audio format) fixed server-side; client cannot escalate tools/persona. |
-| FR-V02 | Direct client↔OpenAI audio (WebRTC web/Android; WSS relay for M5Stack). | AWS is never in the WebRTC media path; M5Stack audio flows device→IoT→Fargate relay→OpenAI. |
-| FR-V03 | Barge-in via `interrupt_response`. | On `speech_started`, client stops/flushes playback within ≤150 ms; relay issues `response.cancel` + buffer clear for M5Stack. |
-| FR-V04 | Tool/function calling routed server-side. | Web/Android forward calls over HTTPS; relay intercepts for M5Stack; `function_call_output` returned to the session. |
+| FR-V02 | Direct client↔OpenAI audio on every surface (WebRTC web/Android; WebRTC or WSS+Opus/PCM16 fallback for the M5Stack). | AWS is never in the media path for any surface; the M5Stack connects directly to OpenAI with a broker-minted ephemeral token, never through an AWS audio relay. |
+| FR-V03 | Barge-in via `interrupt_response`. | On `speech_started`, client stops/flushes playback within ≤150 ms; the M5Stack stops its DAC locally and issues `response.cancel` + buffer clear on its own direct session. |
+| FR-V04 | Tool/function calling routed server-side. | All surfaces (web, Android, M5Stack) forward `function_call`s over HTTPS to `POST /v1/tools/invoke`; `function_call_output` returned to the session. |
 | FR-V05 | Transcript capture both directions. | User ASR and assistant transcripts persisted as `TURN#`/`LOG#` items with TTL; rendered as labeled turns, never raw JSON. |
 | FR-V06 | Per-session usage metering from `response.done`. | Atomic `UpdateItem ADD` on `USAGE#`/monthly counters; EMF metrics emitted; enforced pre-spend at mint. |
 | FR-V07 | Fallback cascade on Realtime failure. | Retry+backoff → chained STT→LLM→TTS → text-only → graceful failure with side-effects queued; tools still function. |
@@ -143,8 +143,8 @@ Acceptance criteria (AC) are testable. IDs are stable references.
 |---|---|---|
 | FR-M01 | ESP-IDF firmware on ESP32-P4 with C6 `esp-hosted` radio link; LVGL 9 UI. | Pinned IDF tag; framebuffers in PSRAM with PPA dirty-rect flushes; touch via GT911. |
 | FR-M02 | On-device wake: ESP-SR WakeNet primary, microWakeWord fallback for custom phrases. | AFE (AEC/NS/VAD) precedes the tap; shadow `wakeword.engine` selects one active engine; custom models hot-loaded from S3 with SHA-256 verify. |
-| FR-M03 | Backend-proxied audio over IoT Core MQTT to Fargate relay. | Device publishes Opus frames on `audio/up`; relay transcodes to PCM16@24k and bridges the OpenAI WS; audio never on IoT-terminated OpenAI path. |
-| FR-M04 | Instant local barge-in. | Local VAD stops DAC immediately and publishes `barge_in`; relay issues `response.cancel` + `input_audio_buffer.clear`. |
+| FR-M03 | Direct audio to OpenAI Realtime with a broker-minted ephemeral token (WebRTC via esp-webrtc-solution on the P4; WSS + Opus/PCM16 fallback). | Device fetches the ephemeral token from the same broker Lambda as web/Android and opens the OpenAI session directly; IoT Core carries control/telemetry/shadow only, never audio. |
+| FR-M04 | Instant local barge-in. | Local VAD stops the DAC immediately and the device issues `response.cancel` + `input_audio_buffer.clear` on its own direct OpenAI session. |
 | FR-M05 | Device-hosted config: SoftAP WiFi onboarding + browser LWA pairing. | SSID chosen from a scan list (no blind box); LWA runs in the phone browser; bind result delivered over mTLS IoT channel. |
 | FR-M06 | Secure storage + 10-year identity. | Flash encryption + Secure Boot v2 + NVS encryption; key in DS peripheral (optional ATECC608B); 10-year cert auto-rotated at year 8; refresh rotated every 24h/boot. |
 | FR-M07 | OTA via IoT Jobs with A/B partitions and rollback. | Signed images, anti-rollback eFuse, mark-valid-after-check-in, canary group first; coordinated P4↔C6 version gating. |
@@ -198,20 +198,20 @@ Acceptance criteria (AC) are testable. IDs are stable references.
 
 ## 5. System Architecture Overview
 
-Live Ninja is one Go-Fiber-on-Lambda-Web-Adapter service fronted by HTTP API v2 + CloudFront, with a small set of purpose-split Lambdas (`authorizer`, `realtime-broker`, `iot-ingest`, `usage-rollup`, `email-dispatch`) and one justified always-on component: the Fargate audio relay for the M5Stack. Web and Android connect audio directly to OpenAI via WebRTC; the M5Stack streams Opus over IoT Core MQTT to the relay, which holds the OpenAI WebSocket. The following system context diagram shows the three LWA-gated clients, the shared backend, OpenAI Realtime, and the AWS services behind them.
+Live Ninja is one Go-Fiber-on-Lambda-Web-Adapter service fronted by HTTP API v2 + CloudFront, with a small set of purpose-split Lambdas (`authorizer`, `realtime-broker`, `iot-ingest`, `usage-rollup`, `email-dispatch`) — fully serverless, with no always-on component. All three surfaces connect audio directly to OpenAI: web and Android via WebRTC, and the M5Stack via WebRTC (esp-webrtc-solution on the ESP32-P4) or a WSS + Opus/PCM16 fallback, each using a short-lived ephemeral token minted by the same `realtime-broker` Lambda. AWS IoT Core carries only the M5Stack control plane — device shadow (config, wake-word sync), heartbeat/telemetry, and OTA — never audio. The following system context diagram shows the three LWA-gated clients, the shared backend, OpenAI Realtime, and the AWS services behind them.
 
 ```mermaid
 flowchart TB
     subgraph Clients
         WEB["Web Browser<br/>WebRTC"]
         AND["Android Assistant<br/>WebRTC"]
-        M5["M5Stack Tab5<br/>MQTT + WSS"]
+        M5["M5Stack Tab5<br/>WebRTC / WSS"]
     end
 
     subgraph Backend["Live Ninja Backend - AWS us-east-1"]
         FIBER["Go-Fiber on Lambda<br/>Web Adapter"]
         BROKER["Realtime Token Broker"]
-        RELAY["Fargate Audio Relay<br/>device only"]
+        IOTC["IoT Core<br/>control + telemetry only"]
         DATA["AWS Data + Services"]
     end
 
@@ -220,15 +220,16 @@ flowchart TB
 
     WEB -->|HTTPS| FIBER
     AND -->|HTTPS| FIBER
-    M5 -->|MQTT audio| RELAY
+    M5 -->|HTTPS token + tools| FIBER
+    M5 -->|MQTT control| IOTC
     FIBER --> BROKER
     FIBER --> DATA
+    IOTC --> DATA
     BROKER -->|mint ephemeral token| OAI
-    RELAY -->|WebSocket audio| OAI
     WEB -.->|direct audio| OAI
     AND -.->|direct audio| OAI
+    M5 -.->|direct audio| OAI
     FIBER -->|OAuth| LWA
-    RELAY --> DATA
 ```
 
 The concrete AWS resource topology — HTTP API + Fiber Lambda, the split-out Lambdas, DynamoDB, S3, SES, IoT Core, SSM, CloudWatch, and the OIDC deploy path — is shown below.
@@ -289,7 +290,7 @@ flowchart LR
     OIDC --> SB["sam build"]
     SB --> SD["sam deploy<br/>no-confirm-changeset"]
     SD --> CFN["CloudFormation<br/>update stack"]
-    CFN --> PROD["Production<br/>Lambda + IoT + Fargate"]
+    CFN --> PROD["Production<br/>Lambda + IoT"]
     PROD --> WATCH["gh run watch<br/>+ CloudWatch alarms"]
 ```
 
@@ -345,6 +346,31 @@ stateDiagram-v2
     Error --> Provisioning: credential invalid
 ```
 
+### REST endpoint catalog
+
+Consolidated first-party API surface (path-versioned `/v1`). Auth is the LWA-minted first-party session JWT (Bearer / `__Host-` cookie on web) unless the row is marked **Public**.
+
+| Method | Path | Purpose | Auth |
+|---|---|---|---|
+| GET | `/v1/realtime/session` | Mint a short-lived OpenAI Realtime ephemeral token (config/persona/guides bound server-side); used by web, Android, **and the M5Stack**. | Session JWT |
+| POST | `/v1/uploads` | Presigned S3 PUT (content-type allowlist, size cap, owner-namespaced key). | Session JWT |
+| POST | `/v1/tools/invoke` | Server-side tool execution, re-authorized per call; the M5Stack routes tool calls here over HTTPS. | Session JWT |
+| POST | `/v1/deliverables` | Create a deliverable (PDF/MD/CSV/JSON/ICS/image/artifact) → S3 object + DynamoDB index item. | Session JWT |
+| POST | `/v1/deliverables/zip` | Bundle N deliverables into one ZIP deliverable. | Session JWT |
+| POST | `/v1/deliverables/{id}/deliver` | Mint a short-lived presigned URL and surface/deliver the item (optional SES email). | Session JWT |
+| GET | `/v1/deliverables` | List the caller's deliverables (Query, never Scan). | Session JWT |
+| GET | `/v1/deliverables/{id}/download` | Authorized download (key prefix == caller `userId`). | Session JWT |
+| POST | `/v1/memory/search` | Semantic recall over S3 Vectors (`memory.search`). | Session JWT |
+| POST | `/v1/memory` | Write a typed memory item (`memory.write`). | Session JWT |
+| GET | `/v1/entities/{id}` | Fetch one entity (`entity.get`). | Session JWT |
+| POST | `/v1/plans` | Create/update a plan and its tasks (`plan.upsert`). | Session JWT |
+| GET | `/v1/guides` | List the caller's Guide Entities. | Session JWT |
+| PUT | `/v1/guides/{id}` | Create/edit/enable/prioritize a guide (versioned; synced to devices). | Session JWT |
+| GET | `/v1/account` | Account profile, sessions, connected devices. | Session JWT |
+| DELETE | `/v1/account` | Right-to-delete: partition-scoped purge across DynamoDB, S3, IoT, LWA refresh. | Session JWT |
+| GET | `/healthz` | Liveness/readiness probe. | **Public** |
+| GET | `/v1/compat` | Capability negotiation for long-lived clients (10-year M5Stack). | **Public** |
+
 ---
 
 ## 6. Voice / GPT-Realtime Experience Requirements
@@ -353,7 +379,7 @@ stateDiagram-v2
 
 | Metric | Target |
 |---|---|
-| User stops speaking → first assistant audio | ≤ 800 ms (WebRTC); < 1.2 s (M5Stack relay) |
+| User stops speaking → first assistant audio | ≤ 800 ms (WebRTC); < 1.2 s (M5Stack direct WebRTC/WSS) |
 | Barge-in stop (playback silenced) | ≤ 150 ms |
 | Ephemeral token establish window | ~60 s TTL, pre-minted during wake |
 | OpenAI session duration cap | ~30 min, transparently re-minted/reconnected |
@@ -398,32 +424,33 @@ sequenceDiagram
     C->>D: Store transcript turns
 ```
 
-The M5Stack audio path bridges device MQTT through the Fargate relay to OpenAI and back, with local instant barge-in:
+The M5Stack connects directly to OpenAI Realtime with a broker-minted ephemeral token; IoT Core carries only control/telemetry, and tool calls go to the backend over HTTPS — **M5Stack — direct audio to OpenAI Realtime**:
 
 ```mermaid
 sequenceDiagram
     participant DEV as M5Stack
-    participant IOT as IoT Core MQTT
-    participant RL as Fargate Relay
+    participant B as Realtime Broker
     participant O as OpenAI Realtime
+    participant T as Tool Router
+    participant IOT as IoT Core
 
+    Note over DEV,IOT: Control/telemetry only - config, wake-word sync, heartbeat, OTA
+    DEV->>IOT: Publish heartbeat + shadow reported
     DEV->>DEV: Wake + AFE AEC + VAD gate
-    DEV->>IOT: Publish Opus frames audio up
-    IOT->>RL: Route via IoT Rule
-    RL->>RL: Transcode Opus to PCM16 24k
-    RL->>O: input_audio_buffer append
-    O-->>RL: function call or audio deltas
-    RL->>O: Tool output injected server side
-    O-->>RL: Output audio 24k PCM
-    RL->>RL: Encode Opus 24k
-    RL->>IOT: Publish audio down
-    IOT-->>DEV: Opus frames
-    DEV->>DEV: Jitter buffer + I2S playback
-    Note over DEV,RL: Barge-in
+    DEV->>B: GET realtime session, Bearer JWT
+    B->>O: POST client_secrets, config + guides bound
+    O-->>B: ephemeral token
+    B-->>DEV: token + session config
+    DEV->>O: Open WebRTC or WSS with ephemeral token
+    DEV->>O: Stream user audio direct
+    O-->>DEV: Output audio direct bidirectional
+    O-->>DEV: function call
+    DEV->>T: POST v1 tools invoke over HTTPS
+    T-->>DEV: function_call_output
+    DEV->>O: Return tool result
+    Note over DEV,O: Barge-in
     DEV->>DEV: Local speech detected, stop DAC
-    DEV->>IOT: control up barge_in
-    IOT->>RL: Forward
-    RL->>O: response cancel + buffer clear
+    DEV->>O: response cancel + input_audio_buffer clear
 ```
 
 ---
@@ -547,6 +574,20 @@ The 10-year "login" is a continuously, silently rotated credential lineage ancho
 | Settings | `USER#<userId>` | `SETTINGS#v<n>` | — | — | — |
 | IdempotencyKey | `IDEMP#<key>` | `IDEMP` | — | — | 24h |
 
+**v1.1 entities (Deliverables Store, Memory Layer, Guides — milestones M9/M10).** These extend the same single table with the same Query/GetItem-only discipline; TTL applies only to `retentionUntil`-bearing memory items.
+
+| Entity | PK | SK | GSI | Notes |
+|---|---|---|---|---|
+| Deliverable | `USER#<userId>` | `DELIV#<ts>#<deliverableId>` | `GSI1PK=DELIV#<deliverableId>` (share-by-id) | list = Query PK=`USER#<userId>`, SK `begins_with DELIV#`; fetch/share = GetItem or Query GSI1 on `DELIV#<deliverableId>`. |
+| Entity (people/places/information) | `USER#<userId>` | `ENTITY#<entityType>#<entityId>` | `GSI2PK=ETYPE#<userId>#<entityType>` (list by type) | fetch one = GetItem; list a type = Query GSI2 on `ETYPE#<userId>#<entityType>`. |
+| Edge (relationships) | `USER#<userId>` | `EDGE#<fromId>#<relation>#<toId>` | — | traverse from a node = Query PK=`USER#<userId>`, SK `begins_with EDGE#<fromId>#`. |
+| Memory (typed) | `USER#<userId>` | `MEM#<memoryType>#<memoryId>` | — | attrs `vectorId`, `sourceTurnId`, `confidence`, `retentionUntil` (TTL); `memoryType` ∈ {working, episodic, semantic, procedural}. Recall by type = Query SK `begins_with MEM#<memoryType>#`; semantic recall goes through S3 Vectors then GetItem by `memoryId`. |
+| Guide | `USER#<userId>` | `GUIDE#<guideId>` | — | attrs `enabled`, `priority`, `version`, `body`; mirrored to the IoT device shadow. Load-all-enabled = Query SK `begins_with GUIDE#`. |
+| Plan | `USER#<userId>` | `PLAN#<planId>` | — | attr `status`; fetch = GetItem; list plans = Query SK `begins_with PLAN#`. |
+| Task | `USER#<userId>` | `TASK#<planId>#<taskId>` | — | attr `status`; list a plan's tasks = Query SK `begins_with TASK#<planId>#`. |
+
+**Access patterns (no `Scan` anywhere).** Every v1.1 read is a `Query` against a `USER#<userId>` partition with an `SK begins_with` prefix, or a `GetItem` by full key, or a `Query` against `GSI1`/`GSI2` — exactly as the v1.0 entities. Deliverable share-by-id resolves through `GSI1` (`DELIV#<deliverableId>`); entity-by-type lists resolve through `GSI2` (`ETYPE#<userId>#<entityType>`). `Scan` remains reserved for one-off manual migrations only; it never appears on any serving path.
+
 The entity model and GSI lookup relationships:
 
 ```mermaid
@@ -556,6 +597,13 @@ erDiagram
     USER ||--o{ WAKEWORD_CONFIG : configures
     USER ||--o{ USAGE_LOG : accumulates
     DEVICE ||--o{ DEVICE_CRED : holds
+    USER ||--o{ DELIVERABLE : produces
+    USER ||--o{ ENTITY : knows
+    USER ||--o{ EDGE : relates
+    USER ||--o{ MEMORY : remembers
+    USER ||--o{ GUIDE : sets
+    USER ||--o{ PLAN : plans
+    PLAN ||--o{ TASK : contains
 
     USER {
         string partition_key "USER#userId"
@@ -599,6 +647,50 @@ erDiagram
         number tokens
         number ttl "90d"
     }
+    DELIVERABLE {
+        string partition_key "USER#userId"
+        string sk "DELIV#ts#deliverableId"
+        string gsi1pk "DELIV#deliverableId"
+        string s3Key
+        string kind
+    }
+    ENTITY {
+        string partition_key "USER#userId"
+        string sk "ENTITY#entityType#entityId"
+        string gsi2pk "ETYPE#userId#entityType"
+        string label
+    }
+    EDGE {
+        string partition_key "USER#userId"
+        string sk "EDGE#fromId#relation#toId"
+        string relation
+    }
+    MEMORY {
+        string partition_key "USER#userId"
+        string sk "MEM#memoryType#memoryId"
+        string vectorId
+        string sourceTurnId
+        number confidence
+        number retentionUntil "TTL"
+    }
+    GUIDE {
+        string partition_key "USER#userId"
+        string sk "GUIDE#guideId"
+        boolean enabled
+        number priority
+        number version
+        string body
+    }
+    PLAN {
+        string partition_key "USER#userId"
+        string sk "PLAN#planId"
+        string status
+    }
+    TASK {
+        string partition_key "USER#userId"
+        string sk "TASK#planId#taskId"
+        string status
+    }
 ```
 
 ### 8.2 S3 buckets
@@ -623,13 +715,13 @@ Audio not stored by default (`storeAudio=false`). Transcripts stored if `storeTr
 
 | ID | Category | Requirement |
 |---|---|---|
-| NFR-01 | Performance | First assistant audio ≤800 ms (WebRTC) / <1.2 s (M5Stack); barge-in ≤150 ms; ephemeral mint p99 within alarm threshold; Android wake <2%/hr screen-off battery. |
-| NFR-02 | Security | OpenAI key only in SSM, IAM-scoped to broker/relay; refresh tokens hashed at rest; JWT signing via KMS (non-extractable); mTLS for IoT; TLS everywhere; strict CSP; XSS-safe rendering. |
+| NFR-01 | Performance | First assistant audio ≤800 ms (WebRTC) / <1.2 s (M5Stack direct WebRTC/WSS); barge-in ≤150 ms; ephemeral mint p99 within alarm threshold; Android wake <2%/hr screen-off battery. |
+| NFR-02 | Security | OpenAI key only in SSM, IAM-scoped to the broker; refresh tokens hashed at rest; JWT signing via KMS (non-extractable); mTLS for IoT; TLS everywhere; strict CSP; XSS-safe rendering. |
 | NFR-03 | Privacy | On-device wake as a hard invariant; audio off by default; transcripts TTL'd + user-deletable; ZDR requested; no PII harvesting; consent recorded. |
 | NFR-04 | Cost | On-demand DynamoDB, Query/GetItem only; per-user metering enforced pre-spend; daily/monthly quotas; AWS Budgets at $20/$50/$100 on `Project=live-ninja`; CloudFront caching for static; direct-to-OpenAI audio (no AWS in media path). |
 | NFR-05 | Reliability | Fallback cascade on Realtime failure; WebRTC ICE-restart; M5Stack reconnect state machine with backoff; A/B OTA with rollback; idempotency on side-effecting operations. |
 | NFR-06 | Observability | Structured slog JSON with `requestId`/`userId`/`surface`/`route`/`latencyMs`; CloudWatch EMF metrics; X-Ray on hot-path Lambdas; `live-ninja-ops` dashboard; alarms → SNS → SES. |
-| NFR-07 | Scalability | Serverless auto-scales; Fargate relay autoscaled on connection count; single-table + GSIs; S3/CloudFront snapshots for global lists; virtualized/paginated large lists. |
+| NFR-07 | Scalability | Fully serverless auto-scaling (no always-on relay to autoscale — all audio is direct client↔OpenAI); single-table + GSIs; S3/CloudFront snapshots for global lists; virtualized/paginated large lists. |
 | NFR-08 | Compatibility | Path-versioned `/v1`; capability negotiation via `X-LN-Client`/`X-LN-Server`; forward-compatible settings schema; `/v1` kept alive for the 10-year M5Stack field lifetime. |
 
 ---
@@ -692,7 +784,7 @@ Audio not stored by default (`storeAudio=false`). Transcripts stored if `storeTr
 
 ### 12.2 Dependencies
 
-- OpenAI Realtime API; Login with Amazon (single Security Profile with registered return URLs); AWS (Lambda, HTTP API, DynamoDB, S3, SES, SSM, KMS, IoT Core, ECS Fargate, CloudFront, Route 53, EventBridge, SQS, CloudWatch/X-Ray).
+- OpenAI Realtime API; Login with Amazon (single Security Profile with registered return URLs); AWS (Lambda, HTTP API, DynamoDB, S3, SES, SSM, KMS, IoT Core, CloudFront, Route 53, EventBridge, SQS, CloudWatch/X-Ray).
 - GitHub Actions OIDC `gha-deploy` role (`vars.AWS_DEPLOY_ROLE_ARN`); ACM cert, hosted zone, artifact bucket via `vars`.
 - Picovoice Console (Porcupine training) — optional; openWakeWord (Apache-2.0) is the never-blocked fallback.
 
@@ -702,8 +794,8 @@ Audio not stored by default (`storeAudio=false`). Transcripts stored if `storeTr
 |---|---|---|
 | OpenAI API key leakage to clients | Severe (cost/abuse) | Key only in SSM, broker-scoped; short-TTL config-bound ephemeral tokens; never in logs/env of `web`. |
 | DynamoDB Scan cost blowout | High (silent bill) | Single-table Query/GetItem; `ConsumedReadCapacityUnits` alarm; rollups + S3 snapshots; Scan only for manual migrations. |
-| Realtime audio latency/cost if relayed through AWS | High | Direct client↔OpenAI WebRTC/WS; AWS never in audio path. |
-| ESP32-P4 can't run WebRTC well | High (M5Stack blocked) | Backend-proxied WSS + Opus relay on Fargate; device runs libopus + WSS + esp-sr only. |
+| Realtime audio latency/cost if relayed through AWS | High | Direct client↔OpenAI WebRTC/WS on every surface incl. M5Stack; AWS never in the audio path. |
+| ESP32-P4 can't run WebRTC well | Medium (M5Stack fallback) | WebRTC via esp-webrtc-solution on the P4 preferred; graceful WSS + Opus/PCM16 fallback directly to OpenAI (device runs libopus + WSS + esp-sr); ephemeral token from the shared broker either way — no AWS audio relay. |
 | 10-year M5Stack credential compromise | High | Store only peppered hash / KMS-encrypted refresh; short-lived working tokens; cert second factor; rotation; instant server-side revoke. |
 | SES mail silently dropped (DMARC) | Medium (missed alerts) | DKIM-verified `@jeremy.ninja` Source, Reply-To gmail; never send from gmail identity; suppression list. |
 | Runaway OpenAI/AWS cost (abandoned/always-listening) | High | Local wake (no continuous cloud audio); idle/duration caps; pre-spend quotas; org hard limit; budget + cost alarms. |
@@ -741,7 +833,7 @@ gantt
 
     section V2
     M5Stack firmware + IoT           :w1, after v4, 30d
-    Fargate audio relay              :w2, after v4, 20d
+    M5Stack direct audio + broker    :w2, after v4, 20d
     OTA + HIL rig + scale            :w3, after w1, 20d
     Long-horizon v1 compatibility    :w4, after w3, 15d
 ```
@@ -755,9 +847,9 @@ gantt
 | Q-1 | Fiber-on-Lambda via LWA or the proxy adapter? | **Lambda Web Adapter** — one idiomatic Fiber codebase, streaming/SSE support, local/prod parity, native arm64. |
 | Q-2 | HTTP API v2 or REST API v1? | **HTTP API v2** — ~70% cheaper, native JWT authorizer, lower latency; `$default` → Fiber. |
 | Q-3 | Single-table or multi-table DynamoDB? | **Single table** `live-ninja` with two GSIs; all access by known keys; Query/GetItem only. |
-| Q-4 | Audio transport through AWS or direct to OpenAI? | **Direct client↔OpenAI** (WebRTC web/Android, WSS relay for M5Stack); AWS never in the media path. |
+| Q-4 | Audio transport through AWS or direct to OpenAI? | **Direct client↔OpenAI on every surface** (WebRTC web/Android; WebRTC or WSS+Opus/PCM16 for M5Stack); AWS never in the media path. |
 | Q-5 | Secrets store? | **SSM Parameter Store SecureString** (+ KMS for signing/refresh encryption); no secrets manager. |
-| Q-6 | M5Stack Realtime transport? | **Backend-proxied WSS + Opus via a Fargate relay** — on-device WebRTC on the radio-split P4 is impractical. |
+| Q-6 | M5Stack Realtime transport? | **Direct to OpenAI from the device** — WebRTC via Espressif's esp-webrtc-solution on the ESP32-P4, with a WSS + Opus/PCM16 fallback; ephemeral token from the same broker Lambda as web/Android; no AWS audio relay. |
 | Q-7 | Are broker/authorizer separate Lambdas from day one? | **Yes** — broker holds the crown-jewel key policy; authorizer is on every hot path (keep tiny for cold-start). |
 | Q-8 | Android wake engine? | **Porcupine primary, openWakeWord fallback**, behind a `WakeWordEngine` interface; own FGS engine, not the DSP hotword. |
 | Q-9 | Web wake word default state? | **Off by default, opt-in**; openWakeWord WASM default, Porcupine optional; click-to-talk always available. |
@@ -770,7 +862,7 @@ gantt
 | Q-16 | Per-user OpenAI quota? | **~30 min realtime audio/day + monthly token ceiling (~$15)**, enforced pre-spend at mint; 10-min hard session cap; soft-warn at 80%. |
 | Q-17 | Confirm-before-send for email tool? | **Yes for external recipients**, with per-user daily send cap and optional allowlist; idempotency keys. |
 | Q-18 | M5Stack secure element? | **ATECC608B recommended default** on production units for the 10-year field credential. |
-| Q-19 | Telemetry/control transport for M5Stack? | **IoT Core MQTT** (control-plane only); audio uses the WSS relay, never IoT. |
+| Q-19 | Telemetry/control transport for M5Stack? | **IoT Core MQTT** (control-plane only — device shadow, wake-word sync, heartbeat, OTA); audio is direct to OpenAI, never over IoT and never through an AWS relay. |
 | Q-20 | Cost center tag? | **`voice-ai`**; full mandatory tag set applied once at stack level in `samconfig.toml`. |
 
 
@@ -1911,6 +2003,18 @@ The assistant can create files, package them, and deliver them as separate, dura
 ### Memory Layer — Functional Requirements
 
 A structured personal memory organized by people, places, and information, with organizational (projects/lists) and planning (goals/tasks) capabilities, exposed to GPT-Realtime as tools. Recommended design: DynamoDB entity/relationship graph + S3 Vectors semantic recall + optional local RAG sidecar.
+
+**Memory-architecture options considered** (the full analysis also lives in the whitepaper; the decision is captured here so the PRD is self-contained):
+
+| Option | Recall quality | Latency | Monthly cost (1 user) | Privacy | Ops burden | Scales |
+|---|---|---|---|---|---|---|
+| A · Local RAG on user PC | High | Low (local) | ~$0 | Highest | You run it | Per-machine |
+| B · Amazon S3 Vectors | High | Medium | Very low | Cloud (encrypted) | None | Yes |
+| C · DynamoDB entity graph only | Low (no ANN) | Low | Lowest | Cloud | None | Structured only |
+| D · OpenSearch Serverless | Highest | Low | High (idle floor) | Cloud | Low | Yes |
+| E · pgvector / Aurora | High | Low | Medium–High (idle floor) | Cloud | Medium | Yes |
+
+**Recommended:** a hybrid, tiered memory — DynamoDB entity/relationship graph (structured + organizational + planning) + S3 Vectors (semantic recall) + an OPTIONAL local-RAG sidecar (graceful fallback). Avoid the always-on cost floors of OpenSearch Serverless and Aurora unless scale later justifies them.
 
 | ID | Requirement | Acceptance Criteria |
 |---|---|---|

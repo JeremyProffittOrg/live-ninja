@@ -49,12 +49,12 @@ Six workstreams run in parallel wherever dependencies allow. **WS-A (Platform/In
 
 | WS | Name | Owns | Primary models | Depends on | Runs parallel with |
 |---|---|---|---|---|---|
-| **WS-A** | Platform & Infra | SAM stack, OIDC pipeline, DynamoDB single-table, SSM, S3, CloudFront/R53, tagging, IoT Core, Fargate relay infra | O (arch), S (IaC), H (config) | — | all (foundation) |
+| **WS-A** | Platform & Infra | SAM stack, OIDC pipeline, DynamoDB single-table, SSM, S3, CloudFront/R53, tagging, IoT Core (control/telemetry only) | O (arch), S (IaC), H (config) | — | all (foundation) |
 | **WS-B** | Identity & Auth | LWA OAuth (BFF), first-party JWT (KMS ES256) + rotating refresh, device 10-yr flow, authorizer | O (flows/threat), S (handlers) | WS-A (M0) | WS-C |
-| **WS-C** | Realtime Voice | Token broker, session config, tool router, Fargate audio relay, fallback cascade, metering gate | O (broker/relay), F (audio), S (tools) | WS-A, WS-B | WS-B |
+| **WS-C** | Realtime Voice | Token broker, session config, tool router, fallback cascade, metering gate | O (broker/tools/metering), F (audio), S (tools) | WS-A, WS-B | WS-B |
 | **WS-D** | Web Client | Fiber SSR UI, WebRTC-to-OpenAI, transcript/visualizer, settings, PWA/SW, WASM wake word | S (UI), F (realtime.mjs) | WS-B, WS-C | WS-E, WS-F |
 | **WS-E** | Android Client | VoiceInteractionService, ROLE_ASSISTANT flow, wake-word FGS, WebRTC, Custom Tabs LWA | F (assistant/wake), S (UI) | WS-B, WS-C | WS-D, WS-F |
-| **WS-F** | M5Stack Firmware | ESP-IDF firmware, ESP-SR wake, IoT MQTT audio, device-hosted config/LWA, 10-yr cert, OTA | O (P4/C6 arch), F (audio/wake), S (LVGL UI) | WS-A, WS-B, WS-C relay | WS-D, WS-E |
+| **WS-F** | M5Stack Firmware | ESP-IDF firmware, ESP-SR wake, direct WebRTC/WSS audio to OpenAI + IoT MQTT control/telemetry, device-hosted config/LWA, 10-yr cert, OTA | O (P4/C6 arch), F (audio/wake), S (LVGL UI) | WS-A, WS-B, WS-C broker | WS-D, WS-E |
 | **WS-G** | Cross-Cut Platform | Settings schema/sync, wake-word training+distribution, privacy/retention, observability, cost/quota, versioning/compat, testing | O (contracts/quota), F (sync), S (tests) | WS-A | all |
 
 ### 2.1 CI/CD pipeline (WS-A)
@@ -68,7 +68,7 @@ flowchart LR
     OIDC --> SB["sam build"]
     SB --> SD["sam deploy<br/>no-confirm-changeset"]
     SD --> CFN["CloudFormation<br/>update stack"]
-    CFN --> PROD["Production<br/>Lambda + IoT + Fargate"]
+    CFN --> PROD["Production<br/>Lambda + IoT"]
     PROD --> WATCH["gh run watch<br/>+ CloudWatch alarms"]
 ```
 
@@ -94,7 +94,7 @@ gantt
 
     section V2
     M5Stack firmware + IoT           :w1, after v4, 30d
-    Fargate audio relay              :w2, after v4, 20d
+    M5 direct-audio (broker/ephemeral token) :w2, after v4, 20d
     OTA + HIL rig + scale            :w3, after w1, 20d
     Long-horizon v1 compatibility    :w4, after w3, 15d
 ```
@@ -132,7 +132,7 @@ flowchart TB
     subgraph Backend["Live Ninja Backend - AWS us-east-1"]
         FIBER["Go-Fiber on Lambda<br/>Web Adapter"]
         BROKER["Realtime Token Broker"]
-        RELAY["Fargate Audio Relay<br/>device only"]
+        IOT["AWS IoT Core<br/>control/telemetry"]
         DATA["AWS Data + Services"]
     end
 
@@ -141,18 +141,18 @@ flowchart TB
 
     WEB -->|HTTPS| FIBER
     AND -->|HTTPS| FIBER
-    M5 -->|MQTT audio| RELAY
+    M5 -->|MQTT control/telemetry| IOT
+    M5 -->|direct WebRTC/WSS audio + ephemeral token| OAI
     FIBER --> BROKER
     FIBER --> DATA
+    IOT --> DATA
     BROKER -->|mint ephemeral token| OAI
-    RELAY -->|WebSocket audio| OAI
     WEB -.->|direct audio| OAI
     AND -.->|direct audio| OAI
     FIBER -->|OAuth| LWA
-    RELAY --> DATA
 ```
 
-**Locked decisions (see research briefs):** Lambda Web Adapter for the Fiber app (not proxy shims); **single-table DynamoDB** (`Query`/`GetItem` only, never `Scan` on a serving path); **direct client→OpenAI WebRTC/WS for audio** (browser/Android) with a **Fargate relay only for the M5Stack**; **SSM Parameter Store SecureString** for secrets (no Secrets Manager); **KMS ES256** JWT signing (private key non-extractable); GitHub Actions + OIDC as the only deploy path; six mandatory cost tags at stack level.
+**Locked decisions (see research briefs):** Lambda Web Adapter for the Fiber app (not proxy shims); **single-table DynamoDB** (`Query`/`GetItem` only, never `Scan` on a serving path); **ALL surfaces (web, Android, M5Stack) connect DIRECT to OpenAI Realtime** with a **broker-minted ephemeral token; no audio relay**; **SSM Parameter Store SecureString** for secrets (no Secrets Manager); **KMS ES256** JWT signing (private key non-extractable); GitHub Actions + OIDC as the only deploy path; six mandatory cost tags at stack level.
 
 ---
 
@@ -224,7 +224,7 @@ Ordered tasks:
 
 ### M2 — Realtime voice backend (broker + tool-calling)  `[ ]`  (WS-C lead)
 
-**Definition of Done:** An authenticated client can `GET /api/v1/realtime/session` and receive a **config-bound OpenAI ephemeral token** (~60s) plus the resolved persona/tool manifest; the OpenAI key lives only in SSM read by the broker's isolated role; server-side **tool router** (`POST /api/v1/tools/invoke`) executes tools re-authorized per call with idempotency; the **metering/quota gate** rejects over-cap mints pre-spend; the **fallback cascade** (retry → chained STT→LLM→TTS → text-only) is implemented; the **Fargate audio relay** service exists (for M5) even though no device connects yet. _(FR `[RT]`)_
+**Definition of Done:** An authenticated client can `GET /api/v1/realtime/session` and receive a **config-bound OpenAI ephemeral token** (~60s) plus the resolved persona/tool manifest; the OpenAI key lives only in SSM read by the broker's isolated role; server-side **tool router** (`POST /api/v1/tools/invoke`) executes tools re-authorized per call with idempotency; the **metering/quota gate** rejects over-cap mints pre-spend; the **fallback cascade** (retry → chained STT→LLM→TTS → text-only) is implemented; all surfaces (web, Android, M5Stack) are served directly by the broker with no audio relay. _(FR `[RT]`)_
 
 ```mermaid
 sequenceDiagram
@@ -254,15 +254,14 @@ sequenceDiagram
 ```
 
 Ordered tasks:
-- `[ ]` **O** — `realtime-broker` Lambda (isolated IAM: `ssm:GetParameter` one ARN + `kms:Decrypt`): load persona/tools, mint `POST /v1/realtime/client_secrets` config-bound (`model gpt-realtime`, `voice`, `instructions`, `semantic_vad interrupt_response`, `tools`, `pcm16`). _(§7 backend, Voice §2/§6)_
+- `[ ]` **O** — `realtime-broker` Lambda (isolated IAM: `ssm:GetParameter` one ARN + `kms:Decrypt`): serves **all surfaces (web, Android, M5Stack)** directly — no relay; load persona/tools, mint `POST /v1/realtime/client_secrets` config-bound (`model gpt-realtime`, `voice`, `instructions`, `semantic_vad interrupt_response` so every client does local barge-in against OpenAI, `tools`, `pcm16`). _(§7 backend, Voice §2/§6)_
 - `[ ]` **O** — Quota/metering gate at mint: read `USAGE#<month>`+daily counter, per-user token-bucket (1 mint/5s burst 3), soft-cap warn / hard-cap 402/429; write session ledger stub. _(Crosscut §6, Voice §13)_
 - `[ ]` **O** — `internal/realtime` session config + persona resolution (clients send persona **ID**, server resolves instructions — anti-injection). _(Web §2.1)_
-- `[ ]` **S** — Tool router (`fn-tool-router` / `/api/v1/tools/invoke`): re-authorize LWA user per call, enumerated-arg schemas, idempotency keys; tool catalog `send_email` (SES `jeremy@jeremy.ninja` / Reply-To gmail, confirm-before-send external), `set_timer/reminder` (EventBridge Scheduler), `device_control` (owner-scoped MQTT), `get_weather/web_lookup`, `remember/recall_note`. _(Voice §7)_
-- `[ ]` **F** — **Fargate audio relay** (Go arm64, ALB+WSS): validate device JWT, budget-gate, hold OpenAI WS, Opus↔PCM16@24k transcode, barge-in (`response.cancel`+`input_audio_buffer.clear`), tool-call intercept server-side, transcript/usage sink. ECS service+autoscaling in SAM. _(Voice §3.3/§3.4, M5 §4)_
+- `[ ]` **S** — Tool router (`fn-tool-router` / `/api/v1/tools/invoke`): re-authorize LWA user per call, enumerated-arg schemas, idempotency keys; every surface (web, Android, and **device over HTTPS** — `function_call` routed device→backend `POST /v1/tools/invoke`) invokes tools through this one path; tool catalog `send_email` (SES `jeremy@jeremy.ninja` / Reply-To gmail, confirm-before-send external), `set_timer/reminder` (EventBridge Scheduler), `device_control` (owner-scoped MQTT), `get_weather/web_lookup`, `remember/recall_note`. _(Voice §7)_
 - `[ ]` **F** — Fallback cascade `fn-fallback-turn`: 2× backoff retry → STT (`gpt-4o-transcribe`)→`gpt-4o-mini`→TTS (`gpt-4o-mini-tts`) → text-only → graceful hard-down (side-effects queued). _(Voice §12)_
-- `[ ]` **S** — Transcript sink + usage rollup: `USER#<uid>/LOG#…` turns (TTL 90d), `usage-rollup` hourly EventBridge → daily/monthly rollups (Query only). _(§4, §13 backend)_
+- `[ ]` **S** — Transcript sink + usage rollup: all surfaces (web, Android, and device over HTTPS) write `USER#<uid>/LOG#…` turns (TTL 90d), `usage-rollup` hourly EventBridge → daily/monthly rollups (Query only). _(§4, §13 backend)_
 - `[ ]` **S** — EMF metrics: `SessionsBrokered`, `EphemeralTokenMintLatency`, `ToolInvocations`, per-surface counts; X-Ray on broker/authorizer/web. _(§13)_
-- `[ ]` **F** — Broker/relay/tool tests: mocked OpenAI WS + REST, quota gate pre-spend enforcement, tool re-authz, confirm-before-send, relay Opus transcode + barge-in cancel. _(Crosscut §7)_
+- `[ ]` **F** — Broker/tool tests: mocked OpenAI WS + REST, quota gate pre-spend enforcement, ephemeral-token mint for all surfaces, tool re-authz (incl. device→backend `POST /v1/tools/invoke`), confirm-before-send. _(Crosscut §7)_
 
 ### M3 — Web client  `[ ]`  (WS-D lead)
 
@@ -323,7 +322,7 @@ Ordered tasks:
 
 ### M5 — M5Stack firmware + IoT + on-device config / 10-yr login  `[ ]`  (WS-F lead)
 
-**Definition of Done:** A Tab5 boots ESP-IDF firmware, onboards WiFi + Login-with-Amazon via its device-hosted config page, provisions an IoT Thing + on-chip-keypair X.509 cert (10-yr lineage, DS-peripheral-protected), does on-device ESP-SR wake detection, streams Opus audio over IoT MQTT through the Fargate relay to GPT-Realtime with instant local barge-in, renders the LVGL state-machine UI, syncs settings via device shadow, and updates via signed A/B IoT-Jobs OTA. Device recorded in `c:\dev\fleet\esp32.md`. _(FR `[M5]`)_
+**Definition of Done:** A Tab5 boots ESP-IDF firmware, onboards WiFi + Login-with-Amazon via its device-hosted config page, provisions an IoT Thing + on-chip-keypair X.509 cert (10-yr lineage, DS-peripheral-protected), does on-device ESP-SR wake detection, connects DIRECTLY to OpenAI Realtime (WebRTC via esp-webrtc-solution, or WSS+Opus) using a broker-minted ephemeral token, with instant local barge-in, renders the LVGL state-machine UI, syncs settings via device shadow, and updates via signed A/B IoT-Jobs OTA. Device recorded in `c:\dev\fleet\esp32.md`. _(FR `[M5]`)_
 
 ```mermaid
 stateDiagram-v2
@@ -352,8 +351,8 @@ Ordered tasks:
 - `[ ]` **F** — Audio path: PDM mic → AFE (AEC/NS/VAD) → ESP-SR WakeNet "Hey Live Ninja" → Opus 16kHz 20ms uplink; downlink Opus decode → I2S with 60-100ms jitter buffer; local instant barge-in (stop DAC + control publish). _(M5 §3/§4)_
 - `[ ]` **S** — IoT Core: Fleet Provisioning by Claiming Certificate, on-chip keypair (DS peripheral), per-device topic policy (`${iot:Connection.Thing.ThingName}`), topic map (`audio/up|down`, `control/up|down`, `telemetry`), classic+`config` shadows. _(M5 §5)_
 - `[ ]` **O** — Device-hosted config: SoftAP captive portal (SSID scan-list-select, passphrase keyboard only), STA config page, **LWA PKCE brokered by backend**, bind token returned over IoT `control/down`. _(M5 §6)_
-- `[ ]` **O** — 10-yr persistence: X.509 op-cert (10-yr, rotate at yr8), encrypted NVS bind record, flash encryption + Secure Boot v2 + NVS encryption; steady-state 24h mTLS refresh; realtime session request over HTTPS → relay. _(M5 §6, Auth §6)_
-- `[ ]` **F** — `iot-ingest` Lambda: `SELECT * FROM 'liveninja/+/telemetry'` → DynamoDB `DEVICE#` lastSeen/telemetry (PutItem, GSI2 `DEVSEEN#`); IoT Rules routing audio/control to relay. _(§10 backend)_
+- `[ ]` **O** — 10-yr persistence: X.509 op-cert (10-yr, rotate at yr8), encrypted NVS bind record, flash encryption + Secure Boot v2 + NVS encryption; steady-state 24h mTLS refresh; realtime session: HTTPS to broker for ephemeral token, then direct to OpenAI. _(M5 §6, Auth §6)_
+- `[ ]` **F** — `iot-ingest` Lambda: `SELECT * FROM 'liveninja/+/telemetry'` → DynamoDB `DEVICE#` lastSeen/telemetry (PutItem, GSI2 `DEVSEEN#`); IoT Rules for control/telemetry only (no audio). _(§10 backend)_
 - `[ ]` **S** — LVGL UI state machine (Idle/Listening/Speaking/Settings/Onboarding/Error), 720p PSRAM framebuffers + PPA dirty-rect, 48-64px targets, list-selects, "N of M", keyboard only for passphrase/name. _(M5 §7)_
 - `[ ]` **F** — OTA: A/B partitions, `esp_https_ota`, Secure Boot v2 verify + anti-rollback eFuse, IoT Jobs canary→fleet, mark-valid-after-check-in, coordinated P4↔C6 version gate. _(M5 §8)_
 - `[ ]` **S** — HIL rig scaffolding (bench Tab5, PlatformIO CI flash, serial+telemetry MQTT assert); record device in `c:\dev\fleet\esp32.md` (eFuse MAC, role, last COM). _(Crosscut §7, fleet rule)_
@@ -403,7 +402,7 @@ Ordered tasks:
 - `[ ]` **O** — Privacy: consent records (`CONSENT#`), retention TTLs (transcripts 30d default, audio off), `DELETE /account` Step Functions (Query+BatchWrite, S3 purge, IoT thing/cert delete, LWA revoke, SES confirm), OpenAI ZDR requested + documented. _(Crosscut §4)_
 - `[ ]` **S** — WAF rate-based rules on API; per-user concurrent-session + session-rate limits; IoT telemetry throttle. _(Crosscut §6)_
 - `[ ]` **S** — Versioning/compat: `/v1` path prefix, `X-LN-Client`/`X-LN-Server` headers, `GET /compat`, below-min "please update" states; content-addressed wake models with safe fallback. _(Crosscut §8)_
-- `[ ]` **F** — Load tests (k6/Vegeta + synthetic-session generator): quota/rate limits hold, `ConsumedReadCapacityUnits` flat (no Scan), relay under connection load. _(Crosscut §7)_
+- `[ ]` **F** — Load tests (k6/Vegeta + synthetic-session generator): quota/rate limits hold, `ConsumedReadCapacityUnits` flat (no Scan), broker ephemeral-token mint under connection load. _(Crosscut §7)_
 - `[ ]` **O** — Security review pass over auth/broker/device/tool paths + threat-model checklist sign-off. _(Auth §9, all risk tables)_
 
 ### M8 — Launch  `[ ]`  (WS-A + WS-G lead, all WS)
@@ -413,10 +412,44 @@ Ordered tasks:
 Ordered tasks:
 - `[ ]` **H** — Request SES production access; verify DKIM `@jeremy.ninja` identity, bounce/complaint SNS suppression wired. _(§6 backend)_
 - `[ ]` **H** — Confirm `Project`+`CostCenter` Cost Allocation Tags active in Billing; budgets alerting. _(§12)_
-- `[ ]` **S** — Production end-to-end smoke: web voice turn, Android wake→WebRTC turn+tool call, M5 wake→relay turn+barge-in; verify one line via `gh run watch`. _(§14)_
+- `[ ]` **S** — Production end-to-end smoke: web voice turn, Android wake→WebRTC turn+tool call, M5 wake→direct WebRTC/WSS turn+barge-in; verify one line via `gh run watch`. _(§14)_
 - `[ ]` **S** — Distribution: web live; Android signed APK + `.well-known/assetlinks.json` + `GET /v1/app/android/latest` updater; M5 firmware channel + fleet provisioning claim enabled. _(Android §9, M5 §8)_
 - `[ ]` **H** — Runbook + on-call: alarm→action mapping, credential-rotation steps (re-put SSM), device kill-switch, `/v1` compatibility lifetime commitment. _(Crosscut §8)_
 - `[ ]` **O** — Launch go/no-go review against every risk table; sign off residual-risk acceptances. _(§7)_
+
+> **v1.1 capability milestones** — layered on the launched core platform (M0–M8). The same deploy law, cost tags, arm64, and no-Scan discipline apply.
+
+### M9 — Deliverables Store  `[ ]`  (WS-C lead, WS-D/E/F support)
+
+**Definition of Done:** the assistant can create/zip/deliver files via tools; deliverables persist per-user on S3, are indexed in DynamoDB (Query-only), and appear identically in the web Download Center and Android Files tab; downloads use short-lived presigned URLs; optional SES delivery works. _(FR-DLV-01..06)_
+
+Ordered tasks:
+- `[ ]` **S** — S3 deliverables bucket + lifecycle + SSE/KMS; SAM + cost tags. _(FR-DLV-01/06)_
+- `[ ]` **S** — DynamoDB deliverable items (`PK=USER# SK=DELIV#`) + GSI; Query access patterns. _(FR-DLV-04)_
+- `[ ]` **F** — Generator + Zipper Lambda (Go, arm64); streaming ZIP. _(FR-DLV-01/02)_
+- `[ ]` **F** — `deliverable.create/zip/deliver` tools wired into the realtime tool router. _(FR-DLV-01..03)_
+- `[ ]` **S** — Web Download Center (sortable table, share/delete, empty/loading/error states). _(FR-DLV-05)_
+- `[ ]` **S** — Android Files tab (list + multi-select zip/share). _(FR-DLV-05)_
+- `[ ]` **S** — SES delivery channel + presigned-URL authz by `userId` prefix. _(FR-DLV-03/06)_
+- `[ ]` **H** — Tests: unit + e2e (create→zip→deliver→download on web + app).
+
+### M10 — Memory Layer + Guide Entities  `[ ]`  (WS-C + WS-G lead, all surfaces support)
+
+**Definition of Done:** DynamoDB entity/relationship graph stores people/places/information/projects/tasks/plans; S3 Vectors provides semantic recall; `memory.*`/`plan.upsert` tools + session bootstrap integrate with GPT-Realtime; Guide Entities inject into every session on every surface; a memory/guide browser allows view/edit/forget with propagation to both stores; optional local-RAG sidecar can be enabled with graceful fallback. _(FR-MEM-01..09)_
+
+Ordered tasks:
+- `[ ]` **O** — Entity + relationship data model in DynamoDB (people/places/info/projects/tasks/plans). _(FR-MEM-01)_
+- `[ ]` **F** — Embedder Lambda + S3 Vectors index (verify GA/region `us-east-1`). _(FR-MEM-02)_
+- `[ ]` **F** — Memory Router Lambda: structured (DynamoDB) vs semantic (vector) routing. _(FR-MEM-01/02)_
+- `[ ]` **F** — Tools `memory.search/write`, `entity.get`, `plan.upsert`; session-bootstrap retrieval primes the persona. _(FR-MEM-04)_
+- `[ ]` **O** — Optional local-RAG sidecar (LanceDB/sqlite-vec) + secure bridge + graceful fallback to S3 Vectors. _(FR-MEM-03)_
+- `[ ]` **S** — Memory browser UI (web/app): view/edit/forget; forget propagates to DynamoDB + vector index. _(FR-MEM-05)_
+- `[ ]` **S** — Privacy: retention TTLs, export-as-Deliverable, redaction; no silent capture. _(FR-MEM-05, Crosscut §4)_
+- `[ ]` **S** — Guide Entity type in DynamoDB (`GUIDE#`) + versioning + device/IoT-shadow sync. _(FR-MEM-07)_
+- `[ ]` **F** — Always-inject enabled guides into session-bootstrap system instructions on all surfaces. _(FR-MEM-07)_
+- `[ ]` **F** — Recency-filtered web-search/research tool (default 30d) + authoritative-source allow-list (Anthropic/OpenAI); cite source dates. _(FR-MEM-08)_
+- `[ ]` **S** — Guide Manager UI (web/app): list, edit, enable/disable, priority; seed default "AI is an emerging technology" guide. _(FR-MEM-09)_
+- `[ ]` **H** — Tests: recall-quality eval, forget propagation, guide always-injection, sidecar on/off.
 
 ---
 
@@ -424,7 +457,7 @@ Ordered tasks:
 
 - **Production-only.** No staging/dev. Every push to `main` is a production deploy. Verify before pushing; no destructive surprises.
 - **Deploy path (only allowed one):** push/merge to `main` → GitHub Actions assumes `vars.AWS_DEPLOY_ROLE_ARN` via **OIDC** (`id-token: write`, no static keys) → `make build` (arm64) → `sam build` → `sam deploy --no-confirm-changeset --no-fail-on-empty-changeset`. No local `aws`/`sam deploy`/`sam sync`. If a deploy need has no pipeline, build the pipeline — never deploy by hand.
-- **arm64 everywhere.** All Lambdas `provided.al2023`, `Architectures: [arm64]`, built `GOOS=linux GOARCH=arm64 CGO_ENABLED=0 -tags lambda.norpc -o bootstrap`. The Fargate relay is arm64. Flip architecture and build step together (never `Architectures:` alone).
+- **arm64 everywhere.** All Lambdas `provided.al2023`, `Architectures: [arm64]`, built `GOOS=linux GOARCH=arm64 CGO_ENABLED=0 -tags lambda.norpc -o bootstrap`. Flip architecture and build step together (never `Architectures:` alone).
 - **Cost tags (stack-level, once, in `samconfig.toml`):** `Project=live-ninja CostCenter=voice-ai Environment=prod ManagedBy=sam DeployedVia=github-actions Owner=jeremy`. Activate `Project`+`CostCenter` as Cost Allocation Tags in Billing at M0 (non-retroactive).
 - **Secrets:** SSM Parameter Store SecureString + KMS only — **no Secrets Manager/Vault**. Agents never see values; the user sets them via `scripts/set-secret.sh` (GitHub) / manual `aws ssm put-parameter` (SSM). Workflow reads only ARNs from `vars`. Broker holds the sole `ssm:GetParameter` on the OpenAI key ARN.
 - **DynamoDB discipline:** `Query`/`GetItem` only on every serving path; `Scan` reserved for manual one-off migrations. Read-mostly catalogs served from S3/CloudFront snapshots. `ConsumedReadCapacityUnits` alarm armed.
@@ -438,13 +471,15 @@ Ordered tasks:
 |---|---|
 | **M0** | `sam deploy` succeeds via OIDC; `/healthz` 200 through CloudFront; table+GSIs+TTL present; buckets/edge exist; alarms+budgets armed; tags active. Local Fiber smoke (`:8080`) parity. |
 | **M1** | `dynamodb-local` + mocked LWA: PKCE happy-path all surfaces; `aud`-substitution + refresh-reuse rejected; `tokensValidAfter` kill ≤60s; cookie flags correct; device-claim binding; new-sign-in SES fires (mock). |
-| **M2** | Mocked OpenAI REST/WS: config-bound ephemeral mint; quota gate rejects over-cap **pre-spend**; tool router re-authz + confirm-before-send + idempotency; relay Opus↔PCM16 + barge-in cancel; fallback cascade degrades correctly. |
+| **M2** | Mocked OpenAI REST/WS: config-bound ephemeral mint; broker ephemeral-token mint under load; quota gate rejects over-cap **pre-spend**; tool router re-authz + confirm-before-send + idempotency (incl. device→backend `POST /v1/tools/invoke`); fallback cascade degrades correctly. |
 | **M3** | Playwright (stub LWA, mock OpenAI WS): login → conversation bootstrap, barge-in cut-through, transcript render, settings CRUD, wake-swap, click-to-talk fallback; Lighthouse + axe WCAG AA both themes; SW network-first HTML verified (no stale HTML). |
 | **M4** | Robolectric/Espresso + instrumented VoiceInteractionService; wake-engine FRR@FAR corpus gated in CI (fail on regression); role-flow fallback across `Build.MANUFACTURER`; battery <2%/hr screen-off measured; barge-in AEC on-device. |
-| **M5** | HIL rig: CI flashes bench Tab5 (PlatformIO), speaker plays positive/negative corpus, assert wake on `telemetry`; provisioning issues cert (key on-chip); relay round-trip audio; OTA canary→mark-valid→rollback-on-fail; shadow sync loop. |
+| **M5** | HIL rig: CI flashes bench Tab5 (PlatformIO), speaker plays positive/negative corpus, assert wake on `telemetry`; provisioning issues cert (key on-chip); device direct WebRTC/WSS turn + barge-in; OTA canary→mark-valid→rollback-on-fail; shadow sync loop. |
 | **M6** | Contract tests: settings schema round-trip + 409 reconcile; shadow accepted→Dynamo bump; wake manifest + SHA-256 verify across all-client fixtures; training job cost-bounded (conc≤2, timeout, ≤3/day). |
-| **M7** | k6/Vegeta load: `ConsumedReadCapacityUnits` flat (proves no Scan), quota/rate limits hold, relay under connection load; `DELETE /account` purges all partitions (Query+BatchWrite); security-review checklist signed. |
+| **M7** | k6/Vegeta load: `ConsumedReadCapacityUnits` flat (proves no Scan), quota/rate limits hold, broker ephemeral-token mint under load; `DELETE /account` purges all partitions (Query+BatchWrite); security-review checklist signed. |
 | **M8** | Production end-to-end smoke on all three surfaces; alarms/budgets confirmed emailing; SES out of sandbox; distribution channels reachable; go/no-go against risk tables. |
+| **M9** | Deliverables e2e: `create`→`zip`→`deliver`; presigned GET authz by `userId` prefix; Download Center + Files tab list via Query (no Scan); SES delivery. |
+| **M10** | Memory: entity-graph CRUD by keys/GSI (no Scan); S3 Vectors recall eval; `memory.*`/`plan.upsert` tools; session-bootstrap injects guides on all surfaces; forget propagates to Dynamo+vectors; local-RAG on/off fallback. |
 
 Cross-cutting gates (all milestones): `golangci-lint` + `go vet` clean; unit tests `testify` table-driven; JSON-schema/contract validation in CI; deploy job gated on tests; every new UI form runs the **mandatory multi-persona design pass** before code.
 
@@ -456,7 +491,7 @@ Cross-cutting gates (all milestones): `golangci-lint` + `go vet` clean; unit tes
 |---|---|---|
 | 1 | **WS-A slips → everything blocks.** M0 is the critical path for all six workstreams. | Staff M0 with Opus+Sonnet; keep it minimal-but-real (deploy an empty stack day one). Contract freeze at M0 lets WS-B..G design against stable seams before infra is 100%. |
 | 2 | **Shared contracts drift between surfaces** built in parallel (settings/shadow/wake-manifest/headers/quota). | Six contracts frozen in `/contracts` at M0 (WS-G, Opus); CI validates every client fixture against them; additive-only within `/v1`. |
-| 3 | **Fargate relay (M2) blocks M5** — M5 audio depends on the relay existing. | Build the relay in M2 (before any device connects) so M5 firmware integrates against a live endpoint; relay tested with synthetic device JWT + mock device frames. |
+| 3 | **M5 firmware must sustain a direct WebRTC/WSS+TLS Realtime session on the ESP32-P4.** | Use Espressif esp-webrtc-solution (proven on ESP32-S3/P4), WSS+Opus fallback, front-load the audio path on the HIL rig; the broker serves all surfaces so there is no bespoke relay to build. |
 | 4 | **Auth (M1) is on the critical path for M2–M5** and is the hardest/riskiest. | Opus-led; ES256+KMS + rotating-refresh machinery is shared identically across surfaces — build once in M1, reuse. Threat-model checklist gates M1 done. |
 | 5 | **Production-only, no staging** — a bad deploy hits users. | Change-set previewed in CI logs; local Fiber LWA-parity smoke pre-push; feature flags via capability negotiation; alarms + fast SES alerting; additive-only API changes; canary IoT-Jobs for firmware. |
 | 6 | **M5 firmware (M5) is long, hardware-gated, and last** — schedule tail risk. | Sequenced to V2 after web/Android prove the loop; HIL rig scaffolded early (M5 task); P4/C6 `esp-hosted` link is task-1 risk-front-loaded; device recorded in fleet registry. |
@@ -500,39 +535,8 @@ _(no notes yet)_
 ### M8 — Launch
 _(no notes yet)_
 
----
+### M9 — Deliverables Store
+_(no notes yet)_
 
-## Milestone M9 — Deliverables Store  `[ ]`
-
-**Definition of Done:** the assistant can create/zip/deliver files via tools; deliverables persist per-user on S3, are indexed in DynamoDB (Query-only), and appear identically in the web Download Center and Android Files tab; downloads use short-lived presigned URLs; optional SES delivery works.
-
-| # | Task | Status | Model |
-|---|---|---|---|
-| 9.1 | S3 deliverables bucket + lifecycle + SSE/KMS; SAM + cost tags | `[ ]` | Sonnet |
-| 9.2 | DynamoDB deliverable items + GSI; Query access patterns | `[ ]` | Sonnet |
-| 9.3 | Generator + Zipper Lambda (Go, arm64); streaming ZIP | `[ ]` | Fable |
-| 9.4 | `deliverable.create/zip/deliver` tools wired into the realtime tool router | `[ ]` | Fable |
-| 9.5 | Web Download Center (sortable table, share/delete, states) | `[ ]` | Sonnet |
-| 9.6 | Android Files tab (list + multi-select zip/share) | `[ ]` | Sonnet |
-| 9.7 | SES delivery channel + presigned URL authz by userId prefix | `[ ]` | Sonnet |
-| 9.8 | Tests: unit + e2e (create to zip to deliver to download on both surfaces) | `[ ]` | Haiku |
-
-## Milestone M10 — Memory Layer  `[ ]`
-
-**Definition of Done:** DynamoDB entity/relationship graph stores people/places/information/projects/tasks/plans; S3 Vectors provides semantic recall; memory tools + session bootstrap integrate with GPT-Realtime; a memory browser allows view/edit/forget with propagation to both stores; optional local RAG sidecar can be enabled with graceful fallback.
-
-| # | Task | Status | Model |
-|---|---|---|---|
-| 10.1 | Entity + relationship data model in DynamoDB (people/places/info/projects/tasks) | `[ ]` | Opus |
-| 10.2 | Embedder Lambda + S3 Vectors index (verify GA/region us-east-1) | `[ ]` | Fable |
-| 10.3 | Memory Router Lambda: structured vs semantic routing | `[ ]` | Fable |
-| 10.4 | Tools `memory.search/write`, `entity.get`, `plan.upsert`; session bootstrap retrieval | `[ ]` | Fable |
-| 10.5 | Optional local RAG sidecar (LanceDB/sqlite-vec) + secure bridge + fallback | `[ ]` | Opus |
-| 10.6 | Memory browser UI (web/app): view/edit/forget; forget propagates to DynamoDB + vectors | `[ ]` | Sonnet |
-| 10.7 | Privacy: retention, export-as-deliverable, redaction; no silent capture | `[ ]` | Sonnet |
-| 10.8 | Tests: recall quality eval, forget propagation, sidecar on/off | `[ ]` | Haiku |
-| 10.9 | Guide Entity type in DynamoDB (GUIDE items) + versioning + device/IoT-shadow sync | `[ ]` | Sonnet |
-| 10.10 | Always-inject enabled guides into the session-bootstrap system instructions (all surfaces) | `[ ]` | Fable |
-| 10.11 | Recency-filtered web-search/research tool (default 30d) + authoritative-source allow-list (Anthropic/OpenAI); cite source dates | `[ ]` | Fable |
-| 10.12 | Guide Manager UI (web/app): list, edit, enable/disable, priority; seed default "AI is an emerging technology" guide | `[ ]` | Sonnet |
-
+### M10 — Memory Layer + Guide Entities
+_(no notes yet)_
