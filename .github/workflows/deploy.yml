@@ -1,0 +1,138 @@
+name: Deploy
+
+# Deploy = push to main. This is the only allowed path to AWS (see deploy.md) —
+# no local `sam deploy`, no static AWS keys, OIDC only.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.25"
+  AWS_REGION: us-east-1
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # required for OIDC
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build Lambda functions (arm64)
+        run: make build
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-live-ninja-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup AWS SAM CLI
+        uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+
+      # Values are held only in env: indirection so they never appear as literal
+      # command-line args; never echo them, never enable `set -x` in this job.
+      - name: Sync secrets to SSM
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LWA_CLIENT_ID: ${{ vars.LWA_CLIENT_ID }}
+          LWA_CLIENT_SECRET: ${{ secrets.LWA_CLIENT_SECRET }}
+        run: |
+          set -eu
+
+          aws ssm put-parameter \
+            --name "/live-ninja/prod/openai/api_key" \
+            --type SecureString \
+            --value "$OPENAI_API_KEY" \
+            --overwrite >/dev/null
+
+          aws ssm put-parameter \
+            --name "/live-ninja/prod/lwa/client_id" \
+            --type String \
+            --value "$LWA_CLIENT_ID" \
+            --overwrite >/dev/null
+
+          aws ssm put-parameter \
+            --name "/live-ninja/prod/lwa/client_secret" \
+            --type SecureString \
+            --value "$LWA_CLIENT_SECRET" \
+            --overwrite >/dev/null
+
+          # cred_pepper is generated once by the workflow and never rotated here;
+          # only created if the parameter does not already exist.
+          if aws ssm get-parameter --name "/live-ninja/prod/device/cred_pepper" >/dev/null 2>&1; then
+            echo "device/cred_pepper already set, leaving as-is"
+          else
+            echo "device/cred_pepper not found, generating"
+            GENERATED_PEPPER="$(openssl rand -hex 32)"
+            aws ssm put-parameter \
+              --name "/live-ninja/prod/device/cred_pepper" \
+              --type SecureString \
+              --value "$GENERATED_PEPPER" >/dev/null
+          fi
+
+      - name: SAM build
+        run: sam build
+
+      - name: SAM deploy
+        run: |
+          sam deploy \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --s3-bucket "${{ vars.CLOUDFORMATION_S3_BUCKET }}" \
+            --s3-prefix live-ninja \
+            --parameter-overrides \
+              DomainName=${{ vars.DOMAIN_NAME }} \
+              CertificateArn=${{ vars.CERTIFICATE_ARN }} \
+              HostedZoneId=${{ vars.HOSTED_ZONE_ID }}
+
+      # Allowed to fail on the very first deploy while DNS/CloudFront propagate;
+      # subsequent runs should pass reliably.
+      - name: Smoke test /healthz
+        continue-on-error: true
+        run: |
+          set -u
+          for i in $(seq 1 10); do
+            if curl -fsS "https://live.jeremy.ninja/healthz"; then
+              echo "smoke test passed on attempt $i"
+              exit 0
+            fi
+            echo "attempt $i failed, retrying in 15s..."
+            sleep 15
+          done
+          echo "smoke test did not pass after retries (tolerated pre-DNS-propagation)"
+          exit 1

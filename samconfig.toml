@@ -1,0 +1,14 @@
+# SAM CLI configuration for live-ninja.
+# Deploys run ONLY from GitHub Actions (OIDC role via repo var AWS_DEPLOY_ROLE_ARN).
+# The artifact bucket (--s3-bucket) and parameter overrides (DomainName/CertificateArn/
+# HostedZoneId from repo vars) are passed as CLI flags by the deploy workflow.
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "live-ninja"
+region = "us-east-1"
+capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
+resolve_s3 = false
+confirm_changeset = false
+fail_on_empty_changeset = false
+tags = "Project=live-ninja CostCenter=voice-ai Environment=prod ManagedBy=sam DeployedVia=github-actions Owner=jeremy"

@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://live.jeremy.ninja/contracts/v1/telemetry.schema.json",
+  "title": "Live Ninja — Telemetry Event (v1)",
+  "description": "Envelope for every telemetry/analytics event emitted by any surface (web, Android, M5Stack) into the self-hosted Athena event lake (NFR-06, Crosscut §5, PRD N-5 'no third-party analytics SDKs'). HARD INVARIANT: telemetry events carry event metadata ONLY — never transcript content, never raw user utterances, never assistant response text. This is enforced both by this schema (no field exists to hold free-form conversational text) and by review discipline (a PR adding a string attr that could carry transcript content is a correctness bug, not a style nit).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event", "surface", "ts", "sessionId", "attrs"],
+  "properties": {
+    "event": {
+      "type": "string",
+      "description": "Stable, engine-agnostic event name from the enumerated catalog below. New names may be added additively (contracts/README.md rule 1); an existing name's meaning never changes.",
+      "enum": [
+        "session_started",
+        "session_ended",
+        "wake_word_detected",
+        "barge_in",
+        "tool_invoked",
+        "tool_result",
+        "fallback_engaged",
+        "quota_warning",
+        "quota_exceeded",
+        "settings_synced",
+        "wakeword_model_verify_failed",
+        "wakeword_model_unsupported_format",
+        "device_heartbeat",
+        "device_error",
+        "auth_new_signin",
+        "ota_started",
+        "ota_completed",
+        "ota_rolled_back"
+      ]
+    },
+    "deviceId": {
+      "type": ["string", "null"],
+      "description": "Present when the event originates from (or concerns) a specific registered DEVICE#<deviceId> — always present for M5Stack events; may be null for a web/Android session with no bound device row (e.g. a browser tab that hasn't paired anything).",
+      "default": null
+    },
+    "surface": {
+      "type": "string",
+      "description": "Which client surface emitted the event — mirrors X-LN-Client's surface token (see headers.md).",
+      "enum": ["web", "android", "m5stack", "backend"]
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC event timestamp, assigned client-side at capture (not ingestion time) so ordering survives network delay/offline buffering (M5Stack heartbeat buffering)."
+    },
+    "sessionId": {
+      "type": "string",
+      "description": "Correlates events within one realtime/voice session or one settings-sync episode. Use the literal value \"none\" for events with no session context (e.g. a standalone device_heartbeat) rather than omitting the field, so every event is uniformly joinable in Athena."
+    },
+    "userId": {
+      "type": ["string", "null"],
+      "description": "Present for authenticated-user events; null for pre-auth/anonymous device provisioning events (e.g. an unbound M5Stack's first heartbeat). Never the LWA raw amazonUserId — always the internal userId.",
+      "default": null
+    },
+    "attrs": {
+      "type": "object",
+      "description": "Event-specific structured attributes. additionalProperties is permissive at the KEY level (new attrs may be added per event without a schema bump) but every value MUST be a primitive (string/number/boolean/null) or a shallow array/object of primitives — never a field intended to hold free-form user or assistant speech/text. Known per-event attrs are documented below; unlisted attrs on a known event are allowed (forward-compat) but reviewers should reject any attr name/shape that smells like transcript content (e.g. `utterance`, `responseText`, `transcript`, `userSpeech` are BANNED attr names — CI/lint should grep for them).",
+      "additionalProperties": {
+        "type": ["string", "number", "boolean", "null", "array", "object"]
+      },
+      "not": {
+        "description": "Reject any attrs object whose keys look like transcript-content carriers.",
+        "anyOf": [
+          { "required": ["transcript"] },
+          { "required": ["utterance"] },
+          { "required": ["responseText"] },
+          { "required": ["userSpeech"] },
+          { "required": ["assistantSpeech"] },
+          { "required": ["text"] }
+        ]
+      }
+    }
+  },
+  "$comment": "Per-event attrs reference (informative, not machine-enforced beyond the banned-keys check above): session_started {engine, voiceEngine, personaId}; session_ended {durationSec, endReason: user|timeout|error|idle_cap}; wake_word_detected {wakeWord, engine, confidence}; barge_in {stopLatencyMs}; tool_invoked {toolName, idempotencyKey}; tool_result {toolName, ok, latencyMs}; fallback_engaged {stage: retry|stt_llm_tts|text_only|hard_failure, reason}; quota_warning {kind: daily_minutes|monthly_tokens, pctUsed}; quota_exceeded {kind, httpStatus}; settings_synced {fromVersion, toVersion, transport: websocket|fcm|shadow}; wakeword_model_verify_failed {wakeWord, platform, expectedSha256}; wakeword_model_unsupported_format {wakeWord, platform, format}; device_heartbeat {firmwareVersion, rssi, freeHeapBytes}; device_error {code, stateAtError}; auth_new_signin {surface, isNewDevice}; ota_started/ota_completed/ota_rolled_back {fromVersion, toVersion, jobId}."
+}

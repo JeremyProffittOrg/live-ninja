@@ -165,7 +165,7 @@ flowchart TB
 > Each task line: `[status]` · **model** · task · _(FR refs / note)_.
 > FR IDs reference the PRD's functional requirements; where the PRD numbering is not yet fixed, the bracketed area tag (e.g. `[AUTH]`, `[RT]`, `[WAKE]`) stands in and is reconciled during M0's contract pass.
 
-### M0 — Bootstrap / Infrastructure  `[ ]`  (WS-A lead, WS-G support)
+### M0 — Bootstrap / Infrastructure  `[~]`  (WS-A lead, WS-G support)
 
 **Definition of Done:** An empty-but-real SAM stack deploys to `759775734231` via GitHub Actions + OIDC on push to `main`; the single-table DynamoDB (`live-ninja`) with both GSIs + TTL exists; all SSM parameter *slots* exist (values set out-of-band by the user); S3 buckets, CloudFront + Route 53 for `live.jeremy.ninja`, and the six cost tags are in place; `/healthz` returns 200 through CloudFront; the DynamoDB `ConsumedReadCapacityUnits` alarm and AWS Budgets ($20/$50/$100 on `Project=live-ninja`) are armed. **Cost Allocation Tags `Project`+`CostCenter` activated in Billing (non-retroactive — do early).**
 
@@ -543,7 +543,12 @@ Cross-cutting gates (all milestones): `golangci-lint` + `go vet` clean; unit tes
 > Per house style, append **verbose** notes here (and inline under each task/milestone) as work proceeds — decisions made, files touched, commands run, gotchas hit, blockers and how they were resolved. Keep it detailed enough that a fresh agent can resume from this plan alone. Update the status markers in §4 in place.
 
 ### M0 — Bootstrap / Infrastructure
-_(no notes yet)_
+
+**2026-07-17 15:30–16:00 EDT — authoring pass (5 parallel agents, workflow `wf_808876a2`).**
+- Environment verified: Go 1.25.0, SAM CLI 1.150.1, ESP-IDF v5.4.4 at `C:\esp\esp-idf-v5.4.4` (riscv32 toolchain present for P4/C6), PlatformIO, gh authed, Temurin 17 JDK installed via winget for M4 (`C:\Program Files\Eclipse Adoptium\jdk-17.0.19.10-hotspot`). Tab5 on COM58 (`30:ED:A0:E3:01:1E`) confirmed + already in fleet registry. Repo vars/secrets all pre-set per deploy.md §bootstrap.
+- Files authored: `template.yaml` + `samconfig.toml` (full M0 stack: HTTP API v2 `$default`→WebFunction; 6 arm64 `provided.al2023` functions, CodeUri `.build/<fn>/`; LWA layer `LambdaAdapterLayerArm64:25` on web; table `live-ninja` pk/sk+GSI1+GSI2+TTL+PITR Retain; KMS `alias/live-ninja-auth` (symmetric) + `alias/live-ninja-jwt` (ECC_NIST_P256 SIGN_VERIFY) Retain; 5 S3 buckets Retain; SQS email queue+DLQ; IoT ThingType/ThingGroup/scoped device policy + telemetry rule→iot-ingest; CloudFront (CachingDisabled default + AllViewerExceptHostHeader, `/static/*` CachingOptimized, HSTS/nosniff headers policy, PriceClass_100) + R53 A/AAAA aliases; OpsTopic SNS + 5 alarms + Budgets $20/$50/$100 on `user:Project$live-ninja`), `.github/workflows/deploy.yml` (test→deploy, OIDC `vars.AWS_DEPLOY_ROLE_ARN`, secrets→SSM sync step with env-indirection, `sam build`+`sam deploy`, healthz smoke `continue-on-error`), `Makefile`, `.gitignore`, `.golangci.yml`, `go.mod`, `cmd/{web,authorizer,realtime-broker,iot-ingest,usage-rollup,email-dispatch}/main.go`, `internal/{config,observ,store}`, `contracts/` (8 frozen seam contracts incl. settings.schema.json, telemetry.schema.json, api.md route inventory), `SETUP.md` (user-action gate).
+- Key decisions: KMS env vars carry **key ARNs** not alias ARNs (Ref on Alias returns name); web fn gets `kms:Decrypt` via `kms:ViaService=ssm` for SecureString reads; samconfig uses `confirm_changeset=false`/`fail_on_empty_changeset=false` (real keys); authorizer deployed but NOT attached until M1; SSM params workflow-managed (not CFN) — `cred_pepper` generated only-if-missing.
+- Verified locally: `go mod tidy && go build ./... && go vet ./...` clean; `sam validate --lint` passes; arm64 cross-build of cmd/web with exact CI flags OK. No local deploys (pipeline only).
 
 ### M1 — Auth
 _(no notes yet)_

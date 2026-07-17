@@ -1,0 +1,806 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  live-ninja - LWA-gated voice assistant platform (web / Android / M5Stack Tab5)
+  around OpenAI GPT Realtime. M0 bootstrap stack: Fiber web app behind Lambda Web
+  Adapter, HTTP API, single-table DynamoDB, KMS auth/JWT keys, S3 buckets, SQS email
+  pipeline, IoT baseline, CloudFront + Route 53 edge, alarms and budgets.
+
+Parameters:
+  DomainName:
+    Type: String
+    Default: live.jeremy.ninja
+    Description: Public domain served by CloudFront.
+  CertificateArn:
+    Type: String
+    Description: ACM certificate ARN (us-east-1) covering DomainName.
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+    Description: Route 53 hosted zone that DomainName lives in.
+
+Globals:
+  Function:
+    Runtime: provided.al2023
+    Handler: bootstrap
+    Architectures:
+      - arm64
+    Timeout: 30
+    MemorySize: 256
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref Table
+        LOG_LEVEL: info
+
+Resources:
+  # ------------------------------------------------------------------
+  # HTTP API (no custom domain here - CloudFront fronts it)
+  # ------------------------------------------------------------------
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+
+  # ------------------------------------------------------------------
+  # Lambda functions
+  # ------------------------------------------------------------------
+  WebFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: live-ninja-web
+      Description: Go Fiber app behind Lambda Web Adapter; serves /healthz and all routes.
+      CodeUri: .build/web/
+      MemorySize: 512
+      Layers:
+        - arn:aws:lambda:us-east-1:753240598075:layer:LambdaAdapterLayerArm64:25
+      Environment:
+        Variables:
+          AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
+          PORT: "8080"
+          RUST_LOG: info
+          DOMAIN_NAME: !Ref DomainName
+          EMAIL_QUEUE_URL: !Ref EmailQueue
+          JWT_KMS_KEY_ID: !GetAtt JwtKey.Arn
+          AUTH_KMS_KEY_ID: !GetAtt AuthKey.Arn
+      Events:
+        CatchAll:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Sid: TableCrud
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:BatchGetItem
+                - dynamodb:Query
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:BatchWriteItem
+                - dynamodb:ConditionCheckItem
+                - dynamodb:TransactGetItems
+                - dynamodb:TransactWriteItems
+              Resource:
+                - !GetAtt Table.Arn
+                - !Sub "${Table.Arn}/index/*"
+            - Sid: LwaParams
+              Effect: Allow
+              Action:
+                - ssm:GetParameter
+                - ssm:GetParameters
+              Resource:
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/lwa/*"
+            - Sid: SsmSecureStringDecrypt
+              Effect: Allow
+              Action:
+                - kms:Decrypt
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
+            - Sid: JwtSign
+              Effect: Allow
+              Action:
+                - kms:Sign
+                - kms:GetPublicKey
+              Resource:
+                - !GetAtt JwtKey.Arn
+            - Sid: AuthCrypto
+              Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+              Resource:
+                - !GetAtt AuthKey.Arn
+            - Sid: EmailEnqueue
+              Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource:
+                - !GetAtt EmailQueue.Arn
+
+  AuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: live-ninja-authorizer
+      Description: >-
+        HTTP API v2 simple-response Lambda authorizer. Deployed in M0 but not yet
+        attached to the HTTP API (attachment happens in M1). Deny-by-default;
+        allows only explicitly public routes.
+      CodeUri: .build/authorizer/
+
+  RealtimeBrokerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: live-ninja-realtime-broker
+      Description: >-
+        Direct-invoke realtime token broker (invoked by the web function in M2+).
+        Sole holder of ssm:GetParameter on the OpenAI API key parameter.
+      CodeUri: .build/realtime-broker/
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Sid: OpenAiKeyParam
+              Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource:
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/openai/api_key"
+            - Sid: SsmSecureStringDecrypt
+              Effect: Allow
+              Action:
+                - kms:Decrypt
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
+
+  IotIngestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: live-ninja-iot-ingest
+      Description: IoT rule target - parses device telemetry and records DEVICE#/TELEM lastSeen.
+      CodeUri: .build/iot-ingest/
+      Events:
+        Telemetry:
+          Type: IoTRule
+          Properties:
+            AwsIotSqlVersion: "2016-03-23"
+            Sql: "SELECT *, topic(2) as deviceId FROM 'liveninja/+/telemetry'"
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Sid: TableWrite
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+              Resource:
+                - !GetAtt Table.Arn
+
+  UsageRollupFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: live-ninja-usage-rollup
+      Description: Hourly usage rollup - Query-only reads of the USAGE partition, emits EMF metrics.
+      CodeUri: .build/usage-rollup/
+      Timeout: 60
+      Events:
+        Hourly:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 hour)
+            Description: live-ninja hourly usage rollup
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Sid: TableQuery
+              Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+              Resource:
+                - !GetAtt Table.Arn
+                - !Sub "${Table.Arn}/index/*"
+
+  EmailDispatchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: live-ninja-email-dispatch
+      Description: SQS consumer - sends templated email via SES with DynamoDB idempotency.
+      CodeUri: .build/email-dispatch/
+      Events:
+        EmailJobs:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt EmailQueue.Arn
+            BatchSize: 10
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Sid: SesSend
+              Effect: Allow
+              Action:
+                - ses:SendEmail
+              Resource:
+                - !Sub "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/jeremy.ninja"
+                - !Sub "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/jeremy@jeremy.ninja"
+            - Sid: IdempotencyWrite
+              Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource:
+                - !GetAtt Table.Arn
+            - Sid: QueueConsume
+              Effect: Allow
+              Action:
+                - sqs:ReceiveMessage
+                - sqs:DeleteMessage
+                - sqs:GetQueueAttributes
+              Resource:
+                - !GetAtt EmailQueue.Arn
+
+  # ------------------------------------------------------------------
+  # DynamoDB single table
+  # ------------------------------------------------------------------
+  Table:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: live-ninja
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: gsi1pk
+          AttributeType: S
+        - AttributeName: gsi1sk
+          AttributeType: S
+        - AttributeName: gsi2pk
+          AttributeType: S
+        - AttributeName: gsi2sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: gsi1pk
+              KeyType: HASH
+            - AttributeName: gsi1sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: GSI2
+          KeySchema:
+            - AttributeName: gsi2pk
+              KeyType: HASH
+            - AttributeName: gsi2sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  # ------------------------------------------------------------------
+  # KMS keys
+  # ------------------------------------------------------------------
+  AuthKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: live-ninja auth key - envelope encryption of LWA refresh tokens and auth material.
+      KeySpec: SYMMETRIC_DEFAULT
+      KeyUsage: ENCRYPT_DECRYPT
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AccountRootAdmin
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+            Action: kms:*
+            Resource: "*"
+
+  AuthKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/live-ninja-auth
+      TargetKeyId: !Ref AuthKey
+
+  JwtKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: live-ninja JWT signing key - ES256 (ECC_NIST_P256); private key never leaves KMS.
+      KeySpec: ECC_NIST_P256
+      KeyUsage: SIGN_VERIFY
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AccountRootAdmin
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+            Action: kms:*
+            Resource: "*"
+
+  JwtKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/live-ninja-jwt
+      TargetKeyId: !Ref JwtKey
+
+  # ------------------------------------------------------------------
+  # S3 buckets
+  # ------------------------------------------------------------------
+  UserBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: live-ninja-user-759775734231
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  WakewordsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: live-ninja-wakewords-759775734231
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  AssetsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: live-ninja-assets-759775734231
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  LogsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: live-ninja-logs-759775734231
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  AnalyticsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: live-ninja-analytics-759775734231
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # ------------------------------------------------------------------
+  # SQS email pipeline
+  # ------------------------------------------------------------------
+  EmailQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: live-ninja-email
+      VisibilityTimeout: 180
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt EmailDeadLetterQueue.Arn
+        maxReceiveCount: 5
+
+  EmailDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: live-ninja-email-dlq
+      MessageRetentionPeriod: 1209600
+
+  # ------------------------------------------------------------------
+  # IoT Core baseline
+  # ------------------------------------------------------------------
+  IotThingType:
+    Type: AWS::IoT::ThingType
+    Properties:
+      ThingTypeName: liveninja-tab5
+
+  IotThingGroup:
+    Type: AWS::IoT::ThingGroup
+    Properties:
+      ThingGroupName: liveninja-fleet
+
+  IotDevicePolicy:
+    Type: AWS::IoT::Policy
+    Properties:
+      PolicyName: live-ninja-device
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - iot:Connect
+            Resource:
+              - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:client/${!iot:Connection.Thing.ThingName}"
+            Condition:
+              Bool:
+                iot:Connection.Thing.IsAttached: "true"
+          - Effect: Allow
+            Action:
+              - iot:Publish
+            Resource:
+              - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:topic/liveninja/${!iot:Connection.Thing.ThingName}/*"
+          - Effect: Allow
+            Action:
+              - iot:Subscribe
+            Resource:
+              - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/liveninja/${!iot:Connection.Thing.ThingName}/*"
+          - Effect: Allow
+            Action:
+              - iot:Receive
+            Resource:
+              - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:topic/liveninja/${!iot:Connection.Thing.ThingName}/*"
+
+  # ------------------------------------------------------------------
+  # CloudFront + Route 53 edge
+  # ------------------------------------------------------------------
+  SecurityHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: live-ninja-security-headers
+        Comment: HSTS, nosniff, referrer policy, clickjacking protection; CSP left to the app.
+        SecurityHeadersConfig:
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 63072000
+            IncludeSubdomains: false
+            Preload: false
+            Override: true
+          ContentTypeOptions:
+            Override: true
+          ReferrerPolicy:
+            ReferrerPolicy: strict-origin-when-cross-origin
+            Override: true
+          FrameOptions:
+            FrameOption: DENY
+            Override: true
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: live-ninja edge for live.jeremy.ninja
+        Aliases:
+          - !Ref DomainName
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        Origins:
+          - Id: http-api
+            DomainName: !Sub "${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols:
+                - TLSv1.2
+        DefaultCacheBehavior:
+          TargetOriginId: http-api
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+            - PUT
+            - POST
+            - PATCH
+            - DELETE
+          CachedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          # Managed policies: CachingDisabled + AllViewerExceptHostHeader
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+          ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
+        CacheBehaviors:
+          - PathPattern: /static/*
+            TargetOriginId: http-api
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            # Managed policy: CachingOptimized
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+            ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
+
+  DnsRecordA:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "${DomainName}."
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+        EvaluateTargetHealth: false
+
+  DnsRecordAAAA:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "${DomainName}."
+      Type: AAAA
+      AliasTarget:
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+        EvaluateTargetHealth: false
+
+  # ------------------------------------------------------------------
+  # Ops: SNS topic, alarms, budgets
+  # ------------------------------------------------------------------
+  OpsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: live-ninja-ops
+      Subscription:
+        - Protocol: email
+          Endpoint: proffitt.jeremy@gmail.com
+
+  TableReadCapacityAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: live-ninja-table-read-capacity
+      AlarmDescription: DynamoDB live-ninja consumed read capacity exceeds 50000 units in 5 minutes (possible Scan / runaway reads).
+      Namespace: AWS/DynamoDB
+      MetricName: ConsumedReadCapacityUnits
+      Dimensions:
+        - Name: TableName
+          Value: !Ref Table
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 50000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref OpsTopic
+
+  TableWriteCapacityAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: live-ninja-table-write-capacity
+      AlarmDescription: DynamoDB live-ninja consumed write capacity exceeds 25000 units in 5 minutes.
+      Namespace: AWS/DynamoDB
+      MetricName: ConsumedWriteCapacityUnits
+      Dimensions:
+        - Name: TableName
+          Value: !Ref Table
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 25000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref OpsTopic
+
+  TableThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: live-ninja-table-throttles
+      AlarmDescription: DynamoDB live-ninja read or write throttle events detected.
+      Metrics:
+        - Id: throttles
+          Label: TotalThrottleEvents
+          Expression: readThrottles + writeThrottles
+          ReturnData: true
+        - Id: readThrottles
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref Table
+            Period: 300
+            Stat: Sum
+        - Id: writeThrottles
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref Table
+            Period: 300
+            Stat: Sum
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref OpsTopic
+
+  WebFunctionErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: live-ninja-web-errors
+      AlarmDescription: live-ninja-web Lambda errors >= 5 in 5 minutes.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref WebFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref OpsTopic
+
+  HttpApi5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: live-ninja-http-5xx
+      AlarmDescription: HTTP API 5xx responses >= 10 in 5 minutes.
+      Namespace: AWS/ApiGateway
+      MetricName: 5xx
+      Dimensions:
+        - Name: ApiId
+          Value: !Ref HttpApi
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref OpsTopic
+
+  Budget20:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: live-ninja-monthly-20
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: 20
+          Unit: USD
+        CostFilters:
+          TagKeyValue:
+            - user:Project$live-ninja
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: proffitt.jeremy@gmail.com
+
+  Budget50:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: live-ninja-monthly-50
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: 50
+          Unit: USD
+        CostFilters:
+          TagKeyValue:
+            - user:Project$live-ninja
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: proffitt.jeremy@gmail.com
+
+  Budget100:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: live-ninja-monthly-100
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: 100
+          Unit: USD
+        CostFilters:
+          TagKeyValue:
+            - user:Project$live-ninja
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: proffitt.jeremy@gmail.com
+
+Outputs:
+  HttpApiEndpoint:
+    Description: HTTP API invoke URL (origin behind CloudFront).
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  CloudFrontDomain:
+    Description: CloudFront distribution domain name.
+    Value: !GetAtt CloudFrontDistribution.DomainName
+  TableName:
+    Description: DynamoDB single-table name.
+    Value: !Ref Table
+  OpsTopicArn:
+    Description: SNS ops/alerts topic ARN.
+    Value: !Ref OpsTopic

@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://live.jeremy.ninja/contracts/v1/settings.schema.json",
+  "title": "Live Ninja — User Settings (v1)",
+  "description": "Canonical per-user settings document. Stored as DynamoDB item PK=USER#<userId> SK=SETTINGS#v<n> (see PRD.md §8.1). This is the ONLY settings document across all three surfaces (web, Android, M5Stack) — FR-S01. Every reader/writer, including firmware written years apart, MUST preserve unknown fields on write-back per contracts/README.md rule 2. additionalProperties is true at every object level for exactly this reason.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "version",
+    "wakeWord",
+    "wakeEngine",
+    "sensitivity",
+    "persona",
+    "voice",
+    "turnDetection",
+    "theme",
+    "micDeviceId",
+    "voiceEngine"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Optimistic-concurrency counter (FR-S01). Every PUT/UpdateItem carries ConditionExpression version = expected and increments this on success; a stale write gets HTTP 409 and the client re-reads/re-applies. This is NOT a schema version — schema evolution is additive-only per contracts/README.md and is not tracked by this field."
+    },
+    "wakeWord": {
+      "type": "string",
+      "description": "ID of the active wake-word catalog entry (FR-K02). Always a combobox selection over the shared catalog + the user's own trained models — never a free-typed phrase. Resolves via GET /v1/wakeword catalog and the per-user WAKE# items; the actual model asset is fetched via contracts/wakeword-manifest.md.",
+      "default": "hey-live-ninja",
+      "minLength": 1
+    },
+    "wakeEngine": {
+      "type": "string",
+      "description": "Wake-word inference engine backing the selected wakeWord (FR-K02, FR-M02). `openwakeword` is the free/default engine (Android FGS, web WASM). `porcupine` is the optional Picovoice engine (Android; requires an AccessKey — reveals that field via progressive disclosure, UX-R05). `wakenet` is the M5Stack ESP-SR primary on-device engine (FR-M02); M5Stack falls back to an oWW-ESP model when a custom phrase isn't available as a curated WakeNet model (FR-K05).",
+      "enum": ["openwakeword", "porcupine", "wakenet"],
+      "default": "openwakeword"
+    },
+    "sensitivity": {
+      "type": "number",
+      "description": "Wake-word detection sensitivity, always a bounded slider — never a text field (FR-K06).",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.5
+    },
+    "persona": {
+      "type": "object",
+      "description": "Persona selection (FR-S03). Sent/stored as a catalog ID; the server resolves the actual system instructions server-side (anti prompt-injection — clients never send raw instructions to the realtime broker). `presetId: \"custom\"` is the sole justified free-text case (UX rich-UI case 6): it reveals `systemInstructions` as a capped, labeled editor with reset-to-preset.",
+      "additionalProperties": true,
+      "required": ["presetId"],
+      "properties": {
+        "presetId": {
+          "type": "string",
+          "description": "Catalog persona ID (e.g. \"default\") or the literal \"custom\".",
+          "default": "default",
+          "minLength": 1
+        },
+        "systemInstructions": {
+          "type": ["string", "null"],
+          "description": "Free-text system-instruction override. Only meaningful/editable when presetId == \"custom\"; null/absent otherwise. Capped length enforced server-side (see api.md PUT /v1/settings validation).",
+          "maxLength": 4000,
+          "default": null
+        }
+      }
+    },
+    "voice": {
+      "type": "string",
+      "description": "OpenAI Realtime voice, chosen from an enumerated picker with inline preview (UX-R01) — never free text. Default is `cedar` per PRD Q-14. New voice enum members may be appended in later milestones per contracts/README.md rule 3; an unrecognized value on read must fall back to `cedar` in the UI but be preserved verbatim on write-back.",
+      "enum": ["alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse"],
+      "default": "cedar"
+    },
+    "turnDetection": {
+      "type": "string",
+      "description": "Turn-detection strategy bound into the realtime session config at mint (FR-V01, PRD §6.2). Exposed to the user as a radio control (UX-R01/R02). `semantic_vad` is the platform default and pairs with `interrupt_response:true`.",
+      "enum": ["semantic_vad", "server_vad"],
+      "default": "semantic_vad"
+    },
+    "theme": {
+      "type": "string",
+      "description": "UI theme, segmented control (UX-R02).",
+      "enum": ["light", "dark", "system"],
+      "default": "system"
+    },
+    "micDeviceId": {
+      "type": ["string", "null"],
+      "description": "Selected input device id from the browser's enumerateDevices()/Android getAvailableCommunicationDevices() (UX-R01) — populated control, never typed. Null means \"system default device\".",
+      "default": null
+    },
+    "voiceEngine": {
+      "type": "object",
+      "description": "Voice-engine selection (FR-VE-01..04). `default` applies to any session/device without an explicit pin (e.g. a fresh web browser session); `devices` is a per-device pin map keyed by deviceId, letting an individual M5Stack/Android device be pinned to a cheaper or alternate engine (e.g. nova-sonic) while others stay on the platform default. The realtime-broker resolves engine-for-session as devices[deviceId] ?? default. `nova-sonic` reintroduces a backend media bridge for ONLY the pinned device (FR-VE-04) — all other engines stay client-direct.",
+      "additionalProperties": true,
+      "required": ["default", "devices"],
+      "properties": {
+        "default": {
+          "type": "string",
+          "enum": ["openai-realtime", "openai-realtime-mini", "nova-sonic"],
+          "default": "openai-realtime"
+        },
+        "devices": {
+          "type": "object",
+          "description": "Map of deviceId -> pinned engine. Keys are the caller's own DEVICE#<deviceId> ids; absent keys fall back to `default`.",
+          "additionalProperties": {
+            "type": "string",
+            "enum": ["openai-realtime", "openai-realtime-mini", "nova-sonic"]
+          },
+          "default": {}
+        }
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "description": "Retention/storage controls (FR-S04). Included here because Settings is the one canonical doc (FR-S01) and these fields gate DynamoDB TTL + S3 lifecycle enforcement; not in the required core list above because it predates no milestone dependency, but MUST be present on every settings document the server writes at account-creation time.",
+      "additionalProperties": true,
+      "properties": {
+        "storeAudio": {
+          "type": "boolean",
+          "description": "Persist raw audio to S3 (opt-in). Off by default — on-device wake + this flag are the load-bearing privacy controls (PRD §10).",
+          "default": false
+        },
+        "storeTranscripts": {
+          "type": "boolean",
+          "default": true
+        },
+        "retentionDays": {
+          "type": "integer",
+          "description": "TTL window for transcripts/logs. Radio control, not free text (FR-S04).",
+          "enum": [0, 7, 30, 90],
+          "default": 30
+        }
+      }
+    }
+  }
+}

@@ -1,1 +1,35 @@
-# Build/tooling ignores are added per-milestone as needed.
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# Lambda build artifacts (per Makefile `build` target)
+.build/
+bootstrap
+
+# AWS SAM
+.aws-sam/
+samconfig.local.toml
+
+# Node (web/admin tooling, if any)
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# Env / local secrets (never commit real values)
+.env
+.env.local
+*.pem
+*.key
+
+# IDE / editor
+.vscode/
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
