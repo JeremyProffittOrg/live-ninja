@@ -48,7 +48,7 @@ Live Ninja is a single, coherent voice assistant that follows the user across ev
 - **N-3:** No on-device ASR/LLM/TTS — all conversation runs through OpenAI Realtime (with a server-side chained fallback).
 - **N-4:** No staging/dev environment — production-only, guarded by local smoke tests, alarms, and canary rollouts.
 - **N-5:** No third-party analytics SDKs (privacy + cost); analytics derive from the self-hosted Athena event lake.
-- **N-6:** No relaying of any surface's audio (web, Android, or M5Stack) through AWS — all audio is direct client↔OpenAI; AWS is never in the media path.
+- **N-6:** No relaying of any surface's audio through AWS **by default** — all audio is direct client↔OpenAI; AWS is never in the media path. *(Sole exception: the optional Nova Sonic secondary engine (M12 / FR-VE), which routes audio through a backend bridge only for devices explicitly pinned to it — off by default.)*
 - **N-7:** No secrets manager (SSM Parameter Store SecureString / KMS only).
 
 ---
@@ -79,7 +79,7 @@ Acceptance criteria (AC) are testable. IDs are stable references.
 |---|---|---|
 | FR-B01 | Single Go-Fiber app on Lambda Web Adapter behind HTTP API Gateway v2, arm64. | Same binary runs locally on `:8080` and in Lambda; `$default` route forwards to Fiber; deployed via SAM. |
 | FR-B02 | `realtime-broker` mints OpenAI ephemeral client secrets from the SSM-held key. | `GET /api/v1/realtime/session` returns an `ek_...` token + session/persona/tool manifest; standing key never in response or client. |
-| FR-B03 | Single-table DynamoDB `live-ninja`, on-demand, Query/GetItem only. | No `Scan` on any serving path (code review + `ConsumedReadCapacityUnits` alarm); two GSIs cover inverse lookups. |
+| FR-B03 | Single-table DynamoDB `live-ninja`, on-demand, Query/GetItem only. | No `Scan` on any serving path (code review + `ConsumedReadCapacityUnits` alarm); four GSIs cover inverse lookups (GSI1/GSI2 core; GSI3 by-topic, GSI4 by-device for history filtering). |
 | FR-B04 | S3 presigned upload/download with content-type allowlist, size cap, owner-namespaced keys. | `POST /api/v1/uploads` returns a presigned PUT with pinned `Content-Type`/`Content-Length`; download authorizes key prefix == caller `userId`. |
 | FR-B05 | SES transactional email off the request path via SQS → `email-dispatch`. | Source is a DKIM-verified `@jeremy.ninja` identity, Reply-To `proffitt.jeremy@gmail.com`; idempotency prevents duplicate sends. |
 | FR-B06 | IoT Core MQTT control-plane ingest for device telemetry/heartbeat. | IoT Rule → `iot-ingest` writes `PutItem` (never Scan) updating `DEVICE#` lastSeen/telemetry. |
@@ -352,7 +352,7 @@ Consolidated first-party API surface (path-versioned `/v1`). Auth is the LWA-min
 
 | Method | Path | Purpose | Auth |
 |---|---|---|---|
-| GET | `/v1/realtime/session` | Mint a short-lived OpenAI Realtime ephemeral token (config/persona/guides bound server-side); used by web, Android, **and the M5Stack**. | Session JWT |
+| GET | `/v1/realtime/session` | Session bootstrap: resolves the device's `voiceEngine` and returns EITHER a short-lived OpenAI Realtime ephemeral token (direct; config/persona/guides bound server-side) OR a Nova Sonic backend-bridge WebSocket URL; used by web, Android, **and the M5Stack**. | Session JWT |
 | POST | `/v1/uploads` | Presigned S3 PUT (content-type allowlist, size cap, owner-namespaced key). | Session JWT |
 | POST | `/v1/tools/invoke` | Server-side tool execution, re-authorized per call; the M5Stack routes tool calls here over HTTPS. | Session JWT |
 | POST | `/v1/deliverables` | Create a deliverable (PDF/MD/CSV/JSON/ICS/image/artifact) → S3 object + DynamoDB index item. | Session JWT |
@@ -366,6 +366,11 @@ Consolidated first-party API surface (path-versioned `/v1`). Auth is the LWA-min
 | POST | `/v1/plans` | Create/update a plan and its tasks (`plan.upsert`). | Session JWT |
 | GET | `/v1/guides` | List the caller's Guide Entities. | Session JWT |
 | PUT | `/v1/guides/{id}` | Create/edit/enable/prioritize a guide (versioned; synced to devices). | Session JWT |
+| GET | `/v1/conversations` | List/filter conversation history by `topic`, `device`, `from`, `to` (Query + GSIs, never Scan). | Session JWT |
+| GET | `/v1/conversations/{id}` | Fetch one conversation (transcript pointer, summary, topics). | Session JWT |
+| GET | `/v1/topics` | List the caller's topic taxonomy. | Session JWT |
+| POST | `/v1/topics` | Create a topic in the taxonomy. | Session JWT |
+| PATCH | `/v1/topics/{id}` | Rename / merge / archive a topic (tags reference stable topic IDs). | Session JWT |
 | GET | `/v1/account` | Account profile, sessions, connected devices. | Session JWT |
 | DELETE | `/v1/account` | Right-to-delete: partition-scoped purge across DynamoDB, S3, IoT, LWA refresh. | Session JWT |
 | GET | `/healthz` | Liveness/readiness probe. | **Public** |
@@ -391,6 +396,25 @@ Consolidated first-party API surface (path-versioned `/v1`). Auth is the LWA-min
 - **Tool calling:** tools are declared at mint (config-bound); execution is always server-side in `fn-tool-router`, re-authorized against the LWA user each call, with enumerated tool args, confirm-before-send for external email, and idempotency keys. Initial catalog: `send_email`, `set_timer`/`set_reminder`, `device_control`, `get_weather`/`web_lookup`, `remember_note`/`recall_note`, `create_calendar_event` (phase 2).
 - **Persona:** "You are Live Ninja, a concise, action-oriented voice assistant…" plus user name/timezone/units injected server-side; identical across surfaces.
 - **Fallback:** retry+backoff → chained STT (`gpt-4o-transcribe`) → `gpt-4o-mini` → TTS (`gpt-4o-mini-tts`) → text-only → graceful failure with side-effects queued; tools work in the fallback chain.
+
+### Voice engine options
+
+The voice engine is pluggable behind a common session/tool/transcript interface, so topics, memory, and tools work identically no matter which engine produced the audio/transcript. `openai-realtime` is the default (client-direct WebRTC + ephemeral token), with `openai-realtime-mini` as the cheaper client-direct option and Amazon **Nova Sonic** (on Bedrock) as an OPTIONAL secondary engine reached through a backend media bridge — not client-direct. Engine selection is a per-device pin (`voiceEngine`) resolved by the session broker at bootstrap, which returns EITHER an OpenAI ephemeral token (direct) OR a backend-bridge WebSocket URL (Nova Sonic).
+
+| ID | Requirement | Acceptance Criteria |
+|---|---|---|
+| FR-VE-01 | The voice engine is pluggable behind a common session/tool/transcript interface; topics, memory, and tools work identically across engines. | Switching engines needs no change to memory/topic/tool code. |
+| FR-VE-02 | Supported engines: `openai-realtime` (default, client-direct WebRTC + ephemeral token), `openai-realtime-mini` (cheaper, client-direct), `nova-sonic` (Amazon Nova Sonic on Bedrock via a backend media bridge — NOT client-direct). | Each engine reachable; OpenAI stays client-direct, Nova via backend bridge. |
+| FR-VE-03 | Per-DEVICE engine pin: a `voiceEngine` setting on the device selects the engine; the session broker resolves it and returns EITHER an OpenAI ephemeral token (direct) OR a backend-bridge WebSocket URL (Nova Sonic). | Pinning a device to nova-sonic routes that device through the bridge; others stay direct. |
+| FR-VE-04 | Cost/architecture note captured: Nova Sonic model tokens are ~5× cheaper than gpt-realtime but require a backend bridge (reintroduces AWS in the media path for Nova-pinned devices only); gpt-realtime-mini is the cheap option that keeps the client-direct design. | Documented tradeoff table (below). |
+
+**Engine tradeoff table:**
+
+| Engine | Transport | AWS in media path | Relative model cost | When to use |
+|---|---|---|---|---|
+| `openai-realtime` | Client-direct WebRTC + ephemeral token | No | Baseline (1×) | Default — lowest latency, no AWS relay. |
+| `openai-realtime-mini` | Client-direct WebRTC + ephemeral token | No | Cheaper than baseline | Cheap option that keeps the client-direct design. |
+| `nova-sonic` | Backend media bridge (WebSocket) to Nova Sonic on Bedrock | Yes (Nova-pinned devices only) | ~5× cheaper model tokens than gpt-realtime | Cost-sensitive devices willing to trade the client-direct invariant for cheaper tokens. |
 
 The end-to-end voice turn — local wake, ephemeral token, Realtime session, tool call, spoken response, and transcript storage:
 
@@ -585,8 +609,12 @@ The 10-year "login" is a continuously, silently rotated credential lineage ancho
 | Guide | `USER#<userId>` | `GUIDE#<guideId>` | — | attrs `enabled`, `priority`, `version`, `body`; mirrored to the IoT device shadow. Load-all-enabled = Query SK `begins_with GUIDE#`. |
 | Plan | `USER#<userId>` | `PLAN#<planId>` | — | attr `status`; fetch = GetItem; list plans = Query SK `begins_with PLAN#`. |
 | Task | `USER#<userId>` | `TASK#<planId>#<taskId>` | — | attr `status`; list a plan's tasks = Query SK `begins_with TASK#<planId>#`. |
+| Topic | `USER#<userId>` | `TOPIC#<topicId>` | — | attrs `name`, `color`, `status` (active\|archived), `aliases[]`, `mergedInto`, `createdAt`, `updatedAt`; tags reference the STABLE `topicId`, so rename/merge/split never re-tags. List = Query SK `begins_with TOPIC#`. |
+| Conversation | `USER#<userId>` | `CONV#<ts>#<convId>` | `GSI3` (by topic), `GSI4` (by device) | attrs `deviceId`, `engine`, `durationSec`, `title`, `summary`, `transcriptS3`, `topicIds[]`. Date/time range = Query base SK `begins_with CONV#` between `ts` bounds; by-topic = Query `GSI3PK=USER#<userId>#TOPIC#<topicId>`; by-device = Query `GSI4PK=USER#<userId>#DEV#<deviceId>`. |
 
 **Access patterns (no `Scan` anywhere).** Every v1.1 read is a `Query` against a `USER#<userId>` partition with an `SK begins_with` prefix, or a `GetItem` by full key, or a `Query` against `GSI1`/`GSI2` — exactly as the v1.0 entities. Deliverable share-by-id resolves through `GSI1` (`DELIV#<deliverableId>`); entity-by-type lists resolve through `GSI2` (`ETYPE#<userId>#<entityType>`). `Scan` remains reserved for one-off manual migrations only; it never appears on any serving path.
+
+**Conversation topics & filterable history (GSI3/GSI4).** `GSI3` indexes conversations by topic (`GSI3PK=USER#<userId>#TOPIC#<topicId>`, `GSI3SK=<ts>`) and `GSI4` by device (`GSI4PK=USER#<userId>#DEV#<deviceId>`, `GSI4SK=<ts>`); date/time ranges use the base `CONV#<ts>` sort key directly. Combined filters = Query the most selective GSI (topic or device), then apply a `FilterExpression` for the remaining facets — never a `Scan` on the serving path.
 
 The entity model and GSI lookup relationships:
 
@@ -604,6 +632,9 @@ erDiagram
     USER ||--o{ GUIDE : sets
     USER ||--o{ PLAN : plans
     PLAN ||--o{ TASK : contains
+    USER ||--o{ TOPIC : categorizes
+    USER ||--o{ CONVERSATION : records
+    TOPIC }o--o{ CONVERSATION : tags
 
     USER {
         string partition_key "USER#userId"
@@ -626,6 +657,7 @@ erDiagram
         string gsi1pk "DEVSN#serial"
         string iotThingName
         string lastSeen
+        string voiceEngine "openai-realtime|openai-realtime-mini|nova-sonic"
     }
     DEVICE_CRED {
         string partition_key "DEVICE#deviceId"
@@ -690,6 +722,23 @@ erDiagram
         string partition_key "USER#userId"
         string sk "TASK#planId#taskId"
         string status
+    }
+    TOPIC {
+        string partition_key "USER#userId"
+        string sk "TOPIC#topicId"
+        string name
+        string color
+        string status "active|archived"
+        string mergedInto
+    }
+    CONVERSATION {
+        string partition_key "USER#userId"
+        string sk "CONV#ts#convId"
+        string gsi3pk "USER#userId#TOPIC#topicId"
+        string gsi4pk "USER#userId#DEV#deviceId"
+        string deviceId
+        string engine
+        string transcriptS3
     }
 ```
 
@@ -846,8 +895,8 @@ gantt
 |---|---|---|
 | Q-1 | Fiber-on-Lambda via LWA or the proxy adapter? | **Lambda Web Adapter** — one idiomatic Fiber codebase, streaming/SSE support, local/prod parity, native arm64. |
 | Q-2 | HTTP API v2 or REST API v1? | **HTTP API v2** — ~70% cheaper, native JWT authorizer, lower latency; `$default` → Fiber. |
-| Q-3 | Single-table or multi-table DynamoDB? | **Single table** `live-ninja` with two GSIs; all access by known keys; Query/GetItem only. |
-| Q-4 | Audio transport through AWS or direct to OpenAI? | **Direct client↔OpenAI on every surface** (WebRTC web/Android; WebRTC or WSS+Opus/PCM16 for M5Stack); AWS never in the media path. |
+| Q-3 | Single-table or multi-table DynamoDB? | **Single table** `live-ninja` with four GSIs (GSI1/GSI2 core + GSI3 by-topic, GSI4 by-device); all access by known keys; Query/GetItem only. |
+| Q-4 | Audio transport through AWS or direct to OpenAI? | **Direct client↔OpenAI on every surface** (WebRTC web/Android; WebRTC or WSS+Opus/PCM16 for M5Stack); AWS never in the media path — *except* devices explicitly pinned to the optional Nova Sonic engine (M12), which use a backend bridge. |
 | Q-5 | Secrets store? | **SSM Parameter Store SecureString** (+ KMS for signing/refresh encryption); no secrets manager. |
 | Q-6 | M5Stack Realtime transport? | **Direct to OpenAI from the device** — WebRTC via Espressif's esp-webrtc-solution on the ESP32-P4, with a WSS + Opus/PCM16 fallback; ephemeral token from the same broker Lambda as web/Android; no AWS audio relay. |
 | Q-7 | Are broker/authorizer separate Lambdas from day one? | **Yes** — broker holds the crown-jewel key policy; authorizer is on every hot path (keep tiny for cold-start). |
@@ -864,6 +913,7 @@ gantt
 | Q-18 | M5Stack secure element? | **ATECC608B recommended default** on production units for the 10-year field credential. |
 | Q-19 | Telemetry/control transport for M5Stack? | **IoT Core MQTT** (control-plane only — device shadow, wake-word sync, heartbeat, OTA); audio is direct to OpenAI, never over IoT and never through an AWS relay. |
 | Q-20 | Cost center tag? | **`voice-ai`**; full mandatory tag set applied once at stack level in `samconfig.toml`. |
+| Q-21 | A second voice engine beyond OpenAI Realtime? | **Nova Sonic is an OPTIONAL secondary engine** — Amazon Nova Sonic on Bedrock via a backend media bridge, pinnable per device (`voiceEngine`); ~5× cheaper model tokens but reintroduces AWS in the media path for Nova-pinned devices only. Planned as milestone **M12**; `openai-realtime` stays the default and `openai-realtime-mini` is the client-direct cheap option. |
 
 
 ---
@@ -1305,6 +1355,7 @@ Purpose: Browse past conversations grouped by date, with snippets, duration, and
 - **Grouped list** — `RecyclerView` with sticky date headers (Today / Yesterday / date); DATA SOURCE: conversation history store, sorted desc, paginated. Each row: title, snippet, duration, and **action badges** (fixed enum of tool types: Email / Timer / Calendar / Search / etc.).
 - **Tap row** — expands/opens full transcript detail (user + assistant bubbles, same styling as screen 6, read-only) with the tool-result cards inline.
 - **Search** — 🔍 opens a query field (legitimate free-text search over history).
+- **Filters** — topic multi-select (populated from the topic taxonomy, not a blind text box), device picker, and date-range picker filter the list by topic / device / date-and-time or any combination (Query + GSIs, never Scan). A **Topic Manager** entry (rename / merge / split / color / archive topics) is reachable from the filter bar; renames/merges never re-tag conversations (tags reference stable topic IDs).
 - **Load older** — pagination control; virtualized list, "Showing 12".
 - States: **empty** (illustration + "No conversations yet. Say 'Hey Live Ninja' to start."); **loading** (skeleton rows under a date header); **error** ("Couldn't load history" + Retry).
 - A11y: date headers are real headings for screen-reader navigation; each row is a single focusable item announcing "Email to Sarah, 42 seconds, email sent"; action badges are icon+text; expand control states announced (collapsed/expanded); search field has visible label.
@@ -1529,6 +1580,9 @@ Full-screen rich-UI surface (Go-Fiber server-rendered templates + progressive JS
 - **History table** — sortable `<table>`: Date (left, sortable, default sort desc), Title (identity), Duration (right-aligned, m:ss), Actions-taken badges from a known enum {Calendar, Email, Timer, Music, Shopping, Weather, …}. Row click → detail drawer.
 - **Search** — `<input type="search">` (genuinely open-ended query — case 6, allowed), debounced 300ms.
 - **Date filter** — `<select>`/date-range picker from preset ranges {Today, 7 days, 30 days, Custom}. Not free text.
+- **Topic filter** — topic multi-select combobox populated from the topic taxonomy (never a blind text box); combines with the device and date filters (Query + GSIs, never Scan).
+- **Device filter** — `<select>` populated from the user's connected devices; filters history to conversations from that device.
+- **Topic Manager** — a linked view to list / rename / merge / split / color / archive topics; tags reference stable topic IDs so renames/merges never re-tag conversations.
 - **Detail drawer** — master-detail: full transcript + tool-result cards for the selected row; structured, never raw dump.
 - **Actions:** Primary = open detail (row). Secondary = sort columns, filter, search, paginate, per-row Delete/Export in drawer (guarded delete).
 - **States:** Empty → "No conversations yet." Loading → skeleton rows scoped to the table. Error → distinct banner with retry. Pagination shows "Showing 1–25 of 214" and disables Prev on page 1.
@@ -2039,3 +2093,20 @@ A **Guide Entity** is a special memory entity that is injected into the system i
 | FR-MEM-07 | Guide Entities are injected into every session's system instructions on all surfaces; user-managed (create/edit/enable/priority); versioned; device-synced. | Every new session includes all enabled guides verbatim in its system instructions; toggling a guide takes effect on the next session across web, app, and M5Stack. |
 | FR-MEM-08 | A guide can carry sourcing directives that constrain tools: a recency filter (default 30 days) and an authoritative-source allow-list (e.g., Anthropic, OpenAI docs). | The web-search / research tool respects the active recency window and prefers allow-listed sources; responses cite source dates. |
 | FR-MEM-09 | Ship a default-enabled guide "AI is an emerging technology" (30-day recency; defer to Anthropic/OpenAI official docs; cite dates). | New accounts have the guide enabled; it appears in the Guide Manager and is editable. |
+
+
+### Conversation Topics & Filterable History
+
+Every finished conversation is post-processed off the realtime path to extract topics, map them to the user's evolving taxonomy, and make history filterable by topic, device, and date/time — all via Query/GSIs, never Scan. Engine-agnostic (works for any voice engine's transcript) and planned alongside the memory work.
+
+| ID | Requirement | Acceptance Criteria |
+|---|---|---|
+| FR-TOP-01 | Every finished conversation is processed by a cheap, ENGINE-AGNOSTIC post-session text model (e.g. gpt-4o-mini) that extracts key topics from the transcript, maps them to the user's existing topic taxonomy, and proposes new topics. Runs off the realtime path. | Within N seconds of session end, the conversation has 1..N topic tags; works identically regardless of which voice engine produced the transcript. |
+| FR-TOP-02 | A per-user, EVOLVING, REDEFINABLE topic taxonomy: topics can be created, renamed, merged, split, colored, archived. Tags reference STABLE topic IDs, so rename/merge never requires re-tagging. | Renaming a topic updates every conversation's displayed tag with no re-tag; merge repoints tags via `mergedInto`/alias. |
+| FR-TOP-03 | Conversations are tagged with topics (many-to-many). | A conversation can carry multiple topics; a topic lists all its conversations. |
+| FR-TOP-04 | Conversation history is filterable by TOPIC, DEVICE, and DATE/TIME (and combinations), using Query/GSIs only (never Scan). | Filtering by any facet or combination returns correct results via key queries + FilterExpression; no Scan on the serving path. |
+| FR-TOP-05 | Topic Manager UI + history filter UI: topic multi-select (populated from the taxonomy, NOT a blind text box), device picker, date-range picker; Topic Manager lists/renames/merges/splits/colors/archives topics. | Rich-UI rules; populated controls; results in the existing sortable history table. |
+| FR-TOP-06 | Optional: the live GPT Realtime session may emit provisional topics in-band via a `tag_topics(topics[])` function/tool call for instant on-screen hints; the post-session extractor remains the canonical source and normalizes to the taxonomy. | Live hint appears during the session; stored tags come from the extractor. |
+| FR-TOP-07 | Background re-clustering periodically suggests merging near-duplicate topics as the taxonomy evolves. | A scheduled job proposes merges; user confirms in Topic Manager. |
+
+**Data model & endpoints.** Topics (`SK=TOPIC#{topicId}`) and Conversations (`SK=CONV#{ts}#{convId}`) extend the single table (§8.1); `GSI3` filters by topic (`GSI3PK=USER#{userId}#TOPIC#{topicId}`, `GSI3SK={ts}`), `GSI4` by device (`GSI4PK=USER#{userId}#DEV#{deviceId}`, `GSI4SK={ts}`), and the base `CONV#{ts}` sort key covers date/time ranges. Combined filters Query the most selective GSI, then `FilterExpression` for the rest — no Scan. Endpoints: `GET /v1/conversations` (params `topic`, `device`, `from`, `to`), `GET /v1/conversations/{id}`, `GET /v1/topics`, `POST /v1/topics`, `PATCH /v1/topics/{id}` (rename/merge/archive).

@@ -10,7 +10,7 @@ Live Ninja is one AWS backend serving three LWA-gated client surfaces — a resp
 
 ## 1. Overview & how to read this plan
 
-This plan is organized into **parallel workstreams** executed by **agentic teams of subagents**, sequenced across **milestones M0–M10** — M0–M8 build the core platform (three surfaces, auth, realtime voice, programmable wake words, hardening, launch), **M9** adds the **Deliverables Store**, and **M10** adds the **Memory Layer including Guide Entities**. Each milestone has a **Definition of Done** and an ordered task list. Every milestone and task carries a **status marker** and a **model-routing** annotation. Tasks cross-reference **FR IDs** from the PRD where natural.
+This plan is organized into **parallel workstreams** executed by **agentic teams of subagents**, sequenced across **milestones M0–M12** — M0–M8 build the core platform (three surfaces, auth, realtime voice, programmable wake words, hardening, launch), **M9** adds the **Deliverables Store**, **M10** adds the **Memory Layer including Guide Entities**, **M11** conversation topics & filterable history, **M12** (optional) a secondary voice engine (Nova Sonic) pinnable per device. Each milestone has a **Definition of Done** and an ordered task list. Every milestone and task carries a **status marker** and a **model-routing** annotation. Tasks cross-reference **FR IDs** from the PRD where natural.
 
 ### 1.1 Status markers (updated in place as work proceeds)
 
@@ -114,6 +114,8 @@ gantt
 | **M8** Launch | ● | ○ | ○ | ○ | ○ | ○ | ● |
 | **M9** Deliverables Store | ○ | | ● | ○ | ○ | ○ | ○ |
 | **M10** Memory Layer + Guide Entities | ○ | ○ | ● | ○ | ○ | ○ | ● |
+| **M11** Topics & history filtering | ○ | | ● | ○ | ○ | ○ | ● |
+| **M12** Secondary voice engine (Nova Sonic) · optional | ○ | ○ | ● | ○ | ○ | ○ | ○ |
 
 ● = lead workstream · ○ = contributing · M9–M10 are v1.1 capability additions layered on the core platform.
 
@@ -451,6 +453,34 @@ Ordered tasks:
 - `[ ]` **S** — Guide Manager UI (web/app): list, edit, enable/disable, priority; seed default "AI is an emerging technology" guide. _(FR-MEM-09)_
 - `[ ]` **H** — Tests: recall-quality eval, forget propagation, guide always-injection, sidecar on/off.
 
+### M11 — Conversation Topics & Filterable History  `[ ]`  (WS-C + WS-G lead, WS-D/E support)
+
+**Definition of Done:** every finished conversation is auto-tagged with topics by a cheap engine-agnostic post-session model; a per-user evolving/redefinable topic taxonomy (create/rename/merge/split/color/archive, stable IDs) exists; history is filterable by topic/device/date via Query/GSIs (no Scan); Topic Manager + history filter UIs shipped on web/app. _(FR-TOP-01..07)_
+
+Ordered tasks:
+- `[ ]` **S** — Topic taxonomy storage: Topic items (`SK=TOPIC#`) + Conversation items (`SK=CONV#{ts}#`, with deviceId/engine/topicIds) + filtering GSIs (GSI3 by topic, GSI4 by device); Query-only access. _(FR-TOP-02/03/04)_
+- `[ ]` **F** — Post-session topic-extraction Lambda: cheap engine-agnostic text model reads the transcript, maps to existing topics, proposes new ones; triggered on session end. _(FR-TOP-01)_
+- `[ ]` **S** — Conversation record writer: persist transcript to S3, write CONV# item with deviceId/engine/duration/topicIds. _(FR-TOP-03)_
+- `[ ]` **S** — History filter API: `GET /v1/conversations` (topic/device/from/to) via GSI queries + FilterExpression (no Scan); `GET /v1/conversations/{id}`. _(FR-TOP-04)_
+- `[ ]` **S** — Topic Manager UI + history filter UI (web/app): topic multi-select (populated, no blind text box), device picker, date-range picker; create/rename/merge/split/color/archive topics. _(FR-TOP-05)_
+- `[ ]` **F** — Optional live `tag_topics` tool in the realtime session config for provisional on-screen topic hints (post-processor stays canonical). _(FR-TOP-06)_
+- `[ ]` **S** — Background re-clustering job: suggest merges of near-duplicate topics. _(FR-TOP-07)_
+- `[ ]` **H** — Tests: extraction→tag→filter (topic/device/date, combos) prove no Scan; rename/merge keep tags stable.
+
+### M12 — Secondary Voice Engine (Nova Sonic) · optional/deferred  `[ ]`  (WS-C lead, WS-D/E/F support)
+
+> **OPTIONAL / deferred.** This milestone reintroduces a backend media bridge **only for Nova-pinned devices**; OpenAI devices stay client-direct.
+
+**Definition of Done:** a device can be pinned to `nova-sonic`; audio for pinned devices flows device⇄backend-bridge⇄Bedrock Nova Sonic; the engine is abstracted so topics/memory/tools work identically; OpenAI-pinned devices are unchanged (client-direct). _(FR-VE-01..04)_
+
+Ordered tasks:
+- `[ ]` **O** — Voice-engine abstraction: common session/tool/transcript event schema; normalize OpenAI Realtime and Nova Sonic events to it. _(FR-VE-01)_
+- `[ ]` **F** — Nova Sonic backend bridge: Bedrock bidirectional streaming (HTTP/2 + SigV4) service holding the session; device⇄bridge WebSocket audio; barge-in/VAD parity. _(FR-VE-02)_
+- `[ ]` **S** — Per-device `voiceEngine` pin (openai-realtime|openai-realtime-mini|nova-sonic) in settings/Device; session bootstrap returns ephemeral token (direct) OR bridge WS URL. _(FR-VE-03)_
+- `[ ]` **S** — Client dual-path: direct WebRTC (OpenAI) vs backend-bridged WSS (Nova) on web/Android; M5Stack uses the bridge WSS when Nova-pinned. _(FR-VE-02/03)_
+- `[ ]` **S** — Settings UI: per-device engine picker (segmented/list) with the cost/tradeoff note. _(FR-VE-04)_
+- `[ ]` **H** — Tests: pin a device to nova-sonic (bridge path), another to openai (direct); topics/tools/memory identical across engines.
+
 ---
 
 ## 5. Environments & deploy
@@ -480,6 +510,8 @@ Ordered tasks:
 | **M8** | Production end-to-end smoke on all three surfaces; alarms/budgets confirmed emailing; SES out of sandbox; distribution channels reachable; go/no-go against risk tables. |
 | **M9** | Deliverables e2e: `create`→`zip`→`deliver`; presigned GET authz by `userId` prefix; Download Center + Files tab list via Query (no Scan); SES delivery. |
 | **M10** | Memory: entity-graph CRUD by keys/GSI (no Scan); S3 Vectors recall eval; `memory.*`/`plan.upsert` tools; session-bootstrap injects guides on all surfaces; forget propagates to Dynamo+vectors; local-RAG on/off fallback. |
+| **M11** | Extraction + tagging on session end; filter-by-topic/device/date (and combos) via GSI queries proves no Scan; taxonomy rename/merge keeps existing tags stable. |
+| **M12** | Per-device engine pin routes correctly (Nova→bridge path, OpenAI→direct); Nova bridge round-trip audio + barge-in; cross-engine tool/transcript parity. |
 
 Cross-cutting gates (all milestones): `golangci-lint` + `go vet` clean; unit tests `testify` table-driven; JSON-schema/contract validation in CI; deploy job gated on tests; every new UI form runs the **mandatory multi-persona design pass** before code.
 
@@ -539,4 +571,10 @@ _(no notes yet)_
 _(no notes yet)_
 
 ### M10 — Memory Layer + Guide Entities
+_(no notes yet)_
+
+### M11 — Conversation Topics & Filterable History
+_(no notes yet)_
+
+### M12 — Secondary Voice Engine (Nova Sonic)
 _(no notes yet)_
