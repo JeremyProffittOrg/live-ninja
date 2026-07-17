@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Voice-interaction metadata for LiveNinjaVoiceInteractionService (Android §2).
+  supportsLaunchVoiceAssistFromKeyguard enables the lock-screen assist entry;
+  LiveNinjaSession + KeyguardGate handle the locked-session gating.
+-->
+<voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="ninja.jeremy.liveninja.assistant.LiveNinjaSessionService"
+    android:recognitionService="ninja.jeremy.liveninja.assistant.LiveNinjaRecognitionService"
+    android:settingsActivity="ninja.jeremy.liveninja.MainActivity"
+    android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="true"
+    android:supportsLocalInteraction="true" />

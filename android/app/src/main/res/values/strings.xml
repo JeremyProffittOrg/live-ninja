@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Live Ninja</string>
+
+    <string name="destination_conversation">Conversation</string>
+    <string name="destination_files">Files</string>
+    <string name="destination_settings">Settings</string>
+
+    <string name="conversation_idle_title">Say “Hey Live Ninja”</string>
+    <string name="conversation_idle_body">Sign in and enable the wake word to start a live conversation. The live session view arrives with the realtime tasks of this milestone.</string>
+
+    <string name="conversation_state_idle">Ready</string>
+    <string name="conversation_state_requesting_mic">Requesting microphone…</string>
+    <string name="conversation_state_connecting">Connecting…</string>
+    <string name="conversation_state_listening">Listening</string>
+    <string name="conversation_state_muted">Muted</string>
+    <string name="conversation_state_speaking">Speaking</string>
+    <string name="conversation_state_ending">Ending…</string>
+    <string name="conversation_state_error">Something went wrong</string>
+    <string name="conversation_session_timer">%1$d:%2$02d</string>
+    <string name="conversation_tap_to_talk">Tap to talk</string>
+    <string name="conversation_idle_wake_caption">Or just say “%1$s”</string>
+    <string name="conversation_idle_privacy_caption">Wake-word detection stays on this device. Audio streams only during a live conversation.</string>
+    <string name="conversation_role_you">You</string>
+    <string name="conversation_role_assistant">Live Ninja</string>
+    <string name="conversation_tool_call">Used %1$s</string>
+    <string name="conversation_barge_in">Go ahead — I\'m listening</string>
+    <string name="conversation_interrupt_hint">Just start speaking to interrupt</string>
+    <string name="conversation_error_dismiss">Dismiss</string>
+    <string name="conversation_error_not_wired_title">Voice engine not connected</string>
+    <string name="conversation_error_not_wired_body">The realtime voice engine isn\'t available in this build yet.</string>
+    <string name="conversation_error_mic_denied_title">Microphone access needed</string>
+    <string name="conversation_error_mic_denied_body">Live Ninja can\'t hear you without the microphone. Allow microphone access in Settings, then try again.</string>
+    <string name="conversation_error_session_title">Couldn\'t start the conversation</string>
+    <string name="conversation_error_session_body">The voice session ended unexpectedly. Check your connection and try again.</string>
+
+    <string name="files_empty_title">No files yet</string>
+    <string name="files_empty_body">Deliverables and uploads from your conversations will appear here.</string>
+
+    <string name="assistant_service_label">Live Ninja assistant</string>
+    <string name="recognition_service_label">Live Ninja speech service</string>
+    <string name="sensitive_action_gate_title">Confirm it’s you</string>
+    <string name="sensitive_action_gate_subtitle">This action needs your screen lock or biometric because the conversation started on the lock screen.</string>
+
+    <string name="login_title">Live Ninja</string>
+    <string name="login_tagline">Your always-on voice assistant. Sign in to sync your wake word, settings, and conversation history.</string>
+    <string name="login_continue_with_amazon">Continue with Amazon</string>
+    <string name="login_opening_amazon">Opening secure Amazon sign-in…</string>
+    <string name="login_completing">Finishing sign-in…</string>
+    <string name="login_session_note">Stay signed in for 30 days. After that, we\'ll ask you to confirm it\'s still you with Amazon — your voice history and settings are never affected.</string>
+    <string name="login_privacy_note">We use Login with Amazon only to verify your identity — Live Ninja never sees your Amazon password, payment details, or order history.</string>
+    <string name="login_error_denied">Amazon sign-in was cancelled. Tap Continue with Amazon to try again.</string>
+    <string name="login_error_state">That sign-in attempt expired or didn\'t match. Please start again.</string>
+    <string name="login_error_not_allowed">This Amazon account isn\'t on the Live Ninja allow list. Ask the owner to add you, then try again.</string>
+    <string name="login_error_exchange">Sign-in could not be completed. Please try again.</string>
+    <string name="login_error_network">Can\'t reach Live Ninja right now. Check your connection and try again.</string>
+    <string name="login_error_session_expired">Your session ended. Sign in again to continue.</string>
+
+    <string name="onboarding_step_progress">Step %1$d of %2$d</string>
+    <string name="onboarding_back">Back</string>
+    <string name="onboarding_continue">Continue</string>
+    <string name="onboarding_finish">Finish setup</string>
+    <string name="onboarding_skip_for_now">Skip for now</string>
+    <string name="onboarding_get_started">Get started</string>
+
+    <string name="onboarding_welcome_title">Meet Live Ninja</string>
+    <string name="onboarding_welcome_body">A hands-free voice assistant that\'s always ready. A short setup connects your account, microphone, and wake word.</string>
+    <string name="onboarding_welcome_wake_caption">Just say</string>
+    <string name="onboarding_welcome_wake_phrase">“Hey Live Ninja”</string>
+
+    <string name="onboarding_signin_title">Sign in</string>
+    <string name="onboarding_signin_body">Sign in with your Amazon account to sync your wake word, settings, and conversation history across devices.</string>
+    <string name="onboarding_signin_button">Continue with Amazon</string>
+    <string name="onboarding_signin_done">You\'re signed in.</string>
+    <string name="onboarding_signin_unavailable">Sign-in isn\'t available in this build.</string>
+    <string name="onboarding_signin_privacy">We use Login with Amazon only to verify your identity — Live Ninja never sees your Amazon password, payment details, or order history.</string>
+
+    <string name="onboarding_mic_title">Microphone access</string>
+    <string name="onboarding_mic_body">Live Ninja needs the microphone to hear your wake word and talk with you.</string>
+    <string name="onboarding_mic_disclosure_title">How your microphone is used</string>
+    <string name="onboarding_mic_disclosure_body">Wake-word detection runs entirely on this device — audio only leaves your phone after you say the wake word or start a conversation, and only to answer you. It is never sold or used for ads.</string>
+    <string name="onboarding_mic_granted">Microphone access granted.</string>
+    <string name="onboarding_mic_grant">Allow microphone</string>
+    <string name="onboarding_mic_not_now">Not now</string>
+
+    <string name="onboarding_notif_title">Notifications</string>
+    <string name="onboarding_notif_body">A quiet, persistent notification shows when Live Ninja is listening for the wake word, so you\'re always in control.</string>
+    <string name="onboarding_notif_granted">Notifications enabled.</string>
+    <string name="onboarding_notif_grant">Allow notifications</string>
+
+    <string name="onboarding_role_title">Set as your assistant</string>
+    <string name="onboarding_role_body">Make Live Ninja your device\'s default assistant so long-pressing home (or the side button) opens it — even from the lock screen.</string>
+    <string name="onboarding_role_held">Live Ninja is your default assistant.</string>
+    <string name="onboarding_role_set_button">Set as default assistant</string>
+    <string name="onboarding_role_skip">Skip — use wake word only</string>
+    <string name="onboarding_role_walkthrough_title">Set it manually</string>
+    <string name="onboarding_role_walkthrough_hint">If the button above didn\'t work, set it in system settings, then come back here.</string>
+    <string name="onboarding_role_open_settings">Open assistant settings</string>
+    <string name="onboarding_role_path_aosp">Settings → Apps → Default apps → Digital assistant app → Live Ninja</string>
+    <string name="onboarding_role_path_samsung">Settings → Apps → Choose default apps → Digital assistant app → Device assistance app → Live Ninja</string>
+    <string name="onboarding_role_path_xiaomi">Settings → Apps → Manage apps → Default apps → Assist &amp; voice input → Live Ninja</string>
+    <string name="onboarding_role_path_oneplus">Settings → Apps → Default apps → Assistant app → Live Ninja</string>
+
+    <string name="onboarding_overlay_title">Show over other apps</string>
+    <string name="onboarding_overlay_body">Optional: allow Live Ninja to draw over other apps so the live conversation overlay can appear anywhere.</string>
+    <string name="onboarding_overlay_granted">Overlay permission granted.</string>
+    <string name="onboarding_overlay_allow">Allow overlay</string>
+
+    <string name="onboarding_wake_title">Pick your wake word</string>
+    <string name="onboarding_wake_body">Choose the phrase that wakes Live Ninja. You can train a custom phrase later in Settings.</string>
+
+    <string name="wake_notification_channel">Wake word listening</string>
+    <string name="wake_notification_channel_description">Persistent status while Live Ninja listens for your wake word on-device.</string>
+    <string name="wake_notification_listening_title">Listening for “%1$s”</string>
+    <string name="wake_notification_listening_body">Wake-word detection runs entirely on this device. Audio never leaves your phone until you wake it.</string>
+    <string name="wake_notification_duty_body">Battery Saver active — listening in short bursts to save power.</string>
+    <string name="wake_notification_muted_title">Wake word muted</string>
+    <string name="wake_notification_muted_body">Microphone is off. Tap Resume to listen again.</string>
+    <string name="wake_notification_error_title">Wake word paused</string>
+    <string name="wake_notification_error_body">Microphone unavailable. Open Live Ninja to resume listening.</string>
+    <string name="wake_notification_action_mute">Mute</string>
+    <string name="wake_notification_action_resume">Resume</string>
+    <string name="wake_notification_action_stop">Turn off</string>
+    <string name="wake_notification_resume_title">Resume wake word?</string>
+    <string name="wake_notification_resume_body">Android paused listening after restart. Tap to open Live Ninja and resume.</string>
+
+    <string name="dialog_cancel">Cancel</string>
+
+    <string name="settings_section_wake">Wake word</string>
+    <string name="settings_wake_word_label">Wake phrase</string>
+    <string name="settings_wake_catalog_offline">Showing built-in phrases — couldn\'t reach the online catalog.</string>
+    <string name="settings_wake_engine_label">Detection engine</string>
+    <string name="settings_engine_openwakeword">openWakeWord</string>
+    <string name="settings_engine_openwakeword_desc">Free on-device engine — recommended</string>
+    <string name="settings_engine_porcupine">Porcupine</string>
+    <string name="settings_engine_porcupine_desc">Picovoice engine — uses your access key</string>
+    <string name="settings_engine_porcupine_unavailable">Not included in this build — requires a Picovoice access key</string>
+    <string name="settings_sensitivity_label">Sensitivity — %1$d%%</string>
+    <string name="settings_sensitivity_hint">Higher reacts to quieter or less exact speech but may trigger on similar-sounding words.</string>
+
+    <string name="settings_section_conversation">Conversation</string>
+    <string name="settings_persona_label">Assistant persona</string>
+    <string name="settings_custom_instructions_label">Custom system instructions</string>
+    <string name="settings_custom_instructions_counter">%1$d / %2$d characters</string>
+    <string name="settings_voice_label">Voice</string>
+    <string name="settings_voice_default_badge">Default</string>
+    <string name="settings_voice_preview_unavailable">Voice previews aren\'t available yet — they arrive with the voice preview service.</string>
+    <string name="settings_turn_detection_label">Turn taking</string>
+    <string name="settings_turn_semantic">Natural (semantic)</string>
+    <string name="settings_turn_semantic_desc">Waits until you finish a thought — recommended</string>
+    <string name="settings_turn_server">Pause-based</string>
+    <string name="settings_turn_server_desc">Responds after any pause in speech</string>
+
+    <string name="settings_section_audio">Audio</string>
+    <string name="settings_mic_label">Microphone</string>
+    <string name="settings_mic_system_default">System default</string>
+
+    <string name="settings_section_appearance">Appearance</string>
+    <string name="settings_theme_light">Light</string>
+    <string name="settings_theme_dark">Dark</string>
+    <string name="settings_theme_system">System</string>
+
+    <string name="settings_section_privacy">Privacy</string>
+    <string name="settings_store_transcripts_label">Save transcripts</string>
+    <string name="settings_store_transcripts_desc">Keep text transcripts of your conversations for history and recall.</string>
+    <string name="settings_store_audio_label">Save audio recordings</string>
+    <string name="settings_store_audio_desc">Off by default. Voice audio is kept only if you turn this on.</string>
+    <string name="settings_retention_label">Keep conversation data for</string>
+    <string name="settings_retention_none">Don\'t retain — delete after each session</string>
+    <string name="settings_retention_days">%1$d days</string>
+
+    <string name="settings_section_account">Account</string>
+    <string name="settings_account_signed_in">Signed in with Amazon</string>
+    <string name="settings_account_signed_out">Not signed in</string>
+    <string name="settings_account_unavailable">Account actions aren\'t available in this build.</string>
+    <string name="settings_sign_out">Sign out</string>
+    <string name="settings_sign_out_everywhere">Sign out on every device</string>
+    <string name="settings_sign_out_confirm_title">Sign out of Live Ninja?</string>
+    <string name="settings_sign_out_confirm_body">You\'ll need to sign in with Amazon again on this device to keep using the assistant.</string>
+    <string name="settings_sign_out_everywhere_confirm_title">Sign out everywhere?</string>
+    <string name="settings_sign_out_everywhere_confirm_body">This signs out every device connected to your account, including this one. Each device can sign back in with your Amazon account.</string>
+    <string name="settings_signed_out">Signed out.</string>
+    <string name="settings_signed_out_everywhere">Signed out on all devices.</string>
+    <string name="settings_sign_out_failed">Sign-out failed. Check your connection and try again.</string>
+    <string name="settings_version_caption">Settings synced locally · v%1$d</string>
+</resources>

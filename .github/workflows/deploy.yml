@@ -5,7 +5,13 @@ name: Deploy
 on:
   push:
     branches: [main]
-  workflow_dispatch: {}
+  workflow_dispatch:
+
+# Serialize deploys: a second push queues behind the in-flight run instead of
+# racing the CloudFormation stack (no cancel — every push is a prod deploy).
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false {}
 
 permissions:
   contents: read
