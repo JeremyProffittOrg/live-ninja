@@ -205,7 +205,9 @@ type tokenInfoResponse struct {
 	Aud    string `json:"aud"`
 	UserID string `json:"user_id"`
 	AppID  string `json:"app_id"`
-	Exp    string `json:"exp"`
+	// exp arrives as a JSON number (seconds remaining) from the live LWA
+	// endpoint — json.Number also tolerates a quoted value.
+	Exp json.Number `json:"exp"`
 }
 
 // Validate runs the mandatory two-check validation of an LWA access

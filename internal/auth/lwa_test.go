@@ -50,7 +50,9 @@ func newMockLWA(t *testing.T, tokeninfoAud, tokeninfoUserID, profileUserID strin
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"aud":"` + tokeninfoAud + `","user_id":"` + tokeninfoUserID + `","app_id":"amzn1.application.x","exp":"3600"}`))
+		// exp is a bare JSON number on the live LWA endpoint (regression:
+		// a string-typed Exp field 502'd every real callback).
+		w.Write([]byte(`{"aud":"` + tokeninfoAud + `","user_id":"` + tokeninfoUserID + `","app_id":"amzn1.application.x","exp":3600}`))
 	})
 	mux.HandleFunc("/user/profile", func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(strings.ToLower(r.Header.Get("Authorization")), "bearer ") {
