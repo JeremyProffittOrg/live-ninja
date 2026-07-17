@@ -79,8 +79,13 @@ if "%LWA_RETURN_URL%"=="" set "LWA_RETURN_URL=https://live.jeremy.ninja/auth/lwa
 gh variable set LWA_RETURN_URL --body "%LWA_RETURN_URL%" && echo   [ok] variable LWA_RETURN_URL set
 
 set "OPENAI_REALTIME_MODEL="
-set /p "OPENAI_REALTIME_MODEL=OpenAI Realtime model [enter for default: gpt-realtime]: "
+set /p "OPENAI_REALTIME_MODEL=OpenAI Realtime MODEL NAME - NOT your API key [enter for default: gpt-realtime]: "
 if "%OPENAI_REALTIME_MODEL%"=="" set "OPENAI_REALTIME_MODEL=gpt-realtime"
+if /I "%OPENAI_REALTIME_MODEL:~0,3%"=="sk-" (
+  echo   [!] That looks like an API KEY, not a model name - refusing to store it as a public variable.
+  echo       Your API key goes in the hidden OPENAI_API_KEY prompt further down.
+  set "OPENAI_REALTIME_MODEL=gpt-realtime"
+)
 gh variable set OPENAI_REALTIME_MODEL --body "%OPENAI_REALTIME_MODEL%" && echo   [ok] variable OPENAI_REALTIME_MODEL set
 
 set "OPENAI_MONTHLY_BUDGET_USD="
@@ -93,12 +98,15 @@ REM ---------------------------------------------------------------------------
 REM  2) SECRETS  ->  GitHub SECRETS  (HIDDEN input via set-secret.cmd)
 REM     You will be prompted; input is not echoed. Values never reach the agent.
 REM ---------------------------------------------------------------------------
-echo --- Required secrets (hidden input) ---
-echo   OPENAI_API_KEY   : OpenAI API key for the Realtime session broker
-call "%~dp0set-secret.cmd" OPENAI_API_KEY
+echo --- Required secrets (value goes straight to GitHub; gh does not echo it) ---
 echo(
-echo   LWA_CLIENT_SECRET: Login with Amazon client secret (Authorization Code exchange)
-call "%~dp0set-secret.cmd" LWA_CLIENT_SECRET
+echo   OPENAI_API_KEY - paste your OpenAI API key at the prompt below:
+gh secret set OPENAI_API_KEY
+if errorlevel 1 (echo   [X] OPENAI_API_KEY was NOT set - re-run and paste the key when prompted.) else (echo   [ok] OPENAI_API_KEY set)
+echo(
+echo   LWA_CLIENT_SECRET - paste your Login with Amazon client secret at the prompt below:
+gh secret set LWA_CLIENT_SECRET
+if errorlevel 1 (echo   [X] LWA_CLIENT_SECRET was NOT set - re-run and paste the secret when prompted.) else (echo   [ok] LWA_CLIENT_SECRET set)
 echo(
 
 echo --- Optional secret ---
@@ -106,7 +114,7 @@ echo   PICOVOICE_ACCESS_KEY is ONLY needed if you use Porcupine for custom wake 
 echo   The default programmable wake-word engine is openWakeWord (open-source, no key).
 choice /c YN /m "Set PICOVOICE_ACCESS_KEY now"
 if errorlevel 2 goto after_pico
-call "%~dp0set-secret.cmd" PICOVOICE_ACCESS_KEY
+gh secret set PICOVOICE_ACCESS_KEY
 :after_pico
 
 echo(
