@@ -111,17 +111,32 @@ jobs:
               --value "$GENERATED_PEPPER" >/dev/null
           fi
 
+      # A failed INITIAL create leaves ROLLBACK_COMPLETE, which blocks all
+      # future deploys — clear the dead shell (idempotent; only ever matches
+      # a stack that never successfully created).
+      - name: Clear ROLLBACK_COMPLETE stack shell
+        run: |
+          STATUS=$(aws cloudformation describe-stacks --stack-name live-ninja \
+            --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "NONE")
+          if [ "$STATUS" = "ROLLBACK_COMPLETE" ]; then
+            echo "Deleting failed initial-create stack shell"
+            aws cloudformation delete-stack --stack-name live-ninja
+            aws cloudformation wait stack-delete-complete --stack-name live-ninja
+          fi
+
       # No `sam build`: binaries are prebuilt by `make build` into .build/<fn>/
       # (SAM's default builder for provided.* runtimes would demand a Makefile
       # inside each CodeUri dir). `sam deploy` zips the CodeUri dirs directly.
+      # --resolve-s3: vars.CLOUDFORMATION_S3_BUCKET lives in us-east-2; Lambda
+      # code objects must be same-region (us-east-1), so SAM manages its own
+      # in-region artifact bucket.
       - name: SAM deploy
         run: |
           sam deploy \
             --template-file template.yaml \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
-            --s3-bucket "${{ vars.CLOUDFORMATION_S3_BUCKET }}" \
-            --s3-prefix live-ninja \
+            --resolve-s3 \
             --parameter-overrides \
               DomainName=${{ vars.DOMAIN_NAME }} \
               CertificateArn=${{ vars.CERTIFICATE_ARN }} \
