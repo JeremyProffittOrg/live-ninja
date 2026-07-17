@@ -1918,3 +1918,18 @@ A structured personal memory organized by people, places, and information, with 
 | FR-MEM-04 | Memory tools: `memory.search`, `memory.write`, `entity.get`, `plan.upsert`; session bootstrap primes the persona with relevant memory. | Tools callable mid-turn; connect-time retrieval injects a relevant slice. |
 | FR-MEM-05 | Memory browser (web/app) lists every person/place/fact/plan with edit and forget; forget removes from DynamoDB and the vector index; export is itself a Deliverable. | User can view/edit/delete; deletion propagates to both stores. |
 | FR-MEM-06 | Avoid always-on cost floors (OpenSearch Serverless, Aurora/pgvector) unless scale justifies. | Default design uses only serverless S3 and DynamoDB tiers. |
+
+
+### Guide Entities (always-injected system guidance)
+
+A **Guide Entity** is a special memory entity that is injected into the system instructions of **every** GPT-Realtime session, on every surface — unconditionally, not by relevance retrieval. Guides encode standing operating policy for the assistant (defaults, tone, sourcing rules). Users can create, edit, prioritize, and enable/disable multiple guides; a set of platform default guides ships enabled. Guides are stored in DynamoDB (`entityType=GUIDE`), versioned, and synced to devices (IoT shadow for the M5Stack). Directives inside a guide can also steer tool use — e.g., a recency rule constrains the web-search / research tool.
+
+**Seeded default guide — "AI is an emerging technology":**
+
+> Treat AI as a fast-moving, emerging field. When answering AI or technical questions, prefer technical documents and articles **published or updated within the last 30 days**; when recent sources are unavailable or authority is needed, defer to the **official technical documentation of leading AI providers (e.g., Anthropic and OpenAI)**. Always cite sources with their publication/update dates, and flag when the best available source is older than 30 days.
+
+| ID | Requirement | Acceptance Criteria |
+|---|---|---|
+| FR-MEM-07 | Guide Entities are injected into every session's system instructions on all surfaces; user-managed (create/edit/enable/priority); versioned; device-synced. | Every new session includes all enabled guides verbatim in its system instructions; toggling a guide takes effect on the next session across web, app, and M5Stack. |
+| FR-MEM-08 | A guide can carry sourcing directives that constrain tools: a recency filter (default 30 days) and an authoritative-source allow-list (e.g., Anthropic, OpenAI docs). | The web-search / research tool respects the active recency window and prefers allow-listed sources; responses cite source dates. |
+| FR-MEM-09 | Ship a default-enabled guide "AI is an emerging technology" (30-day recency; defer to Anthropic/OpenAI official docs; cite dates). | New accounts have the guide enabled; it appears in the Guide Manager and is editable. |

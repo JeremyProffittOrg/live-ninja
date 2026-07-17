@@ -529,3 +529,8 @@ _(no notes yet)_
 | 10.6 | Memory browser UI (web/app): view/edit/forget; forget propagates to DynamoDB + vectors | `[ ]` | Sonnet |
 | 10.7 | Privacy: retention, export-as-deliverable, redaction; no silent capture | `[ ]` | Sonnet |
 | 10.8 | Tests: recall quality eval, forget propagation, sidecar on/off | `[ ]` | Haiku |
+| 10.9 | Guide Entity type in DynamoDB (GUIDE items) + versioning + device/IoT-shadow sync | `[ ]` | Sonnet |
+| 10.10 | Always-inject enabled guides into the session-bootstrap system instructions (all surfaces) | `[ ]` | Fable |
+| 10.11 | Recency-filtered web-search/research tool (default 30d) + authoritative-source allow-list (Anthropic/OpenAI); cite source dates | `[ ]` | Fable |
+| 10.12 | Guide Manager UI (web/app): list, edit, enable/disable, priority; seed default "AI is an emerging technology" guide | `[ ]` | Sonnet |
+
