@@ -1,5 +1,0 @@
-grok/prd.md:      9/12 mermaid valid
-grok/plan.md:    10/10 mermaid valid
-codex/prd.md:    12/12 mermaid valid
-codex/plan.md:    8/ 8 mermaid valid
-DONE

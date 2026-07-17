@@ -2039,7 +2039,7 @@ Every function has a self-contained, offline HTML prototype under `mockups/`, al
 
 ## Deliverables Store & Memory Layer (v1.1 additions)
 
-These two capabilities extend the platform. Full analysis and the memory-architecture options/recommendation are in **[LiveNinja-Memory-Deliverables-Whitepaper.pdf](LiveNinja-Memory-Deliverables-Whitepaper.pdf)**. Implementation is planned as milestones **M9** and **M10** (see plan.md); the build is deferred.
+These two capabilities extend the platform. The memory-architecture options and recommendation are summarized in the Memory Layer section below (the original white paper is archived in `archive/planning-notes.zip`). Implementation is planned as milestones **M9** and **M10** (see plan.md); the build is deferred.
 
 ### Deliverables Store — Functional Requirements
 
