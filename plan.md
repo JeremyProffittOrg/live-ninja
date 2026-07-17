@@ -281,7 +281,7 @@ Ordered tasks:
 
 ### M4 — Android client (assistant role + wake word)  `[ ]`  (WS-E lead)
 
-**Definition of Done:** The app installs (sideload/internal-testing), completes LWA via Custom Tabs+PKCE (30-day sliding session in Keystore), runs its **own programmable wake-word engine** (Porcupine primary / openWakeWord fallback) in a `microphone` FGS with a persistent notification, acquires `ROLE_ASSISTANT` via the resilient OEM-aware guided flow (and works even without it), and on wake opens a **WebRTC** GPT-Realtime session with AEC-backed barge-in; locked-screen sessions gate sensitive actions behind biometric. _(FR `[AND]`)_
+**Definition of Done:** The app installs (sideload/internal-testing and Google Play), completes LWA via Custom Tabs+PKCE (30-day sliding session in Keystore), runs its **own programmable wake-word engine** (openWakeWord default / Porcupine optional) in a `microphone` FGS with a persistent notification, acquires `ROLE_ASSISTANT` via the resilient OEM-aware guided flow (and works even without it), and on wake opens a **WebRTC** GPT-Realtime session with AEC-backed barge-in; locked-screen sessions gate sensitive actions behind biometric. _(FR `[AND]`)_
 
 ```mermaid
 sequenceDiagram
@@ -311,7 +311,7 @@ sequenceDiagram
 Ordered tasks:
 - `[ ]` **H** — Gradle module layout (`:app`, `:core-audio`, `:core-realtime`, `:core-auth`, `:feature-*`, `:service-assistant`), minSdk 29/targetSdk 35, Hilt, Compose M3. _(Android §1)_
 - `[ ]` **S** — LWA Custom Tabs + PKCE, `/api/v1/auth/lwa/exchange`, refresh in EncryptedSharedPreferences/Keystore, silent sliding refresh on foreground. _(Android §6)_
-- `[ ]` **F** — `WakeWordEngine` interface; Porcupine primary (`.ppn` from backend/S3) + openWakeWord fallback; `AudioRecord` 16kHz + VAD pre-gate. _(Android §3.1)_
+- `[ ]` **F** — `WakeWordEngine` interface; openWakeWord default + Porcupine optional (`.ppn` from backend/S3, needs Picovoice key); `AudioRecord` 16kHz + VAD pre-gate. _(Android §3.1)_
 - `[ ]` **F** — `WakeWordService` (`foregroundServiceType=microphone`, persistent low-priority notification, BOOT_COMPLETED restart); battery strategy (VAD gate, no continuous wakelock, thermal/battery-saver duty-cycle, <2%/hr target). _(Android §3.2/§3.3)_
 - `[ ]` **O** — `VoiceInteractionService`/`SessionService`/`Session` + `RecognitionService`; manifest contract; `RoleManager` request + **OEM-aware settings deep-link fallback walkthrough** + `isRoleHeld` polling; locked-session gating via `requestDismissKeyguard()`. _(Android §2)_
 - `[ ]` **F** — WebRTC capture chain (google-webrtc vendored .aar behind `RealtimeTransport`), `MODE_IN_COMMUNICATION`, platform+WebRTC AEC/NS/AGC, ephemeral token from backend. _(Android §4)_
@@ -407,13 +407,13 @@ Ordered tasks:
 
 ### M8 — Launch  `[ ]`  (WS-A + WS-G lead, all WS)
 
-**Definition of Done:** SES production access granted (out of sandbox); Cost Allocation Tags confirmed active; all three surfaces pass end-to-end smoke on production; distribution channels live (web at `live.jeremy.ninja`, Android signed APK + `assetlinks.json`/in-app updater, M5 firmware release + fleet provisioning enabled); alarms + budgets confirmed firing to email; runbook + `/v1` long-horizon compatibility commitment documented. _(FR `[LAUNCH]`)_
+**Definition of Done:** SES production access granted (out of sandbox); Cost Allocation Tags confirmed active; all three surfaces pass end-to-end smoke on production; distribution channels live (web at `live.jeremy.ninja`, Android signed APK + `assetlinks.json`/in-app updater + Google Play listing, M5 firmware release + fleet provisioning enabled); alarms + budgets confirmed firing to email; runbook + `/v1` long-horizon compatibility commitment documented. _(FR `[LAUNCH]`)_
 
 Ordered tasks:
 - `[ ]` **H** — Request SES production access; verify DKIM `@jeremy.ninja` identity, bounce/complaint SNS suppression wired. _(§6 backend)_
 - `[ ]` **H** — Confirm `Project`+`CostCenter` Cost Allocation Tags active in Billing; budgets alerting. _(§12)_
 - `[ ]` **S** — Production end-to-end smoke: web voice turn, Android wake→WebRTC turn+tool call, M5 wake→direct WebRTC/WSS turn+barge-in; verify one line via `gh run watch`. _(§14)_
-- `[ ]` **S** — Distribution: web live; Android signed APK + `.well-known/assetlinks.json` + `GET /v1/app/android/latest` updater; M5 firmware channel + fleet provisioning claim enabled. _(Android §9, M5 §8)_
+- `[ ]` **S** — Distribution: web live; Android signed APK + `.well-known/assetlinks.json` + `GET /v1/app/android/latest` updater + Google Play listing (Play signing, data-safety); M5 firmware channel + fleet provisioning claim enabled. _(Android §9, M5 §8)_
 - `[ ]` **H** — Runbook + on-call: alarm→action mapping, credential-rotation steps (re-put SSM), device kill-switch, `/v1` compatibility lifetime commitment. _(Crosscut §8)_
 - `[ ]` **O** — Launch go/no-go review against every risk table; sign off residual-risk acceptances. _(§7)_
 

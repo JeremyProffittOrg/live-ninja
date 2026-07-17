@@ -57,7 +57,7 @@ Live Ninja is a single, coherent voice assistant that follows the user across ev
 
 ### 2.1 Phone-primary-assistant user (Ava)
 
-Ava has made Live Ninja her phone's default digital assistant. She invokes it hands-free by saying "Hey Live Ninja" (on-device Porcupine wake), by the assist gesture, by long-press power, or from her Bluetooth headset — even over the lock screen. Primary use cases: dictate and send an email while driving, set timers/reminders, ask quick questions, control her M5Stack, all with barge-in so she can interrupt mid-answer.
+Ava has made Live Ninja her phone's default digital assistant. She invokes it hands-free by saying "Hey Live Ninja" (on-device wake word), by the assist gesture, by long-press power, or from her Bluetooth headset — even over the lock screen. Primary use cases: dictate and send an email while driving, set timers/reminders, ask quick questions, control her M5Stack, all with barge-in so she can interrupt mid-answer.
 
 ### 2.2 Desktop / web user (Wei)
 
@@ -119,7 +119,7 @@ Acceptance criteria (AC) are testable. IDs are stable references.
 | ID | Requirement | Acceptance Criteria |
 |---|---|---|
 | FR-N01 | Implement `VoiceInteractionService`/`Session` assistant contract and acquire `ROLE_ASSISTANT`. | Manifest declares the services with `BIND_VOICE_INTERACTION`; role requested via `RoleManager` with OEM-aware guided fallback; `isRoleHeld` re-checked each launch. |
-| FR-N02 | Own on-device wake engine (Porcupine primary, openWakeWord fallback) in a `microphone` FGS. | "Hey Live Ninja" + custom words detected on-device; persistent listening notification shown; works regardless of role or OEM DSP. |
+| FR-N02 | Own on-device wake engine (openWakeWord default, Porcupine optional) in a `microphone` FGS. | "Hey Live Ninja" + custom words detected on-device; persistent listening notification shown; works regardless of role or OEM DSP. |
 | FR-N03 | GPT Realtime via WebRTC using backend-brokered ephemeral key. | Mic track + `oai-events` datachannel; SDP exchange with `Bearer ek_`; API key never on device. |
 | FR-N04 | AEC-backed barge-in. | Platform + WebRTC AEC; on user speech mid-playback, fade-stop ≤50 ms, flush jitter buffer, start new turn. |
 | FR-N05 | Locked-screen session gating. | Non-sensitive replies proceed over keyguard; sensitive actions gated behind `requestDismissKeyguard()`. |
@@ -800,7 +800,7 @@ Audio not stored by default (`storeAudio=false`). Transcripts stored if `storeTr
 | SES mail silently dropped (DMARC) | Medium (missed alerts) | DKIM-verified `@jeremy.ninja` Source, Reply-To gmail; never send from gmail identity; suppression list. |
 | Runaway OpenAI/AWS cost (abandoned/always-listening) | High | Local wake (no continuous cloud audio); idle/duration caps; pre-spend quotas; org hard limit; budget + cost alarms. |
 | Android `ROLE_ASSISTANT` not honored on OEMs | Medium (UX friction) | OEM-aware guided walkthrough + deep links + `isRoleHeld` polling; wake word does not depend on the role. |
-| Play Store rejection (background mic + assistant + FGS-mic) | Medium | Default to signed-APK sideload/internal testing; prominent disclosure + consent logging; full declarations only if going public. |
+| Play Store rejection (background mic + assistant + FGS-mic) | Medium | Ship signed-APK sideload/internal-testing first; prominent disclosure + consent logging; full background-mic/assistant/FGS-mic + data-safety declarations for the Google Play listing. |
 | Session-token theft (30-day web/Android) | Medium | 15-min access JWT + rotating refresh with reuse detection; HttpOnly cookies; new-login SES alert; per-session revoke. |
 | Stale HTML after deploy (web) | Low/Medium | Network-first HTML SW + `no-cache` headers + content-hashed immutable assets + versioned cache purge. |
 | Settings sync conflicts across 3 devices | Medium | Monotonic `version` + `ConditionExpression` optimistic concurrency; DynamoDB source of truth; higher version wins. |
@@ -851,9 +851,9 @@ gantt
 | Q-5 | Secrets store? | **SSM Parameter Store SecureString** (+ KMS for signing/refresh encryption); no secrets manager. |
 | Q-6 | M5Stack Realtime transport? | **Direct to OpenAI from the device** — WebRTC via Espressif's esp-webrtc-solution on the ESP32-P4, with a WSS + Opus/PCM16 fallback; ephemeral token from the same broker Lambda as web/Android; no AWS audio relay. |
 | Q-7 | Are broker/authorizer separate Lambdas from day one? | **Yes** — broker holds the crown-jewel key policy; authorizer is on every hot path (keep tiny for cold-start). |
-| Q-8 | Android wake engine? | **Porcupine primary, openWakeWord fallback**, behind a `WakeWordEngine` interface; own FGS engine, not the DSP hotword. |
+| Q-8 | Android wake engine? | **openWakeWord default** (free, Apache-2.0, no key), **Porcupine optional** (needs a Picovoice key), behind a `WakeWordEngine` interface; own FGS engine, not the DSP hotword. |
 | Q-9 | Web wake word default state? | **Off by default, opt-in**; openWakeWord WASM default, Porcupine optional; click-to-talk always available. |
-| Q-10 | Android distribution? | **Signed-APK sideload / internal-testing** to sidestep Play assistant/always-on-mic review; full declarations only if going public. |
+| Q-10 | Android distribution? | **Both** — signed-APK sideload/internal-testing first, **plus a Google Play listing** (Play signing, background-mic/assistant/FGS-mic + data-safety declarations). |
 | Q-11 | Web front-end framework? | **Go-Fiber server-rendered HTML + progressive-enhancement ES modules** — no SPA framework. |
 | Q-12 | M5Stack custom wake phrases? | **Select-only on device** (curated flashable WakeNet set + oWW-ESP fallback); phrase creation on web/Android. |
 | Q-13 | Session signing algorithm? | **ES256 via non-extractable KMS CMK**, JWKS published; access JWT 15 min. |
