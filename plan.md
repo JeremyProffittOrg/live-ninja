@@ -283,7 +283,7 @@ Ordered tasks:
 - `[ ]` **S** — PWA: `manifest.webmanifest` + `sw.js` (network-first HTML, SWR assets, never cache `/api|/auth`/OpenAI, versioned cache purge on activate, `skipWaiting`/`clients.claim`). _(Web §8)_
 - `[ ]` **S** — Playwright e2e (stubbed LWA + mock OpenAI WS): login, settings CRUD, wake-swap, session bootstrap; Lighthouse + axe WCAG AA. _(Crosscut §7)_
 
-### M4 — Android client (assistant role + wake word)  `[ ]`  (WS-E lead)
+### M4 — Android client (assistant role + wake word)  `[~]`  (WS-E lead)
 
 **Definition of Done:** The app (id `ninja.jeremy.liveninja`; debug + release keystores generated, release key held by user) installs (sideload/internal-testing and Google Play), completes LWA via Custom Tabs+PKCE (30-day sliding session in Keystore), runs its **own programmable wake-word engine** (openWakeWord default / Porcupine optional) in a `microphone` FGS with a persistent notification, acquires `ROLE_ASSISTANT` via the resilient OEM-aware guided flow (and works even without it), and on wake opens a **WebRTC** GPT-Realtime session with AEC-backed barge-in; locked-screen sessions gate sensitive actions behind biometric. _(FR `[AND]`)_
 
@@ -324,7 +324,7 @@ Ordered tasks:
 - `[ ]` **S** — Permissions choreography + prominent mic disclosure/consent logging; offline/edge behavior. _(Android §5/§8)_
 - `[ ]` **S** — Tests: JUnit/Robolectric, Espresso, VoiceInteractionService instrumented, wake-engine FRR@FAR harness gated in CI. _(Crosscut §7)_
 
-### M5 — M5Stack firmware + IoT + on-device config / 10-yr login  `[ ]`  (WS-F lead)
+### M5 — M5Stack firmware + IoT + on-device config / 10-yr login  `[~]`  (WS-F lead)
 
 **Definition of Done:** A Tab5 boots ESP-IDF firmware, onboards WiFi + Login-with-Amazon via its device-hosted config page, provisions an IoT Thing + on-chip-keypair X.509 cert (10-yr lineage, DS-peripheral-protected), does on-device ESP-SR wake detection, connects DIRECTLY to OpenAI Realtime (WebRTC via esp-webrtc-solution, or WSS+Opus) using a broker-minted ephemeral token, with instant local barge-in, renders the LVGL state-machine UI, syncs settings via device shadow, and updates via signed A/B IoT-Jobs OTA. Device recorded in `c:\dev\fleet\esp32.md`. _(FR `[M5]`)_
 
@@ -361,7 +361,7 @@ Ordered tasks:
 - `[ ]` **F** — OTA: A/B partitions, `esp_https_ota`, Secure Boot v2 verify + anti-rollback eFuse, IoT Jobs canary→fleet, mark-valid-after-check-in, coordinated P4↔C6 version gate. _(M5 §8)_
 - `[ ]` **S** — HIL rig scaffolding (bench Tab5, PlatformIO CI flash, serial+telemetry MQTT assert); record device in `c:\dev\fleet\esp32.md` (eFuse MAC, role, last COM). _(Crosscut §7, fleet rule)_
 
-### M6 — Programmable wake-word system + settings sync  `[ ]`  (WS-G lead)
+### M6 — Programmable wake-word system + settings sync  `[~]`  (WS-G lead)
 
 **Definition of Done:** A user can create a custom wake phrase on Web/Android; a backend training pipeline produces per-platform models to S3 (SHA-256 pinned); the canonical settings doc (`SETTINGS#v<n>`, optimistic-concurrency) syncs across all surfaces via WebSocket/FCM/IoT-shadow with higher-version-wins reconciliation; each client SHA-verifies and hot-swaps wake models; the M5 selects from curated flashable WakeNet + oWW-ESP fallback. _(FR `[WAKE]`, `[SETTINGS]`)_
 
@@ -423,7 +423,7 @@ Ordered tasks:
 
 > **v1.1 capability milestones** — layered on the launched core platform (M0–M8). The same deploy law, cost tags, arm64, and no-Scan discipline apply.
 
-### M9 — Deliverables Store  `[ ]`  (WS-C lead, WS-D/E/F support)
+### M9 — Deliverables Store  `[~]`  (WS-C lead, WS-D/E/F support)
 
 **Definition of Done:** the assistant can create/zip/deliver files via tools; deliverables persist per-user on S3, are indexed in DynamoDB (Query-only), and appear identically in the web Download Center and Android Files tab; downloads use short-lived presigned URLs; optional SES delivery works. _(FR-DLV-01..06)_
 
@@ -540,6 +540,13 @@ Cross-cutting gates (all milestones): `golangci-lint` + `go vet` clean; unit tes
 
 ## 8. Implementation Notes
 
+> **RESUME STATE — end of day 1 (2026-07-17 ~18:45 EDT; next session: cron at 21:15 EDT).**
+> - **Deployed & prod-verified:** M0 complete `[x]`; M1 web-leg + M3 verified in a real browser (owner bound, sign-in → authed `/conversation` renders, pickers populated). Stack green at run 29614463844 (commit `8987e98`).
+> - **Committed, pending device/e2e verification:** M4 Android (`e49b188`, assembleDebug + 46 tests green), M5 firmware (`b550265`, flashed COM58, boot-verified).
+> - **Working tree is DIRTY (uncommitted, does NOT compile):** partial M6+M9 from workflow `wf_4bf35707` — 6 of 8 agents were killed by the Claude session usage limit (resets 9pm ET). Do NOT commit or push until the resumed workflow's integrator makes it green. Resume command in the M6 notes below.
+> - **Next session order:** (1) resume `wf_4bf35707` (M6+M9) → integrate → push → watch deploy; (2) M7 hardening workflow; (3) M10+M11 workflow; (4) M12 Nova Sonic (needs Bedrock model access — check `aws bedrock list-foundation-models`/console first, it is the only external blocker); (5) M8 launch pass incl. 3-surface smoke (M5 bench pairing needs WiFi onboarding via the Tab5 SoftAP portal — user-interactive or netsh-profile approach TBD); resume hourly SES reports.
+> - Ops notes: deploys serialize on `deploy-main` concurrency group; SNS ops-topic email subscription still needs the user's confirmation click; SES still sandboxed (fine for owner-only email until M8).
+
 > Per house style, append **verbose** notes here (and inline under each task/milestone) as work proceeds — decisions made, files touched, commands run, gotchas hit, blockers and how they were resolved. Keep it detailed enough that a fresh agent can resume from this plan alone. Update the status markers in §4 in place.
 
 ### M0 — Bootstrap / Infrastructure
@@ -560,6 +567,8 @@ Also: `concurrency: deploy-main` (serialize pushes, no cancel) + automatic ROLLB
 **M0 DoD verified in prod:** run 29612083012 green; `https://live.jeremy.ninja/healthz` 200 through CloudFront; `/.well-known/jwks.json` serves the KMS ES256 key; table ACTIVE with GSI1/GSI2; 5 alarms + 3 budgets armed; 4 SSM params synced by workflow; **Cost Allocation Tags Project+CostCenter ACTIVATED via `ce update-cost-allocation-tags-status` (CLI, Errors:[])** — no user action needed. Remaining user click: SNS ops-topic email subscription confirmation (SETUP.md).
 
 ### M1 — Auth
+
+**2026-07-17 ~18:20 EDT — PROD-VERIFIED (web leg):** real LWA browser sign-in completed end-to-end at live.jeremy.ninja — **owner bound** (`CONFIG/OWNER` → `amzn1.account.AEGRRHCM6JMXBTAYH5HY5GW6LK5Q`, userId `82417102-…`, boundAt 21:20:41Z), session cookie set, authed pages render. Two prod bugs found+fixed via the browser test: (1) LWA security profile was missing the `https://live.jeremy.ninja/auth/lwa/callback` return URL (registered as `/auth/callback` — corrected in the Amazon Developer console, existing entries untouched); (2) live `/auth/o2/tokeninfo` returns `exp` as a JSON number, our string-typed field 502'd every callback (`e1609fd`, regression test updated to the numeric form). Android exchange + device 10-yr flow still to be e2e-verified on their surfaces.
 
 **2026-07-17 16:10–17:15 EDT — authored by 10 parallel agents + integrator + test author (workflow `wf_1aba42cc`), dictated-interface pattern (item shapes + Go signatures fixed in the workflow spec so authors ran fully parallel).**
 - `internal/store/`: full single-table layer (users/sessions/oauth/devices/usage + types) — `RotateRefresh` is a `TransactWriteItems` rotate-on-use with reuse detection (`prevHash` match ⇒ family revoke + `ErrRefreshReuse`); owner binding via conditional Put; allowlist under `CONFIG/ALLOW#`. Zero `Scan`s.
@@ -589,11 +598,19 @@ Also: `concurrency: deploy-main` (serialize pushes, no cancel) + automatic ROLLB
 - PWA: `manifest.webmanifest` + `/sw.js` network-first HTML, SWR static, never caches `/api|/auth|OpenAI`, versioned purge + skipWaiting/claim.
 - Integrator: found+wrote the missing conversation-page entry module; CSP middleware (self + api.openai.com connect-src, worker-src blob); local smoke on :8081 all pass (healthz//,conversation→login redirect,settings,css,sw.js,mjs), `node --check` clean on every JS file; build/vet/test green.
 - **Pending prod verification after deploy: page loads + LWA login browser test.**
+- **2026-07-17 ~18:35 EDT — PROD-VERIFIED:** landing page, LWA sign-in, and the authed `/conversation` page all render at live.jeremy.ninja (persona/voice pickers populated from the live API, mic control, hands-free toggle, text fallback). One fix from the browser test: SSR pages (`/conversation` `/settings` `/downloads`) + root PWA assets (`/sw.js` `/favicon.ico`) added to the authorizer public list — they're cookie-gated server-side, and the API-GW deny was returning bare 403 JSON to signed-in browsers (`8987e98`; unauthenticated requests correctly 302 to `/`). Remaining: live voice turn (mic), Playwright e2e + Lighthouse/axe gates (M7).
 
 ### M4 — Android client
-_(no notes yet)_
+
+**2026-07-17 16:15–17:35 EDT — scaffold + 5 feature authors + integrator (workflow `wf_85044fc3`); committed `e49b188`.**
+- Kotlin 2.1.10 + Compose M3 (BOM 2025.02.00) + Hilt 2.56.2 (KSP), Gradle 8.13/AGP 8.9.1, single `:app` module (packages `auth/net/wake/realtime/assistant/ui`), minSdk 29/target 35. `assembleDebug` + `testDebugUnitTest` green — **46 unit tests** (PKCE RFC-7636 vectors, 401 refresh-replay-once, refresh single-flight, transport state machine, transcript delta dedup, tool round-trip, EnergyVad, oWW pipeline).
+- LWA Custom Tabs + PKCE → `/api/v1/auth/lwa/exchange`; tokens in EncryptedSharedPreferences; `WakeWordService` mic-FGS (persistent notification, BOOT restart, VAD gate + battery-saver duty cycle); openWakeWord 3-model ONNX pipeline (onnxruntime-android) with bundled hey-jarvis default + `ModelManager` SHA-256-verified downloads; `VoiceInteractionService`/Session/RecognitionService + RoleManager flow w/ OEM deep-link fallbacks + keyguard gating; WebRTC (io.github.webrtc-sdk) behind `RealtimeTransport` w/ barge-in fade + jitter flush; onboarding wizard/conversation/settings/files/overlay UIs.
+- Debug APK ~174MB (webrtc+onnx native libs, 4 ABIs — release minify+ABI splits will shrink). Debug keystore in `android/keystores/` (ignored); **release keystore at `C:\dev\live-ninja-keys\release.keystore`** (alias liveninja — held by user, outside repo).
+- Remaining for M4 DoD: on-device instrumented runs, FRR/FAR corpus harness in CI, Play listing (M8), assetlinks (M8), FCM deferred (no Firebase account) — foreground-poll reconcile instead, noted in M6.
 
 ### M5 — M5Stack firmware + IoT
+
+**2026-07-17 16:15–18:00 EDT — scaffold + 5 subsystem authors + integrator (workflow `wf_05903dc8`); committed `b550265`. Summary:** ESP-IDF v5.4.4 / esp32p4 / **m5stack_tab5 BSP 1.2.0** (LVGL 9.5, GT911, esp_codec_dev ES8388/ES7210), A/B OTA partitions; components `ln_audio`/`ln_wake`/`ln_realtime` (WSS+pcm16 direct to OpenAI — LOCKED, no on-device WebRTC)/`ln_net` (esp-hosted C6 WiFi, SoftAP portal, pairing + 10-yr refresh)/`ln_iot` (mTLS MQTT, shadow, esp_https_ota)/`ln_ui`, wired by `main/ln_ctrl.c` full state machine. **Built, flashed to COM58, boot-verified.** Remaining for DoD: backend IoT provisioning path (`IOT_DATA_ENDPOINT`, claim certs, `ProvisionIoT` fill-in), bench WiFi onboarding + pairing e2e, wake→voice-turn HIL, OTA exercise, flash-enc/Secure-Boot hardening.
 
 **2026-07-17 — Audio pipeline (`components/ln_audio`, `components/ln_wake`) implemented (audio subagent).**
 
@@ -607,7 +624,9 @@ _(no notes yet)_
 - **Integration contract:** boot order `ln_audio_init()` → `ln_wake_init()`; ctrl consumes `LN_WAKE_EVENT`; uplink pcm16@16k from `ln_wake_audio_subscribe`; downlink pcm16@24k → `ln_audio_play`; barge-in → `ln_audio_play_stop()` (+ optional `ln_wake_enable(false)` during Speaking if self-trigger observed).
 
 ### M6 — Programmable wake-word + settings sync
-_(no notes yet)_
+
+**2026-07-17 ~18:20–18:35 EDT — workflow `wf_4bf35707` (M6+M9 combined, 7 authors + integrator) PARTIALLY complete: 2/8 agents finished (infra, android) before the Claude session usage limit (resets 9pm ET) killed the other 6.** Landed in the working tree (UNCOMMITTED — does not compile yet): template.yaml + deploy.yml (ECR repo, Batch Fargate ARM64 CE/queue/jobdef, DeliverablesBucket, ShadowIngest + DeliverablesZipper functions, container-build CI job w/ dorny/paths-filter + first-deploy bootstrap ordering), Makefile (+2 fns), Android Files tab + wake-word management (DTOs, FilesScreen, settings), partial Go files from killed agents (cmd/shadow-ingest, cmd/deliverables-zipper, internal/sync, internal/wakeword, internal/deliv, webapp/tools edits with unresolved seams).
+**Resume:** `Workflow({scriptPath: 'C:\\Users\\Jeremy\\.claude\\projects\\C--dev-live-ninja\\8f47f390-5048-4ab6-8822-9909c0bd61a9\\workflows\\scripts\\m6-m9-wake-settings-deliverables-wf_4bf35707-f73.js', resumeFromRunId: 'wf_4bf35707-f73'})` — the 2 finished agents replay from cache; 6 rerun. Locked decisions in that script: no FCM (no Firebase account) → poll/foreground reconcile on web+Android, IoT shadow push for M5; openWakeWord-only training (Batch Fargate ARM64, piper synthetic positives, ≤3/day/user); Porcupine catalog-flagged unavailable; deliverables bucket `live-ninja-deliverables-759775734231` 180d lifecycle.
 
 ### M7 — Hardening / observability / cost / privacy
 _(no notes yet)_
@@ -616,7 +635,8 @@ _(no notes yet)_
 _(no notes yet)_
 
 ### M9 — Deliverables Store
-_(no notes yet)_
+
+_(combined with M6 in workflow `wf_4bf35707` — see M6 notes: partial, resume at 9:15pm session)_
 
 ### M10 — Memory Layer + Guide Entities
 _(no notes yet)_
