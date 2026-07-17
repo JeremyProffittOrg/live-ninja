@@ -11,7 +11,7 @@ on:
 # racing the CloudFormation stack (no cancel — every push is a prod deploy).
 concurrency:
   group: deploy-main
-  cancel-in-progress: false {}
+  cancel-in-progress: false
 
 permissions:
   contents: read
