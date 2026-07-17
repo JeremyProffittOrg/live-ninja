@@ -1885,3 +1885,36 @@ Every function has a self-contained, offline HTML prototype under `mockups/`, al
 - [Portal Config](mockups/m5stack-portal/02-portal-config.html)
 - [Portal Success](mockups/m5stack-portal/03-portal-success.html)
 
+
+
+---
+
+## Deliverables Store & Memory Layer (v1.1 additions)
+
+These two capabilities extend the platform. Full analysis and the memory-architecture options/recommendation are in **[LiveNinja-Memory-Deliverables-Whitepaper.pdf](LiveNinja-Memory-Deliverables-Whitepaper.pdf)**. Implementation is planned as milestones **M9** and **M10** (see plan.md); the build is deferred.
+
+### Deliverables Store — Functional Requirements
+
+The assistant can create files, package them, and deliver them as separate, durable downloadables stored per-user on S3 and indexed in DynamoDB, reachable from the website and the Android app.
+
+| ID | Requirement | Acceptance Criteria |
+|---|---|---|
+| FR-DLV-01 | `deliverable.create(kind,name,content)` tool produces a file (PDF/MD/CSV/JSON/ICS/image/artifact). | A tool call yields an S3 object under `{userId}/{deliverableId}/{filename}` and a DynamoDB index item. |
+| FR-DLV-02 | `deliverable.zip(ids[],name)` bundles N deliverables into one ZIP as its own deliverable. | A Lambda streams member objects into an archive; result stored and indexed. |
+| FR-DLV-03 | `deliverable.deliver(id,channels[])` mints a short-lived presigned URL and surfaces the item. | Download works on web and app; optional SES email from an `@jeremy.ninja` identity. |
+| FR-DLV-04 | Deliverables list is a Query (never Scan) on `PK=USER#{userId}, SK=DELIV#{ts}#{id}`. | Listing deliverables uses Query; a GSI supports direct id lookup for shares. |
+| FR-DLV-05 | Web Download Center and Android Files tab render the same list; every artifact-producing turn logs a deliverable (all transactions). | Identical cross-surface list; each generated artifact appears automatically. |
+| FR-DLV-06 | Per-user isolation, SSE (and optional KMS), sha256 integrity, lifecycle retention, type/size allow-listing on uploads. | No public objects; downloads authorized by `userId` key prefix. |
+
+### Memory Layer — Functional Requirements
+
+A structured personal memory organized by people, places, and information, with organizational (projects/lists) and planning (goals/tasks) capabilities, exposed to GPT-Realtime as tools. Recommended design: DynamoDB entity/relationship graph + S3 Vectors semantic recall + optional local RAG sidecar.
+
+| ID | Requirement | Acceptance Criteria |
+|---|---|---|
+| FR-MEM-01 | Entity graph in DynamoDB for people, places, information, projects, tasks, plans and relationships. | Entities/edges stored as items; retrieval by keys/GSIs, no Scan. |
+| FR-MEM-02 | Semantic recall tier via S3 Vectors (embeddings of notes/transcripts/facts). | `memory.search(query,entityTypes)` returns ranked hits from the vector index. |
+| FR-MEM-03 | Optional local RAG sidecar on the user PC; platform falls back to S3 Vectors when it is absent/offline. | Retrieval works with the sidecar present or absent; no hard dependency. |
+| FR-MEM-04 | Memory tools: `memory.search`, `memory.write`, `entity.get`, `plan.upsert`; session bootstrap primes the persona with relevant memory. | Tools callable mid-turn; connect-time retrieval injects a relevant slice. |
+| FR-MEM-05 | Memory browser (web/app) lists every person/place/fact/plan with edit and forget; forget removes from DynamoDB and the vector index; export is itself a Deliverable. | User can view/edit/delete; deletion propagates to both stores. |
+| FR-MEM-06 | Avoid always-on cost floors (OpenSearch Serverless, Aurora/pgvector) unless scale justifies. | Default design uses only serverless S3 and DynamoDB tiers. |

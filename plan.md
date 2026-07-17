@@ -497,3 +497,35 @@ _(no notes yet)_
 
 ### M8 — Launch
 _(no notes yet)_
+
+---
+
+## Milestone M9 — Deliverables Store  `[ ]`
+
+**Definition of Done:** the assistant can create/zip/deliver files via tools; deliverables persist per-user on S3, are indexed in DynamoDB (Query-only), and appear identically in the web Download Center and Android Files tab; downloads use short-lived presigned URLs; optional SES delivery works.
+
+| # | Task | Status | Model |
+|---|---|---|---|
+| 9.1 | S3 deliverables bucket + lifecycle + SSE/KMS; SAM + cost tags | `[ ]` | Sonnet |
+| 9.2 | DynamoDB deliverable items + GSI; Query access patterns | `[ ]` | Sonnet |
+| 9.3 | Generator + Zipper Lambda (Go, arm64); streaming ZIP | `[ ]` | Fable |
+| 9.4 | `deliverable.create/zip/deliver` tools wired into the realtime tool router | `[ ]` | Fable |
+| 9.5 | Web Download Center (sortable table, share/delete, states) | `[ ]` | Sonnet |
+| 9.6 | Android Files tab (list + multi-select zip/share) | `[ ]` | Sonnet |
+| 9.7 | SES delivery channel + presigned URL authz by userId prefix | `[ ]` | Sonnet |
+| 9.8 | Tests: unit + e2e (create to zip to deliver to download on both surfaces) | `[ ]` | Haiku |
+
+## Milestone M10 — Memory Layer  `[ ]`
+
+**Definition of Done:** DynamoDB entity/relationship graph stores people/places/information/projects/tasks/plans; S3 Vectors provides semantic recall; memory tools + session bootstrap integrate with GPT-Realtime; a memory browser allows view/edit/forget with propagation to both stores; optional local RAG sidecar can be enabled with graceful fallback.
+
+| # | Task | Status | Model |
+|---|---|---|---|
+| 10.1 | Entity + relationship data model in DynamoDB (people/places/info/projects/tasks) | `[ ]` | Opus |
+| 10.2 | Embedder Lambda + S3 Vectors index (verify GA/region us-east-1) | `[ ]` | Fable |
+| 10.3 | Memory Router Lambda: structured vs semantic routing | `[ ]` | Fable |
+| 10.4 | Tools `memory.search/write`, `entity.get`, `plan.upsert`; session bootstrap retrieval | `[ ]` | Fable |
+| 10.5 | Optional local RAG sidecar (LanceDB/sqlite-vec) + secure bridge + fallback | `[ ]` | Opus |
+| 10.6 | Memory browser UI (web/app): view/edit/forget; forget propagates to DynamoDB + vectors | `[ ]` | Sonnet |
+| 10.7 | Privacy: retention, export-as-deliverable, redaction; no silent capture | `[ ]` | Sonnet |
+| 10.8 | Tests: recall quality eval, forget propagation, sidecar on/off | `[ ]` | Haiku |
