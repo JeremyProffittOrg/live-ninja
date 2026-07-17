@@ -35,6 +35,34 @@ echo Target repo: %REPO%
 echo(
 
 REM ---------------------------------------------------------------------------
+REM  0) Configure Login with Amazon FIRST (URLs to register), then continue
+REM ---------------------------------------------------------------------------
+echo ============================================================
+echo   STEP 1 of 2 - Configure your Login with Amazon profile
+echo ============================================================
+echo   Open: https://developer.amazon.com/settings/console/securityprofile
+echo   Select your Live Ninja Security Profile, open "Web Settings", and set:
+echo(
+echo   Allowed Origins:
+echo     https://live.jeremy.ninja
+echo(
+echo   Allowed Return URLs:
+echo     https://live.jeremy.ninja/auth/lwa/callback          [web]
+echo     https://live.jeremy.ninja/auth/lwa/android           [Android app-link]
+echo     https://live.jeremy.ninja/auth/lwa/device/callback   [M5Stack device setup]
+echo     http://localhost:8080/auth/lwa/callback              [local dev - optional]
+echo(
+echo   Consent Privacy Notice URL:
+echo     https://live.jeremy.ninja/privacy
+echo(
+echo   All surfaces use the backend BFF, so every return URL stays on
+echo   live.jeremy.ninja. Then copy the Client ID + Client Secret from that
+echo   same Security Profile - you will paste them below.
+echo ============================================================
+pause
+echo(
+
+REM ---------------------------------------------------------------------------
 REM  1) NON-SECRET configuration  ->  GitHub VARIABLES
 REM     (safe to echo; these are public identifiers)
 REM ---------------------------------------------------------------------------
@@ -46,10 +74,9 @@ if not "%LWA_CLIENT_ID%"=="" (
 )
 
 set "LWA_RETURN_URL="
-set /p "LWA_RETURN_URL=LWA Allowed Return URL (e.g. https://live.jeremy.ninja/auth/callback) [enter to skip]: "
-if not "%LWA_RETURN_URL%"=="" (
-  gh variable set LWA_RETURN_URL --body "%LWA_RETURN_URL%" && echo   [ok] variable LWA_RETURN_URL set
-)
+set /p "LWA_RETURN_URL=LWA web return URL [enter for default https://live.jeremy.ninja/auth/lwa/callback]: "
+if "%LWA_RETURN_URL%"=="" set "LWA_RETURN_URL=https://live.jeremy.ninja/auth/lwa/callback"
+gh variable set LWA_RETURN_URL --body "%LWA_RETURN_URL%" && echo   [ok] variable LWA_RETURN_URL set
 
 set "OPENAI_REALTIME_MODEL="
 set /p "OPENAI_REALTIME_MODEL=OpenAI Realtime model [enter for default: gpt-realtime]: "
