@@ -10,7 +10,9 @@ Live Ninja is one AWS backend serving three LWA-gated client surfaces — a resp
 
 ## 1. Overview & how to read this plan
 
-This plan is organized into **parallel workstreams** executed by **agentic teams of subagents**, sequenced across **milestones M0–M12** — M0–M8 build the core platform (three surfaces, auth, realtime voice, programmable wake words, hardening, launch), **M9** adds the **Deliverables Store**, **M10** adds the **Memory Layer including Guide Entities**, **M11** conversation topics & filterable history, **M12** (optional) a secondary voice engine (Nova Sonic) pinnable per device. Each milestone has a **Definition of Done** and an ordered task list. Every milestone and task carries a **status marker** and a **model-routing** annotation. Tasks cross-reference **FR IDs** from the PRD where natural.
+This plan is organized into **parallel workstreams** executed by **agentic teams of subagents**, sequenced across **milestones M0–M12** — M0–M8 build the core platform (three surfaces, auth, realtime voice, programmable wake words, hardening, launch), **M9** adds the **Deliverables Store**, **M10** adds the **Memory Layer including Guide Entities**, **M11** conversation topics & filterable history, **M12** a secondary voice engine (Nova Sonic) pinnable per device (**in scope this build**; requires Bedrock Nova Sonic access in `us-east-1`). Each milestone has a **Definition of Done** and an ordered task list. Every milestone and task carries a **status marker** and a **model-routing** annotation. Tasks cross-reference **FR IDs** from the PRD where natural.
+
+> **Locked execution decisions (2026-07-17):** run **autonomously M0→M12** (agentic teams, pausing only on a genuine blocker; each push to `main` is a prod deploy); the **`gha-deploy`** OIDC role is broad enough for all services; **M12 (Nova Sonic) is in scope** (needs Bedrock Nova Sonic model access in `us-east-1`); Android app id **`ninja.jeremy.liveninja`** with freshly-generated debug + release keystores (release key held by the user); app secrets captured via `scripts/setup-live-ninja-secrets.bat` (GitHub secrets → SSM by the deploy workflow). **Remaining external prerequisites before M1/M2:** a **Login with Amazon Security Profile** (client id/secret + return URLs) and an **OpenAI Realtime API key**.
 
 ### 1.1 Status markers (updated in place as work proceeds)
 
@@ -173,7 +175,7 @@ Ordered tasks:
 - `[ ]` **H** — `samconfig.toml` with stack tags `Project=live-ninja CostCenter=voice-ai Environment=prod ManagedBy=sam DeployedVia=github-actions Owner=jeremy`; arm64 defaults; artifact bucket `vars.CLOUDFORMATION_S3_BUCKET`. _(§12)_
 - `[ ]` **H** — `Makefile` build targets: `GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -o bootstrap ./cmd/<fn>` per function.
 - `[ ]` **S** — `.github/workflows/deploy.yml` per `deploy.md`: OIDC `role-to-assume: vars.AWS_DEPLOY_ROLE_ARN`, `id-token: write`, `make build` → `sam build` → `sam deploy --no-confirm-changeset --no-fail-on-empty-changeset`.
-- `[ ]` **H** — SSM SecureString/String parameter slots: `/live-ninja/prod/openai/api_key`, `/lwa/client_id`, `/lwa/client_secret`, `/session/jwt_signing_key` (or KMS key alias), `/device/cred_pepper`. Values set out-of-band by user. _(§8)_
+- `[ ]` **H** — SSM SecureString/String parameter slots: `/live-ninja/prod/openai/api_key`, `/lwa/client_id`, `/lwa/client_secret`, `/session/jwt_signing_key` (or KMS key alias), `/device/cred_pepper`. Values captured via `scripts/setup-live-ninja-secrets.bat` (GitHub secrets) and synced to these SSM params by the deploy workflow. _(§8)_
 - `[ ]` **O** — KMS CMKs: `alias/live-ninja-auth` (envelope-encrypt LWA refresh tokens) + `ECC_NIST_P256 SIGN_VERIFY` CMK for first-party JWT signing (private key never leaves KMS). _(Auth brief §2.3)_
 - `[ ]` **S** — S3 buckets (block-public, SSE-S3, versioning on assets): `live-ninja-user-<acct>`, `-wakewords-<acct>`, `-assets-<acct>`, `-logs-<acct>`, `-analytics-<acct>`. _(§5 backend)_
 - `[ ]` **S** — Edge: CloudFront distro for `live.jeremy.ninja` (ACM `vars.CERTIFICATE_ARN`), Route 53 alias (`vars.HOSTED_ZONE_ID`), cache `/static/*` immutable, pass `/api|/auth` no-cache; security headers (HSTS/CSP/X-CTO/Referrer).
@@ -283,7 +285,7 @@ Ordered tasks:
 
 ### M4 — Android client (assistant role + wake word)  `[ ]`  (WS-E lead)
 
-**Definition of Done:** The app installs (sideload/internal-testing and Google Play), completes LWA via Custom Tabs+PKCE (30-day sliding session in Keystore), runs its **own programmable wake-word engine** (openWakeWord default / Porcupine optional) in a `microphone` FGS with a persistent notification, acquires `ROLE_ASSISTANT` via the resilient OEM-aware guided flow (and works even without it), and on wake opens a **WebRTC** GPT-Realtime session with AEC-backed barge-in; locked-screen sessions gate sensitive actions behind biometric. _(FR `[AND]`)_
+**Definition of Done:** The app (id `ninja.jeremy.liveninja`; debug + release keystores generated, release key held by user) installs (sideload/internal-testing and Google Play), completes LWA via Custom Tabs+PKCE (30-day sliding session in Keystore), runs its **own programmable wake-word engine** (openWakeWord default / Porcupine optional) in a `microphone` FGS with a persistent notification, acquires `ROLE_ASSISTANT` via the resilient OEM-aware guided flow (and works even without it), and on wake opens a **WebRTC** GPT-Realtime session with AEC-backed barge-in; locked-screen sessions gate sensitive actions behind biometric. _(FR `[AND]`)_
 
 ```mermaid
 sequenceDiagram
@@ -467,9 +469,9 @@ Ordered tasks:
 - `[ ]` **S** — Background re-clustering job: suggest merges of near-duplicate topics. _(FR-TOP-07)_
 - `[ ]` **H** — Tests: extraction→tag→filter (topic/device/date, combos) prove no Scan; rename/merge keep tags stable.
 
-### M12 — Secondary Voice Engine (Nova Sonic) · optional/deferred  `[ ]`  (WS-C lead, WS-D/E/F support)
+### M12 — Secondary Voice Engine (Nova Sonic)  `[ ]`  (WS-C lead, WS-D/E/F support)
 
-> **OPTIONAL / deferred.** This milestone reintroduces a backend media bridge **only for Nova-pinned devices**; OpenAI devices stay client-direct.
+> **In scope this build.** Requires Bedrock Nova Sonic model access in `us-east-1`. Reintroduces a backend media bridge **only for Nova-pinned devices**; OpenAI-pinned devices stay client-direct.
 
 **Definition of Done:** a device can be pinned to `nova-sonic`; audio for pinned devices flows device⇄backend-bridge⇄Bedrock Nova Sonic; the engine is abstracted so topics/memory/tools work identically; OpenAI-pinned devices are unchanged (client-direct). _(FR-VE-01..04)_
 
