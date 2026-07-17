@@ -78,15 +78,9 @@ set /p "LWA_RETURN_URL=LWA web return URL [enter for default https://live.jeremy
 if "%LWA_RETURN_URL%"=="" set "LWA_RETURN_URL=https://live.jeremy.ninja/auth/lwa/callback"
 gh variable set LWA_RETURN_URL --body "%LWA_RETURN_URL%" && echo   [ok] variable LWA_RETURN_URL set
 
-set "OPENAI_REALTIME_MODEL="
-set /p "OPENAI_REALTIME_MODEL=OpenAI Realtime MODEL NAME - NOT your API key [enter for default: gpt-realtime]: "
-if "%OPENAI_REALTIME_MODEL%"=="" set "OPENAI_REALTIME_MODEL=gpt-realtime"
-if /I "%OPENAI_REALTIME_MODEL:~0,3%"=="sk-" (
-  echo   [!] That looks like an API KEY, not a model name - refusing to store it as a public variable.
-  echo       Your API key goes in the hidden OPENAI_API_KEY prompt further down.
-  set "OPENAI_REALTIME_MODEL=gpt-realtime"
-)
-gh variable set OPENAI_REALTIME_MODEL --body "%OPENAI_REALTIME_MODEL%" && echo   [ok] variable OPENAI_REALTIME_MODEL set
+REM Realtime model is fixed to the default (no prompt - avoids anyone pasting a key here).
+set "OPENAI_REALTIME_MODEL=gpt-realtime"
+gh variable set OPENAI_REALTIME_MODEL --body "%OPENAI_REALTIME_MODEL%" && echo   [ok] variable OPENAI_REALTIME_MODEL=gpt-realtime set
 
 set "OPENAI_MONTHLY_BUDGET_USD="
 set /p "OPENAI_MONTHLY_BUDGET_USD=OpenAI monthly spend cap in USD (metering/quota gate) [enter for default: 100]: "
