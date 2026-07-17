@@ -1,0 +1,53 @@
+menu "Live Ninja audio (ln_audio)"
+
+    config LN_AUDIO_JITTER_PREBUFFER_MS
+        int "Playback jitter prebuffer (ms)"
+        range 20 500
+        default 80
+        help
+            Milliseconds of downlink audio queued before playback starts.
+            Plan M5 calls for a 60-100 ms jitter buffer; 80 ms default.
+
+    config LN_AUDIO_PLAYBACK_RING_MS
+        int "Playback ring buffer capacity (ms)"
+        range 1000 60000
+        default 30000
+        help
+            Total capacity of the PSRAM playback ring. OpenAI Realtime pushes
+            response audio faster than realtime, so this absorbs whole
+            responses without blocking the downlink task.
+
+    config LN_AUDIO_DEFAULT_VOLUME
+        int "Default speaker volume (0-100)"
+        range 0 100
+        default 70
+
+    config LN_AUDIO_MIC_GAIN_DB
+        int "Analog mic gain (dB)"
+        range 0 42
+        default 30
+
+    config LN_AUDIO_AEC_REF_DELAY_MS
+        int "Software AEC reference delay (ms)"
+        range 0 200
+        default 24
+        help
+            Zero-padding inserted ahead of the software echo-reference stream
+            each time playback starts, approximating the codec DAC + DMA +
+            acoustic latency so the AEC filter sees the reference roughly
+            aligned with the echo. The AFE AEC filter tail absorbs the rest.
+
+    config LN_AUDIO_CAPTURE_TASK_PRIORITY
+        int "Capture (audio_rx) task priority"
+        default 23
+
+    config LN_AUDIO_PLAYBACK_TASK_PRIORITY
+        int "Playback task priority"
+        default 22
+
+    config LN_AUDIO_TASK_CORE
+        int "Core for audio tasks"
+        range 0 1
+        default 0
+
+endmenu

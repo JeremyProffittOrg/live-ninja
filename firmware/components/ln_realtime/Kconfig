@@ -1,0 +1,26 @@
+menu "Live Ninja realtime client (ln_realtime)"
+
+config LN_RT_BACKEND_BASE_URL
+    string "Backend base URL"
+    default "https://live.jeremy.ninja"
+    help
+        Base URL of the Live Ninja backend. The session bootstrap calls
+        GET <base>/v1/realtime/session with the device JWT to obtain a
+        broker-minted OpenAI ephemeral token (contracts/api.md).
+
+config LN_RT_DEFAULT_MODEL
+    string "Fallback OpenAI realtime model"
+    default "gpt-realtime"
+    help
+        Used for the wss://api.openai.com/v1/realtime?model=... query
+        parameter only when the broker response does not name a model.
+
+config LN_RT_CLIENT_SEMVER
+    string "Client semver for the X-LN-Client header"
+    default "0.1.0"
+    help
+        Semantic version reported as X-LN-Client: m5stack/<semver>+<build>
+        (contracts/headers.md). The +<build> part comes from the app
+        descriptor version at runtime.
+
+endmenu

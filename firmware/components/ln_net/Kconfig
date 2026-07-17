@@ -1,0 +1,53 @@
+menu "Live Ninja — network (ln_net)"
+
+    config LN_BACKEND_BASE_URL
+        string "Backend base URL"
+        default "https://live.jeremy.ninja"
+        help
+            Base URL of the Live Ninja backend. Device pairing
+            (/auth/device/pair/*), token refresh (/auth/refresh) and the
+            realtime session mint (/v1/realtime/session) are all resolved
+            against this. No trailing slash.
+
+    config LN_PORTAL_AP_SSID
+        string "Provisioning SoftAP SSID"
+        default "LiveNinja-Setup"
+        help
+            SSID of the open SoftAP the device raises while unprovisioned
+            (PRD M5 screen 1: 'Join Wi-Fi "LiveNinja-Setup"').
+
+    config LN_PORTAL_AP_CHANNEL
+        int "Provisioning SoftAP channel"
+        range 1 13
+        default 6
+
+    config LN_PORTAL_AP_MAX_CLIENTS
+        int "Provisioning SoftAP max stations"
+        range 1 8
+        default 4
+
+    config LN_WIFI_CONNECT_RETRIES
+        int "STA connect attempts before falling back to the portal"
+        range 1 20
+        default 6
+        help
+            With stored credentials, how many consecutive failed connect
+            attempts before the provisioning portal is raised alongside the
+            (continuing) background retry loop.
+
+    config LN_WIFI_RETRY_BACKGROUND_S
+        int "Background STA retry period while portal is up (seconds)"
+        range 10 600
+        default 60
+
+    config LN_AUTH_ROTATE_PERIOD_S
+        int "Silent refresh-token rotation period (seconds)"
+        range 3600 604800
+        default 86400
+        help
+            Steady-state cadence of the silent POST /auth/refresh rotation
+            (plan.md M5: 24h). Access JWTs are additionally refreshed
+            on demand whenever ln_auth_get_jwt() finds the cached one
+            expiring.
+
+endmenu

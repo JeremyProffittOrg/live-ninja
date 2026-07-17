@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Ninja — Device Setup</title>
+<style>
+:root{
+  --bg:#0B1220;--bg2:#0a1424;--grad:radial-gradient(1200px 700px at 70% -10%,#12294a 0%,#0B1220 55%);
+  --surface:#101b30;--surface2:#16233c;--border:rgba(122,160,205,.16);--border-strong:rgba(122,160,205,.30);
+  --teal:#22E3D6;--teal-glow:rgba(34,224,208,.35);--cyan:#38d0ff;--text:#e8f0fa;--muted:#9fb2c9;
+  --error:#ff5c72;--success:#34e39b;--focus:0 0 0 3px rgba(56,208,255,.55);
+  --r:12px;--r-lg:18px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif;
+  background:var(--bg) ;background-image:var(--grad);color:var(--text);min-height:100vh;line-height:1.5}
+main{max-width:480px;margin:0 auto;padding:20px 16px 48px}
+header{display:flex;align-items:center;gap:10px;padding:14px 0 22px}
+.orb{width:26px;height:26px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#7ff5ec,var(--teal) 60%,#0d8f86);
+  box-shadow:0 0 18px var(--teal-glow);flex:none}
+header h1{font-size:19px;font-weight:600}
+.step{margin-left:auto;font-size:13px;color:var(--muted);white-space:nowrap}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:18px;margin-bottom:16px}
+h2{font-size:16px;font-weight:600;margin-bottom:4px}
+.hint{font-size:14px;color:var(--muted);margin-bottom:12px}
+fieldset{border:0}
+legend{font-size:16px;font-weight:600;margin-bottom:4px}
+.netlist{list-style:none;margin-top:10px}
+.netlist li+li{margin-top:8px}
+.net{display:flex;align-items:center;gap:12px;width:100%;min-height:52px;padding:10px 14px;border:1px solid var(--border);
+  border-radius:var(--r);background:var(--surface2);color:var(--text);font-size:16px;text-align:left;cursor:pointer}
+.net:hover{border-color:var(--border-strong)}
+.net:focus-visible,button:focus-visible,input:focus-visible,a:focus-visible{outline:none;box-shadow:var(--focus)}
+.net[aria-pressed="true"]{border-color:var(--teal);box-shadow:0 0 0 1px var(--teal-glow)}
+.net .ssid{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.net .meta{color:var(--muted);font-size:13px;flex:none;display:flex;gap:8px;align-items:center}
+.bars{display:inline-flex;align-items:flex-end;gap:2px;height:14px}
+.bars span{width:3px;background:var(--teal);border-radius:1px;opacity:.25}
+.bars span.on{opacity:1}
+.bars span:nth-child(1){height:4px}.bars span:nth-child(2){height:7px}.bars span:nth-child(3){height:10px}.bars span:nth-child(4){height:14px}
+label{display:block;font-size:14px;font-weight:600;margin:14px 0 6px}
+input[type=text],input[type=password]{width:100%;min-height:48px;padding:10px 14px;font-size:16px;color:var(--text);
+  background:var(--bg2);border:1px solid var(--border-strong);border-radius:var(--r)}
+.pwrow{display:flex;gap:8px}
+.pwrow input{flex:1}
+button{font:inherit;cursor:pointer}
+.btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;min-height:50px;margin-top:16px;
+  padding:12px 18px;font-size:16px;font-weight:600;border-radius:var(--r);border:1px solid transparent;text-decoration:none}
+.btn-primary{background:var(--teal);color:#042522}
+.btn-primary:hover{filter:brightness(1.08)}
+.btn-primary[disabled]{opacity:.55;cursor:not-allowed}
+.btn-ghost{background:transparent;color:var(--cyan);border-color:var(--border-strong);min-height:44px;width:auto;padding:8px 16px;margin-top:0;font-weight:500}
+.toggle{background:transparent;color:var(--cyan);border:1px solid var(--border-strong);border-radius:var(--r);min-width:72px;min-height:48px;font-size:14px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px}
+.alert{display:none;margin-top:12px;padding:10px 14px;border-radius:var(--r);font-size:14px;
+  background:rgba(255,92,114,.12);border:1px solid rgba(255,92,114,.45);color:#ffd7dd}
+.alert.show{display:block}
+.status-line{display:flex;align-items:center;gap:10px;font-size:15px;color:var(--muted);margin-top:6px}
+.spin{width:18px;height:18px;border:2px solid var(--border-strong);border-top-color:var(--teal);border-radius:50%;
+  animation:spin .9s linear infinite;flex:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation:none}}
+.kv{margin-top:8px;font-size:14px}
+.kv div{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border)}
+.kv dt{color:var(--muted)}
+.kv dd{font-weight:600;text-align:right;overflow-wrap:anywhere}
+.ok{color:var(--success)}
+.url{font-family:Consolas,Menlo,monospace;font-size:13px;color:var(--cyan);overflow-wrap:anywhere;margin-top:10px;display:block}
+.skel{height:52px;border-radius:var(--r);background:linear-gradient(90deg,var(--surface2) 25%,#1b2b47 50%,var(--surface2) 75%);
+  background-size:200% 100%;animation:sh 1.2s infinite}
+@keyframes sh{to{background-position:-200% 0}}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="orb" aria-hidden="true"></div>
+    <h1>Live Ninja — Device Setup</h1>
+    <div class="step" id="step" aria-live="polite">Step 1 of 3</div>
+  </header>
+
+  <!-- STEP 1: pick a network -->
+  <section class="card" id="panel-wifi">
+    <fieldset>
+      <legend>Choose your Wi-Fi network</legend>
+      <p class="hint" id="scanHint">Networks near your device, strongest first.</p>
+      <ul class="netlist" id="netlist" aria-describedby="scanHint"></ul>
+      <div class="row">
+        <span class="hint" id="netCount" style="margin:0" aria-live="polite"></span>
+        <button type="button" class="btn-ghost" id="rescan">&#10227; Rescan</button>
+      </div>
+    </fieldset>
+
+    <div id="hiddenWrap" class="hidden">
+      <label for="hiddenSsid">Hidden network name (SSID)</label>
+      <input type="text" id="hiddenSsid" autocomplete="off" autocapitalize="none" spellcheck="false">
+    </div>
+
+    <form id="joinForm" class="hidden">
+      <label for="pw" id="pwLabel">Password</label>
+      <div class="pwrow">
+        <input type="password" id="pw" autocomplete="current-password" autocapitalize="none" spellcheck="false"
+               aria-describedby="pwHint">
+        <button type="button" class="toggle" id="pwToggle" aria-pressed="false" aria-label="Show password">Show</button>
+      </div>
+      <p class="hint" id="pwHint" style="margin-top:6px">Your password stays on this device — it is only used to join the network.</p>
+      <div class="alert" id="joinError" role="alert"></div>
+      <button type="submit" class="btn btn-primary" id="joinBtn">Join network</button>
+    </form>
+  </section>
+
+  <!-- STEP 1b: connecting -->
+  <section class="card hidden" id="panel-connecting">
+    <h2>Connecting&hellip;</h2>
+    <div class="status-line"><span class="spin" aria-hidden="true"></span>
+      <span id="connMsg" aria-live="polite">Connecting&hellip;</span></div>
+  </section>
+
+  <!-- STEP 2: pair with Amazon -->
+  <section class="card hidden" id="panel-pair">
+    <h2><span class="ok">&#10003;</span> Wi-Fi connected</h2>
+    <dl class="kv">
+      <div><dt>Network</dt><dd id="pairSsid"></dd></div>
+      <div><dt>Device IP</dt><dd id="pairIp"></dd></div>
+    </dl>
+    <p class="hint" style="margin-top:14px">Now link the device to your Amazon account. Your phone will
+      switch back to the internet to open the sign-in page.</p>
+    <div class="status-line" id="pairWait"><span class="spin" aria-hidden="true"></span>
+      <span aria-live="polite">Getting a pairing link&hellip;</span></div>
+    <a class="btn btn-primary hidden" id="claimBtn" rel="noopener">&#127312; Continue with Amazon</a>
+    <span class="url hidden" id="claimUrlText"></span>
+    <p class="hint hidden" id="pairNote">If the button doesn&rsquo;t open, reconnect your phone to your normal
+      Wi-Fi and visit the link above. This device stays signed in for 10 years &mdash; you won&rsquo;t need to
+      log in again. You can also finish from the QR code on the device screen.</p>
+  </section>
+
+  <!-- STEP 3: done -->
+  <section class="card hidden" id="panel-done" role="status">
+    <h2><span class="ok">&#10003;</span> Device paired</h2>
+    <p class="hint" style="margin-top:8px">Setup is complete — your device is linked to your Amazon account
+      and will finish on its own screen. You can close this page and reconnect your phone to your normal Wi-Fi.</p>
+  </section>
+</main>
+
+<script>
+(function(){
+"use strict";
+var $=function(id){return document.getElementById(id);};
+var selSsid=null, selSecure=true, hiddenMode=false, submitted=false, pollTimer=null;
+
+function show(el,on){el.classList.toggle("hidden",!on);}
+function setStep(n){$("step").textContent="Step "+n+" of 3";}
+function panels(active){
+  ["panel-wifi","panel-connecting","panel-pair","panel-done"].forEach(function(id){
+    show($(id),id===active);
+  });
+}
+
+/* ---------- scan / network list ---------- */
+function bars(rssi){
+  var lvl=rssi>=-55?4:rssi>=-67?3:rssi>=-75?2:1,h="";
+  for(var i=1;i<=4;i++)h+='<span class="'+(i<=lvl?"on":"")+'"></span>';
+  return '<span class="bars" aria-hidden="true">'+h+"</span>";
+}
+function escText(s){var d=document.createElement("span");d.textContent=s;return d.innerHTML;}
+function renderSkeleton(){
+  var ul=$("netlist");ul.innerHTML="";
+  for(var i=0;i<4;i++){var li=document.createElement("li");li.innerHTML='<div class="skel"></div>';ul.appendChild(li);}
+  $("netCount").textContent="Scanning…";
+}
+function renderList(nets){
+  var ul=$("netlist");ul.innerHTML="";
+  nets.forEach(function(n){
+    var li=document.createElement("li"),b=document.createElement("button");
+    b.type="button";b.className="net";b.setAttribute("aria-pressed",String(n.ssid===selSsid&&!hiddenMode));
+    b.innerHTML='<span class="ssid">'+escText(n.ssid)+'</span><span class="meta">'+
+      (n.secure?'<span aria-label="Secured network">🔒</span>':'<span>Open</span>')+bars(n.rssi)+"</span>";
+    b.addEventListener("click",function(){pick(n.ssid,n.secure,false);});
+    li.appendChild(b);ul.appendChild(li);
+  });
+  var li=document.createElement("li"),b=document.createElement("button");
+  b.type="button";b.className="net";b.setAttribute("aria-pressed",String(hiddenMode));
+  b.innerHTML='<span class="ssid">Join a hidden network…</span>';
+  b.addEventListener("click",function(){pick(null,true,true);});
+  li.appendChild(b);ul.appendChild(li);
+  $("netCount").textContent=nets.length?nets.length+" network"+(nets.length===1?"":"s")+" found":
+    "No networks found — try Rescan.";
+}
+function markPressed(){
+  var btns=$("netlist").querySelectorAll(".net");
+  for(var i=0;i<btns.length;i++){
+    var label=btns[i].querySelector(".ssid").textContent;
+    var isHiddenRow=(label==="Join a hidden network…");
+    btns[i].setAttribute("aria-pressed",String(isHiddenRow?hiddenMode:(!hiddenMode&&label===selSsid)));
+  }
+}
+function pick(ssid,secure,hidden){
+  hiddenMode=hidden;selSsid=ssid;selSecure=secure;
+  show($("hiddenWrap"),hidden);
+  show($("joinForm"),true);
+  $("joinError").classList.remove("show");
+  $("pwLabel").textContent=hidden?"Password (leave blank if open)":
+    (secure?'Password for “'+ssid+'”':'“'+ssid+'” is an open network');
+  show($("pw").parentElement,secure||hidden);
+  markPressed();
+  (hidden?$("hiddenSsid"):$("pw")).focus();
+}
+function scan(){
+  renderSkeleton();
+  fetch("/api/scan").then(function(r){return r.json();}).then(function(j){
+    renderList(j.networks||[]);
+  }).catch(function(){
+    $("netCount").textContent="Scan busy — trying again…";
+    setTimeout(scan,2500);
+  });
+}
+$("rescan").addEventListener("click",scan);
+
+/* ---------- passphrase + join ---------- */
+$("pwToggle").addEventListener("click",function(){
+  var pw=$("pw"),showing=pw.type==="text";
+  pw.type=showing?"password":"text";
+  this.textContent=showing?"Show":"Hide";
+  this.setAttribute("aria-pressed",String(!showing));
+  this.setAttribute("aria-label",(showing?"Show":"Hide")+" password");
+});
+$("joinForm").addEventListener("submit",function(ev){
+  ev.preventDefault();
+  var ssid=hiddenMode?$("hiddenSsid").value.trim():selSsid;
+  if(!ssid){showError("Enter the network name.");$("hiddenSsid").focus();return;}
+  var pass=$("pw").value;
+  if(selSecure&&!hiddenMode&&pass.length<8){showError("Wi-Fi passwords are at least 8 characters.");$("pw").focus();return;}
+  $("joinBtn").disabled=true;$("joinBtn").textContent="Joining…";
+  fetch("/api/wifi",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({ssid:ssid,pass:pass})})
+  .then(function(r){
+    if(!r.ok)throw new Error("bad");
+    submitted=true;
+    $("connMsg").textContent="Connecting to “"+ssid+"”…";
+    panels("panel-connecting");
+  })
+  .catch(function(){resetJoin();showError("Couldn’t send that to the device. Try again.");});
+});
+function showError(msg){var a=$("joinError");a.textContent=msg;a.classList.add("show");}
+function resetJoin(){$("joinBtn").disabled=false;$("joinBtn").textContent="Join network";}
+
+/* ---------- status polling ---------- */
+function poll(){
+  fetch("/api/status").then(function(r){return r.json();}).then(function(st){
+    if(st.paired){setStep(3);panels("panel-done");return;}
+    var w=st.wifi||{};
+    if(w.state==="connected"){
+      setStep(2);
+      $("pairSsid").textContent=w.ssid||"";
+      $("pairIp").textContent=w.ip||"";
+      panels("panel-pair");
+      if(st.claimUrl){
+        var a=$("claimBtn");a.href=st.claimUrl;
+        show(a,true);show($("claimUrlText"),true);show($("pairNote"),true);show($("pairWait"),false);
+        $("claimUrlText").textContent=st.claimUrl;
+      }
+    }else if(submitted&&(w.state==="wrong_password"||w.state==="ap_not_found"||w.state==="failed")){
+      submitted=false;resetJoin();panels("panel-wifi");setStep(1);
+      showError(w.state==="wrong_password"?
+        "Wrong password for “"+w.ssid+"” — try again.":
+        w.state==="ap_not_found"?
+        "Couldn’t find “"+w.ssid+"”. Check the network is in range, or rescan.":
+        "Couldn’t connect to “"+w.ssid+"”. Try again.");
+      if($("pw").parentElement&&!$("pw").parentElement.classList.contains("hidden"))$("pw").focus();
+    }
+  }).catch(function(){/* device busy switching networks; keep polling */});
+}
+
+setStep(1);panels("panel-wifi");scan();
+pollTimer=setInterval(poll,1500);
+})();
+</script>
+</body>
+</html>

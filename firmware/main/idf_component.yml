@@ -1,0 +1,5 @@
+dependencies:
+  idf: ">=5.4"
+  espressif/m5stack_tab5: "^1.2.0"
+  espressif/esp_websocket_client: "^1.4.0"
+  lvgl/lvgl: "^9"

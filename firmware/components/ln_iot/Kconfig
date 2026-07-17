@@ -1,0 +1,45 @@
+menu "Live Ninja IoT (ln_iot)"
+
+    config LN_IOT_TOPIC_PREFIX
+        string "Application MQTT topic prefix"
+        default "liveninja"
+        help
+            Prefix for application topics: <prefix>/<thingName>/control/up|down and
+            <prefix>/<thingName>/telemetry. Must match the per-device IoT policy
+            provisioned by the backend (contracts/shadow.md, plan.md M5).
+
+    config LN_IOT_PROV_TEMPLATE
+        string "Default fleet provisioning template name"
+        default "liveninja-tab5"
+        help
+            Used when the pairing flow did not store a template name in NVS.
+            Must match the Fleet Provisioning template created by WS-A (M0
+            "IoT Core baseline").
+
+    config LN_IOT_HEARTBEAT_S
+        int "Telemetry heartbeat interval (seconds)"
+        default 30
+        range 5 3600
+        help
+            device_heartbeat cadence on liveninja/<thing>/telemetry (rssi, free
+            heap, app state, firmware version).
+
+    config LN_IOT_MQTT_BUF_SIZE
+        int "MQTT rx/tx buffer size (bytes)"
+        default 8192
+        range 2048 32768
+        help
+            Sized so fleet-provisioning responses (certificate PEM ~1.3KB inside
+            JSON) and full shadow documents arrive without chunking; chunked
+            reassembly is still handled if a payload exceeds this.
+
+    config LN_IOT_VERIFY_TIMEOUT_S
+        int "OTA rollback watchdog (seconds)"
+        default 300
+        range 60 3600
+        help
+            After booting an unverified (pending-verify) OTA image, the firmware
+            must complete an MQTT connect to AWS IoT within this window or it
+            calls esp_ota_mark_app_invalid_rollback_and_reboot().
+
+endmenu

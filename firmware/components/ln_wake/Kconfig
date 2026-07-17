@@ -1,0 +1,34 @@
+menu "Live Ninja wake word (ln_wake)"
+
+    config LN_WAKE_DEFAULT_MODEL
+        string "Default WakeNet model name"
+        default "wn9_hiesp"
+        help
+            WakeNet model used when NVS holds no override ("ln_wake"/"model").
+            M5-stage built-in model is "Hi, ESP" (wn9_hiesp); the custom
+            "Hey Live Ninja" model lands in M6 via the curated set — the
+            pipeline is model-agnostic, only this name/NVS changes.
+
+    config LN_WAKE_INPUT_FORMAT
+        string "AFE input format string"
+        default "MR"
+        help
+            Channel layout fed to the AFE: M = mic, R = playback (echo)
+            reference, N = unused. ln_wake interleaves the primary mic and
+            the software echo reference from ln_audio, so "MR" is correct
+            for this board. Must contain exactly one M and at most one R.
+
+    config LN_WAKE_FEED_TASK_PRIORITY
+        int "AFE feed (ww_feed) task priority"
+        default 21
+
+    config LN_WAKE_FETCH_TASK_PRIORITY
+        int "AFE fetch/inference (ww_infer) task priority"
+        default 20
+
+    config LN_WAKE_TASK_CORE
+        int "Core for wake tasks (and AFE internal task)"
+        range 0 1
+        default 1
+
+endmenu

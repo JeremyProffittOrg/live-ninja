@@ -1,0 +1,13 @@
+## ln_net — C6 WiFi (esp_wifi_remote over esp-hosted SDIO), SoftAP captive
+## portal provisioning, backend device pairing + 10-yr auth lineage.
+##
+## esp_hosted 1.4.0 + esp_wifi_remote 0.8.5 is the combination confirmed
+## working against the factory-flashed ESP32-C6 esp-hosted slave firmware on
+## the M5Stack Tab5 (SDIO CLK=12 CMD=13 D0=11 D1=10 D2=9 D3=8, RST=15 —
+## pins set in sdkconfig.defaults). Bump both together, and only alongside a
+## coordinated C6 slave update (plan.md M5 OTA "P4<->C6 version gate").
+dependencies:
+  idf: ">=5.4"
+  espressif/esp_hosted: "~1.4.0"
+  espressif/esp_wifi_remote: "~0.8.5"
+  espressif/m5stack_tab5: "^1.2.0"
