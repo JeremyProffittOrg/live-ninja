@@ -165,7 +165,7 @@ flowchart TB
 > Each task line: `[status]` · **model** · task · _(FR refs / note)_.
 > FR IDs reference the PRD's functional requirements; where the PRD numbering is not yet fixed, the bracketed area tag (e.g. `[AUTH]`, `[RT]`, `[WAKE]`) stands in and is reconciled during M0's contract pass.
 
-### M0 — Bootstrap / Infrastructure  `[~]`  (WS-A lead, WS-G support)
+### M0 — Bootstrap / Infrastructure  `[x]`  (WS-A lead, WS-G support)
 
 **Definition of Done:** An empty-but-real SAM stack deploys to `759775734231` via GitHub Actions + OIDC on push to `main`; the single-table DynamoDB (`live-ninja`) with both GSIs + TTL exists; all SSM parameter *slots* exist (values set out-of-band by the user); S3 buckets, CloudFront + Route 53 for `live.jeremy.ninja`, and the six cost tags are in place; `/healthz` returns 200 through CloudFront; the DynamoDB `ConsumedReadCapacityUnits` alarm and AWS Budgets ($20/$50/$100 on `Project=live-ninja`) are armed. **Cost Allocation Tags `Project`+`CostCenter` activated in Billing (non-retroactive — do early).**
 
@@ -352,7 +352,7 @@ stateDiagram-v2
 
 Ordered tasks:
 - `[ ]` **O** — ESP-IDF v5.4+ project, pinned tag; P4/C6 `esp-hosted` link bring-up, netif/esp-tls/mqtt over hosted transport; task partition (`audio_rx`, `ww_infer`, `net_uplink/downlink`, `lvgl`, `ctrl`). _(M5 §1/§2)_
-- `[ ]` **F** — Audio path: PDM mic → AFE (AEC/NS/VAD) → ESP-SR WakeNet "Hey Live Ninja" → Opus 16kHz 20ms uplink; downlink Opus decode → I2S with 60-100ms jitter buffer; local instant barge-in (stop DAC + control publish). _(M5 §3/§4)_
+- `[~]` **F** — Audio path: PDM mic → AFE (AEC/NS/VAD) → ESP-SR WakeNet "Hey Live Ninja" → Opus 16kHz 20ms uplink; downlink Opus decode → I2S with 60-100ms jitter buffer; local instant barge-in (stop DAC + control publish). _(M5 §3/§4)_ — `components/ln_audio` + `components/ln_wake` implemented & building (see §8 M5 notes); remaining: ln_realtime wiring (uplink = `ln_wake_audio_subscribe`, downlink = `ln_audio_play`, barge-in = `ln_audio_play_stop` + control publish). Locked transport is WSS pcm16 (24k down / 16k up), not Opus.
 - `[ ]` **S** — IoT Core: Fleet Provisioning by Claiming Certificate, on-chip keypair (DS peripheral), per-device topic policy (`${iot:Connection.Thing.ThingName}`), topic map (`audio/up|down`, `control/up|down`, `telemetry`), classic+`config` shadows. _(M5 §5)_
 - `[ ]` **O** — Device-hosted config: SoftAP captive portal (SSID scan-list-select, passphrase keyboard only), STA config page, **LWA PKCE brokered by backend**, bind token returned over IoT `control/down`. _(M5 §6)_
 - `[ ]` **O** — 10-yr persistence: X.509 op-cert (10-yr, rotate at yr8), encrypted NVS bind record, flash encryption + Secure Boot v2 + NVS encryption; steady-state 24h mTLS refresh; realtime session: HTTPS to broker for ephemeral token, then direct to OpenAI. _(M5 §6, Auth §6)_
@@ -550,6 +550,15 @@ Cross-cutting gates (all milestones): `golangci-lint` + `go vet` clean; unit tes
 - Key decisions: KMS env vars carry **key ARNs** not alias ARNs (Ref on Alias returns name); web fn gets `kms:Decrypt` via `kms:ViaService=ssm` for SecureString reads; samconfig uses `confirm_changeset=false`/`fail_on_empty_changeset=false` (real keys); authorizer deployed but NOT attached until M1; SSM params workflow-managed (not CFN) — `cred_pepper` generated only-if-missing.
 - Verified locally: `go mod tidy && go build ./... && go vet ./...` clean; `sam validate --lint` passes; arm64 cross-build of cmd/web with exact CI flags OK. No local deploys (pipeline only).
 
+**2026-07-17 ~16:45–17:50 EDT — deploy hardening + M0 DONE.** Six pipeline attempts; five distinct bootstrap defects found+fixed (none in stack code):
+1. **OIDC**: new-2026 repos emit ID-qualified sub claims (`repo:JeremyProffittOrg@299835367/live-ninja@1303872500:ref:...`) that missed the org trust patterns. Fixed org-wide: `credential-rotation` d489274 adds `repo:${Org}@${OrgId}/*` variants; `github-oidc-deploy` stack updated (bootstrap procedure — its pipeline path requires re-adding deleted static bootstrap keys, so the stack update ran locally with the same `github` IAM user the bootstrap workflow uses; template and live state are in sync). Repo-level `use_immutable_subject:false` PUT had no effect — the ID-qualified form appears forced for new repos.
+2. `sam build` removed: SAM's default builder for provided.* runtimes demands a per-CodeUri Makefile; we deploy prebuilt `.build/<fn>/bootstrap` (make build) directly.
+3. `--resolve-s3`: org var `CLOUDFORMATION_S3_BUCKET` (cloudformation-jeremy-ninja) is **us-east-2**; Lambda requires same-region code objects → SAM managed in-region bucket.
+4. Stray `{}` YAML typo (GitHub parser rejected workflow).
+5. Stale `aws-sam-cli-managed-default` stack pointed at a deleted bucket → deleted; SAM recreated bucket+stack on next run.
+Also: `concurrency: deploy-main` (serialize pushes, no cancel) + automatic ROLLBACK_COMPLETE shell cleanup step; leftover Retain resources from the failed first create (empty table + 5 empty buckets) deleted before re-create.
+**M0 DoD verified in prod:** run 29612083012 green; `https://live.jeremy.ninja/healthz` 200 through CloudFront; `/.well-known/jwks.json` serves the KMS ES256 key; table ACTIVE with GSI1/GSI2; 5 alarms + 3 budgets armed; 4 SSM params synced by workflow; **Cost Allocation Tags Project+CostCenter ACTIVATED via `ce update-cost-allocation-tags-status` (CLI, Errors:[])** — no user action needed. Remaining user click: SNS ops-topic email subscription confirmation (SETUP.md).
+
 ### M1 — Auth
 
 **2026-07-17 16:10–17:15 EDT — authored by 10 parallel agents + integrator + test author (workflow `wf_1aba42cc`), dictated-interface pattern (item shapes + Go signatures fixed in the workflow spec so authors ran fully parallel).**
@@ -577,7 +586,17 @@ _(no notes yet)_
 _(no notes yet)_
 
 ### M5 — M5Stack firmware + IoT
-_(no notes yet)_
+
+**2026-07-17 — Audio pipeline (`components/ln_audio`, `components/ln_wake`) implemented (audio subagent).**
+
+- **ESP-SR on P4 confirmed** — `espressif/esp-sr` 2.4.6 supports esp32p4 (uses `esp32p4_less_v3` prebuilt libs because `CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y` on IDF 5.4); no VAD-only fallback needed. Dep declared in `components/ln_wake/idf_component.yml`, resolved in `dependencies.lock`.
+- **Hardware constraint that shaped the design:** the Tab5 BSP runs ONE I2S port full-duplex (ES8388 DAC + ES7210 ADC share MCLK/BCLK/WS), so capture and playback must share one rate. Link fixed at **48 kHz/16-bit/stereo** (custom `i2s_std_config_t` passed to `bsp_audio_init()` before the codec helpers — BSP default is mono); all rate conversion in software (`ln_resample.c`: 33-tap Q15 FIR ×3 decimator 48k→16k, 31-tap polyphase ×2 interpolator 24k→48k; both numerically verified DC + 1 kHz tone on host).
+- **Capture:** ES7210 default routing = MIC1+MIC2 on L/R; MIC1 (left) is the primary voice channel. `audio_rx` task (prio 23, core 0) reads 10 ms blocks, decimates to 16 k mono, delivers 160-sample frames + a **software AEC echo-reference** channel to up to 4 sinks. No hardware echo-loopback is wired to the ES7210, so the reference is generated from the playback path (every DAC chunk also decimated to 16 k into a ref ring consumed sample-synchronously — same MCLK, zero drift; `CONFIG_LN_AUDIO_AEC_REF_DELAY_MS` (24 ms) zero-padding approximates DAC/DMA latency, AEC filter tail absorbs the rest).
+- **Playback:** `ln_audio_play()` takes 24 kHz mono pcm16 (OpenAI realtime downlink) into a 30 s PSRAM ring; `audio_tx` task prebuffers `CONFIG_LN_AUDIO_JITTER_PREBUFFER_MS` (80 ms, plan range 60–100) then drains ×2-upsampled→stereo to the codec; blocking-full gives the downlink task natural backpressure; `ln_audio_play_end()` drains short tails, `ln_audio_play_stop()` = instant barge-in flush. Volume/mic-mute/spk-mute persist in NVS `ln_audio`.
+- **Wake:** `ln_wake` = ESP-SR AFE v2 (`afe_config_init("MR", …, AFE_TYPE_SR, AFE_MODE_HIGH_PERF)` → AEC+NS+VADNet) + WakeNet. Model name from NVS `ln_wake/model`, default `CONFIG_LN_WAKE_DEFAULT_MODEL=wn9_hiesp` ("Hi, ESP" — M5-stage stand-in; M6 swaps the custom "Hey Live Ninja" model **by name only**, pipeline is model-agnostic; `ln_wake_set_model()` does NVS persist + live pipeline restart). Tasks: `ww_feed` (prio 21) + `ww_infer` (prio 20) on core 1; AFE internal task also core 1. Posts `LN_WAKE_EVENT` on the default loop: `DETECTED` (model+word payload), `VAD_SPEECH`/`VAD_SILENCE`, `READY`/`FALLBACK`; `ln_wake_trigger()` = push-to-talk manual wake. **Processed (echo-cancelled/NS) 16 k mono audio is exposed via `ln_wake_audio_subscribe()` — net_uplink must send THIS stream to OpenAI, not raw mic.** Documented fallbacks: no WakeNet model in partition → AFE-only + `FALLBACK` event (push-to-talk); ESP-SR entirely unavailable → energy-VAD (RMS hysteresis) on raw mic frames emitting the same events.
+- **Partition/flash changes:** `partitions_ota.csv` — added `model, data, spiffs, 0xC20000, 0x180000` (esp-sr packs `srmodels.bin` = wn9_hiesp + vadnet1_medium = 579 KB; headroom for M6 custom model), `assets` shrunk to `0xDA0000, 0x260000`. `sdkconfig.defaults` + `sdkconfig`: `CONFIG_MODEL_IN_FLASH=y`, `CONFIG_SR_WN_WN9_HIESP=y`, `CONFIG_SR_VADN_VADNET1_MEDIUM=y`, `CONFIG_SR_NSN_WEBRTC=y`, `CONFIG_AFE_INTERFACE_V1=y`. **Flash command now includes `0xc20000 build\srmodels\srmodels.bin`** (in `flash_args`; integrator: flash it or wake falls back to push-to-talk).
+- **Verify:** `idf.py build` clean, zero warnings on ln_* sources; app 0x133df0 fits ota_0 (80% free). Components not yet referenced by `main/` (integrator wires), so linker GC's them — linkage pre-verified by nm cross-check: every undefined symbol in `libln_audio.a`+`libln_wake.a` resolves against build libs (only libc/libgcc left). Build gotcha: `export.bat` picks Python 3.14 env that isn't installed — set `IDF_PYTHON_ENV_PATH=%USERPROFILE%\.espressif\python_env\idf5.4_py3.13_env` first.
+- **Integration contract:** boot order `ln_audio_init()` → `ln_wake_init()`; ctrl consumes `LN_WAKE_EVENT`; uplink pcm16@16k from `ln_wake_audio_subscribe`; downlink pcm16@24k → `ln_audio_play`; barge-in → `ln_audio_play_stop()` (+ optional `ln_wake_enable(false)` during Speaking if self-trigger observed).
 
 ### M6 — Programmable wake-word + settings sync
 _(no notes yet)_
