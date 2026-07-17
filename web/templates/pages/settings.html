@@ -1,0 +1,308 @@
+{{define "head"}}
+<script type="module" src="{{asset "/static/js/settings.mjs"}}"></script>
+{{end}}
+
+{{define "body"}}
+{{template "nav" .}}
+
+<main class="set-shell" id="main">
+  <div class="set-page-head">
+    <h1>Settings</h1>
+    <p class="ln-muted">Changes save automatically and apply on every device you use Live Ninja on.</p>
+  </div>
+
+  <!-- ============ Wake word ============ -->
+  <section class="ln-card set-section" aria-labelledby="sectionWakeWord">
+    <div class="set-section__intro">
+      <h2 class="ln-card__title" id="sectionWakeWord">Wake word</h2>
+      <p class="ln-muted">What Live Ninja listens for before it starts a conversation.</p>
+    </div>
+
+    <div class="ln-field ln-combobox" id="wakeWordCombobox">
+      <label for="wakeWordInput">Wake phrase</label>
+      {{- /* Searchable combobox over /static/wakewords/catalog.json —
+             selection only, never a free-typed phrase (FR-K02).
+             settings.mjs swaps the SSR'd id for the display phrase once
+             the catalog loads; a stored id missing from the catalog is
+             kept as-is (schema forward-compat rule). */}}
+      <input class="ln-input" id="wakeWordInput" type="text" role="combobox"
+             aria-expanded="false" aria-controls="wakeWordListbox" aria-autocomplete="list"
+             autocomplete="off" spellcheck="false"
+             value="{{.WakeWord}}" data-selected-id="{{.WakeWord}}"
+             aria-describedby="wakeWordHint">
+      <ul class="ln-combobox-panel" id="wakeWordListbox" role="listbox" aria-label="Wake phrases" hidden></ul>
+      <p class="ln-hint" id="wakeWordHint">Pick from the built-in phrases. Training your own phrase arrives with the wake-word studio.</p>
+    </div>
+
+    <fieldset class="ln-fieldset">
+      <legend>Wake engine</legend>
+      <div class="ln-choices">
+        <label class="ln-choice">
+          <input type="radio" name="wakeEngine" value="openwakeword" {{if eq .WakeEngine "openwakeword"}}checked{{end}}>
+          <span class="ln-choice__body">
+            <span class="ln-choice__title">openWakeWord</span>
+            <span class="ln-choice__desc">Runs in this browser — free, on-device (default).</span>
+          </span>
+        </label>
+        <label class="ln-choice is-disabled">
+          <input type="radio" name="wakeEngine" value="porcupine" disabled aria-describedby="engineHintPorcupine" {{if eq .WakeEngine "porcupine"}}checked{{end}}>
+          <span class="ln-choice__body">
+            <span class="ln-choice__title">Porcupine</span>
+            <span class="ln-choice__desc" id="engineHintPorcupine">Available on the Android app.</span>
+          </span>
+        </label>
+        <label class="ln-choice is-disabled">
+          <input type="radio" name="wakeEngine" value="wakenet" disabled aria-describedby="engineHintWakenet" {{if eq .WakeEngine "wakenet"}}checked{{end}}>
+          <span class="ln-choice__body">
+            <span class="ln-choice__title">WakeNet</span>
+            <span class="ln-choice__desc" id="engineHintWakenet">Available on M5Stack hardware.</span>
+          </span>
+        </label>
+      </div>
+    </fieldset>
+
+    <div class="ln-field">
+      <label for="sensitivity">Wake sensitivity</label>
+      <div class="ln-slider-row">
+        <input class="ln-slider" id="sensitivity" type="range" min="0" max="100" step="1"
+               value="{{.SensitivityPct}}" style="--val: {{.SensitivityPct}}%;"
+               aria-valuetext="{{.SensitivityPct}}%">
+        <output class="ln-slider-value" id="sensitivityValue" for="sensitivity">{{.SensitivityPct}}%</output>
+      </div>
+      <p class="ln-hint">Higher values trigger more easily but may cause false wakes.</p>
+    </div>
+  </section>
+
+  <!-- ============ Persona ============ -->
+  <section class="ln-card set-section" aria-labelledby="sectionPersona">
+    <div class="set-section__intro">
+      <h2 class="ln-card__title" id="sectionPersona">Persona</h2>
+      <p class="ln-muted">How Live Ninja speaks and behaves.</p>
+    </div>
+
+    <div class="ln-field">
+      <label for="personaPreset">Persona</label>
+      {{- /* Server-rendered from the same catalog GET /api/v1/realtime/
+             personas serves, + the literal "custom" option last
+             (spec §3.3). */}}
+      <select class="ln-select" id="personaPreset">
+        {{range .Personas}}<option value="{{.ID}}"{{if .Selected}} selected{{end}}>{{.Name}}{{if .Description}} — {{.Description}}{{end}}</option>
+        {{end}}<option value="custom"{{if .IsCustomPersona}} selected{{end}}>Custom — write your own instructions</option>
+      </select>
+    </div>
+
+    <div class="ln-field" id="customInstructionsField" {{if not .IsCustomPersona}}hidden{{end}}>
+      <label for="systemInstructions">Custom instructions</label>
+      <textarea class="ln-textarea" id="systemInstructions" maxlength="4000"
+                aria-describedby="instructionsCharCount"
+                placeholder="e.g. Always answer in a calm, brief tone and call me Jeremy.">{{.Instructions}}</textarea>
+      <div class="ln-charcount"><span id="instructionsCharCount">{{.InstructionsLen}} / 4000</span></div>
+    </div>
+  </section>
+
+  <!-- ============ Voice ============ -->
+  <section class="ln-card set-section" aria-labelledby="sectionVoice">
+    <div class="set-section__intro">
+      <h2 class="ln-card__title" id="sectionVoice">Voice</h2>
+      <p class="ln-muted">Pick how Live Ninja sounds. Preview any voice before choosing.</p>
+    </div>
+
+    <fieldset class="ln-fieldset">
+      <legend class="ln-sr-only">Voice</legend>
+      {{- /* Rows in canonical enum order (settings.schema.json #/properties/
+             voice) from realtime.SupportedVoices, fully server-rendered;
+             settings.mjs enables the preview buttons (POST
+             /api/v1/fallback/tts). An unrecognized stored voice renders
+             with cedar selected but is preserved verbatim on write-back. */}}
+      <div class="set-voice-list" id="voiceList">
+        {{range .Voices}}
+        <label class="set-voice-row">
+          <input type="radio" name="voice" value="{{.ID}}"{{if .Selected}} checked{{end}}>
+          <span class="set-voice-info">
+            <span class="set-voice-name">{{.Name}}{{if .Default}} <span class="ln-dim">(default)</span>{{end}}</span>
+            <span class="set-voice-desc">{{.Description}}</span>
+          </span>
+          <button class="set-voice-preview" type="button" disabled aria-pressed="false"
+                  aria-label="Preview the {{.Name}} voice" data-voice-preview="{{.ID}}">
+            <span aria-hidden="true">▶</span>
+          </button>
+        </label>
+        {{end}}
+      </div>
+    </fieldset>
+  </section>
+
+  <!-- ============ Turn detection ============ -->
+  <section class="ln-card set-section" aria-labelledby="sectionTurn">
+    <div class="set-section__intro">
+      <h2 class="ln-card__title" id="sectionTurn">Turn detection</h2>
+      <p class="ln-muted">How Live Ninja decides you've finished speaking.</p>
+    </div>
+
+    <fieldset class="ln-fieldset">
+      <legend class="ln-sr-only">Turn detection</legend>
+      <div class="ln-choices">
+        <label class="ln-choice">
+          <input type="radio" name="turnDetection" value="semantic_vad" {{if eq .TurnDetection "semantic_vad"}}checked{{end}}>
+          <span class="ln-choice__body">
+            <span class="ln-choice__title">Semantic VAD</span>
+            <span class="ln-choice__desc">Live Ninja judges when you're done speaking from meaning, not just silence (recommended).</span>
+          </span>
+        </label>
+        <label class="ln-choice">
+          <input type="radio" name="turnDetection" value="server_vad" {{if eq .TurnDetection "server_vad"}}checked{{end}}>
+          <span class="ln-choice__body">
+            <span class="ln-choice__title">Server VAD</span>
+            <span class="ln-choice__desc">Ends your turn after a fixed silence gap.</span>
+          </span>
+        </label>
+      </div>
+    </fieldset>
+  </section>
+
+  <!-- ============ Appearance ============ -->
+  <section class="ln-card set-section" aria-labelledby="sectionAppearance">
+    <div class="set-section__intro">
+      <h2 class="ln-card__title" id="sectionAppearance">Appearance</h2>
+    </div>
+
+    <fieldset class="ln-fieldset">
+      <legend>Theme</legend>
+      <div class="ln-seg" id="themeSeg">
+        <label><input type="radio" name="theme" value="light" {{if eq .Theme "light"}}checked{{end}}><span>Light</span></label>
+        <label><input type="radio" name="theme" value="dark" {{if eq .Theme "dark"}}checked{{end}}><span>Dark</span></label>
+        <label><input type="radio" name="theme" value="system" {{if eq .Theme "system"}}checked{{end}}><span>System</span></label>
+      </div>
+      <p class="ln-hint">System follows your device's light/dark preference. Applies immediately.</p>
+    </fieldset>
+  </section>
+
+  <!-- ============ Microphone ============ -->
+  <section class="ln-card set-section" aria-labelledby="sectionMic">
+    <div class="set-section__intro">
+      <h2 class="ln-card__title" id="sectionMic">Microphone</h2>
+    </div>
+
+    <div class="ln-field">
+      <label for="micDevice">Input device</label>
+      {{- /* Populated from enumerateDevices(); the grant button appears
+             instead of unlabeled entries when mic permission was never
+             granted in this browser (spec §3.3). The SSR'd "Saved
+             microphone" placeholder keeps the stored selection visible
+             until real labels arrive. */}}
+      <select class="ln-select" id="micDevice">
+        <option value=""{{if not .MicDeviceID}} selected{{end}}>System default</option>
+        {{if .MicDeviceID}}<option value="{{.MicDeviceID}}" selected>Saved microphone</option>{{end}}
+      </select>
+      <button class="ln-btn ln-btn--ghost" id="micGrant" type="button" hidden>
+        Grant microphone access to see device names
+      </button>
+      <p class="ln-hint">Used for voice conversations in this browser.</p>
+    </div>
+  </section>
+
+  <!-- ============ Privacy ============ -->
+  <section class="ln-card set-section" aria-labelledby="sectionPrivacy">
+    <div class="set-section__intro">
+      <h2 class="ln-card__title" id="sectionPrivacy">Privacy</h2>
+      <p class="ln-muted">What Live Ninja keeps, and for how long.</p>
+    </div>
+
+    <div class="ln-field">
+      <label class="ln-toggle">
+        <input type="checkbox" id="storeAudio" aria-describedby="storeAudioNote" {{if .StoreAudio}}checked{{end}}>
+        <span class="ln-toggle-track" aria-hidden="true"><span class="ln-toggle-thumb"></span></span>
+        <span>Store audio recordings</span>
+      </label>
+      <p class="ln-hint" id="storeAudioNote" {{if not .StoreAudio}}hidden{{end}}>Audio storage isn't wired up yet in this build — this preference is saved for when it is.</p>
+    </div>
+
+    <div class="ln-field">
+      <label class="ln-toggle">
+        <input type="checkbox" id="storeTranscripts" {{if .StoreTranscript}}checked{{end}}>
+        <span class="ln-toggle-track" aria-hidden="true"><span class="ln-toggle-thumb"></span></span>
+        <span>Store transcripts</span>
+      </label>
+    </div>
+
+    <fieldset class="ln-fieldset">
+      <legend>Keep transcripts for</legend>
+      <div class="ln-choices">
+        <label class="ln-choice">
+          <input type="radio" name="retentionDays" value="0" {{if eq .RetentionDays 0}}checked{{end}}>
+          <span class="ln-choice__body"><span class="ln-choice__title">Don't keep transcripts</span></span>
+        </label>
+        <label class="ln-choice">
+          <input type="radio" name="retentionDays" value="7" {{if eq .RetentionDays 7}}checked{{end}}>
+          <span class="ln-choice__body"><span class="ln-choice__title">7 days</span></span>
+        </label>
+        <label class="ln-choice">
+          <input type="radio" name="retentionDays" value="30" {{if eq .RetentionDays 30}}checked{{end}}>
+          <span class="ln-choice__body"><span class="ln-choice__title">30 days</span></span>
+        </label>
+        <label class="ln-choice">
+          <input type="radio" name="retentionDays" value="90" {{if eq .RetentionDays 90}}checked{{end}}>
+          <span class="ln-choice__body"><span class="ln-choice__title">90 days</span></span>
+        </label>
+      </div>
+    </fieldset>
+  </section>
+
+  <!-- ============ Account ============ -->
+  <section class="ln-card set-section set-danger-card" aria-labelledby="sectionAccount">
+    <div class="set-section__intro">
+      <h2 class="ln-card__title" id="sectionAccount">Account</h2>
+    </div>
+
+    <div class="set-danger-row">
+      <div class="set-danger-row__body">
+        <div class="set-danger-row__title">Sign out</div>
+        <div class="set-danger-row__sub">Signs out this browser only.</div>
+      </div>
+      <div class="set-danger-row__action">
+        <button class="ln-btn ln-btn--ghost" id="signOut" type="button">Sign out</button>
+      </div>
+    </div>
+
+    <div class="set-danger-row">
+      <div class="set-danger-row__body">
+        <div class="set-danger-row__title">Sign out everywhere</div>
+        <div class="set-danger-row__sub">Signs out every device, including this one.</div>
+      </div>
+      <div class="set-danger-row__action">
+        <button class="ln-btn ln-btn--danger" id="signOutAll" type="button"
+                aria-expanded="false" aria-controls="signOutAllConfirm">Sign out everywhere</button>
+      </div>
+    </div>
+    <div class="set-confirm-panel" id="signOutAllConfirm" hidden>
+      <p>This signs out every device, including this one. You'll need to sign in again everywhere.</p>
+      <div class="set-confirm-actions" style="display:flex; gap: var(--ln-sp-3); flex-wrap: wrap;">
+        <button class="ln-btn ln-btn--danger" id="signOutAllConfirmBtn" type="button">Yes, sign out everywhere</button>
+        <button class="ln-btn ln-btn--ghost" id="signOutAllCancelBtn" type="button">Cancel</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Save status -->
+  <div class="set-savebar">
+    <p class="set-savebar__status" id="saveStatus" role="status" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="saveStatusText">All changes saved</span>
+    </p>
+    <button class="ln-btn ln-btn--ghost" id="saveRetryBtn" type="button" hidden>Retry</button>
+  </div>
+</main>
+
+<div class="ln-toast" id="toast" role="status" aria-live="polite" hidden>
+  <span id="toastMsg"></span>
+  <button class="ln-btn ln-btn--ghost" id="toastActionBtn" type="button" hidden></button>
+</div>
+
+{{- /* SSR data islands (spec §3.2): the full canonical settings document
+       (including version) and the static voice/persona catalogs. No
+       client-side settings fetch happens on first paint — settings.mjs
+       hydrates from these. json.Marshal HTML-escapes <,>,& so the raw
+       emit inside this JSON script block is safe. */}}
+<script type="application/json" id="settings-data">{{.SettingsJSON}}</script>
+<script type="application/json" id="catalogs-data">{{.CatalogsJSON}}</script>
+{{end}}

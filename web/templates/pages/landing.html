@@ -1,0 +1,105 @@
+{{define "head"}}
+<script type="module" src="{{asset "/static/js/landing.mjs"}}"></script>
+{{end}}
+
+{{define "body"}}
+<div class="landing-page">
+
+  <!-- NAV -->
+  <nav class="landing-nav" aria-label="Primary">
+    <span class="ln-brand"><span class="ln-brand__dot" aria-hidden="true"></span>&nbsp;Live Ninja</span>
+    <div class="landing-nav__links">
+      <a href="#features" data-scroll-to="features">Features</a>
+    </div>
+    <a class="ln-btn ln-btn--ghost" href="#login" data-scroll-to="login" data-scroll-block="center">Sign in</a>
+  </nav>
+
+  <!-- HERO -->
+  <section class="landing-hero">
+    <div class="landing-hero__copy">
+      <span class="ln-eyebrow">Voice-first AI assistant</span>
+      <h1>Just say<br>"Hey Live&nbsp;Ninja."</h1>
+      <p class="landing-hero__lede">
+        A calm, capable voice assistant powered by GPT-Realtime — always listening for its
+        wake phrase, never listening for anything else. Ask it to check your calendar, control
+        your smart home, or think through a problem out loud.
+      </p>
+      <span class="landing-hero__wake">"Hey Live Ninja, what's on my calendar today?"</span>
+      <div class="landing-hero__cta">
+        <a class="ln-btn ln-btn--primary ln-btn--lg" href="/auth/lwa/login" data-lwa-cta>
+          <span data-lwa-label>Continue with Amazon</span>
+        </a>
+        <a class="ln-btn ln-btn--ghost ln-btn--lg" href="#features" data-scroll-to="features">See how it works</a>
+      </div>
+    </div>
+    <div class="landing-hero__orbwrap">
+      {{- /* Static marketing orb: conveys no state — hidden from AT (spec §1.5). */}}
+      <div class="ln-orb ln-orb--lg ln-orb--idle" aria-hidden="true">
+        <div class="ln-orb__glow"></div>
+        <div class="ln-orb__ring"></div>
+        <div class="ln-orb__ring ln-orb__ring--2"></div>
+        <div class="ln-orb__ring ln-orb__ring--3"></div>
+        <div class="ln-orb__core"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section class="landing-features" id="features" aria-label="Features">
+    <div class="landing-feature">
+      <div class="landing-feature__icon" aria-hidden="true">⚡</div>
+      <h3>Realtime, natural conversation</h3>
+      <p>Low-latency GPT-Realtime voice, not a request/response chatbot — interrupt it, change your mind, keep talking.</p>
+    </div>
+    <div class="landing-feature">
+      <div class="landing-feature__icon" aria-hidden="true">🏠</div>
+      <h3>Works where you already are</h3>
+      <p>Android, the web, and your M5Stack desktop console — one account, one memory, everywhere you speak.</p>
+    </div>
+    <div class="landing-feature">
+      <div class="landing-feature__icon" aria-hidden="true">🔒</div>
+      <h3>Private by default</h3>
+      <p>Audio is processed for your request only. Wake-word detection runs on-device — nothing streams until it hears you.</p>
+    </div>
+  </section>
+
+  <!-- LOGIN -->
+  <section class="landing-login-wrap" id="login" aria-label="Sign in">
+    <div class="ln-card landing-login-card">
+      <span class="ln-badge ln-badge--teal ln-badge--dot-none">Secure sign-in</span>
+      <h2>Sign in to Live Ninja</h2>
+      <p class="ln-muted">One tap with the Amazon account you already use. We never see or store your Amazon password.</p>
+
+      <a class="ln-btn ln-btn--amazon landing-amazon-btn" href="/auth/lwa/login" data-lwa-cta>
+        <span aria-hidden="true">🛒</span>
+        <span data-lwa-label>Continue with Amazon</span>
+      </a>
+
+      <div class="landing-session-note" role="note">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v4l2.5 2.5"></path></svg>
+        <span>You'll stay signed in on this device for <strong>30 days</strong>. You can sign out any time from Settings.</span>
+      </div>
+
+      <p class="landing-login-legal">
+        By continuing you agree to Live Ninja's Terms of Service and
+        Privacy Policy. Login with Amazon is provided by Amazon and
+        subject to Amazon's privacy notice.
+      </p>
+    </div>
+  </section>
+
+  <!-- TRUST ROW -->
+  <div class="landing-trust-row">
+    <span class="landing-trust-item">🔐 OAuth via Login with Amazon</span>
+    <span class="landing-trust-item">🎙 On-device wake-word</span>
+    <span class="landing-trust-item">🧠 GPT-Realtime voice engine</span>
+    <span class="landing-trust-item">📶 Android · Web · M5Stack</span>
+  </div>
+
+  <!-- FOOTER -->
+  <footer class="landing-footer">
+    <span class="ln-muted" style="font-size: var(--ln-fs-xs);">© 2026 Live Ninja. Not affiliated with Amazon.com, Inc.</span>
+  </footer>
+
+</div>
+{{end}}

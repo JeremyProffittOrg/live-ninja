@@ -4,11 +4,14 @@
 // so this main() is a completely ordinary Fiber app with no Lambda SDK
 // involved.
 //
-// M1+M2 scope: wires webapp.Deps (store, LWA client, KMS signer, SQS email
-// queue, broker Lambda client) and mounts RegisterAuthRoutes +
-// RegisterAPIRoutes behind the ExtractAuthContext/CSRFProtect middleware,
-// while keeping M0's /healthz, landing page, JSON 404, structured request
-// logging, and graceful shutdown.
+// M1–M3 scope: wires webapp.Deps (store, LWA client, KMS signer, SQS email
+// queue, broker Lambda client), the embedded SSR shell (web.Files →
+// fingerprinted assets + html/template Views engine), and mounts
+// RegisterAuthRoutes + RegisterAPIRoutes + RegisterSettingsRoutes +
+// RegisterPageRoutes behind the ExtractAuthContext/CSRFProtect middleware,
+// while keeping M0's /healthz, structured request logging, and graceful
+// shutdown. 404s and errors render HTML for browser navigations and the
+// JSON envelope for API callers (webapp.NotFoundHandler/ErrorHandler).
 //
 // Local dev: run with LWA_CLIENT_ID/LWA_CLIENT_SECRET (bypasses SSM) and a
 // real JWT_KMS_KEY_ID (or expect signer-dependent routes to be the only
@@ -18,7 +21,6 @@ package main
 
 import (
 	"context"
-	"html/template"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -36,44 +38,8 @@ import (
 	"github.com/JeremyProffittOrg/live-ninja/internal/observ"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	"github.com/JeremyProffittOrg/live-ninja/internal/webapp"
+	"github.com/JeremyProffittOrg/live-ninja/web"
 )
-
-const landingPageHTML = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Live Ninja</title>
-<style>
-  :root { color-scheme: light dark; }
-  body {
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    margin: 0;
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: #0b0b12;
-    color: #f4f4f8;
-  }
-  main { text-align: center; padding: 2rem; max-width: 32rem; }
-  h1 { font-size: 1.75rem; margin: 0 0 .5rem; }
-  p { color: #9a9aab; margin: 0 0 1.5rem; }
-  .signin {
-    display: inline-block; padding: .65rem 1.4rem; border-radius: .5rem;
-    background: #8ab4ff; color: #0b0b12; text-decoration: none; font-weight: 600;
-  }
-</style>
-</head>
-<body>
-<main>
-  <h1>Live Ninja</h1>
-  <p>Your private realtime voice assistant.</p>
-  <a class="signin" href="/auth/lwa/login">Sign in with Amazon</a>
-</main>
-</body>
-</html>
-`
 
 func main() {
 	cfg := config.FromEnv()
@@ -86,32 +52,56 @@ func main() {
 		os.Exit(1)
 	}
 
+	// SSR shell: fingerprint the embedded static assets and build the
+	// html/template Views engine over the embedded templates. Both fail
+	// startup on error — a web app with no templates has nothing to serve.
+	assets, err := webapp.NewAssets(web.Files)
+	if err != nil {
+		logger.Error("startup failed", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	renderer, err := webapp.NewRenderer(web.Files, assets)
+	if err != nil {
+		logger.Error("startup failed", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	swHandler, err := assets.FileHandler("sw.js", "text/javascript; charset=utf-8")
+	if err != nil {
+		logger.Error("startup failed", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
-		ErrorHandler:          jsonErrorHandler,
+		ErrorHandler:          webapp.ErrorHandler(),
+		Views:                 renderer,
 	})
 
 	app.Use(requestLoggerMiddleware(logger))
+	app.Use(webapp.SecurityHeaders())
 
-	// Registered before the auth middleware: liveness and the landing page
-	// need neither auth context nor CSRF handling.
+	// Registered before the auth middleware: liveness and static assets
+	// need neither auth context nor CSRF handling. /sw.js sits at the root
+	// so the service worker's scope is "/".
 	app.Get("/healthz", healthzHandler)
-
-	landingTmpl := template.Must(template.New("landing").Parse(landingPageHTML))
-	app.Get("/", landingHandler(landingTmpl))
+	app.Get("/static/*", assets.Handler())
+	app.Get("/sw.js", swHandler)
 
 	// Auth context extraction (authorizer passthrough header, Bearer JWT
 	// fallback) + CSRF double-submit enforcement for cookie-bearing POSTs,
-	// then the route registrars (auth surface here, /api/v1 resources in
-	// api_routes.go).
+	// then the route registrars (auth surface in auth_routes.go, /api/v1
+	// resources in api_routes.go, settings page + API in
+	// settings_routes.go, SSR pages in pages_routes.go).
 	app.Use(webapp.ExtractAuthContext(deps))
 	app.Use(webapp.CSRFProtect())
 	webapp.RegisterAuthRoutes(app, deps)
 	webapp.RegisterAPIRoutes(app, deps)
+	webapp.RegisterSettingsRoutes(app, deps)
+	webapp.RegisterPageRoutes(app, deps)
 
-	// Catch-all: any request that fell through the routes above gets a
-	// JSON 404 rather than Fiber's default plaintext response.
-	app.Use(notFoundHandler)
+	// Catch-all: HTML error page for browser navigations, JSON 404 for
+	// API/asset requests.
+	app.Use(webapp.NotFoundHandler())
 
 	port := envOr("PORT", "8080")
 	logger.Info("starting web server",
@@ -195,28 +185,6 @@ func healthzHandler(c *fiber.Ctx) error {
 		"service": "live-ninja",
 		"time":    time.Now().UTC().Format(time.RFC3339),
 	})
-}
-
-func landingHandler(tmpl *template.Template) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		c.Type("html")
-		return tmpl.Execute(c.Response().BodyWriter(), nil)
-	}
-}
-
-func notFoundHandler(c *fiber.Ctx) error {
-	return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-		"error": "not found",
-		"path":  c.Path(),
-	})
-}
-
-func jsonErrorHandler(c *fiber.Ctx, err error) error {
-	code := fiber.StatusInternalServerError
-	if fe, ok := err.(*fiber.Error); ok {
-		code = fe.Code
-	}
-	return c.Status(code).JSON(fiber.Map{"error": err.Error()})
 }
 
 // requestLoggerMiddleware logs one structured JSON line per request with

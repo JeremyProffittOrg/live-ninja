@@ -1,0 +1,15 @@
+Bundled openWakeWord models (pre-M6 built-in wake word: "Hey Jarvis")
+Source: https://github.com/dscripka/openWakeWord/releases/tag/v0.5.1
+Fetched: 2026-07-17 (author time)
+
+SHA-256 (verified at load time by web/static/js/wakeword.mjs):
+ba2b0e0f8b7b875369a2c89cb13360ff53bac436f2895cced9f479fa65eb176f  melspectrogram.onnx
+70d164290c1d095d1d4ee149bc5e00543250a7316b59f31d056cff7bd3075c1f  embedding_model.onnx
+94a13cfe60075b132f6a472e7e462e8123ee70861bc3fb58434a73712ee0d2cb  hey_jarvis_v0.1.onnx
+
+melspectrogram + embedding_model are phrase-independent feature extractors
+(reused for every openWakeWord phrase, including future M6 custom-trained
+detectors); hey_jarvis_v0.1 is the bundled detector head (input [1,16,96],
+sigmoid score). From M6 on, per-phrase models arrive via
+GET /api/v1/wakeword/{id}/model?platform=web and these files remain the
+guaranteed fallback.

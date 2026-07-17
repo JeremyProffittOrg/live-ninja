@@ -1,0 +1,104 @@
+{{define "head"}}
+<script type="module" src="{{asset "/static/js/conversation.mjs"}}"></script>
+{{end}}
+
+{{define "body"}}
+<div class="conv-app">
+
+  <!-- Header: brand + state pill + persona/voice quick-switch + settings -->
+  <header class="conv-header">
+    <a class="ln-brand" href="/conversation"><span class="ln-brand__dot" aria-hidden="true"></span>&nbsp;Live Ninja</a>
+
+    {{- /* Accessible session state; mic.mjs drives text + data-state. */}}
+    <span class="state-pill" id="statePill" data-state="idle" role="status" aria-live="polite">
+      <span class="state-pill__dot" aria-hidden="true"></span>
+      <span id="statePillText">Idle</span>
+    </span>
+
+    <div class="conv-quickswitch">
+      <div class="conv-quickswitch__group">
+        <label for="personaSelect">Persona</label>
+        {{- /* Populated from GET /api/v1/realtime/personas; "default" is the
+               only catalog entry guaranteed to exist (internal/realtime). */}}
+        <select class="ln-select" id="personaSelect">
+          <option value="default" selected>Live Ninja (default)</option>
+        </select>
+      </div>
+      <div class="conv-quickswitch__group">
+        <label for="voiceSelect">Voice</label>
+        {{- /* Populated from GET /api/v1/realtime/voices; cedar is the
+               contract default (settings.schema.json). */}}
+        <select class="ln-select" id="voiceSelect">
+          <option value="cedar" selected>Cedar (default)</option>
+        </select>
+      </div>
+      <a class="ln-iconbtn" href="/settings" aria-label="Settings">⚙<span class="ln-sr-only">Settings</span></a>
+    </div>
+  </header>
+
+  <div class="conv-body">
+
+    <!-- Left rail: orb, visualizer, primary mic control, wake-word mode -->
+    <section class="conv-rail" aria-label="Voice controls">
+      {{template "audio_viz" .}}
+
+      <p class="conv-status-text" id="statusText">Tap the mic to start</p>
+
+      <div class="ptt-wrap">
+        <button class="ptt" id="pttBtn" type="button" data-state="idle"
+                aria-pressed="false" aria-label="Push to talk, currently off — tap to start">
+          <span aria-hidden="true">🎙</span>
+          <span class="ln-sr-only" data-ln-label>Start talking</span>
+        </button>
+        <p class="ptt-hint">Press <kbd>Space</kbd> to talk</p>
+      </div>
+
+      <button class="ln-btn ln-btn--ghost" type="button" data-ln-end hidden>End conversation</button>
+
+      <div class="conv-divider" role="presentation"></div>
+
+      <div class="wakeword-block">
+        <div class="wakeword-row">
+          <div class="wakeword-copy">
+            <span class="ln-label" id="wakeToggleLabel">Hands-free wake word</span>
+            <span class="wakeword-phrase" id="wakePhrase" hidden></span>
+          </div>
+          {{- /* Off by default (M3 DoD). wakeword.mjs hides the toggle and
+                 shows the unsupported note when WASM/AudioWorklet is
+                 unavailable — click-to-talk always remains. */}}
+          <label class="ln-toggle" id="wakeToggleWrap">
+            <input type="checkbox" id="wakeToggle" aria-labelledby="wakeToggleLabel" aria-describedby="wakeHint">
+            <span class="ln-toggle-track" aria-hidden="true"><span class="ln-toggle-thumb"></span></span>
+          </label>
+        </div>
+        <p class="wakeword-hint" id="wakeHint">Off — use the push-to-talk button to start a turn.</p>
+      </div>
+    </section>
+
+    <!-- Right column: transcript + composer -->
+    <section class="conv-main" aria-label="Conversation">
+      <div class="conv-main__scroll" id="transcriptScroll">
+        {{- /* Empty by design on load — no fabricated turns (spec §2.5).
+               transcript.mjs appends bubbles/tool cards as text nodes. */}}
+        <div class="ln-transcript" id="transcript" role="log" aria-live="polite" aria-relevant="additions"></div>
+      </div>
+
+      <form class="conv-composer" id="composerForm">
+        <label class="ln-sr-only" for="composerInput">Type a message</label>
+        <input class="ln-input" id="composerInput" type="text" autocomplete="off"
+               placeholder="Type instead of talking…">
+        <button class="conv-composer__send" id="composerSend" type="submit" disabled aria-label="Send message">
+          <span aria-hidden="true">➤</span>
+        </button>
+      </form>
+    </section>
+
+  </div>
+</div>
+
+{{- /* Remote assistant audio (realtime.mjs attaches the WebRTC track and
+       routes it through a GainNode for the barge-in ramp). */}}
+<audio id="remoteAudio" autoplay hidden></audio>
+
+<div class="ln-toast" id="toast" role="status" aria-live="polite"></div>
+{{end}}

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Live Ninja">
+  <!-- Live Ninja app glyph. Colors are the mockup design tokens:
+       bg --ln-navy-900 #060d18, head --ln-surface-raised #142544,
+       eye band --ln-navy #0a1424, accents --ln-teal #22e0d0.
+       PNG raster variants in this directory are generated from the same
+       geometry by scripts/gen-icons (go run ./scripts/gen-icons). -->
+  <rect width="512" height="512" rx="116" fill="#060d18"/>
+  <circle cx="256" cy="264" r="148" fill="#142544"/>
+  <rect x="108" y="200" width="296" height="96" rx="48" fill="#0a1424"/>
+  <rect x="126" y="184" width="260" height="14" rx="7" fill="#22e0d0" opacity="0.85"/>
+  <circle cx="204" cy="248" r="24" fill="#22e0d0"/>
+  <circle cx="308" cy="248" r="24" fill="#22e0d0"/>
+</svg>

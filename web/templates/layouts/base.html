@@ -1,0 +1,22 @@
+{{define "base"}}<!doctype html>
+<html lang="en"{{with themeAttr .}} data-theme="{{.}}"{{end}}>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#060d18">
+<title>{{pageTitle}}</title>
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="icon" href="/static/icons/ninja.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="{{asset "/static/css/app.css"}}">
+{{- /* theme.js runs synchronously before first paint (no-flash theme
+       override); CSP forbids inline scripts, hence a file. */}}
+<script src="{{asset "/static/js/theme.js"}}"></script>
+{{block "head" .}}{{end}}
+</head>
+<body{{with pageBodyClass}} class="{{.}}"{{end}}>
+{{block "body" .}}{{end}}
+<script type="module" src="{{asset "/static/js/sw-register.mjs"}}"></script>
+</body>
+</html>{{end}}

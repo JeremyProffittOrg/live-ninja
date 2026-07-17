@@ -6,7 +6,9 @@
 // expression grammar those callers actually emit:
 //
 //	Condition:      attribute_exists(x) | attribute_not_exists(x) |
-//	                a = :v | a > :v (AND-joined)
+//	                a = :v | a > :v (AND-joined), or a single top-level
+//	                OR of those clauses (used by settings optimistic
+//	                concurrency: attribute_not_exists(pk) OR version = :v)
 //	Update:         SET a = :v, b = :w [ADD c :n]
 //	Key condition:  pk = :pk [AND sk = :sk | AND begins_with(sk, :pfx)]
 //	Filter:         a = :v (AND-joined)
@@ -132,9 +134,22 @@ func avNumber(av types.AttributeValue) (float64, bool) {
 }
 
 // evalCondition evaluates an AND-joined condition expression against an
-// existing item (nil means "no item at that key").
+// existing item (nil means "no item at that key"). A single top-level
+// " OR " (no mixing with AND — panics if both appear, like every other
+// unsupported shape) succeeds when any branch does.
 func evalCondition(expr string, item map[string]types.AttributeValue,
 	names map[string]string, values map[string]types.AttributeValue) bool {
+	if strings.Contains(expr, " OR ") {
+		if strings.Contains(expr, " AND ") {
+			panic(fmt.Sprintf("testutil: unsupported mixed AND/OR condition %q", expr))
+		}
+		for _, branch := range strings.Split(expr, " OR ") {
+			if evalCondition(strings.TrimSpace(branch), item, names, values) {
+				return true
+			}
+		}
+		return false
+	}
 	for _, clause := range strings.Split(expr, " AND ") {
 		clause = strings.TrimSpace(clause)
 		switch {

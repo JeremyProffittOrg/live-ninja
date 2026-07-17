@@ -267,7 +267,7 @@ Ordered tasks:
 - `[ ]` **S** — EMF metrics: `SessionsBrokered`, `EphemeralTokenMintLatency`, `ToolInvocations`, per-surface counts; X-Ray on broker/authorizer/web. _(§13)_
 - `[ ]` **F** — Broker/tool tests: mocked OpenAI WS + REST, quota gate pre-spend enforcement, ephemeral-token mint for all surfaces, tool re-authz (incl. device→backend `POST /v1/tools/invoke`), confirm-before-send. _(Crosscut §7)_
 
-### M3 — Web client  `[ ]`  (WS-D lead)
+### M3 — Web client  `[~]`  (WS-D lead)
 
 **Definition of Done:** `live.jeremy.ninja` serves the Fiber SSR app; unauthenticated users get server-rendered login; authed users get a conversation view with **direct WebRTC to OpenAI**, live transcript, visualizer, barge-in, and click-to-talk; a schema-driven settings page (populated controls, WCAG AA both themes); PWA with network-first HTML service worker; CSP allows only OpenAI + self. Optional WASM wake word (off by default) with guaranteed click-to-talk fallback. _(FR `[WEB]`)_
 
@@ -580,7 +580,15 @@ Also: `concurrency: deploy-main` (serialize pushes, no cancel) + automatic ROLLB
 - Deploy fixes carried in this push: org OIDC trust now accepts ID-qualified subs (fixed in `credential-rotation` d489274 + bootstrap-stack update — new-2026 repos emit `repo:Org@id/Repo@id:...`); `sam build` step removed (SAM's default provided.* builder wants per-CodeUri Makefiles; we deploy prebuilt `.build/` artifacts).
 
 ### M3 — Web client
-_(no notes yet)_
+
+**2026-07-17 17:00–18:20 EDT — design pass + 5 parallel authors + integrator (workflow `wf_9bdffbb8`).**
+- `docs/web-ui-spec.md`: mandatory multi-persona design pass output (UX-flow/product/a11y/copy) — the authors' contract for landing/conversation/settings.
+- SSR: `web/templates/` (layouts/partials/pages) via embed.FS, fingerprinted assets (`internal/webapp/assets.go`, immutable `/static/`, no-cache HTML), `pages_routes.go`; dark-first CSS design system both themes AA.
+- JS (vanilla ES modules, no bundler): `realtime.mjs` (WebRTC to `/v1/realtime/calls`, event routing, barge-in w/ `response.cancel`), `mic.mjs` (state machine, push-to-talk hold + hands-free), `toolclient.mjs` (function_call → `/api/v1/tools/invoke` → `function_call_output`, refresh-once-on-401), `transcript.mjs` (`role=log` incremental), `visualizer.mjs` (Analyser → canvas, reduced-motion fallback), `transcriptsink.mjs` (5s/25-turn batches), `settings.mjs` (schema-driven, 409 re-GET/re-apply/retry-once reconcile), `wakeword.mjs` (openWakeWord via onnxruntime-web WASM in AudioWorklet, off-by-default, unsupported→click-to-talk), `conversation.mjs` (integrator-authored page glue — populated persona/voice quick-switch selects, per-session transcript render, tool-result `<dl>` cards).
+- Settings backend (M3 basic form of M6 contract): `internal/store/settings.go` + `settings_routes.go` (GET defaults w/ voice cedar, PUT optimistic-concurrency 409, voices/personas list endpoints).
+- PWA: `manifest.webmanifest` + `/sw.js` network-first HTML, SWR static, never caches `/api|/auth|OpenAI`, versioned purge + skipWaiting/claim.
+- Integrator: found+wrote the missing conversation-page entry module; CSP middleware (self + api.openai.com connect-src, worker-src blob); local smoke on :8081 all pass (healthz//,conversation→login redirect,settings,css,sw.js,mjs), `node --check` clean on every JS file; build/vet/test green.
+- **Pending prod verification after deploy: page loads + LWA login browser test.**
 
 ### M4 — Android client
 _(no notes yet)_
