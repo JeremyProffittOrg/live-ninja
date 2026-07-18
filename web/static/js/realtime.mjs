@@ -4,7 +4,10 @@
 //   - Session mint: `GET /api/v1/realtime/session` (via toolclient's
 //     authFetch) with typed 402 quota_exceeded / 429 rate_limited / 502
 //     broker_unavailable handling (spec §2.5 table). 429 auto-retries once
-//     after `retryAfterSeconds` before surfacing an error.
+//     after `retryAfterSeconds` before surfacing an error. `prefetchSession`
+//     lets intent signals (mic pointerdown, hands-free arm) start the mint
+//     early; connect() consumes it and overlaps the WebRTC offer + ICE
+//     gathering with whatever mint wait remains (latency plan #4).
 //   - WebRTC: RTCPeerConnection + mic track (AEC/NS/AGC true), `oai-events`
 //     datachannel, SDP offer → POST https://api.openai.com/v1/realtime/calls
 //     (Authorization: Bearer <ephemeral>, Content-Type: application/sdp) →
@@ -171,14 +174,94 @@ export async function acquireMicStream({ deviceId = null } = {}) {
   return navigator.mediaDevices.getUserMedia({ audio: base });
 }
 
+// ---- session mint (single attempt) + intent prefetch ---------------------
+
+/** One mint attempt: GET the session bootstrap and validate its shape.
+ * Returns {body, warning}; throws ApiError (HTTP error envelope),
+ * AuthLostError (from authFetch), or RealtimeError (network / bad shape). */
+async function mintOnce(sessionPath) {
+  let resp;
+  try {
+    resp = await authFetch(sessionPath);
+  } catch (err) {
+    if (err && err.name === 'AuthLostError') throw err;
+    throw new RealtimeError('broker_unavailable', 'Could not reach the voice service.');
+  }
+  const warning = resp.headers.get('X-LN-Quota-Warning') || '';
+  let body = null;
+  try {
+    body = await resp.json();
+  } catch {
+    /* handled below via !resp.ok / missing clientSecret */
+  }
+  if (!resp.ok) {
+    throw new ApiError(resp.status, body, undefined, resp.headers.get('X-LN-Txn') || '');
+  }
+  // Two valid success shapes (FR-VE-03). A missing `mode` is the pre-M12
+  // openai-direct shape.
+  const mode = body && body.mode ? body.mode : 'openai-direct';
+  if (mode === 'nova-bridge') {
+    if (!body || !body.wsUrl) {
+      throw new RealtimeError('mint_failed', 'The voice service returned an invalid Nova session.');
+    }
+  } else if (!body || !body.clientSecret || !body.clientSecret.value) {
+    throw new RealtimeError('mint_failed', 'The voice service returned an invalid session.');
+  }
+  return { body, warning };
+}
+
+// Intent prefetch (latency plan #4.2): the session bootstrap is the longest
+// serial leg of connect (~0.7-1.2s CloudFront → web fn → broker → OpenAI
+// mint), so callers with a strong intent signal — mic-button pointerdown,
+// hands-free wake-arm — start it before start()/connect() runs. It is
+// single-flight and consumed at most once (one mint = one session).
+//
+// COST TRADEOFF: a mint consumes a broker concurrency slot + rate-limit
+// token, and there is NO release endpoint — a prefetched mint that goes
+// unused simply lapses when its ~60s server-side token TTL expires, holding
+// that slot/token until then. That is why the client cache TTL is 45s (the
+// ephemeral token is still comfortably valid when consumed) and why
+// prefetch must NEVER fire on page load — only on explicit user intent.
+const PREFETCH_TTL_MS = 45_000;
+let prefetchEntry = null; // {promise, at, sessionPath}
+
+/** Start (or reuse) a speculative session mint. Best-effort: the returned
+ * promise never needs awaiting — failures self-evict so the next real
+ * connect() falls back to a fresh mint with full retry handling. */
+export function prefetchSession({ sessionPath = SESSION_PATH } = {}) {
+  const now = Date.now();
+  if (
+    prefetchEntry &&
+    prefetchEntry.sessionPath === sessionPath &&
+    now - prefetchEntry.at < PREFETCH_TTL_MS
+  ) {
+    return prefetchEntry.promise; // single-flight: reuse the pending/fresh mint
+  }
+  const entry = { at: now, sessionPath, promise: mintOnce(sessionPath) };
+  // A failed prefetch must not poison the next start: evict it so connect()
+  // mints fresh (connect owns 429 retry/backoff + error surfacing).
+  entry.promise.catch(() => {
+    if (prefetchEntry === entry) prefetchEntry = null;
+  });
+  prefetchEntry = entry;
+  return entry.promise;
+}
+
+/** Consume (at most once) a still-fresh prefetched mint for `sessionPath`. */
+function takePrefetchedMint(sessionPath) {
+  const entry = prefetchEntry;
+  if (!entry || entry.sessionPath !== sessionPath) return null;
+  prefetchEntry = null; // one mint = one session: never hand it out twice
+  if (Date.now() - entry.at >= PREFETCH_TTL_MS) return null; // lapsed — server slot expires on its own
+  return entry.promise;
+}
+
 function waitForIceGathering(pc, timeoutMs) {
   if (pc.iceGatheringState === 'complete') return Promise.resolve();
   return new Promise((resolve) => {
     const timer = setTimeout(done, timeoutMs); // trickle-less best effort
-    let settle = 0;
     function done() {
       clearTimeout(timer);
-      clearTimeout(settle);
       pc.removeEventListener('icegatheringstatechange', check);
       pc.removeEventListener('icecandidate', onCandidate);
       resolve();
@@ -187,13 +270,14 @@ function waitForIceGathering(pc, timeoutMs) {
       if (pc.iceGatheringState === 'complete') done();
     }
     function onCandidate(e) {
-      // First candidate + a short settle beats waiting for "complete":
-      // OpenAI accepts host/srflx candidates, and full gathering can burn
-      // the whole timeout on a slow STUN/mDNS path (owner: connect "takes
-      // a few seconds to become ready").
-      if (e.candidate && !settle) {
-        settle = setTimeout(done, 150);
-      }
+      // Send on the FIRST candidate — zero settle (latency plan #4.3).
+      // OpenAI answers with its own public candidates and accepts
+      // host/srflx, so one local candidate is enough to start connectivity
+      // checks; the old +150ms settle bought extra candidates but taxed
+      // every connect. Gathering also now OVERLAPS the session mint (see
+      // connect()), so by the time the SDP is posted the local description
+      // usually carries the full candidate set anyway.
+      if (e.candidate) done();
     }
     pc.addEventListener('icegatheringstatechange', check);
     pc.addEventListener('icecandidate', onCandidate);
@@ -262,6 +346,12 @@ export class RealtimeSession extends EventTarget {
   #userText = new Map();
   #finalizedItems = new Set();
 
+  /** Connect-latency breakdown of the last successful connect (null until
+   * then): {bootstrapMs, iceMs, sdpMs, totalMs} from performance.now()
+   * marks. bootstrap/ICE/mic overlap, so parts don't sum to totalMs. Also
+   * logged via console.debug('[realtime] connect timing', …). */
+  connectTiming = null;
+
   // ---- M12 Nova bridge state (only populated in mode==='nova-bridge') ----
   #mode = 'openai-direct';
   #novaWs = null;
@@ -324,82 +414,85 @@ export class RealtimeSession extends EventTarget {
   // ---- session mint (spec §2.5 error table) ----
 
   async #mint() {
+    // A prefetched mint (pointerdown / wake-arm intent, prefetchSession
+    // above) skips the whole bootstrap wait. If the prefetch failed, fall
+    // through to a fresh mint so retry/backoff + error surfacing applies.
+    const prefetched = takePrefetchedMint(this.sessionPath);
+    if (prefetched) {
+      try {
+        const { body, warning } = await prefetched;
+        if (warning) this.#emit('quotawarning', { message: warning });
+        return body;
+      } catch {
+        /* fresh mint below owns the error */
+      }
+    }
+
     let attempt = 0;
     for (;;) {
-      let resp;
+      let minted;
       try {
-        resp = await authFetch(this.sessionPath);
+        minted = await mintOnce(this.sessionPath);
       } catch (err) {
-        if (err instanceof ApiError || (err && err.name === 'AuthLostError')) throw err;
-        throw new RealtimeError('broker_unavailable', 'Could not reach the voice service.');
-      }
-
-      const warning = resp.headers.get('X-LN-Quota-Warning');
-      if (warning) this.#emit('quotawarning', { message: warning });
-
-      let body = null;
-      try {
-        body = await resp.json();
-      } catch {
-        /* handled below via !resp.ok / missing clientSecret */
-      }
-
-      if (!resp.ok) {
-        const apiErr = new ApiError(resp.status, body, undefined, resp.headers.get('X-LN-Txn') || '');
-        const rtErr = RealtimeError.fromApiError(apiErr);
-        // 429: auto-retry once after retryAfterSeconds (spec §2.5), then
-        // surface for a manual Retry.
-        if (rtErr.code === 'rate_limited' && attempt === 0) {
-          attempt++;
-          const seconds = Math.min(rtErr.retryAfterSeconds || 3, RATE_LIMIT_MAX_WAIT_S);
-          this.#emit('retrywait', { seconds });
-          await sleep(seconds * 1000);
-          continue;
+        if (err instanceof ApiError) {
+          const rtErr = RealtimeError.fromApiError(err);
+          // 429: auto-retry once after retryAfterSeconds (spec §2.5), then
+          // surface for a manual Retry.
+          if (rtErr.code === 'rate_limited' && attempt === 0) {
+            attempt++;
+            const seconds = Math.min(rtErr.retryAfterSeconds || 3, RATE_LIMIT_MAX_WAIT_S);
+            this.#emit('retrywait', { seconds });
+            await sleep(seconds * 1000);
+            continue;
+          }
+          throw rtErr;
         }
-        throw rtErr;
+        throw err; // RealtimeError / AuthLostError pass through
       }
-
-      // Two valid success shapes (FR-VE-03). A missing `mode` is the pre-M12
-      // openai-direct shape.
-      const mode = body && body.mode ? body.mode : 'openai-direct';
-      if (mode === 'nova-bridge') {
-        if (!body || !body.wsUrl) {
-          throw new RealtimeError('mint_failed', 'The voice service returned an invalid Nova session.');
-        }
-      } else if (!body || !body.clientSecret || !body.clientSecret.value) {
-        throw new RealtimeError('mint_failed', 'The voice service returned an invalid session.');
-      }
-      return body;
+      if (minted.warning) this.#emit('quotawarning', { message: minted.warning });
+      return minted.body;
     }
   }
 
   // ---- connect / teardown ----
 
   /**
-   * Full bootstrap: mint → peer connection → SDP exchange → datachannel
-   * open. `stream` is a pre-acquired mic stream (mic.mjs acquires it first
-   * so permission-denied is distinguishable from connection errors); if
-   * omitted, acquires one here with `micDeviceId`.
+   * Full bootstrap: mint ∥ (peer connection + offer + ICE) → SDP exchange →
+   * datachannel open. `stream` is a pre-acquired mic stream (mic.mjs
+   * acquires it first so permission-denied is distinguishable from
+   * connection errors); if omitted, acquires one here with `micDeviceId`.
+   *
+   * Latency plan #4.1: nothing in the WebRTC setup — peer connection,
+   * datachannel, mic track, offer, ICE gathering — needs the minted token,
+   * so it all runs CONCURRENTLY with the session bootstrap; the token's
+   * only serial job is the SDP POST. The breakdown of each connect lands in
+   * `connectTiming` and a console.debug line.
    */
   async connect({ stream = null, micDeviceId = null } = {}) {
     if (this.#pc || this.#novaWs) {
       throw new RealtimeError('already_connected', 'Session is already connected.');
     }
     this.#closing = false;
+    const t0 = performance.now();
 
     // The mic stream is load-bearing for both transports: a WebRTC audio
     // track for openai-direct, the PCM capture source for nova-bridge.
-    // `stream` may be a MediaStream OR a promise of one — kicking mic
-    // acquisition and the session mint off CONCURRENTLY shaves the mint's
-    // ~300-900ms off perceived connect time.
+    // `stream` may be a MediaStream OR a promise of one — mic acquisition,
+    // the session mint, and the WebRTC offer/ICE below all run CONCURRENTLY.
     const streamPromise = Promise.resolve(
       stream || acquireMicStream({ deviceId: micDeviceId }),
     );
+
+    // Speculative WebRTC setup for the (default) openai-direct mode. If the
+    // mint comes back nova-bridge the unused pc is simply closed — the only
+    // cost is a local RTCPeerConnection and host-candidate gathering.
+    const rtc = this.#beginOffer(streamPromise);
 
     let minted;
     try {
       minted = await this.#mint();
     } catch (err) {
+      this.#abortRtc(rtc);
       // Don't leave a granted mic running if the mint failed.
       streamPromise
         .then((s) => {
@@ -408,6 +501,7 @@ export class RealtimeSession extends EventTarget {
         .catch(() => {});
       throw err;
     }
+    const bootstrapMs = performance.now() - t0;
     this.#mode = minted.mode || 'openai-direct';
     this.#sessionId = minted.sessionId || 'web-' + Date.now().toString(36);
     this.#model = minted.model || '';
@@ -423,24 +517,48 @@ export class RealtimeSession extends EventTarget {
       minted.sessionConfig.audio.input.turn_detection;
     this.#serverInterrupts = !td || td.interrupt_response !== false;
 
-    this.#localStream = await streamPromise;
+    try {
+      this.#localStream = await streamPromise;
+    } catch (err) {
+      this.#abortRtc(rtc);
+      throw err; // getUserMedia errors keep their name for mic.mjs routing
+    }
 
     if (this.#mode === 'nova-bridge') {
+      this.#abortRtc(rtc); // Nova is WS+PCM — the speculative pc is unused
       await this.#connectNovaBridge(minted);
+      this.#finishTiming(t0, bootstrapMs, 0, 0);
     } else {
-      await this.#connectOpenAI(minted);
+      await this.#connectOpenAI(minted, rtc, t0, bootstrapMs);
     }
   }
 
-  // ---- openai-direct: WebRTC to OpenAI Realtime (unchanged) ----
+  /** Record + report the connect-latency breakdown. bootstrap, ICE, and the
+   * mic all OVERLAP by design, so the parts deliberately don't sum to
+   * totalMs — totalMs is the wall-clock connect() duration. */
+  #finishTiming(t0, bootstrapMs, iceMs, sdpMs) {
+    this.connectTiming = {
+      bootstrapMs: Math.round(bootstrapMs),
+      iceMs: Math.round(iceMs),
+      sdpMs: Math.round(sdpMs),
+      totalMs: Math.round(performance.now() - t0),
+    };
+    console.debug('[realtime] connect timing', this.connectTiming);
+  }
 
-  async #connectOpenAI(minted) {
+  // ---- openai-direct: WebRTC to OpenAI Realtime ----
+
+  /** Start the token-free half of the WebRTC connect (pc, datachannel, mic
+   * track, offer, ICE gathering) so it overlaps the session mint. The mic
+   * track MUST be in the offer, so the task awaits the (already in-flight)
+   * stream first: in the common case everything here settles before the
+   * mint returns; when the mic resolves late the ordering still holds
+   * (add-track → offer → ICE), just with less overlap. `rtc.ready` never
+   * rejects — it resolves {ok:false, err} so an abandoned attempt cannot
+   * surface an unhandled rejection. */
+  #beginOffer(streamPromise) {
     const pc = new RTCPeerConnection();
     this.#pc = pc;
-
-    for (const track of this.#localStream.getAudioTracks()) {
-      pc.addTrack(track, this.#localStream);
-    }
 
     pc.ontrack = (e) => {
       this.#remoteStream = (e.streams && e.streams[0]) || new MediaStream([e.track]);
@@ -461,6 +579,51 @@ export class RealtimeSession extends EventTarget {
       this.#handleDrop('datachannel');
     };
 
+    const rtc = { pc, dc, aborted: false, iceMs: 0, ready: null };
+    rtc.ready = (async () => {
+      const stream = await streamPromise;
+      if (rtc.aborted) return { ok: false };
+      for (const track of stream.getAudioTracks()) {
+        pc.addTrack(track, stream);
+      }
+      const offer = await pc.createOffer();
+      if (rtc.aborted) return { ok: false };
+      await pc.setLocalDescription(offer);
+      const iceStart = performance.now();
+      await waitForIceGathering(pc, ICE_GATHER_TIMEOUT_MS);
+      rtc.iceMs = performance.now() - iceStart;
+      return { ok: true };
+    })().catch((err) => ({ ok: false, err }));
+    return rtc;
+  }
+
+  /** Abandon a speculative #beginOffer (mint failed, mic failed, or the
+   * mint resolved to nova-bridge). Detaches handlers first so the close
+   * can't masquerade as a mid-call drop. */
+  #abortRtc(rtc) {
+    if (!rtc || rtc.aborted) return;
+    rtc.aborted = true;
+    rtc.dc.onmessage = null;
+    rtc.dc.onclose = null;
+    rtc.dc.onopen = null;
+    try {
+      rtc.dc.close();
+    } catch {
+      /* already closed */
+    }
+    try {
+      rtc.pc.close();
+    } catch {
+      /* already closed */
+    }
+    if (this.#dc === rtc.dc) this.#dc = null;
+    if (this.#pc === rtc.pc) this.#pc = null;
+    this.#dcOpen = false;
+  }
+
+  async #connectOpenAI(minted, rtc, t0, bootstrapMs) {
+    const { pc, dc } = rtc;
+
     const dcOpen = new Promise((resolve, reject) => {
       const timer = setTimeout(
         () => reject(new RealtimeError('sdp_failed', 'Connection to the voice service timed out.')),
@@ -472,12 +635,20 @@ export class RealtimeSession extends EventTarget {
         resolve();
       };
     });
+    // A failure below exits without ever awaiting dcOpen — pre-attach a
+    // no-op handler so its eventual timeout rejection is never "unhandled".
+    dcOpen.catch(() => {});
 
     try {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      await waitForIceGathering(pc, ICE_GATHER_TIMEOUT_MS);
+      // Usually already settled: the offer + ICE ran during the mint.
+      const prep = await rtc.ready;
+      if (!prep.ok) {
+        throw prep.err instanceof RealtimeError
+          ? prep.err
+          : new RealtimeError('sdp_failed', 'Could not prepare the voice connection.');
+      }
 
+      const sdpStart = performance.now();
       const url = this.#model
         ? this.callsUrl + '?model=' + encodeURIComponent(this.#model)
         : this.callsUrl;
@@ -503,7 +674,17 @@ export class RealtimeSession extends EventTarget {
       const answerSdp = await callResp.text();
       await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
 
+      // Perceived-latency note (latency plan #4.4): `sessionready` (which
+      // mic.mjs renders as "Listening") already fires at datachannel OPEN,
+      // not at OpenAI's session.created ack. Moving it earlier still — to
+      // media-up (pc.connectionState 'connected') — was evaluated and NOT
+      // done: the oai-events channel rides the same DTLS association as the
+      // media, so dc open trails media-up by roughly one SCTP handshake RTT
+      // (tens of ms), and before dc open commitTurn/bargeIn/sendEvent all
+      // throw not_connected — "Listening" would advertise controls that
+      // can't work yet, for a negligible win.
       await dcOpen;
+      this.#finishTiming(t0, bootstrapMs, rtc.iceMs, performance.now() - sdpStart);
     } catch (err) {
       this.#teardown();
       throw err instanceof RealtimeError

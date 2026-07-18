@@ -150,6 +150,52 @@ func TestHandleIsIdempotentOnRetry(t *testing.T) {
 	assert.Len(t, convs, 1)
 }
 
+func TestHandleSecondFinalFlushConvergesOnOneConversation(t *testing.T) {
+	// The duplicate-CONV bug: one session's client sent {final:true} twice
+	// a few seconds apart (End button, then pagehide), producing two invokes
+	// with DIFFERENT timestamps. The session claim must map the second onto
+	// the first's canonical timestamp → exactly one CONV row, one broker
+	// call, no double topic counting.
+	ctx := context.Background()
+	h, st, broker := newTestHandler(t, brokerResponse{TopicIDs: []string{"cook"}})
+	uid, sid := "u1", "sessA"
+	tsFirst, tsSecond := "2026-07-17T12:00:00Z", "2026-07-17T12:00:03Z"
+
+	require.NoError(t, st.CreateTopic(ctx, uid, &store.Topic{TopicID: "cook", Name: "Cooking"}))
+	seedTurns(t, st, uid, sid)
+
+	require.NoError(t, h.Handle(ctx, Event{UserID: uid, SessionID: sid, TS: tsFirst, Surface: "web"}))
+	require.NoError(t, h.Handle(ctx, Event{UserID: uid, SessionID: sid, TS: tsSecond, Surface: "web"}))
+
+	assert.Len(t, broker.requests, 1, "second final flush must not re-invoke the model")
+	convs, _, err := st.ListConversations(ctx, uid, store.ListConversationsOpts{})
+	require.NoError(t, err)
+	require.Len(t, convs, 1, "one session must never mint two CONV rows")
+	assert.Equal(t, tsFirst, convs[0].TS, "the first final flush's timestamp is canonical")
+	topic, err := st.GetTopic(ctx, uid, "cook")
+	require.NoError(t, err)
+	assert.Equal(t, 1, topic.ConvCount)
+}
+
+func TestHandleConcurrentClaimDefersToRetry(t *testing.T) {
+	// A different event claimed the session moments ago and its CONV isn't
+	// recorded yet → this attempt must NOT run a parallel extraction (it
+	// would double-create proposed topics); it errors so the async-invoke
+	// retry re-checks after the first attempt lands.
+	ctx := context.Background()
+	h, st, broker := newTestHandler(t, brokerResponse{TopicIDs: []string{"cook"}})
+	uid, sid := "u1", "sessA"
+	seedTurns(t, st, uid, sid)
+
+	claim, err := st.ClaimConversationSession(ctx, uid, sid, "2026-07-17T12:00:00Z")
+	require.NoError(t, err)
+	require.False(t, claim.Existing)
+
+	err = h.Handle(ctx, Event{UserID: uid, SessionID: sid, TS: "2026-07-17T12:00:03Z", Surface: "web"})
+	require.Error(t, err, "young foreign claim without a CONV row means in-flight")
+	assert.Empty(t, broker.requests, "no parallel extraction")
+}
+
 func TestHandleSkipsEmptySessions(t *testing.T) {
 	ctx := context.Background()
 	h, st, broker := newTestHandler(t, brokerResponse{})

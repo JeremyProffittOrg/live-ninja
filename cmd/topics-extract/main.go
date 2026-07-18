@@ -13,7 +13,10 @@
 //     each topic's convCount only when the ref is new), and finally writes
 //     the canonical CONV# record.
 //
-// Idempotency: the CONV# record is written last with a conditional put —
+// Idempotency: a conditional CONVSESS#<sessionId> claim marker pins ONE
+// canonical timestamp per session up front, so even a client that flushed
+// {final:true} twice with different timestamps converges on a single CONV
+// row. The CONV# record itself is written last with a conditional put —
 // an async-retry that finds it already present exits without re-tagging,
 // and every TREF put is itself conditional, so a crash-and-retry midway
 // never double-counts or duplicates rows.
@@ -59,6 +62,11 @@ const (
 
 // maxTitleRunes caps the conversation title (first user utterance).
 const maxTitleRunes = 80
+
+// extractionInFlightGrace: how long another attempt's session claim is
+// treated as "still running" (broker extraction takes a few seconds; async
+// Lambda retries arrive minutes apart, comfortably past this window).
+const extractionInFlightGrace = 2 * time.Minute
 
 // Event is the invoke payload from the transcript sink
 // (internal/webapp/api_routes.go, {final:true} seam). Identity fields come
@@ -120,14 +128,36 @@ func (h *handler) Handle(ctx context.Context, ev Event) error {
 	}
 	l := h.log.With(slog.String("userId", ev.UserID), slog.String("sessionId", ev.SessionID))
 
+	// Pin the session's canonical timestamp FIRST (conditional put of a
+	// CONVSESS#<sessionId> marker): the first final flush wins, and every
+	// later invoke — an async-retry redelivery of the same event, or a
+	// second final:true flush carrying a DIFFERENT ts (End button + pagehide
+	// seconds apart, the duplicate-CONV bug) — adopts the stored ts so all
+	// attempts upsert the same CONV#<ts>#<sessionId> row.
+	claim, err := h.store.ClaimConversationSession(ctx, ev.UserID, ev.SessionID, ts)
+	if err != nil {
+		return err
+	}
+
 	// Already processed? (Retried async delivery, or a client that sent
-	// {final:true} twice with the same event.)
-	if conv, err := h.store.GetConversation(ctx, ev.UserID, ts+"#"+ev.SessionID); err != nil {
+	// {final:true} twice — the claim maps both onto one canonical CONV.)
+	if conv, err := h.store.GetConversation(ctx, ev.UserID, claim.TS+"#"+ev.SessionID); err != nil {
 		return err
 	} else if conv != nil {
 		l.Info("topics-extract: conversation already recorded; skipping")
 		return nil
 	}
+
+	// A DIFFERENT event claimed this session moments ago and its CONV
+	// hasn't landed yet: that attempt is almost certainly still in flight
+	// (the broker call takes seconds). Error out so the async-invoke retry
+	// re-checks later — by then the first attempt has either recorded the
+	// CONV (skip above) or died (grace expired: resume with its ts).
+	if claim.Existing && claim.TS != ts && time.Since(claim.ClaimedAt) < extractionInFlightGrace {
+		return fmt.Errorf("topics-extract: session %s extraction in flight (claimed %s); retrying later",
+			ev.SessionID, claim.ClaimedAt.Format(time.RFC3339))
+	}
+	ts = claim.TS
 
 	turns, err := h.store.ListSessionTurns(ctx, ev.UserID, ev.SessionID)
 	if err != nil {

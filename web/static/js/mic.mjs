@@ -28,7 +28,7 @@
 // #statusText, #wakeToggle, #wakeHint, plus any [data-ln-end] end button.
 // These ids match mockups/web/02-conversation.html and the M3 templates.
 
-import { RealtimeSession, RealtimeError, acquireMicStream } from './realtime.mjs';
+import { RealtimeSession, RealtimeError, acquireMicStream, prefetchSession } from './realtime.mjs';
 
 export const MicState = Object.freeze({
   IDLE: 'idle',
@@ -165,6 +165,7 @@ export class MicController extends EventTarget {
   #createSession;
   #getMicDeviceId;
   #getWakePhrase;
+  #prefetch;
 
   constructor(options = {}) {
     super();
@@ -182,6 +183,7 @@ export class MicController extends EventTarget {
     this.#createSession = options.createSession || (() => new RealtimeSession());
     this.#getMicDeviceId = options.getMicDeviceId || (() => null);
     this.#getWakePhrase = options.getWakePhrase || (() => '');
+    this.#prefetch = options.prefetchSession || prefetchSession;
 
     this.#bindUI(doc);
     this.#restoreHandsFree();
@@ -210,6 +212,9 @@ export class MicController extends EventTarget {
       btn.addEventListener('pointerdown', (e) => {
         if (e.button !== undefined && e.button !== 0) return;
         this.#lastHandledInputAt = Date.now();
+        // Intent prefetch (latency plan #4.2): warm the session mint the
+        // moment the finger lands, before the press/click resolves.
+        this.#maybePrefetch();
         this.#press();
       });
       const release = () => {
@@ -297,6 +302,29 @@ export class MicController extends EventTarget {
   }
 
   // ---- press / release / tap dispatch ----
+
+  /** Warm the session mint on an intent signal (mic-button pointerdown).
+   * #press() already start()s synchronously for idle/denied/error, so on
+   * the pointer path this is single-flight belt-and-braces (realtime.mjs
+   * dedupes and connect() consumes the same in-flight mint); it exists so
+   * the intent→mint wiring is uniform with the hands-free wake-arm
+   * prefetch in conversation.mjs. COST: an unused mint holds a broker
+   * concurrency slot + rate token until its ~60s server TTL lapses (no
+   * release endpoint) — acceptable because it only fires on explicit
+   * intent, never on page load (see prefetchSession in realtime.mjs). */
+  #maybePrefetch() {
+    const startable =
+      this.#state === MicState.IDLE ||
+      this.#state === MicState.DENIED ||
+      this.#state === MicState.ERROR;
+    if (!startable) return;
+    if (this.#errorInfo && this.#errorInfo.permanent) return; // quota: no session will start
+    try {
+      this.#prefetch();
+    } catch {
+      /* prefetch is best-effort — start() mints fresh if it failed */
+    }
+  }
 
   #press() {
     this.#pressAt = Date.now();

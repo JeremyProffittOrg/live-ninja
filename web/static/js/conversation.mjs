@@ -19,6 +19,7 @@
 //   - wake-word toggle → WakeWordEngine lifecycle → mic.notifyWake().
 
 import { apiJSON, ApiError } from './toolclient.mjs';
+import { prefetchSession } from './realtime.mjs';
 import { MicController, MicState } from './mic.mjs';
 import { createMicTest } from './mictest.mjs';
 import { Transcript } from './transcript.mjs';
@@ -400,6 +401,11 @@ async function saveQuickSwitch({ mutate, revert, appliedToast, appliedBanner }) 
 
 const transcript = new Transcript($('transcriptScroll'), $('transcript'));
 
+// Set by attachTranscriptRendering for the newest session; invoked by the
+// transcript sink's onBeforeFinal hook (see the sink construction below)
+// to sweep rendered-but-unfinalized turns into the final batch.
+let drainLiveTurnsToSink = null;
+
 function attachTranscriptRendering(session) {
   const turnByItem = new Map(); // realtime itemId -> transcript turnId
 
@@ -417,8 +423,59 @@ function attachTranscriptRendering(session) {
     anchorTurnId = null;
   };
 
+  // ---- transcript sink capture (exactly-once, all arrival paths) ----
+  //
+  // This rendering layer is the ONLY feeder of sink.addTurn (the sink
+  // stopped listening to 'userfinal'/'assistantfinal' itself): it is the
+  // one place that sees every path a turn can arrive by — streamed deltas,
+  // the late authoritative final, a final with no deltas — so what gets
+  // SAVED is exactly what got RENDERED. Per-item text accumulates from the
+  // delta events (e.detail.text is the full running text), the final
+  // captures once (guarded by capturedItems), and drainToSink() sweeps
+  // anything still un-finalized into the sink right before the final
+  // flush (registered via the sink's onBeforeFinal — covers the prod loss
+  // where the user's transcription final never landed before End/pagehide
+  // killed the page, leaving the turn rendered but never saved).
+  const liveTextByItem = new Map(); // itemId -> {role, text} still awaiting its final
+  const capturedItems = new Set(); // itemIds already handed to the sink
+  let sinkAnchor = null; // sink handle of the first assistant turn queued ahead of a pending user turn
+
+  const captureToSink = (role, itemId, text) => {
+    if (capturedItems.has(itemId)) return;
+    capturedItems.add(itemId);
+    liveTextByItem.delete(itemId);
+    if (role === 'user') {
+      // A late user final lands BEFORE the assistant reply it prompted,
+      // mirroring the UI's anchor insert (transcriptsink honors `before`
+      // only while the anchor batch hasn't been attempted).
+      sink.addTurn('user', text, { before: sinkAnchor || undefined });
+      sinkAnchor = null;
+    } else {
+      const handle = sink.addTurn('assistant', text);
+      // An un-transcribed/un-captured user utterance is still ahead of us —
+      // remember this assistant entry so that user turn can slot in above.
+      const userStillPending =
+        userSpeechPending || [...liveTextByItem.values()].some((v) => v.role === 'user');
+      if (handle && userStillPending && !sinkAnchor) sinkAnchor = handle;
+    }
+  };
+
+  const drainToSink = () => {
+    // Users first so a drained user turn can still use the anchor slot.
+    for (const [itemId, v] of [...liveTextByItem]) {
+      if (v.role === 'user') captureToSink('user', itemId, v.text);
+    }
+    for (const [itemId, v] of [...liveTextByItem]) {
+      captureToSink(v.role, itemId, v.text);
+    }
+  };
+  drainLiveTurnsToSink = drainToSink; // sink.onBeforeFinal calls the newest session's drain
+
   const beginOrAppend = (role, e) => {
     const { itemId, delta } = e.detail;
+    if (!capturedItems.has(itemId)) {
+      liveTextByItem.set(itemId, { role, text: e.detail.text || '' });
+    }
     let turnId = turnByItem.get(itemId);
     if (!turnId) {
       if (role === 'assistant') {
@@ -453,6 +510,10 @@ function attachTranscriptRendering(session) {
         transcript.addMessage(role, text);
       }
     }
+    // Save the turn: the final text is authoritative; fall back to the
+    // accumulated delta text when the final arrived empty.
+    const live = liveTextByItem.get(itemId);
+    captureToSink(role, itemId, text || (live ? live.text : ''));
     // Any user final ends that utterance's transcription (even an empty
     // one) — drop the anchor so it can't misplace a later user turn.
     if (role === 'user') userTurnPlaced();
@@ -465,10 +526,23 @@ function attachTranscriptRendering(session) {
   session.addEventListener('speechstarted', () => {
     // A new utterance begins: any anchor left from a previous exchange is
     // stale (its transcript was lost or absorbed) — never re-anchor to it.
+    // Same for the sink's anchor: a later utterance must never insert
+    // itself above a previous exchange's assistant reply.
     userSpeechPending = true;
     anchorTurnId = null;
+    sinkAnchor = null;
   });
-  session.addEventListener('usertranscriptfailed', () => userTurnPlaced());
+  session.addEventListener('usertranscriptfailed', (e) => {
+    // Transcription failed server-side, but any streamed deltas are still
+    // on screen — save what was rendered (empty accumulations are dropped
+    // by the sink itself).
+    const itemId = e.detail && e.detail.itemId;
+    if (itemId) {
+      const live = liveTextByItem.get(itemId);
+      if (live) captureToSink('user', itemId, live.text);
+    }
+    userTurnPlaced();
+  });
   session.addEventListener('thinking', () => transcript.showTypingIndicator());
   session.addEventListener('responsedone', () => transcript.hideTypingIndicator());
   session.addEventListener('bargein', () => transcript.hideTypingIndicator());
@@ -701,7 +775,14 @@ const mic = new MicController({
   getWakePhrase: () => wakePhraseText(),
 });
 
-const sink = createTranscriptSink();
+// onBeforeFinal: right before the sink sends a session's one-and-only
+// final flush, drain any rendered-but-never-finalized turns (set per
+// session by attachTranscriptRendering) so they make the final batch.
+const sink = createTranscriptSink({
+  onBeforeFinal: () => {
+    if (typeof drainLiveTurnsToSink === 'function') drainLiveTurnsToSink();
+  },
+});
 sink.observe(mic);
 
 // ---- mic test (self-serve diagnostics; button in the left rail) ----------
@@ -854,7 +935,18 @@ if (!isWakeWordSupported()) {
 } else if (wakeToggle) {
   // mic.mjs already persists the toggle to localStorage; this listener owns
   // the engine lifecycle.
-  wakeToggle.addEventListener('change', () => void setWakeListening(wakeToggle.checked));
+  wakeToggle.addEventListener('change', () => {
+    // Intent prefetch (latency plan #4.2): the user arming hands-free means
+    // a wake — and a session start — is likely soon, so warm the mint now
+    // and the wake→"Listening" path skips the 0.7-1.2s bootstrap.
+    // Deliberately wired to the user's toggle GESTURE, not inside
+    // setWakeListening(): the page-load restore path (bootstrap() below)
+    // must never mint speculatively — an unused mint burns a broker
+    // concurrency slot + rate token for its ~60s server TTL, and there is
+    // no release call (see prefetchSession in realtime.mjs).
+    if (wakeToggle.checked) prefetchSession();
+    void setWakeListening(wakeToggle.checked);
+  });
 }
 
 // ---- composer (typed input; live session or fallback turn) ---------------

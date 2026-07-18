@@ -115,13 +115,34 @@
   .hist-transcript { display: flex; flex-direction: column; gap: var(--ln-sp-3); max-width: 720px; }
 
   /* Tool-call cards in the detail transcript: hidden until the
-     "Show tool calls" toggle turns them on (default off, remembered). */
+     "Show tool calls" toggle turns them on (default off, remembered).
+     The toggle itself lives at the TOP of the page (list level) — one
+     control governing every detail view. */
   .hist-transcript .hist-toolcard { display: none; }
   .hist-transcript.show-tools .hist-toolcard { display: block; }
-  .hist-toolbar-detail { display: flex; align-items: center; margin-bottom: var(--ln-sp-4); }
-  .hist-toolbar-detail .ln-toggle { font-size: var(--ln-fs-sm); font-weight: 600; color: var(--ln-text-muted); }
-  .hist-toolbar-detail .ln-toggle:has(input:checked) { color: var(--ln-text); }
+  .hist-tools-toggle { display: flex; align-items: center; margin-top: var(--ln-sp-3); }
+  .hist-tools-toggle .ln-toggle { font-size: var(--ln-fs-sm); font-weight: 600; color: var(--ln-text-muted); }
+  .hist-tools-toggle .ln-toggle:has(input:checked) { color: var(--ln-text); }
   .hist-toolcard dd { word-break: break-word; }
+
+  /* Full args/output disclosure on tool cards: pinned open via the
+     focusable Details button (aria-expanded), and transiently revealed on
+     mouse hover or keyboard focus within the card. */
+  .hist-toolcard__details-btn { min-height: 32px; padding: 0 var(--ln-sp-3); font-size: var(--ln-fs-xs); flex: none; }
+  .hist-toolcard__full { margin-top: var(--ln-sp-3); border-top: 1px solid var(--ln-border); padding-top: var(--ln-sp-3); }
+  .hist-toolcard:hover .hist-toolcard__full[hidden],
+  .hist-toolcard:focus-within .hist-toolcard__full[hidden] { display: block; }
+  .hist-toolcard__full-label {
+    font-size: var(--ln-fs-xs); font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--ln-text-muted); margin-bottom: var(--ln-sp-1);
+  }
+  .hist-toolcard__full pre {
+    white-space: pre-wrap; word-break: break-word; margin: 0 0 var(--ln-sp-3);
+    font-size: var(--ln-fs-xs); background: var(--ln-surface-2);
+    border: 1px solid var(--ln-border); border-radius: var(--ln-r-sm);
+    padding: var(--ln-sp-2) var(--ln-sp-3); max-height: 320px; overflow: auto;
+  }
+  .hist-toolcard__full pre:last-child { margin-bottom: 0; }
 
   /* Topic manager */
   .hist-manage summary {
@@ -167,6 +188,17 @@
   <div class="hist-page-head">
     <h1>History</h1>
     <p class="ln-muted">Every conversation you’ve had with Live Ninja, tagged by topic. Filter by topic, device, or date.</p>
+    {{- /* "Show tool calls" — ln-toggle slider, default off, remembered in
+           localStorage. Lives here at the top of the page (list level) so
+           ONE control governs tool-card visibility across every
+           conversation detail view. */}}
+    <div class="hist-tools-toggle" id="toolToggleWrap">
+      <label class="ln-toggle">
+        <input type="checkbox" id="showToolCalls">
+        <span class="ln-toggle-track" aria-hidden="true"><span class="ln-toggle-thumb"></span></span>
+        <span>Show tool calls in transcripts</span>
+      </label>
+    </div>
   </div>
 
   <div id="histListView">
@@ -287,17 +319,6 @@
       <h2 id="detailHeading">Conversation</h2>
     </div>
     <div class="hist-detail-meta" id="detailMeta"></div>
-
-    {{- /* "Show tool calls" — ln-toggle slider, default off, remembered in
-           localStorage; only visible when the conversation has tool-call
-           entries to show. */}}
-    <div class="hist-toolbar-detail" id="toolToggleWrap" hidden>
-      <label class="ln-toggle">
-        <input type="checkbox" id="showToolCalls">
-        <span class="ln-toggle-track" aria-hidden="true"><span class="ln-toggle-thumb"></span></span>
-        <span>Show tool calls</span>
-      </label>
-    </div>
 
     <div class="hist-skeleton" id="detailLoading" role="status" aria-label="Loading the conversation">
       <div class="bar" style="width: 85%;"></div>

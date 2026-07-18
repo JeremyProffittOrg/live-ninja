@@ -54,6 +54,13 @@ const (
 	convSKPrefix  = "CONV#"
 	trefSKPrefix  = "TREF#"
 	logSKPrefix   = "LOG#"
+	// convSessSKPrefix keys the per-session claim marker written by
+	// ClaimConversationSession — it pins ONE canonical CONV timestamp per
+	// sessionId so every extraction attempt (retries, a second final:true
+	// flush seconds later) addresses the same CONV#/TREF# items. Note the
+	// prefix does NOT begin with "CONV#" ('S' vs '#' after "CONV"), so
+	// markers can never leak into the CONV# list/range queries.
+	convSessSKPrefix = "CONVSESS#"
 )
 
 func topicSK(topicID string) string { return topicSKPrefix + topicID }
@@ -391,6 +398,77 @@ func (s *Store) DeleteTopic(ctx context.Context, userID, topicID string) error {
 }
 
 // ---- conversation + tag writes (the post-session extractor's path) ----
+
+// ConversationClaim is ClaimConversationSession's result: the canonical
+// timestamp every extraction attempt for a session must key its CONV/TREF
+// writes with, plus enough metadata to detect a concurrent attempt.
+type ConversationClaim struct {
+	TS        string    // canonical conversation timestamp (RFC3339 UTC)
+	ClaimedAt time.Time // when the winning attempt wrote the marker
+	Existing  bool      // true when an earlier attempt claimed this session
+}
+
+// ClaimConversationSession pins the canonical conversation timestamp for
+// one session via a conditional put of USER#<uid>/CONVSESS#<sessionId>.
+// The first caller wins and its ts becomes canonical; every later caller —
+// an async-retry redelivery, a crash-resume, or a SECOND final:true flush
+// carrying a different ts (the duplicate-CONV bug: End button then pagehide
+// a few seconds later) — gets the stored ts back so all attempts converge
+// on the same CONV#<ts>#<sessionId> row instead of minting siblings.
+// Key-addressed GetItem/PutItem only, never a Scan.
+func (s *Store) ClaimConversationSession(ctx context.Context, userID, sessionID, ts string) (*ConversationClaim, error) {
+	if userID == "" || sessionID == "" || ts == "" {
+		return nil, errors.New("store: userID, sessionID and ts are required")
+	}
+	now := time.Now().UTC()
+	_, err := s.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(s.table),
+		Item: map[string]types.AttributeValue{
+			"pk":        &types.AttributeValueMemberS{Value: userPK(userID)},
+			"sk":        &types.AttributeValueMemberS{Value: convSessSKPrefix + sessionID},
+			"sessionId": &types.AttributeValueMemberS{Value: sessionID},
+			"ts":        &types.AttributeValueMemberS{Value: ts},
+			"claimedAt": &types.AttributeValueMemberS{Value: now.Format(time.RFC3339Nano)},
+		},
+		ConditionExpression: aws.String("attribute_not_exists(pk) AND attribute_not_exists(sk)"),
+	})
+	if err == nil {
+		return &ConversationClaim{TS: ts, ClaimedAt: now}, nil
+	}
+	var condErr *types.ConditionalCheckFailedException
+	if !errors.As(err, &condErr) {
+		return nil, fmt.Errorf("store: claim conversation session: %w", err)
+	}
+
+	// Marker already present — read the canonical claim back.
+	out, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(s.table),
+		Key: map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: userPK(userID)},
+			"sk": &types.AttributeValueMemberS{Value: convSessSKPrefix + sessionID},
+		},
+		ConsistentRead: aws.Bool(true),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: read conversation session claim: %w", err)
+	}
+	if out.Item == nil {
+		// Vanishingly unlikely (marker deleted between put and read) —
+		// proceed with the caller's own ts; the conditional CONV/TREF puts
+		// still guarantee no duplicates for identical timestamps.
+		return &ConversationClaim{TS: ts, ClaimedAt: now}, nil
+	}
+	claim := &ConversationClaim{TS: ts, Existing: true}
+	if v, ok := out.Item["ts"].(*types.AttributeValueMemberS); ok && v.Value != "" {
+		claim.TS = v.Value
+	}
+	if v, ok := out.Item["claimedAt"].(*types.AttributeValueMemberS); ok {
+		if t, perr := time.Parse(time.RFC3339Nano, v.Value); perr == nil {
+			claim.ClaimedAt = t
+		}
+	}
+	return claim, nil
+}
 
 // CreateConversation writes the canonical CONV record. Conditional put —
 // the extractor uses ErrAlreadyExists as its "this session was already

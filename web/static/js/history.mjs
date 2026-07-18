@@ -586,6 +586,8 @@ function jsonPreview(raw, max = 200) {
   return s.length > max ? s.slice(0, max) + '…' : s;
 }
 
+let toolCardSeq = 0;
+
 function buildToolCard(turn) {
   const outer = document.createElement('div');
   outer.className = 'ln-toolcard hist-toolcard';
@@ -622,6 +624,56 @@ function buildToolCard(turn) {
   badge.textContent = badgeText;
   head.appendChild(badge);
 
+  // Full args + output (the audit rows store an output snippet) behind an
+  // accessible disclosure: the Details button pins the panel open
+  // (aria-expanded), while mouse hover or keyboard focus anywhere in the
+  // card reveals it transiently (CSS :hover / :focus-within). A plain
+  // `title` tooltip on the card is the last-resort fallback.
+  const fullArgs = String(turn.args || '').trim();
+  const fullOutput = String(turn.output || '').trim();
+  let fullPanel = null;
+  if (fullArgs || fullOutput || turn.error) {
+    const tipParts = [];
+    if (fullArgs) tipParts.push(`Arguments: ${fullArgs}`);
+    if (turn.error) tipParts.push(`Error: ${turn.error}`);
+    if (fullOutput) tipParts.push(`Output: ${fullOutput}`);
+    const tip = tipParts.join('\n');
+    outer.title = tip.length > 1500 ? tip.slice(0, 1500) + '…' : tip;
+
+    const panelId = `histToolFull-${++toolCardSeq}`;
+    const detailsBtn = document.createElement('button');
+    detailsBtn.type = 'button';
+    detailsBtn.className = 'ln-btn ln-btn--ghost hist-toolcard__details-btn';
+    detailsBtn.textContent = 'Details';
+    detailsBtn.setAttribute('aria-expanded', 'false');
+    detailsBtn.setAttribute('aria-controls', panelId);
+    detailsBtn.setAttribute('aria-label', `Show full details for the ${turn.tool || 'tool'} call`);
+    head.appendChild(detailsBtn);
+
+    fullPanel = document.createElement('div');
+    fullPanel.className = 'hist-toolcard__full';
+    fullPanel.id = panelId;
+    fullPanel.hidden = true;
+    const panel = fullPanel;
+    const addBlock = (label, value) => {
+      const lab = document.createElement('div');
+      lab.className = 'hist-toolcard__full-label';
+      lab.textContent = label;
+      const pre = document.createElement('pre');
+      pre.textContent = value;
+      panel.appendChild(lab);
+      panel.appendChild(pre);
+    };
+    if (fullArgs) addBlock('Arguments', fullArgs);
+    if (turn.error) addBlock('Error', turn.error);
+    if (fullOutput) addBlock('Output', fullOutput);
+
+    detailsBtn.addEventListener('click', () => {
+      panel.hidden = !panel.hidden;
+      detailsBtn.setAttribute('aria-expanded', panel.hidden ? 'false' : 'true');
+    });
+  }
+
   card.appendChild(head);
 
   const fields = [];
@@ -648,12 +700,16 @@ function buildToolCard(turn) {
     card.appendChild(dl);
   }
 
+  // Full detail sits below the compact preview.
+  if (fullPanel) card.appendChild(fullPanel);
+
   outer.appendChild(card);
   return outer;
 }
 
-// "Show tool calls" toggle — ln-toggle slider, default off, remembered.
-const toolToggleWrap = $('toolToggleWrap');
+// "Show tool calls" toggle — ln-toggle slider at the TOP of the page
+// (list level: one control governs every detail view), default off,
+// remembered in localStorage across visits.
 const showToolCalls = $('showToolCalls');
 showToolCalls.checked = localStorage.getItem(SHOW_TOOLS_KEY) === '1';
 detailTranscript.classList.toggle('show-tools', showToolCalls.checked);
@@ -665,7 +721,6 @@ showToolCalls.addEventListener('change', () => {
 async function loadDetail() {
   const id = detailConvId;
   setDetailState('loading');
-  toolToggleWrap.hidden = true;
   try {
     const resp = await apiJSON(`/api/v1/conversations/${encodeURIComponent(id)}`);
     if (detailConvId !== id) return; // navigated away meanwhile
@@ -675,10 +730,8 @@ async function loadDetail() {
       return;
     }
     detailTranscript.textContent = '';
-    let toolCount = 0;
     for (const turn of turns) {
       if (turn.role === 'tool') {
-        toolCount++;
         detailTranscript.appendChild(buildToolCard(turn));
         continue;
       }
@@ -693,7 +746,6 @@ async function loadDetail() {
       bubble.appendChild(body);
       detailTranscript.appendChild(bubble);
     }
-    toolToggleWrap.hidden = toolCount === 0;
     setDetailState('transcript');
   } catch (err) {
     if (detailConvId !== id) return;

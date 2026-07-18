@@ -11,9 +11,10 @@
 // a failed batch can never duplicate turns.
 //
 // Wiring: `sink.observe(micController)` subscribes to 'sessioncreated' /
-// 'ending', and each created session's 'sessionready' / 'userfinal' /
-// 'assistantfinal' / 'closed' / 'connectionlost' events. Or drive it
-// manually with beginSession/addTurn/flush.
+// 'ending', and each created session's 'sessionready' / 'closed' /
+// 'connectionlost' LIFECYCLE events. Turns themselves are fed by the
+// page's transcript-rendering layer via addTurn (see attachSession's
+// comment) so the sink stores exactly what the UI rendered.
 //
 // Privacy: `setEnabled(false)` (settings.privacy.storeTranscripts === false)
 // drops turns client-side; the server's retention policy remains the
@@ -32,12 +33,24 @@ export function createTranscriptSink({
   endpoint = ENDPOINT,
   flushIntervalMs = FLUSH_INTERVAL_MS,
   maxBatchTurns = MAX_BATCH_TURNS,
+  // Called synchronously right before the sink marks a session final
+  // (End button / session closed / pagehide). The page uses it to drain
+  // any turns it rendered whose finalizing event never arrived (the GA
+  // user-transcription final routinely lags — or never lands before the
+  // page dies), so they still make the final batch. Must be idempotent:
+  // it can fire more than once per session.
+  onBeforeFinal = null,
 } = {}) {
   let enabled = true;
   let sessionId = '';
   let engine = '';
-  let seq = 0;
-  let pending = []; // [{seq, role, text, engine}]
+  // Sequence numbers are assigned at FLUSH time (not enqueue time) so a
+  // late-arriving user turn can still be inserted before the assistant
+  // reply it prompted (addTurn's `before`) — server rows keep transcript
+  // order. Entries that have been attempted keep their seq forever (the
+  // server dedupes on seq, so a retried batch must resend identical rows).
+  let nextSeq = 0;
+  let pending = []; // [{seq: number|null, role, text, engine}]
   let timer = null;
   let inFlight = false;
   let flushAgain = false;
@@ -45,6 +58,11 @@ export function createTranscriptSink({
   // server releases the session's concurrency slot and kicks topic
   // extraction. Cleared only once a final flush succeeds.
   let finalPending = false;
+  // Latched once a final flush for this session SUCCEEDS. The server kicks
+  // topic extraction on every final:true it sees, so re-marking final (End
+  // button, then pagehide 3s later) used to double-invoke the extractor and
+  // write duplicate CONV rows — final is sent exactly once per session.
+  let finalSent = false;
 
   function armTimer() {
     if (timer !== null) return;
@@ -67,17 +85,34 @@ export function createTranscriptSink({
     if (sessionId && (pending.length || finalPending)) void flush();
     sessionId = id || '';
     engine = sessionEngine || '';
-    seq = 0;
+    nextSeq = 0;
     pending = [];
     finalPending = false;
+    finalSent = false;
   }
 
-  /** Queue one finalized turn. role: "user" | "assistant". */
-  function addTurn(role, text) {
-    if (!enabled || !sessionId) return;
+  /** Queue one finalized turn. role: "user" | "assistant".
+   * @param {'user'|'assistant'} role
+   * @param {string} text
+   * @param {{before?: object}} [opts] `before` is a handle previously
+   *   returned by addTurn: if that entry is still queued and un-attempted,
+   *   the new turn is inserted before it (a late user-transcription final
+   *   lands above the assistant reply it prompted, mirroring the UI's
+   *   anchor insert). An already-attempted/flushed anchor falls back to
+   *   append — its seq was sent to the server and must not shift.
+   * @returns {object|null} an opaque handle usable as a later `before`
+   *   anchor, or null when the turn was dropped (disabled/empty). */
+  function addTurn(role, text, { before = null } = {}) {
+    if (!enabled || !sessionId) return null;
     const trimmed = (text || '').trim();
-    if (!trimmed) return; // server skips empty turns anyway — don't ship them
-    pending.push({ seq: seq++, role, text: trimmed, engine });
+    if (!trimmed) return null; // server skips empty turns anyway — don't ship them
+    const entry = { seq: null, role, text: trimmed, engine };
+    const anchorIdx = before ? pending.indexOf(before) : -1;
+    if (anchorIdx !== -1 && before.seq === null) {
+      pending.splice(anchorIdx, 0, entry);
+    } else {
+      pending.push(entry);
+    }
     if (pending.length > MAX_PENDING_TURNS) {
       pending = pending.slice(pending.length - MAX_PENDING_TURNS);
     }
@@ -86,6 +121,7 @@ export function createTranscriptSink({
     } else {
       armTimer();
     }
+    return entry;
   }
 
   /** Send everything queued. `keepalive` marks the pagehide path (fetch
@@ -102,12 +138,22 @@ export function createTranscriptSink({
     const batch = pending;
     const isFinal = finalPending;
     pending = [];
+    // Seqs are assigned at first attempt, in queue order (late inserts got
+    // their slot via addTurn's `before`); an entry keeps its seq across
+    // retries so a re-sent batch is a server-side no-op per row.
+    for (const entry of batch) {
+      if (entry.seq === null) entry.seq = nextSeq++;
+    }
     inFlight = true;
     let ok = false;
     try {
       const resp = await authFetch(endpoint, {
         method: 'POST',
-        json: { sessionId, turns: batch, final: isFinal },
+        json: {
+          sessionId,
+          turns: batch.map(({ seq, role, text, engine: turnEngine }) => ({ seq, role, text, engine: turnEngine })),
+          final: isFinal,
+        },
         keepalive,
       });
       ok = resp.ok;
@@ -123,7 +169,10 @@ export function createTranscriptSink({
       if (!keepalive) armTimer(); // retry on the normal cadence
       return;
     }
-    if (isFinal) finalPending = false;
+    if (isFinal) {
+      finalPending = false;
+      finalSent = true; // exactly one final per session — never re-marked
+    }
     if (flushAgain || pending.length >= maxBatchTurns) {
       flushAgain = false;
       void flush();
@@ -132,13 +181,30 @@ export function createTranscriptSink({
     }
   }
 
+  /** Invokes the page's pre-final drain hook (idempotent, never throws
+   * out of the sink). Runs only while the session hasn't sent its final. */
+  function runBeforeFinal() {
+    if (typeof onBeforeFinal !== 'function') return;
+    try {
+      onBeforeFinal();
+    } catch {
+      /* a drain failure must never block the final flush */
+    }
+  }
+
   /** Final flush for a finished session; keeps sessionId so a late retry
    * can still land, but stops the cadence timer. Marks the flush final so
    * the server releases the realtime concurrency slot and runs topic
-   * extraction — a final-only flush with zero turns is valid. */
+   * extraction — a final-only flush with zero turns is valid. Idempotent:
+   * once a final flush has SUCCEEDED, later calls (ending + closed, End
+   * button + pagehide) only flush leftovers — they never re-mark final,
+   * so the server's topic extraction runs exactly once per session. */
   function endSession() {
     clearTimer();
-    finalPending = true;
+    if (!finalSent) {
+      runBeforeFinal();
+      finalPending = true;
+    }
     void flush();
   }
 
@@ -150,12 +216,17 @@ export function createTranscriptSink({
     }
   }
 
+  // Session LIFECYCLE only. Turn capture deliberately does NOT live here
+  // anymore: the page's transcript-rendering layer (conversation.mjs
+  // attachTranscriptRendering) is the single place that knows every path a
+  // turn can arrive by — streamed deltas, a late authoritative final, the
+  // insert-before-anchor reorder — and it feeds addTurn so the sink saves
+  // exactly what the UI rendered, exactly once. (Capturing 'userfinal'
+  // here too would double-log every user turn.)
   function attachSession(session) {
     session.addEventListener('sessionready', (e) => {
       beginSession(e.detail.sessionId, e.detail.model || 'openai-realtime');
     });
-    session.addEventListener('userfinal', (e) => addTurn('user', e.detail.text));
-    session.addEventListener('assistantfinal', (e) => addTurn('assistant', e.detail.text));
     session.addEventListener('closed', () => endSession());
     session.addEventListener('connectionlost', () => endSession());
   }
@@ -178,8 +249,14 @@ export function createTranscriptSink({
     // The document is going away and any live session dies with it — mark
     // final so the server frees the concurrency slot instead of letting it
     // block new mints for the rest of the 10-minute cap. (visibilitychange
-    // alone is NOT final: a backgrounded tab keeps its session.)
-    if (sessionId) finalPending = true;
+    // alone is NOT final: a backgrounded tab keeps its session.) If the
+    // session's final already went out (End button pressed, then the user
+    // navigated away), this only flushes stragglers — re-marking final
+    // here was exactly the double-CONV bug.
+    if (sessionId && !finalSent) {
+      runBeforeFinal();
+      finalPending = true;
+    }
     void flush({ keepalive: true });
   });
 

@@ -67,6 +67,42 @@ func TestTopicCRUD(t *testing.T) {
 	require.Len(t, topics, 1)
 }
 
+func TestClaimConversationSession(t *testing.T) {
+	ctx := context.Background()
+	st, _ := newTestStore()
+
+	// First claim wins and keeps its own timestamp.
+	first, err := st.ClaimConversationSession(ctx, "u1", "sessA", "2026-07-18T22:23:25Z")
+	require.NoError(t, err)
+	assert.False(t, first.Existing)
+	assert.Equal(t, "2026-07-18T22:23:25Z", first.TS)
+	assert.False(t, first.ClaimedAt.IsZero())
+
+	// A later claim with a different timestamp (second final flush) gets
+	// the canonical first timestamp back.
+	second, err := st.ClaimConversationSession(ctx, "u1", "sessA", "2026-07-18T22:23:28Z")
+	require.NoError(t, err)
+	assert.True(t, second.Existing)
+	assert.Equal(t, "2026-07-18T22:23:25Z", second.TS)
+	assert.False(t, second.ClaimedAt.IsZero())
+
+	// Sessions and users are independent claims.
+	otherSess, err := st.ClaimConversationSession(ctx, "u1", "sessB", "2026-07-18T23:00:00Z")
+	require.NoError(t, err)
+	assert.False(t, otherSess.Existing)
+	otherUser, err := st.ClaimConversationSession(ctx, "u2", "sessA", "2026-07-18T23:00:00Z")
+	require.NoError(t, err)
+	assert.False(t, otherUser.Existing)
+
+	// The marker must never surface in the CONV# list range.
+	convs, _, err := st.ListConversations(ctx, "u1", ListConversationsOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, convs)
+
+	_, err = st.ClaimConversationSession(ctx, "", "s", "ts")
+	require.Error(t, err)
+}
+
 func TestConversationWriteAndGet(t *testing.T) {
 	ctx := context.Background()
 	st, _ := newTestStore()
