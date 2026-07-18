@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"html/template"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -82,6 +83,8 @@ type settingsPageView struct {
 	Voice           string
 	TurnDetection   string
 	MicEagerness    string
+	ThemeStyle      string
+	AccentColor     string
 	Theme           string
 	MicDeviceID     string
 	StoreAudio      bool
@@ -187,6 +190,8 @@ func buildSettingsPageView(doc map[string]any) (*settingsPageView, error) {
 		Voice:           docString(doc, "voice", realtime.DefaultVoice),
 		TurnDetection:   docString(doc, "turnDetection", "semantic_vad"),
 		MicEagerness:    docString(doc, "micEagerness", "auto"),
+		ThemeStyle:      docNestedString(doc, "appearance", "themeStyle", "hal9000"),
+		AccentColor:     docNestedString(doc, "appearance", "accentColor", ""),
 		Theme:           docString(doc, "theme", "system"),
 		MicDeviceID:     docString(doc, "micDeviceId", ""),
 		StoreAudio:      docBool(doc, "privacy", "storeAudio", false),
@@ -318,6 +323,9 @@ func handlePutSettings(deps *Deps) fiber.Handler {
 // as the `config` shadow desired state for every ACTIVE IoT-provisioned
 // device of the user (contracts/shadow.md; internal/sync). Declared as a
 // package var so tests can intercept the fan-out without IoT clients.
+// hexColorRe validates appearance.accentColor ("#rrggbb").
+var hexColorRe = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+
 var publishSettingsShadow = func(ctx context.Context, deps *Deps, userID string, doc map[string]any, version int64) {
 	pub, err := lnsync.SharedPublisher(ctx, deps.Log)
 	if err != nil {
@@ -396,6 +404,31 @@ func validateAndNormalizeSettings(doc map[string]any) string {
 		}
 	default:
 		return "micEagerness must be a string"
+	}
+	// appearance: theme style preset + accent color ("" = style default).
+	// Optional for older clients — absent normalizes to the defaults.
+	switch ap := doc["appearance"].(type) {
+	case nil:
+		doc["appearance"] = map[string]any{"themeStyle": "hal9000", "accentColor": ""}
+	case map[string]any:
+		st, _ := ap["themeStyle"].(string)
+		if st == "" {
+			ap["themeStyle"] = "hal9000"
+		} else if !oneOf(st, "hal9000", "ninja", "minimal", "terminal") {
+			return "appearance.themeStyle must be one of hal9000, ninja, minimal, terminal"
+		}
+		switch ac := ap["accentColor"].(type) {
+		case nil:
+			ap["accentColor"] = ""
+		case string:
+			if ac != "" && !hexColorRe.MatchString(ac) {
+				return "appearance.accentColor must be a #rrggbb hex color (or empty for the style default)"
+			}
+		default:
+			return "appearance.accentColor must be a string"
+		}
+	default:
+		return "appearance must be an object"
 	}
 	if s, ok := doc["theme"].(string); !ok || !oneOf(s, "light", "dark", "system") {
 		return "theme must be light, dark, or system"
@@ -486,6 +519,15 @@ func docBool(doc map[string]any, objKey, key string, def bool) bool {
 	if m, ok := doc[objKey].(map[string]any); ok {
 		if b, ok := m[key].(bool); ok {
 			return b
+		}
+	}
+	return def
+}
+
+func docNestedString(doc map[string]any, objKey, key, def string) string {
+	if m, ok := doc[objKey].(map[string]any); ok {
+		if s, ok := m[key].(string); ok {
+			return s
 		}
 	}
 	return def

@@ -804,6 +804,12 @@ async function bootstrap() {
   const privacy = settingsDoc.privacy;
   sink.setEnabled(!(privacy && privacy.storeTranscripts === false));
 
+  // Apply + cache the synced appearance (theme.js reads the cache pre-paint
+  // on every page; this keeps other devices/pages in step with settings).
+  if (window.__lnApplyAppearance && settingsDoc.appearance) {
+    window.__lnApplyAppearance(settingsDoc.appearance);
+  }
+
   renderWakeUI();
   // Hands-free restored ON from a previous visit (mic.mjs reads
   // localStorage in its constructor): bring the engine up now.

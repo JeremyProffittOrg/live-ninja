@@ -185,6 +185,28 @@
       ],
       "default": "auto",
       "description": "Mic pickup: how quickly semantic VAD treats a pause as end-of-turn (maps to the realtime API's turn_detection.eagerness). Optional; absent normalizes to auto."
+    },
+    "appearance": {
+      "type": "object",
+      "description": "Visual customization (two axes, podcasts.jeremy.ninja-style): a style preset and an accent color. Optional; absent normalizes to the defaults.",
+      "properties": {
+        "themeStyle": {
+          "type": "string",
+          "enum": [
+            "hal9000",
+            "ninja",
+            "minimal",
+            "terminal"
+          ],
+          "default": "hal9000"
+        },
+        "accentColor": {
+          "type": "string",
+          "pattern": "^(#[0-9a-fA-F]{6})?$",
+          "default": "",
+          "description": "#rrggbb, or empty string for the style's default accent."
+        }
+      }
     }
   }
 }

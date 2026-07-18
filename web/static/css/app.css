@@ -1139,3 +1139,87 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
   0%, 100% { transform: scale(1); }
   50% { transform: scale(1.12); }
 }
+
+/* ==================== theme styles (data-ln-style) ====================== */
+/* Accent recoloring is done by theme.js (inline --ln-teal/--ln-cyan/
+   --ln-teal-600/--ln-shadow-teal overrides); these blocks change the
+   CHARACTER of each style — backgrounds, glow, and the orb. */
+
+/* ---- HAL 9000 (default): deep black chrome, glowing red eye ---- */
+:root[data-ln-style="hal9000"] {
+  --ln-bg: #050507;
+  --ln-bg-grad: radial-gradient(1100px 650px at 70% -10%, #16080a 0%, #050507 55%);
+  --ln-surface: rgba(24, 12, 14, 0.72);
+  --ln-surface-2: rgba(36, 16, 18, 0.85);
+  --ln-surface-raised: #180c0e;
+  --ln-border: rgba(205, 122, 130, 0.16);
+  --ln-border-strong: rgba(205, 122, 130, 0.30);
+}
+:root[data-ln-style="hal9000"] .ln-orb__core {
+  /* The eye: bright specular point, incandescent core, deep red iris,
+     near-black rim. */
+  background:
+    radial-gradient(circle at 50% 42%,
+      #fff8f2 0%, #ffd9c4 3.5%, #ff5a4a 12%, var(--ln-accent, #e32636) 26%,
+      #7a0f18 58%, #2a0507 82%, #0a0102 100%);
+  box-shadow:
+    0 0 24px 4px color-mix(in srgb, var(--ln-accent, #e32636) 55%, transparent),
+    0 0 90px 18px color-mix(in srgb, var(--ln-accent, #e32636) 22%, transparent),
+    inset 0 0 30px 6px rgba(0, 0, 0, 0.55);
+}
+:root[data-ln-style="hal9000"] .ln-orb__glow {
+  background: radial-gradient(circle,
+    color-mix(in srgb, var(--ln-accent, #e32636) 32%, transparent) 0%,
+    transparent 65%);
+}
+:root[data-ln-style="hal9000"] .ln-orb__ring {
+  border-color: color-mix(in srgb, var(--ln-accent, #e32636) 30%, transparent);
+}
+
+/* ---- Minimal: flat, no glow, no gradients ---- */
+:root[data-ln-style="minimal"] .ln-orb__glow,
+:root[data-ln-style="minimal"] .ln-orb__ring { display: none; }
+:root[data-ln-style="minimal"] .ln-orb__core {
+  background: var(--ln-accent, #38d0ff);
+  box-shadow: none;
+}
+:root[data-ln-style="minimal"] .ptt { box-shadow: none; background: var(--ln-accent, #38d0ff); }
+:root[data-ln-style="minimal"] * { text-shadow: none !important; }
+
+/* ---- Terminal: pure black, CRT phosphor ---- */
+:root[data-ln-style="terminal"] {
+  --ln-bg: #000000;
+  --ln-bg-grad: none;
+  --ln-surface: rgba(8, 16, 8, 0.85);
+  --ln-surface-2: rgba(12, 24, 12, 0.9);
+  --ln-surface-raised: #071007;
+  --ln-border: rgba(80, 200, 110, 0.22);
+  --ln-border-strong: rgba(80, 200, 110, 0.40);
+}
+:root[data-ln-style="terminal"] body { background: #000; }
+:root[data-ln-style="terminal"] .ln-orb__core {
+  background: radial-gradient(circle at 50% 45%,
+    #eaffea 0%, var(--ln-accent, #33ff66) 18%, #0a3a16 70%, #010401 100%);
+  box-shadow: 0 0 30px 6px color-mix(in srgb, var(--ln-accent, #33ff66) 40%, transparent);
+}
+
+/* ---- accent swatch picker (settings Appearance) ---- */
+.ln-swatches { display: flex; flex-wrap: wrap; gap: 10px; }
+.ln-swatch {
+  width: 44px; height: 44px; border-radius: 50%;
+  border: 2px solid var(--ln-border-strong);
+  background: var(--swatch);
+  cursor: pointer;
+  display: grid; place-items: center;
+  font-size: 10px; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.7);
+}
+.ln-swatch[aria-checked="true"], .ln-swatch.is-active {
+  border-color: var(--ln-text);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ln-accent, #888) 45%, transparent);
+}
+.ln-color {
+  width: 84px; height: 44px; padding: 2px;
+  border: 1px solid var(--ln-border-strong); border-radius: 8px;
+  background: var(--ln-surface);
+  cursor: pointer;
+}

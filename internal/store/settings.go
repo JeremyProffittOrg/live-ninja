@@ -51,6 +51,9 @@ func DefaultSettings() map[string]any {
 		"voice":         "cedar",
 		"turnDetection": "semantic_vad",
 		"micEagerness":  "auto",
+		// themeStyle hal9000 is the owner-locked default look (red glowing
+		// eye orb); accentColor "" means "use the style's own default accent".
+		"appearance": map[string]any{"themeStyle": "hal9000", "accentColor": ""},
 		"theme":         "system",
 		"micDeviceId":   nil,
 		"voiceEngine":   map[string]any{"default": "openai-realtime", "devices": map[string]any{}},

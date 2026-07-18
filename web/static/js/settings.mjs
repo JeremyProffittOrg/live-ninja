@@ -289,6 +289,16 @@ function renderField(key) {
       if (r) r.checked = true;
       break;
     }
+    case 'appearance': {
+      const ap = (doc.appearance && typeof doc.appearance === 'object') ? doc.appearance : {};
+      const r = document.querySelector(`input[name="themeStyle"][value="${CSS.escape(ap.themeStyle || 'hal9000')}"]`);
+      if (r) r.checked = true;
+      const custom = document.getElementById('accentCustom');
+      if (custom && /^#[0-9a-fA-F]{6}$/.test(ap.accentColor || '')) custom.value = ap.accentColor;
+      if (window.__lnApplyAppearance) window.__lnApplyAppearance(ap);
+      syncAccentSwatches();
+      break;
+    }
     case 'voiceEngine': {
       // Reflect voiceEngine.default; an unknown value leaves all radios
       // unchecked (the stored value is still preserved on write-back).
@@ -934,6 +944,59 @@ for (const r of document.querySelectorAll('input[name="micEagerness"]')) {
     if (!r.checked) return;
     doc.micEagerness = r.value;
     markChanged('micEagerness');
+  });
+}
+
+// ---- appearance: theme style + accent color -----------------------------
+
+function appearanceDoc() {
+  if (!doc.appearance || typeof doc.appearance !== 'object') {
+    doc.appearance = { themeStyle: 'hal9000', accentColor: '' };
+  }
+  return doc.appearance;
+}
+
+function applyAppearanceLive() {
+  if (window.__lnApplyAppearance) window.__lnApplyAppearance(appearanceDoc());
+  syncAccentSwatches();
+}
+
+function syncAccentSwatches() {
+  const current = appearanceDoc().accentColor || '';
+  for (const b of document.querySelectorAll('.ln-swatch')) {
+    const active = (b.dataset.accent || '') === current;
+    b.classList.toggle('is-active', active);
+    b.setAttribute('aria-checked', active ? 'true' : 'false');
+  }
+}
+
+for (const r of document.querySelectorAll('input[name="themeStyle"]')) {
+  r.addEventListener('change', () => {
+    if (!r.checked) return;
+    appearanceDoc().themeStyle = r.value;
+    applyAppearanceLive();
+    markChanged('appearance');
+  });
+}
+
+for (const b of document.querySelectorAll('.ln-swatch')) {
+  b.addEventListener('click', () => {
+    appearanceDoc().accentColor = b.dataset.accent || '';
+    applyAppearanceLive();
+    markChanged('appearance');
+  });
+}
+
+const accentCustom = document.getElementById('accentCustom');
+if (accentCustom) {
+  accentCustom.addEventListener('input', () => {
+    appearanceDoc().accentColor = accentCustom.value;
+    applyAppearanceLive();
+  });
+  accentCustom.addEventListener('change', () => {
+    appearanceDoc().accentColor = accentCustom.value;
+    applyAppearanceLive();
+    markChanged('appearance');
   });
 }
 

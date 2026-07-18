@@ -308,6 +308,59 @@
       </div>
       <p class="ln-hint">System follows your device's light/dark preference. Applies immediately.</p>
     </fieldset>
+
+    <fieldset class="ln-fieldset">
+      <legend>Style</legend>
+      <div class="ln-choices">
+        <label class="ln-choice">
+          <input type="radio" name="themeStyle" value="hal9000" {{if eq .ThemeStyle "hal9000"}}checked{{end}}>
+          <span class="ln-choice__body">
+            <span class="ln-choice__title">HAL 9000</span>
+            <span class="ln-choice__desc">Deep black with a glowing red eye. "I'm sorry Dave" energy (default).</span>
+          </span>
+        </label>
+        <label class="ln-choice">
+          <input type="radio" name="themeStyle" value="ninja" {{if eq .ThemeStyle "ninja"}}checked{{end}}>
+          <span class="ln-choice__body">
+            <span class="ln-choice__title">Ninja</span>
+            <span class="ln-choice__desc">The original navy-and-teal look.</span>
+          </span>
+        </label>
+        <label class="ln-choice">
+          <input type="radio" name="themeStyle" value="minimal" {{if eq .ThemeStyle "minimal"}}checked{{end}}>
+          <span class="ln-choice__body">
+            <span class="ln-choice__title">Minimal</span>
+            <span class="ln-choice__desc">Flat and quiet — no glow, no gradients.</span>
+          </span>
+        </label>
+        <label class="ln-choice">
+          <input type="radio" name="themeStyle" value="terminal" {{if eq .ThemeStyle "terminal"}}checked{{end}}>
+          <span class="ln-choice__body">
+            <span class="ln-choice__title">Terminal</span>
+            <span class="ln-choice__desc">Pure black, phosphor green, CRT vibes.</span>
+          </span>
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset class="ln-fieldset">
+      <legend>Accent color</legend>
+      <div class="ln-swatches" id="accentSwatches" role="radiogroup" aria-label="Accent color">
+        <button type="button" class="ln-swatch" data-accent="" style="--swatch: #888" title="Style default" aria-label="Style default"><span>Auto</span></button>
+        <button type="button" class="ln-swatch" data-accent="#e32636" style="--swatch: #e32636" aria-label="HAL red"></button>
+        <button type="button" class="ln-swatch" data-accent="#22e0d0" style="--swatch: #22e0d0" aria-label="Ninja teal"></button>
+        <button type="button" class="ln-swatch" data-accent="#38d0ff" style="--swatch: #38d0ff" aria-label="Cyan"></button>
+        <button type="button" class="ln-swatch" data-accent="#33ff66" style="--swatch: #33ff66" aria-label="Phosphor green"></button>
+        <button type="button" class="ln-swatch" data-accent="#ffca4a" style="--swatch: #ffca4a" aria-label="Amber"></button>
+        <button type="button" class="ln-swatch" data-accent="#b388ff" style="--swatch: #b388ff" aria-label="Violet"></button>
+        <button type="button" class="ln-swatch" data-accent="#ff7ab8" style="--swatch: #ff7ab8" aria-label="Pink"></button>
+      </div>
+      <div class="ln-field" style="margin-top:10px">
+        <label for="accentCustom">Custom color</label>
+        <input type="color" class="ln-color" id="accentCustom" value="{{if .AccentColor}}{{.AccentColor}}{{else}}#e32636{{end}}">
+      </div>
+      <p class="ln-hint">"Auto" follows the style's own color. Applies immediately on every device.</p>
+    </fieldset>
   </section>
 
   <!-- ============ Microphone ============ -->
