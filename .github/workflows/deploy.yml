@@ -357,7 +357,7 @@ jobs:
               OpenAIRealtimeModel=${{ vars.OPENAI_REALTIME_MODEL || 'gpt-realtime' }} \
               NovaBridgeDesiredCount=${{ steps.nova.outputs.desired }} \
               NovaBridgeImageReady=${{ steps.nova.outputs.imageReady }} \
-              NovaBridgeEnable=false
+              NovaBridgeEnable=true
 
       # Oversized static binaries (ORT WASM ~11 MB, wake-word ONNX models) can't
       # be served through the Fiber Lambda (>6 MB response cap → 500). Publish
