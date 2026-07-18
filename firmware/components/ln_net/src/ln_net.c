@@ -24,6 +24,10 @@
 #include "esp_netif_sntp.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "esp_hosted_api_types.h" /* esp_hosted_coprocessor_fwver_t */
+
+/* Defined in esp-hosted's esp_hosted_api.c; no public header declares it. */
+extern esp_err_t esp_hosted_get_coprocessor_fwversion(esp_hosted_coprocessor_fwver_t *ver_info);
 #include "nvs.h"
 #include "sdkconfig.h"
 
@@ -462,6 +466,12 @@ static bool sta_try_connect(int retry_count)
     cfg.sta.threshold.authmode = s_pass[0] ? WIFI_AUTH_WPA_PSK : WIFI_AUTH_OPEN;
     cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
     cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    /* WPA3-SAE: accept both hunt-and-peck and H2E password-element modes.
+     * Modern Wi-Fi 6/7 routers running WPA3-only commonly MANDATE H2E; with
+     * the zero default (hunt-and-peck only) the SAE handshake dies as a
+     * plain AUTH_FAIL — HIL-diagnosed against the owner's WPA3-Personal
+     * 802.11be AP, where a correct password was rejected (reason 202). */
+    cfg.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
 
     char ssid_evt[33];
     strlcpy(ssid_evt, s_ssid, sizeof(ssid_evt));
@@ -869,6 +879,19 @@ esp_err_t ln_net_init(void)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_wifi_init (remote/C6) failed: %s", esp_err_to_name(err));
         return err;
+    }
+
+    /* Diagnostic: the C6 slave's esp-hosted firmware version (an old slave
+     * can silently ignore newer RPC config fields like sae_pwe_h2e). */
+    {
+        esp_hosted_coprocessor_fwver_t ver = {0};
+        if (esp_hosted_get_coprocessor_fwversion(&ver) == ESP_OK) {
+            ESP_LOGI(TAG, "C6 esp-hosted slave firmware v%lu.%lu.%lu",
+                     (unsigned long)ver.major1, (unsigned long)ver.minor1,
+                     (unsigned long)ver.patch1);
+        } else {
+            ESP_LOGW(TAG, "C6 slave firmware version query failed (old slave?)");
+        }
     }
 
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
