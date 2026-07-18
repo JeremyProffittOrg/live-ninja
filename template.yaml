@@ -46,6 +46,15 @@ Parameters:
       pull an image that does not exist; the container-bootstrap job then pushes the
       image and scales the service to 1. Every subsequent deploy leaves this at the
       default 1.
+  NovaBridgeEnable:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      Master switch for the entire M12 nova-bridge subsystem (ECS/ALB/CloudFront
+      /nova/*). Default off so the core stack deploys independently of the
+      Fargate voice bridge; enabled in a dedicated deploy once the bridge is
+      verified. The ECR repo stays unconditional so its image persists.
   NovaBridgeImageReady:
     Type: String
     Default: "false"
@@ -89,7 +98,7 @@ Conditions:
   # the image is pushed; a subsequent deploy (NovaBridgeImageReady=true) brings
   # up the service. The ALB, target group, repo and CloudFront /nova/* origin
   # deploy in both phases.
-  NovaBridgeReady: !Equals [!Ref NovaBridgeImageReady, "true"]
+  NovaBridgeReady: !Equals [!Ref NovaBridgeEnable, "true"]
 
 Resources:
   # ------------------------------------------------------------------
@@ -1536,12 +1545,14 @@ Resources:
 
   NovaBridgeLogGroup:
     Type: AWS::Logs::LogGroup
+    Condition: NovaBridgeReady
     Properties:
       LogGroupName: /live-ninja/ecs/nova-bridge
       RetentionInDays: 5
 
   NovaBridgeExecutionRole:
     Type: AWS::IAM::Role
+    Condition: NovaBridgeReady
     Properties:
       RoleName: live-ninja-nova-bridge-exec
       Description: ECS task execution role for the nova-bridge service (ECR pull + CloudWatch Logs).
@@ -1557,6 +1568,7 @@ Resources:
 
   NovaBridgeTaskRole:
     Type: AWS::IAM::Role
+    Condition: NovaBridgeReady
     Properties:
       RoleName: live-ninja-nova-bridge-task
       Description: >-
@@ -1599,6 +1611,7 @@ Resources:
 
   NovaBridgeCluster:
     Type: AWS::ECS::Cluster
+    Condition: NovaBridgeReady
     Properties:
       ClusterName: live-ninja-nova-bridge
 
@@ -1607,6 +1620,7 @@ Resources:
   # CloudFront /nova/* behavior (WAF + TLS applied there), never directly.
   NovaBridgeAlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
+    Condition: NovaBridgeReady
     Properties:
       GroupDescription: live-ninja nova-bridge ALB - ingress from CloudFront origin-facing prefix list only.
       VpcId: !Ref BatchVpc
@@ -1625,6 +1639,7 @@ Resources:
   # only; egress open (ECR pull, Bedrock, DynamoDB, Logs, public JWKS).
   NovaBridgeServiceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
+    Condition: NovaBridgeReady
     Properties:
       GroupDescription: live-ninja nova-bridge Fargate tasks - ingress from the ALB SG only, egress open.
       VpcId: !Ref BatchVpc
@@ -1635,6 +1650,7 @@ Resources:
 
   NovaBridgeServiceIngressFromAlb:
     Type: AWS::EC2::SecurityGroupIngress
+    Condition: NovaBridgeReady
     Properties:
       GroupId: !Ref NovaBridgeServiceSecurityGroup
       IpProtocol: tcp
@@ -1645,6 +1661,7 @@ Resources:
 
   NovaBridgeAlb:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Condition: NovaBridgeReady
     Properties:
       Name: live-ninja-nova-bridge
       Type: application
@@ -1662,6 +1679,7 @@ Resources:
 
   NovaBridgeTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Condition: NovaBridgeReady
     Properties:
       Name: live-ninja-nova-bridge
       # Fargate awsvpc networking -> IP targets.
@@ -1683,6 +1701,7 @@ Resources:
 
   NovaBridgeListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: NovaBridgeReady
     Properties:
       LoadBalancerArn: !Ref NovaBridgeAlb
       # HTTP only: TLS is terminated at CloudFront with the existing cert; the
@@ -1966,12 +1985,15 @@ Resources:
           # WebSocket upgrades to Bedrock Nova Sonic ride this origin under the
           # /nova/* behavior below. OriginReadTimeout is bumped to CloudFront's
           # 60s max so a slow first WS response is not cut short.
-          - Id: nova-bridge
-            DomainName: !GetAtt NovaBridgeAlb.DNSName
-            CustomOriginConfig:
-              OriginProtocolPolicy: http-only
-              HTTPPort: 80
-              OriginReadTimeout: 60
+          - !If
+            - NovaBridgeReady
+            - Id: nova-bridge
+              DomainName: !GetAtt NovaBridgeAlb.DNSName
+              CustomOriginConfig:
+                OriginProtocolPolicy: http-only
+                HTTPPort: 80
+                OriginReadTimeout: 60
+            - !Ref "AWS::NoValue"
           # Oversized static binaries (ORT WASM, wake models) served from S3.
           - Id: assets-s3
             DomainName: !Sub "${AssetsBucket}.s3.${AWS::Region}.amazonaws.com"
@@ -2037,26 +2059,29 @@ Resources:
           # Upgrade / Connection / Sec-WebSocket-* headers, query string (the JWT
           # is a query param) and everything else are forwarded verbatim. Compress
           # is off — a WebSocket stream must not be content-encoded.
-          - PathPattern: /nova/*
-            TargetOriginId: nova-bridge
-            ViewerProtocolPolicy: redirect-to-https
-            AllowedMethods:
-              - GET
-              - HEAD
-              - OPTIONS
-              - PUT
-              - POST
-              - PATCH
-              - DELETE
-            CachedMethods:
-              - GET
-              - HEAD
-            Compress: false
-            # Managed policies: CachingDisabled + AllViewer (forwards all headers
-            # incl. the WebSocket upgrade set, all cookies, all query strings).
-            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
-            OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
-            ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
+          - !If
+            - NovaBridgeReady
+            - PathPattern: /nova/*
+              TargetOriginId: nova-bridge
+              ViewerProtocolPolicy: redirect-to-https
+              AllowedMethods:
+                - GET
+                - HEAD
+                - OPTIONS
+                - PUT
+                - POST
+                - PATCH
+                - DELETE
+              CachedMethods:
+                - GET
+                - HEAD
+              Compress: false
+              # Managed policies: CachingDisabled + AllViewer (forwards all headers
+              # incl. the WebSocket upgrade set, all cookies, all query strings).
+              CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+              OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
+              ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
+            - !Ref "AWS::NoValue"
 
   DnsRecordA:
     Type: AWS::Route53::RecordSet
@@ -2603,6 +2628,7 @@ Outputs:
     Description: ECR repository URI the deploy workflow pushes the nova-bridge image to (M12).
     Value: !GetAtt NovaBridgeRepo.RepositoryUri
   NovaBridgeClusterName:
+    Condition: NovaBridgeReady
     Description: ECS cluster hosting the nova-bridge Fargate service (M12).
     Value: !Ref NovaBridgeCluster
   NovaBridgeServiceName:
@@ -2610,8 +2636,10 @@ Outputs:
     Description: nova-bridge ECS service name (used by the container-bootstrap scale-to-1 step) (M12).
     Value: !GetAtt NovaBridgeService.Name
   NovaBridgeAlbDnsName:
+    Condition: NovaBridgeReady
     Description: Internal-only (CloudFront-fronted) ALB DNS name for the nova-bridge service (M12).
     Value: !GetAtt NovaBridgeAlb.DNSName
   NovaBridgeWsUrl:
+    Condition: NovaBridgeReady
     Description: WebSocket URL the realtime session bootstrap hands to nova-sonic-pinned clients (M12).
     Value: !Sub "wss://${DomainName}/nova/session"

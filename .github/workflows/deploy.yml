@@ -356,7 +356,8 @@ jobs:
               HostedZoneId=${{ vars.HOSTED_ZONE_ID }} \
               OpenAIRealtimeModel=${{ vars.OPENAI_REALTIME_MODEL || 'gpt-realtime' }} \
               NovaBridgeDesiredCount=${{ steps.nova.outputs.desired }} \
-              NovaBridgeImageReady=${{ steps.nova.outputs.imageReady }}
+              NovaBridgeImageReady=${{ steps.nova.outputs.imageReady }} \
+              NovaBridgeEnable=false
 
       # Oversized static binaries (ORT WASM ~11 MB, wake-word ONNX models) can't
       # be served through the Fiber Lambda (>6 MB response cap → 500). Publish
