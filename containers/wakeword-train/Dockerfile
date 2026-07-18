@@ -18,11 +18,14 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# ca-certificates: TLS to GitHub (build time) and S3 (run time). No compiler
-# toolchain — every Python dep pins a prebuilt manylinux aarch64 wheel
-# (verified per-package; see requirements.txt).
+# ca-certificates: TLS to GitHub (build time) and S3 (run time). libgomp1:
+# the OpenMP runtime torch/torchaudio's aarch64 wheels dlopen at import
+# (slim-bookworm doesn't ship it — its absence killed the first real
+# training run with "libgomp.so.1: cannot open shared object file").
+# No compiler toolchain — every Python dep pins a prebuilt manylinux
+# aarch64 wheel (verified per-package; see requirements.txt).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates \
+ && apt-get install -y --no-install-recommends ca-certificates libgomp1 \
  && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /opt/wakeword-train/requirements.txt
