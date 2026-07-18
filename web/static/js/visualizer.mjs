@@ -51,6 +51,12 @@ const DEFAULTS = {
   fftSize: 64,
   gapRatio: 0.35,
   minBarRatio: 0.06,
+  // A gentle always-present traveling wave shown while a source is active
+  // (listening/speaking) so the user has an unmistakable "it's live / capturing"
+  // cue even during quiet moments; real audio spikes the bars above it.
+  // Suppressed under prefers-reduced-motion (that mode is a static level meter).
+  idleAmplitude: 0.22,
+  idlePhaseStep: 0.14,
   attack: 0.6,
   release: 0.15,
   reducedMotionIntervalMs: 400,
@@ -109,6 +115,7 @@ export class Visualizer {
 
     this._barLevels = new Float32Array(this._opts.barCount);
     this._freqData = null; // sized lazily once an AnalyserNode exists
+    this._phase = 0; // advances the idle traveling wave (normal-motion only)
 
     this._running = false;
     this._rafId = null;
@@ -324,9 +331,20 @@ export class Visualizer {
     const analyser = this._activeAnalyser();
     const { barCount } = this._opts;
 
+    // Idle floor: a gentle traveling wave so the strip is visibly alive while a
+    // source is active. Zero under reduced motion (snap) — that mode is a plain
+    // level meter. Advance the phase once per frame here (not per bar).
+    if (!snap) this._phase += this._opts.idlePhaseStep;
+    const idleAmp = snap ? 0 : this._opts.idleAmplitude;
+    const floorAt = (i) => {
+      if (idleAmp === 0) return this._opts.minBarRatio;
+      const wave = 0.5 + 0.5 * Math.sin(this._phase - i * 0.55);
+      return this._opts.minBarRatio + wave * idleAmp;
+    };
+
     if (!analyser) {
-      const target = this._opts.minBarRatio;
       for (let i = 0; i < barCount; i++) {
+        const target = floorAt(i);
         this._barLevels[i] = snap ? target : this._lerp(this._barLevels[i], target, this._opts.release);
       }
       return;
@@ -345,7 +363,8 @@ export class Visualizer {
       const end = Math.min(bins, start + binsPerBar);
       for (let b = start; b < end; b++) sum += this._freqData[b];
       const avg = end > start ? sum / (end - start) : 0;
-      const target = Math.max(this._opts.minBarRatio, avg / 255);
+      // Real audio spikes above the animated idle floor.
+      const target = Math.max(floorAt(i), avg / 255);
 
       if (snap) {
         this._barLevels[i] = target;
