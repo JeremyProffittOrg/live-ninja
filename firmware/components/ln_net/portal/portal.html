@@ -77,6 +77,9 @@ button{font:inherit;cursor:pointer}
 .kv dd{font-weight:600;text-align:right;overflow-wrap:anywhere}
 .ok{color:var(--success)}
 .url{font-family:Consolas,Menlo,monospace;font-size:13px;color:var(--cyan);overflow-wrap:anywhere;margin-top:10px;display:block}
+.ucode-wrap{margin-top:14px;padding:14px;border:1px solid var(--border-strong);border-radius:var(--r);
+  background:var(--bg2);text-align:center}
+.ucode{font-family:Consolas,Menlo,monospace;font-size:34px;font-weight:700;letter-spacing:4px;color:var(--teal)}
 .skel{height:52px;border-radius:var(--r);background:linear-gradient(90deg,var(--surface2) 25%,#1b2b47 50%,var(--surface2) 75%);
   background-size:200% 100%;animation:sh 1.2s infinite}
 @keyframes sh{to{background-position:-200% 0}}
@@ -179,6 +182,10 @@ button{font:inherit;cursor:pointer}
       switch back to the internet to open the sign-in page.</p>
     <div class="status-line" id="pairWait"><span class="spin" aria-hidden="true"></span>
       <span aria-live="polite">Getting a pairing link&hellip;</span></div>
+    <div class="ucode-wrap hidden" id="codeWrap">
+      <div class="ucode" id="userCode" aria-live="polite"></div>
+      <p class="hint" style="margin-bottom:0">Enter this code in your browser when asked.</p>
+    </div>
     <a class="btn btn-primary hidden" id="claimBtn" rel="noopener">&#127312; Continue with Amazon</a>
     <span class="url hidden" id="claimUrlText"></span>
     <p class="hint hidden" id="pairNote">If the button doesn&rsquo;t open, reconnect your phone to your normal
@@ -398,6 +405,9 @@ function poll(){
         show(a,true);show($("claimUrlText"),true);show($("pairNote"),true);show($("pairWait"),false);
         $("claimUrlText").textContent=st.claimUrl;
       }
+      /* Re-read every poll: a failed pairing restarts with a NEW code. */
+      $("userCode").textContent=st.userCode||"";
+      show($("codeWrap"),!!st.userCode);
     }else if(w.state==="connecting"&&submitted){
       $("connMsg").textContent="Connecting to “"+(w.ssid||selSsid||"your network")+"”…";
       panels("panel-connecting");

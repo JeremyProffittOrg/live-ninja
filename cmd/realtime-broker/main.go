@@ -8,7 +8,13 @@
 //	  metering.md), server-side persona/voice resolution, then a
 //	  config-bound OpenAI Realtime ephemeral token mint
 //	  (POST /v1/realtime/client_secrets, ~60s TTL).
-//	"fallback-turn": text-only degraded turn via gpt-4o-mini.
+//	"fallback-turn": text-only degraded turn via gpt-4o-mini. Legacy
+//	  payload {text} runs a plain completion; payload {messages} runs a
+//	  tool-capable completion bound to the same tool catalog realtime
+//	  sessions get, returning either the final text or the model's
+//	  tool_calls verbatim — the WEB function executes tools (it holds the
+//	  tool-side IAM; this function holds only the OpenAI key) and
+//	  re-invokes with the results appended.
 //	"fallback-stt":  audio -> gpt-4o-transcribe transcript.
 //	"fallback-tts":  text -> gpt-4o-mini-tts MP3 audio.
 //	"extract-topics": post-session topic extraction (M11, FR-TOP-01) —
@@ -61,12 +67,12 @@ type Request struct {
 	// function forwards the ingress txId so a single user action correlates
 	// across the web fn and this broker in CloudWatch). Generated here when
 	// absent so a direct/system invoke is still traceable.
-	TxID          string          `json:"txId,omitempty"`
-	UserID        string          `json:"userId"`
-	Surface       string          `json:"surface"`
-	DeviceID      string          `json:"deviceId,omitempty"`
-	Persona       string          `json:"persona,omitempty"`
-	VoiceOverride string          `json:"voiceOverride,omitempty"`
+	TxID          string `json:"txId,omitempty"`
+	UserID        string `json:"userId"`
+	Surface       string `json:"surface"`
+	DeviceID      string `json:"deviceId,omitempty"`
+	Persona       string `json:"persona,omitempty"`
+	VoiceOverride string `json:"voiceOverride,omitempty"`
 	// MicEagerness maps to semantic VAD's eagerness (low|medium|high|auto);
 	// empty means auto.
 	MicEagerness string          `json:"micEagerness,omitempty"`
@@ -75,6 +81,10 @@ type Request struct {
 
 type turnPayload struct {
 	Text string `json:"text"`
+	// Messages selects the tool-capable turn: the conversation so far
+	// (user text, assistant tool requests, executed tool results). When
+	// present it wins over Text.
+	Messages []realtime.ChatMessage `json:"messages,omitempty"`
 }
 
 type sttPayload struct {
@@ -138,9 +148,14 @@ type Response struct {
 	QuotaWarning string `json:"quotaWarning,omitempty"`
 
 	// Fallback success shapes: Text for turn/stt; audio for tts.
-	Text        string `json:"text,omitempty"`
-	AudioBase64 string `json:"audioBase64,omitempty"`
-	ContentType string `json:"contentType,omitempty"`
+	// ToolCalls (tool-capable fallback-turn only) carries the model's
+	// requested function calls verbatim — this function never executes
+	// them; the web function runs each through internal/tools and
+	// re-invokes with the results.
+	Text        string                  `json:"text,omitempty"`
+	ToolCalls   []realtime.ChatToolCall `json:"toolCalls,omitempty"`
+	AudioBase64 string                  `json:"audioBase64,omitempty"`
+	ContentType string                  `json:"contentType,omitempty"`
 
 	// Extract-topics success shape: ids of existing topics the
 	// conversation matched, plus proposed brand-new topic names (the
@@ -155,11 +170,22 @@ var validSurfaces = map[string]bool{
 	"device":  true,
 }
 
+// fallbackAPI is the FallbackClient surface the broker dispatches to —
+// an interface so tests can fake the OpenAI legs without HTTP.
+// *realtime.FallbackClient is the production implementation.
+type fallbackAPI interface {
+	Turn(ctx context.Context, personaID, text string) (string, error)
+	TurnWithTools(ctx context.Context, personaID string, messages []realtime.ChatMessage) (*realtime.TurnResult, error)
+	Transcribe(ctx context.Context, audio []byte, filename, contentType string) (string, error)
+	Speak(ctx context.Context, text, voice string) ([]byte, error)
+	ExtractTopics(ctx context.Context, transcript string, existing []realtime.TopicOption) (*realtime.ExtractResult, error)
+}
+
 type broker struct {
 	log      *slog.Logger
 	gate     *realtime.Gate
 	minter   *realtime.Minter
-	fallback *realtime.FallbackClient
+	fallback fallbackAPI
 
 	// ddb/table back the per-mint Guide Entity injection (guides.go): the
 	// broker Queries the caller's GUIDE# prefix and appends enabled guides
@@ -400,11 +426,29 @@ func (b *broker) handleNovaBridge(ctx context.Context, l *slog.Logger, req Reque
 
 func (b *broker) handleFallbackTurn(ctx context.Context, l *slog.Logger, req Request) Response {
 	var p turnPayload
-	if err := json.Unmarshal(orEmptyObject(req.Payload), &p); err != nil || strings.TrimSpace(p.Text) == "" {
-		return badRequest("payload.text is required")
+	if err := json.Unmarshal(orEmptyObject(req.Payload), &p); err != nil ||
+		(len(p.Messages) == 0 && strings.TrimSpace(p.Text) == "") {
+		return badRequest("payload.text or payload.messages is required")
+	}
+	if len(p.Messages) > 0 {
+		if err := realtime.ValidateChatMessages(p.Messages); err != nil {
+			return badRequest(err.Error())
+		}
 	}
 	if resp, rejected := b.gateFallback(ctx, l, req); rejected {
 		return resp
+	}
+
+	// Tool-capable turn: same tool catalog realtime sessions get; the
+	// model's tool_calls are returned verbatim for the WEB function to
+	// execute (this function has no tool-side IAM, by design).
+	if len(p.Messages) > 0 {
+		res, err := b.fallback.TurnWithTools(ctx, req.Persona, p.Messages)
+		if err != nil {
+			return b.fallbackError(l, req, "turn", err)
+		}
+		b.countFallback(req, "turn")
+		return Response{Text: res.Text, ToolCalls: res.ToolCalls}
 	}
 
 	text, err := b.fallback.Turn(ctx, req.Persona, p.Text)

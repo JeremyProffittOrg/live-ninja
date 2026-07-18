@@ -68,7 +68,7 @@ func RegisterAPIRoutes(app *fiber.App, deps *Deps) {
 	api.Post("/tools/invoke", handleToolsInvoke(deps, registry))
 	api.Post("/transcript", handleTranscript(deps))
 
-	api.Post("/fallback/turn", handleFallbackTurn(deps))
+	api.Post("/fallback/turn", handleFallbackTurn(deps, registry))
 	api.Post("/fallback/stt", handleFallbackSTT(deps))
 	api.Post("/fallback/tts", handleFallbackTTS(deps))
 }
@@ -287,9 +287,32 @@ type brokerResponse struct {
 	QuotaWarning         string `json:"quotaWarning,omitempty"`
 
 	// Fallback success shapes: Text for turn/stt; audio for tts.
-	Text        string `json:"text,omitempty"`
-	AudioBase64 string `json:"audioBase64,omitempty"`
-	ContentType string `json:"contentType,omitempty"`
+	// ToolCalls (tool-capable fallback-turn only) carries the model's
+	// requested function calls verbatim — the broker never executes them;
+	// handleFallbackTurn runs each through the internal/tools registry
+	// here (the web function holds the tool-side IAM) and re-invokes.
+	Text        string               `json:"text,omitempty"`
+	ToolCalls   []brokerChatToolCall `json:"toolCalls,omitempty"`
+	AudioBase64 string               `json:"audioBase64,omitempty"`
+	ContentType string               `json:"contentType,omitempty"`
+}
+
+// brokerChatToolCall mirrors realtime.ChatToolCall (broker wire contract):
+// one model-requested function call, arguments as the raw JSON string.
+type brokerChatToolCall struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// brokerChatMessage mirrors realtime.ChatMessage: one turn in the
+// fallback tool loop's conversation (user text, an assistant message
+// carrying tool calls, or a tool-result message paired by toolCallId).
+type brokerChatMessage struct {
+	Role       string               `json:"role"`
+	Content    string               `json:"content"`
+	ToolCalls  []brokerChatToolCall `json:"toolCalls,omitempty"`
+	ToolCallID string               `json:"toolCallId,omitempty"`
 }
 
 // invokeRealtimeBroker invokes the realtime-broker Lambda (BrokerFn) via
@@ -713,9 +736,19 @@ func enqueueTopicExtraction(ctx context.Context, deps *Deps, userID, sessionID, 
 
 // ---- POST /api/v1/fallback/{turn,stt,tts} ----
 
-func handleFallbackTurn(deps *Deps) fiber.Handler {
+// maxFallbackToolIterations caps the broker-invoke/execute-tools loop for
+// one typed message; when the model still wants tools after the cap, the
+// turn degrades to a plain text answer saying the tool limit was hit.
+const maxFallbackToolIterations = 5
+
+// fallbackToolLimitText is that degraded answer.
+const fallbackToolLimitText = "I hit the limit of tool calls I can run for a single message, so I stopped early. " +
+	"The results above are what completed — send another message if you'd like me to continue."
+
+func handleFallbackTurn(deps *Deps, registry *tools.Registry) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID, surface, deviceID := UserID(c), Surface(c), DeviceID(c)
+		sessionID := SessionID(c)
 
 		var body struct {
 			Text    string `json:"text"`
@@ -725,23 +758,116 @@ func handleFallbackTurn(deps *Deps) fiber.Handler {
 			return apiBadRequest(c, "text is required")
 		}
 
-		payload, err := json.Marshal(map[string]any{"text": body.Text})
-		if err != nil {
-			return apiInternalError(c, deps, "marshal fallback turn payload", err)
+		invokeTurn := func(payloadObj map[string]any) (*brokerResponse, error) {
+			payload, err := json.Marshal(payloadObj)
+			if err != nil {
+				return nil, fmt.Errorf("marshal fallback turn payload: %w", err)
+			}
+			return invokeRealtimeBroker(c.Context(), deps, brokerRequest{
+				Mode: "fallback-turn", TxID: TxID(c), UserID: userID, Surface: surface, DeviceID: deviceID,
+				Persona: body.Persona, Payload: payload,
+			})
 		}
-		resp, err := invokeRealtimeBroker(c.Context(), deps, brokerRequest{
-			Mode: "fallback-turn", TxID: TxID(c), UserID: userID, Surface: surface, DeviceID: deviceID,
-			Persona: body.Persona, Payload: payload,
+
+		// No tool registry (cold-start init failure) → the legacy plain
+		// completion; a broker that returned tool calls here would have no
+		// executor, so don't ask for them.
+		if registry == nil {
+			resp, err := invokeTurn(map[string]any{"text": body.Text})
+			if err != nil {
+				deps.Log.Error("api: fallback turn failed", slog.String("error", err.Error()), slog.String("userId", userID))
+				return errorJSON(c, fiber.StatusBadGateway, "broker_unavailable", "The fallback turn request failed.")
+			}
+			if resp.Error != "" {
+				return apiRespondBrokerError(c, resp)
+			}
+			return c.JSON(fiber.Map{"text": resp.Text, "toolCalls": []*tools.Result{}})
+		}
+
+		// Tool loop: invoke the broker's tool-capable turn; execute every
+		// returned tool call through the SAME registry pipeline as
+		// POST /api/v1/tools/invoke (schema validation, per-call re-authz,
+		// idempotency, audit — confirm-before-send for send_email included);
+		// append the results as tool messages and re-invoke, capped at
+		// maxFallbackToolIterations.
+		messages := []brokerChatMessage{{Role: "user", Content: body.Text}}
+		executed := make([]*tools.Result, 0, 4)
+		for iter := 0; iter < maxFallbackToolIterations; iter++ {
+			resp, err := invokeTurn(map[string]any{"messages": messages})
+			if err != nil {
+				deps.Log.Error("api: fallback turn failed", slog.String("error", err.Error()), slog.String("userId", userID))
+				return errorJSON(c, fiber.StatusBadGateway, "broker_unavailable", "The fallback turn request failed.")
+			}
+			if resp.Error != "" {
+				return apiRespondBrokerError(c, resp)
+			}
+			if len(resp.ToolCalls) == 0 {
+				return c.JSON(fiber.Map{"text": resp.Text, "toolCalls": executed})
+			}
+
+			messages = append(messages, brokerChatMessage{
+				Role: "assistant", Content: resp.Text, ToolCalls: resp.ToolCalls,
+			})
+			for i, tc := range resp.ToolCalls {
+				res := executeFallbackToolCall(c, registry, tc, iter, i, userID, sessionID, surface)
+				executed = append(executed, res)
+				out, merr := json.Marshal(res)
+				if merr != nil {
+					// tools.Result is plain data — this cannot realistically
+					// fail, but the model must still get *an* output per call.
+					out = []byte(`{"ok":false,"error":{"code":"internal_error","message":"the tool result could not be serialized"}}`)
+				}
+				messages = append(messages, brokerChatMessage{
+					Role: "tool", ToolCallID: tc.ID, Content: string(out),
+				})
+			}
+		}
+
+		deps.Log.Warn("api: fallback turn hit the tool-iteration cap",
+			slog.String("userId", userID), slog.Int("executed", len(executed)),
+			slog.Int("cap", maxFallbackToolIterations))
+		return c.JSON(fiber.Map{
+			"text":             fallbackToolLimitText,
+			"toolCalls":        executed,
+			"toolLimitReached": true,
 		})
-		if err != nil {
-			deps.Log.Error("api: fallback turn failed", slog.String("error", err.Error()), slog.String("userId", userID))
-			return errorJSON(c, fiber.StatusBadGateway, "broker_unavailable", "The fallback turn request failed.")
-		}
-		if resp.Error != "" {
-			return apiRespondBrokerError(c, resp)
-		}
-		return c.JSON(fiber.Map{"text": resp.Text})
 	}
+}
+
+// executeFallbackToolCall runs one model-requested call through the tool
+// registry with the authenticated caller's identity (same entrypoint as
+// /api/v1/tools/invoke — never a bypass). Arguments that are not valid
+// JSON become an invalid_args Result so the model can recover
+// conversationally, mirroring the live datachannel dispatcher's posture.
+func executeFallbackToolCall(c *fiber.Ctx, registry *tools.Registry, tc brokerChatToolCall,
+	iter, idx int, userID, sessionID, surface string) *tools.Result {
+	var args map[string]any
+	if strings.TrimSpace(tc.Arguments) != "" {
+		if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
+			return &tools.Result{
+				Tool: tc.Name, CallID: tc.ID, TxID: TxID(c),
+				Error: &tools.ToolError{
+					Code:    tools.CodeInvalidArgs,
+					Message: "the function-call arguments were not valid JSON",
+					TxID:    TxID(c),
+				},
+			}
+		}
+	}
+	// Idempotency key: unique per attempt — the per-request txId plus the
+	// loop position plus the model's (already unique) call id — so a
+	// side-effecting tool can never double-fire on a duplicate delivery,
+	// while distinct calls always get distinct keys.
+	return registry.Invoke(c.Context(), tools.Invocation{
+		Tool:           tc.Name,
+		Args:           args,
+		IdempotencyKey: fmt.Sprintf("%s#fb%d-%d#%s", TxID(c), iter, idx, tc.ID),
+		CallID:         tc.ID,
+		TxID:           TxID(c),
+		UserID:         userID,
+		SessionID:      sessionID,
+		Surface:        surface,
+	})
 }
 
 func handleFallbackSTT(deps *Deps) fiber.Handler {

@@ -51,7 +51,9 @@ typedef enum {
     /** STA lost the link / failed to connect. Data: ln_net_wifi_fail_t. */
     LN_NET_EVENT_WIFI_DISCONNECTED,
     /** Pairing registered with the backend. Data: ln_net_pairing_info_t
-     *  (claim URL for the LCD QR / portal hand-off). */
+     *  (claim URL for the LCD QR / portal hand-off + the user code the
+     *  human types into the browser). Fires again with a FRESH code when
+     *  a pairing attempt ends in a terminal status and restarts. */
     LN_NET_EVENT_PAIRING_STARTED,
     /** Pairing bound + claimed; 10-yr refresh + deviceId now in NVS.
      *  Data: char[48] deviceId. */
@@ -96,8 +98,14 @@ typedef struct {
     int  retry_count;   /**< consecutive failures so far */
 } ln_net_wifi_fail_t;
 
+/** Pairing user code buffer size: "XXXX-XXXX" + NUL, with slack. */
+#define LN_PAIR_USER_CODE_LEN 16
+
 typedef struct {
     char claim_url[256]; /**< https://.../auth/device/claim?nonce=... */
+    char user_code[LN_PAIR_USER_CODE_LEN]; /**< RFC 8628-style "XXXX-XXXX"
+                          the human types into the browser (empty if the
+                          backend didn't send one) */
     int  expires_in_s;   /**< seconds until this pairing nonce expires */
 } ln_net_pairing_info_t;
 
@@ -132,6 +140,13 @@ bool ln_net_is_online(void);
  * progress). The ctrl/UI layer renders this as QR + text on the LCD.
  */
 esp_err_t ln_net_get_claim_url(char *buf, size_t len);
+
+/**
+ * Copy the current pairing user code ("XXXX-XXXX"; empty string if pairing
+ * is not in progress). The human reads it off the LCD / portal page and
+ * types it into the browser during account linking.
+ */
+esp_err_t ln_net_get_user_code(char *buf, size_t len);
 
 /**
  * Wipe WiFi credentials AND device auth from NVS (Settings "forget this

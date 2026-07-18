@@ -38,6 +38,7 @@ static lv_obj_t *s_qr;
 static lv_obj_t *s_qr_head;
 static lv_obj_t *s_qr_caption;
 static lv_obj_t *s_code_label;
+static lv_obj_t *s_code_hint;
 static lv_obj_t *s_status;
 
 /* ---- network list view ---- */
@@ -437,9 +438,18 @@ lv_obj_t *ln_scr_onboarding_create(void)
     s_qr_head = ln_w_label(hero, "Or scan with your phone", LN_FONT_MD,
                            LN_COL_TEXT);
 
+    /* Pairing user code ("XXXX-XXXX") — biggest Montserrat enabled in
+     * sdkconfig (48), wide-tracked, teal on the dark card for contrast. */
     s_code_label = ln_w_label(hero, "", LN_FONT_HUGE, LN_COL_TEAL);
     lv_obj_set_style_text_letter_space(s_code_label, 8, 0);
     lv_obj_add_flag(s_code_label, LV_OBJ_FLAG_HIDDEN);
+
+    s_code_hint = ln_w_label(hero, "Enter this code in your browser when asked",
+                             LN_FONT_SM, LN_COL_TEXT);
+    lv_label_set_long_mode(s_code_hint, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(s_code_hint, lv_pct(92));
+    lv_obj_set_style_text_align(s_code_hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_add_flag(s_code_hint, LV_OBJ_FLAG_HIDDEN);
 
     s_qr = lv_qrcode_create(hero);
     lv_qrcode_set_size(s_qr, 230);
@@ -586,6 +596,7 @@ void ln_scr_onboarding_portal(const char *ssid, const char *url)
     lv_obj_remove_flag(s_options_row, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(s_qr_head, "Or scan with your phone");
     lv_obj_add_flag(s_code_label, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_code_hint, LV_OBJ_FLAG_HIDDEN);
     set_qr(url);
     lv_label_set_text(s_status, "Waiting for a device to connect…");
     show_view(s_view_main);
@@ -606,8 +617,10 @@ void ln_scr_onboarding_pairing(const char *claim_url, const char *code)
     if (code != NULL && code[0] != '\0') {
         lv_label_set_text(s_code_label, code);
         lv_obj_remove_flag(s_code_label, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(s_code_hint, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(s_code_label, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_code_hint, LV_OBJ_FLAG_HIDDEN);
     }
     set_qr(claim_url);
     lv_label_set_text(s_status, "Waiting for you to approve in the browser…");
@@ -630,6 +643,7 @@ void ln_scr_onboarding_connected(const char *ip)
     snprintf(url, sizeof(url), "http://%s/", ip);
     set_qr(url);
     lv_obj_add_flag(s_code_label, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_code_hint, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(s_status, "Connected — linking your account…");
     show_view(s_view_main);
 }

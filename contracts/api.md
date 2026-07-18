@@ -27,10 +27,11 @@ NFR-02/FR-A02's anti-confused-deputy posture.
 | GET | `/auth/lwa/login` | Start LWA Authorization Code + PKCE for the web surface; sets OAuth `state`+verifier (TTL 10 min), 302s to LWA. | Public |
 | GET | `/auth/lwa/callback` | LWA redirects here with `code`+`state`; backend exchanges code server-side, validates `aud`/`tokeninfo`, upserts user, sets `__Host-` refresh cookie + returns access JWT. | Public |
 | POST | `/auth/lwa/exchange` | Android's Custom-Tabs+PKCE code exchange: `{code, code_verifier}` → access JWT + 30-day refresh. **Canonicalized here** (PRD/plan.md prose used `/api/v1/auth/lwa/exchange`; moved under unversioned `/auth/*` to match the authorizer's public-route prefix and sit alongside `/auth/lwa/login`+`callback` — see Reconciliation notes). | Public |
-| POST | `/auth/device/pair/start` | M5Stack registers a `PAIR#<nonce>` + device-generated PKCE challenge before it has any credentials (FR-A06). Single-use, 600s TTL (PRD threat table "Pairing hijack"). | Public |
-| GET | `/auth/device/pair/poll` | Device polls `?nonce=` for claim status while a human completes pairing in a phone browser. | Public |
-| GET | `/auth/lwa/device/callback` | LWA redirects here (browser leg, opened from the M5Stack config page) with `code`+`state=<nonce>`; backend completes the confidential exchange, creates the IoT Thing + scoped policy, binds the device, mints the 10-year refresh family. | Public |
-| GET | `/auth/device/pair/claim` | Device's final poll once bound: presents its PKCE verifier for the nonce, receives its device refresh token + provisioning claim (cert bootstrap material). Single-use. | Public |
+| POST | `/auth/device/pair/start` | M5Stack registers a `PAIR#<nonce>` + device-generated PKCE challenge before it has any credentials (FR-A06). Single-use, 600s TTL (PRD threat table "Pairing hijack"). Response additionally carries `userCode`: an RFC 8628-style anti-phishing code (8 chars from the `BCDFGHJKLMNPQRSTVWXZ` alphabet, formatted `XXXX-XXXX`) the device MUST display on its screen — the human types it into the browser confirm page before the bind can finalize. | Public |
+| GET | `/auth/device/pair/poll` | Device polls `?nonce=` for claim status while a human completes pairing in a phone browser. Terminal statuses: `bound` (proceed to claim), `410 {"status":"failed","reason":"user_code_attempts_exceeded","message":…}` after 5 wrong user-code entries in the browser (the pairing is invalidated — restart pairing to get a fresh nonce + code), `410 already_claimed`, `404 {"status":"expired"}`. | Public |
+| GET | `/auth/lwa/device/callback` | LWA redirects here (browser leg, opened from the M5Stack config page) with `code`+`state=<nonce>`; backend completes the confidential exchange and runs the Authorize gate, then serves the SSR **user-code confirm page** — the bind does NOT happen yet. The LWA-verified identity is carried to the confirm POST via a one-shot `PAIRCONFIRM` token (hidden form field + HttpOnly `__Host-ln_pair` cookie, 10-min TTL). | Public |
+| POST | `/auth/device/pair/confirm` | Confirm-page form target: `{token, user_code}` (form-encoded). Token must match the HttpOnly cookie (constant-time) and resolve to a live `PAIRCONFIRM` row; `user_code` must constant-time match the code stored on the `PAIR#` row (case-insensitive, dash/space-insensitive). Only then does the backend bind the device: create the IoT Thing + scoped policy hook, the `DEVICE#` record, and the 10-year refresh family identity. Wrong code → inline error with remaining attempts (input preserved); 5th wrong entry → pairing invalidated (`PAIR` status `failed`, terminal). The code is REQUIRED — no bind path skips it. | Public |
+| GET | `/auth/device/pair/claim` | Device's final poll once bound: presents its PKCE verifier for the nonce, receives its device refresh token + provisioning claim (cert bootstrap material). Single-use. Returns the same terminal `failed` payload as poll when the pairing was invalidated by wrong user codes. | Public |
 | POST | `/auth/refresh` | Rotate the refresh token (web cookie or Android/M5Stack bearer refresh), issue a new 15-min access JWT; reuse of an already-rotated token revokes the whole `familyId` + fires a security alert. | Public (validates the refresh token/cookie itself — not a JWT-gated route since the access JWT has by definition expired when this is called) |
 | POST | `/auth/logout` | Delete the caller's session row; refresh dies immediately, outstanding JWT dies within its ≤15 min natural expiry. Idempotent no-op if already logged out. | Public (acts on whatever refresh cookie/token is presented; no-op without one) |
 | GET | `/.well-known/jwks.json` | JWKS for JWT verification (from `kms:GetPublicKey`, cached 24h) — consumed by the `authorizer` and by any future third-party verifier. | Public |
@@ -151,12 +152,15 @@ NFR-02/FR-A02's anti-confused-deputy posture.
 - **`GET auth login` / `GET auth callback`** (PRD §7 sequence-diagram shorthand) resolve to
   **`GET /auth/lwa/login`** / **`GET /auth/lwa/callback`** above.
 - **Device pairing "devices/pair" bind** (plan.md M1 shorthand) is not a client-called REST
-  route at all — it's the backend's own internal action taken inside the
-  `GET /auth/lwa/device/callback` handler once the browser leg completes. No separate route
-  needed; documented here so no workstream builds a phantom endpoint for it.
+  route at all — it's the backend's own internal action, now taken inside the
+  `POST /auth/device/pair/confirm` handler once the human has entered the device's RFC 8628
+  user code (the `GET /auth/lwa/device/callback` handler only authorizes and serves the
+  confirm page). No separate bind route needed; documented here so no workstream builds a
+  phantom endpoint for it.
 
 ## Change log
 
 | Date | Change | Motivated by |
 |---|---|---|
 | 2026-07-17 | Initial freeze at M0. Full inventory compiled from PRD §5 catalog + all milestone task lists (M1–M12); three route names canonicalized per "Reconciliation notes" above. | WS-G M0 contract-freeze task |
+| 2026-07-18 | RFC 8628 user-code binding added to device pairing: `pair/start` responses gain `userCode` (`XXXX-XXXX`, alphabet `BCDFGHJKLMNPQRSTVWXZ`, displayed on the device); new `POST /auth/device/pair/confirm` route (browser confirm leg — constant-time code match, 5-attempt budget); `pair/poll`/`pair/claim` gain the terminal `failed` status (`reason: user_code_attempts_exceeded`); `lwa/device/callback` now serves the confirm page instead of binding directly. No back-compat shim — the code is required (no device had onboarded). | Pairing anti-phishing gap: an allowlisted attacker could phish a victim into binding a 10-yr device credential to the victim's account |

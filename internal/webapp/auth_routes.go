@@ -29,6 +29,18 @@ import (
 // devices on register/poll responses.
 const pollIntervalSeconds = 5
 
+// PairConfirmCookieName binds the device-pairing user-code confirm form to
+// the browser that completed the LWA leg: the device callback sets it to
+// the same one-shot token embedded in the form, and the confirm POST
+// requires an exact match — so a leaked/forwarded form URL or token alone
+// cannot be replayed from another browser. HttpOnly; __Host- prefix rules
+// (Secure, Path=/, no Domain) as with every other auth cookie.
+const PairConfirmCookieName = "__Host-ln_pair"
+
+// pairFailedReason is the machine-readable reason the device poll reports
+// with the terminal "failed" status after too many wrong user codes.
+const pairFailedReason = "user_code_attempts_exceeded"
+
 // RegisterAuthRoutes mounts the M1 auth surface on app. Route names follow
 // the shared spec's M1+M2 route list; the contracts/api.md canonical
 // /auth/* spellings are mounted as aliases onto the same handlers so both
@@ -61,6 +73,7 @@ func RegisterAuthRoutes(app *fiber.App, deps *Deps) {
 	app.Post("/auth/device/pair/poll", r.devicePoll)
 
 	app.Get("/auth/device/claim", r.deviceClaim)
+	app.Post("/auth/device/pair/confirm", r.deviceConfirm)
 }
 
 type authRoutes struct {
@@ -432,7 +445,10 @@ func (r *authRoutes) logoutAll(c *fiber.Ctx) error {
 
 // deviceRegister is the device's first, credential-less call: it registers
 // a single-use pairing nonce bound to the S256 code_challenge the device
-// generated on-chip, and learns the claim URL a human must open.
+// generated on-chip, and learns the claim URL a human must open plus the
+// RFC 8628 user code ("XXXX-XXXX") it must display on its screen — the
+// human types that code into the browser confirm page before the bind can
+// finalize.
 func (r *authRoutes) deviceRegister(c *fiber.Ctx) error {
 	var body struct {
 		CodeChallenge string `json:"codeChallenge"`
@@ -444,7 +460,7 @@ func (r *authRoutes) deviceRegister(c *fiber.Ctx) error {
 		return badRequest(c, "codeChallenge must be a 43-128 char base64url S256 challenge.")
 	}
 
-	nonce, expiresAt, err := auth.RegisterPairing(c.Context(), r.deps.Store, body.CodeChallenge)
+	nonce, userCode, expiresAt, err := auth.RegisterPairing(c.Context(), r.deps.Store, body.CodeChallenge)
 	if err != nil {
 		r.deps.Log.Error("device register: create pairing failed", "error", err.Error())
 		return errorJSON(c, fiber.StatusInternalServerError, "internal", "Something went wrong. Please try again.")
@@ -452,6 +468,7 @@ func (r *authRoutes) deviceRegister(c *fiber.Ctx) error {
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"nonce":               nonce,
+		"userCode":            auth.FormatUserCode(userCode),
 		"claimUrl":            r.baseURL(c) + "/auth/device/claim?nonce=" + url.QueryEscape(nonce),
 		"expiresAt":           expiresAt.UTC().Format(time.RFC3339),
 		"pollIntervalSeconds": pollIntervalSeconds,
@@ -479,6 +496,10 @@ func (r *authRoutes) deviceClaim(c *fiber.Ctx) error {
 		return htmlMessage(c, fiber.StatusInternalServerError, "Pairing unavailable",
 			"Something went wrong. Please try again.")
 	}
+	if pair.Status == store.PairStatusFailed {
+		return htmlMessage(c, fiber.StatusGone, "Pairing cancelled",
+			"Too many incorrect codes were entered for this pairing. Restart pairing on your device to get a fresh code.")
+	}
 	if pair.Status != store.PairStatusPending {
 		return htmlMessage(c, fiber.StatusConflict, "Already paired",
 			"This pairing code was already used. If that wasn't you, revoke the device from your account settings.")
@@ -487,33 +508,163 @@ func (r *authRoutes) deviceClaim(c *fiber.Ctx) error {
 	return c.Redirect("/auth/lwa/login?device_nonce="+url.QueryEscape(nonce), fiber.StatusFound)
 }
 
-// completeDeviceBind finishes the browser leg after the LWA round-trip:
-// the same Authorize gate as every sign-in runs inside BindPairing; on
-// success the device's DEVICE# record, IoT provisioning hook, and 10-year
-// refresh family all exist and the device's next poll can claim them.
+// completeDeviceBind runs after the LWA round-trip of the device-pairing
+// browser leg. It does NOT bind yet: it verifies the pairing is still
+// claimable, runs the same Authorize gate every sign-in surface uses (so
+// an account that couldn't sign in never sees the confirm form), then
+// serves the RFC 8628 user-code confirm page. The LWA-verified identity is
+// carried to the confirm POST via a one-shot PAIRCONFIRM row whose random
+// token lives in BOTH a hidden form field and an HttpOnly cookie — the
+// actual bind happens in deviceConfirm once the human proves they can read
+// the code on the device's screen.
 func (r *authRoutes) completeDeviceBind(c *fiber.Ctx, nonce string, profile *auth.LWAProfile) error {
-	err := auth.BindPairing(c.Context(), r.deps.Store, r.deps.Log, nonce, "", profile)
-	switch {
-	case err == nil:
-		// fall through to success below
-	case errors.Is(err, auth.ErrNotAllowed):
-		return htmlMessage(c, fiber.StatusForbidden, "Access restricted",
-			"This Live Ninja instance is private. Your Amazon account is not on the access list.")
-	case errors.Is(err, auth.ErrPairNotFound):
-		return htmlMessage(c, fiber.StatusNotFound, "Pairing expired",
-			"This pairing code has expired. Start pairing again on your device.")
-	case errors.Is(err, auth.ErrPairAlreadyClaimed):
+	ctx := c.Context()
+
+	pair, err := auth.PollPairing(ctx, r.deps.Store, nonce)
+	if err != nil {
+		if errors.Is(err, auth.ErrPairNotFound) {
+			return htmlMessage(c, fiber.StatusNotFound, "Pairing expired",
+				"This pairing code has expired. Start pairing again on your device.")
+		}
+		r.deps.Log.Error("device bind: poll pairing failed", "error", err.Error(), "nonce", nonce)
+		return htmlMessage(c, fiber.StatusInternalServerError, "Pairing failed",
+			"Something went wrong pairing your device. Please try again.")
+	}
+	if pair.Status == store.PairStatusFailed {
+		return htmlMessage(c, fiber.StatusGone, "Pairing cancelled",
+			"Too many incorrect codes were entered for this pairing. Restart pairing on your device to get a fresh code.")
+	}
+	if pair.Status != store.PairStatusPending {
 		return htmlMessage(c, fiber.StatusConflict, "Already paired",
 			"This pairing code was already used. If that wasn't you, revoke the device from your account settings.")
-	default:
-		r.deps.Log.Error("device bind failed", "error", err.Error(), "nonce", nonce)
+	}
+
+	// Same access gate BindPairing will re-run at confirm time — checked
+	// here too so a not-allowed account is turned away before the code form.
+	if _, err := auth.Authorize(ctx, r.deps.Store, profile); err != nil {
+		if errors.Is(err, auth.ErrNotAllowed) {
+			return htmlMessage(c, fiber.StatusForbidden, "Access restricted",
+				"This Live Ninja instance is private. Your Amazon account is not on the access list.")
+		}
+		r.deps.Log.Error("device bind: authorize failed", "error", err.Error())
 		return htmlMessage(c, fiber.StatusInternalServerError, "Pairing failed",
 			"Something went wrong pairing your device. Please try again.")
 	}
 
+	token, err := randomURLToken(32)
+	if err != nil {
+		return fmt.Errorf("generate pair confirm token: %w", err)
+	}
+	if err := r.deps.Store.PutPairConfirm(ctx, &store.PairConfirm{
+		Token:        token,
+		Nonce:        nonce,
+		AmazonUserID: profile.UserID,
+		Email:        profile.Email,
+		Name:         profile.Name,
+	}); err != nil {
+		r.deps.Log.Error("device bind: put pair confirm failed", "error", err.Error(), "nonce", nonce)
+		return htmlMessage(c, fiber.StatusInternalServerError, "Pairing failed",
+			"Something went wrong pairing your device. Please try again.")
+	}
+	c.Cookie(&fiber.Cookie{
+		Name: PairConfirmCookieName, Value: token,
+		Path: "/", MaxAge: 600, Secure: true, HTTPOnly: true, SameSite: fiber.CookieSameSiteLaxMode,
+	})
+
+	return r.renderConfirmPage(c, fiber.StatusOK, token, "", "")
+}
+
+// deviceConfirm is the POST target of the user-code confirm page: it
+// re-establishes the confirm context (hidden-field token must equal the
+// HttpOnly cookie token, constant-time, and resolve to a live PAIRCONFIRM
+// row), then hands the typed code to auth.BindPairing — which does the
+// constant-time code match, attempt accounting, and the bind itself.
+func (r *authRoutes) deviceConfirm(c *fiber.Ctx) error {
+	ctx := c.Context()
+
+	token := c.FormValue("token")
+	cookie := c.Cookies(PairConfirmCookieName)
+	if token == "" || cookie == "" || subtle.ConstantTimeCompare([]byte(token), []byte(cookie)) != 1 {
+		return htmlMessage(c, fiber.StatusBadRequest, "Pairing session expired",
+			"This pairing confirmation could not be verified in this browser. Start again from the link or QR code on your device.")
+	}
+
+	confirm, err := r.deps.Store.GetPairConfirm(ctx, token)
+	if err != nil {
+		r.deps.Log.Error("device confirm: get pair confirm failed", "error", err.Error())
+		return htmlMessage(c, fiber.StatusInternalServerError, "Pairing failed",
+			"Something went wrong pairing your device. Please try again.")
+	}
+	if confirm == nil {
+		r.clearPairConfirmCookie(c)
+		return htmlMessage(c, fiber.StatusBadRequest, "Pairing session expired",
+			"This pairing confirmation has expired or was already used. Start again from the link or QR code on your device.")
+	}
+
+	userCode := c.FormValue("user_code")
+	if strings.TrimSpace(userCode) == "" {
+		// Nothing typed: re-prompt without burning an attempt.
+		return r.renderConfirmPage(c, fiber.StatusBadRequest, token, "",
+			"Enter the code shown on your device's screen.")
+	}
+
+	profile := &auth.LWAProfile{UserID: confirm.AmazonUserID, Email: confirm.Email, Name: confirm.Name}
+	err = auth.BindPairing(ctx, r.deps.Store, r.deps.Log, confirm.Nonce, "", userCode, profile)
+	var mismatch *auth.UserCodeMismatchError
+	switch {
+	case err == nil:
+		// fall through to success below
+	case errors.As(err, &mismatch):
+		plural := "s"
+		if mismatch.AttemptsRemaining == 1 {
+			plural = ""
+		}
+		return r.renderConfirmPage(c, fiber.StatusBadRequest, token, userCode,
+			fmt.Sprintf("That code doesn't match the one on your device. %d attempt%s remaining.",
+				mismatch.AttemptsRemaining, plural))
+	case errors.Is(err, auth.ErrPairFailed):
+		r.discardPairConfirm(c, token)
+		return htmlMessage(c, fiber.StatusGone, "Pairing cancelled",
+			"Too many incorrect codes were entered, so this pairing has been cancelled for safety. Restart pairing on your device to get a fresh code.")
+	case errors.Is(err, auth.ErrNotAllowed):
+		r.discardPairConfirm(c, token)
+		return htmlMessage(c, fiber.StatusForbidden, "Access restricted",
+			"This Live Ninja instance is private. Your Amazon account is not on the access list.")
+	case errors.Is(err, auth.ErrPairNotFound):
+		r.discardPairConfirm(c, token)
+		return htmlMessage(c, fiber.StatusNotFound, "Pairing expired",
+			"This pairing code has expired. Start pairing again on your device.")
+	case errors.Is(err, auth.ErrPairAlreadyClaimed):
+		r.discardPairConfirm(c, token)
+		return htmlMessage(c, fiber.StatusConflict, "Already paired",
+			"This pairing code was already used. If that wasn't you, revoke the device from your account settings.")
+	default:
+		r.deps.Log.Error("device bind failed", "error", err.Error(), "nonce", confirm.Nonce)
+		return htmlMessage(c, fiber.StatusInternalServerError, "Pairing failed",
+			"Something went wrong pairing your device. Please try again.")
+	}
+
+	r.discardPairConfirm(c, token)
 	r.notifySignIn(c, profile.Email, profile.Name, store.SurfaceDevice, "")
 	return htmlMessage(c, fiber.StatusOK, "Device connected",
 		"Your device is now paired to your account. You can close this page — the device will finish setting itself up within a few seconds.")
+}
+
+// discardPairConfirm drops the confirm row and its browser cookie once the
+// confirm leg reaches any terminal outcome (success or failure). Row
+// deletion is best-effort — the 10-minute TTL reaps stragglers.
+func (r *authRoutes) discardPairConfirm(c *fiber.Ctx, token string) {
+	if err := r.deps.Store.DeletePairConfirm(c.Context(), token); err != nil {
+		r.deps.Log.Warn("device confirm: delete pair confirm failed", "error", err.Error())
+	}
+	r.clearPairConfirmCookie(c)
+}
+
+func (r *authRoutes) clearPairConfirmCookie(c *fiber.Ctx) {
+	c.Cookie(&fiber.Cookie{
+		Name: PairConfirmCookieName, Value: "", Expires: time.Now().Add(-time.Hour),
+		Path: "/", MaxAge: -1, Secure: true, HTTPOnly: true, SameSite: fiber.CookieSameSiteLaxMode,
+	})
 }
 
 // devicePoll is the device's polling loop: pending → keep waiting; bound →
@@ -547,6 +698,8 @@ func (r *authRoutes) devicePoll(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "pending", "pollIntervalSeconds": pollIntervalSeconds})
 	case store.PairStatusClaimed:
 		return errorJSON(c, fiber.StatusGone, "already_claimed", "This pairing code was already used.")
+	case store.PairStatusFailed:
+		return r.pairFailedJSON(c)
 	case store.PairStatusBound:
 		// proceed to claim below
 	default:
@@ -565,6 +718,8 @@ func (r *authRoutes) devicePoll(c *fiber.Ctx) error {
 			return errorJSON(c, fiber.StatusForbidden, "verifier_mismatch", "The pairing code_verifier did not match.")
 		case errors.Is(err, auth.ErrPairAlreadyClaimed):
 			return errorJSON(c, fiber.StatusGone, "already_claimed", "This pairing code was already used.")
+		case errors.Is(err, auth.ErrPairFailed):
+			return r.pairFailedJSON(c)
 		case errors.Is(err, auth.ErrPairNotBound):
 			return c.JSON(fiber.Map{"status": "pending", "pollIntervalSeconds": pollIntervalSeconds})
 		default:
@@ -740,6 +895,110 @@ func (r *authRoutes) baseURL(c *fiber.Ctx) string {
 
 func badRequest(c *fiber.Ctx, msg string) error {
 	return errorJSON(c, fiber.StatusBadRequest, "bad_request", msg)
+}
+
+// pairFailedJSON is the terminal poll/claim response for a pairing
+// invalidated by too many wrong user codes: the device should stop
+// polling this nonce, show the human why, and restart pairing (fresh
+// nonce, fresh code).
+func (r *authRoutes) pairFailedJSON(c *fiber.Ctx) error {
+	return c.Status(fiber.StatusGone).JSON(fiber.Map{
+		"status":  "failed",
+		"reason":  pairFailedReason,
+		"message": "Too many incorrect pairing codes were entered in the browser. Restart pairing to get a fresh code.",
+	})
+}
+
+// renderConfirmPage serves the SSR user-code confirm form (the RFC 8628
+// anti-phishing leg): same minimal single-purpose style as htmlMessage,
+// with a labeled, autofocused code input. token is the server-generated
+// confirm token echoed as a hidden field; typedCode re-fills the input
+// after a wrong entry (preserve input, per form rules); errMsg, when
+// non-empty, renders as the inline field error. The inline script is
+// progressive enhancement only: when this browser also holds a Live Ninja
+// web session, the global CSRF middleware requires the X-LN-CSRF header on
+// POSTs, which a bare HTML form cannot send — the script re-submits via
+// fetch with that header. Without JS (or without a web session, the
+// common pairing case) the native form POST works as-is.
+func (r *authRoutes) renderConfirmPage(c *fiber.Ctx, status int, token, typedCode, errMsg string) error {
+	errBlock := ""
+	describedBy := "user_code_hint"
+	if errMsg != "" {
+		errBlock = `<p class="err" id="user_code_error" role="alert">` + html.EscapeString(errMsg) + `</p>`
+		describedBy = "user_code_error user_code_hint"
+	}
+	c.Type("html")
+	return c.Status(status).SendString(fmt.Sprintf(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Confirm your device — Live Ninja</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         margin: 0; min-height: 100vh; display: flex; align-items: center;
+         justify-content: center; background: #0b0b12; color: #f4f4f8; }
+  main { text-align: center; padding: 2rem; max-width: 32rem; }
+  h1 { font-size: 1.5rem; margin: 0 0 .75rem; }
+  p { color: #9a9aab; margin: 0 0 1.25rem; line-height: 1.5; }
+  label { display: block; font-weight: 600; margin: 0 0 .5rem; }
+  input[type="text"] { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+         font-size: 1.5rem; letter-spacing: .3em; text-transform: uppercase;
+         text-align: center; width: 100%%; max-width: 16rem; padding: .6rem .5rem;
+         border-radius: .5rem; border: 1px solid #3a3a4d; background: #15151f;
+         color: #f4f4f8; }
+  input[type="text"]:focus { outline: 2px solid #8ab4ff; outline-offset: 2px; }
+  .err { color: #ff9d9d; margin: .75rem 0 0; }
+  button { margin-top: 1.25rem; font-size: 1rem; font-weight: 600; padding: .7rem 2rem;
+         border-radius: .5rem; border: none; background: #8ab4ff; color: #0b0b12;
+         cursor: pointer; }
+  button:focus-visible { outline: 2px solid #f4f4f8; outline-offset: 2px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Confirm your device</h1>
+  <p id="user_code_hint">Enter the code shown on your device&#39;s screen to finish pairing.
+     This proves you&#39;re connecting the device in front of you.</p>
+  <form id="pair-confirm-form" method="post" action="/auth/device/pair/confirm">
+    <input type="hidden" name="token" value="%[1]s">
+    <label for="user_code">Pairing code</label>
+    <input type="text" id="user_code" name="user_code" value="%[2]s"
+           autofocus autocomplete="off" autocapitalize="characters"
+           spellcheck="false" inputmode="text" maxlength="9"
+           placeholder="XXXX-XXXX" aria-describedby="%[4]s" required>
+    %[3]s
+    <button type="submit">Connect device</button>
+  </form>
+</main>
+<script>
+(function () {
+  var f = document.getElementById('pair-confirm-form');
+  f.addEventListener('submit', function (e) {
+    var m = document.cookie.match(/(?:^|; )__Host-ln_csrf=([^;]*)/);
+    if (!m) return; // no web session in this browser: native POST is fine
+    e.preventDefault();
+    fetch(f.action, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'X-LN-CSRF': decodeURIComponent(m[1]),
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: new URLSearchParams(new FormData(f)).toString()
+    }).then(function (r) { return r.text(); }).then(function (htmlBody) {
+      document.open(); document.write(htmlBody); document.close();
+    }).catch(function () {
+      // form.submit() bypasses submit handlers, so this cannot loop.
+      f.submit();
+    });
+  });
+})();
+</script>
+</body>
+</html>
+`, html.EscapeString(token), html.EscapeString(typedCode), errBlock, describedBy))
 }
 
 // htmlMessage renders the minimal browser-facing message page used by the

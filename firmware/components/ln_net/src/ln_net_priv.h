@@ -131,6 +131,7 @@ esp_err_t ln_b64url_encode(const uint8_t *in, size_t in_len,
 esp_err_t ln_pairing_run(void);
 
 void ln_pairing_get_claim_url(char *buf, size_t len);
+void ln_pairing_get_user_code(char *buf, size_t len);
 
 /* ---- Auth (ln_auth.c) ---- */
 

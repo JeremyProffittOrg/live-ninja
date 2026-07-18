@@ -350,12 +350,32 @@ const transcript = new Transcript($('transcriptScroll'), $('transcript'));
 function attachTranscriptRendering(session) {
   const turnByItem = new Map(); // realtime itemId -> transcript turnId
 
+  // GA Realtime ordering quirk (verified in prod): the user transcription
+  // final (conversation.item.input_audio_transcription.completed) routinely
+  // lands AFTER the assistant response deltas have started rendering, which
+  // used to paint the answer above the question. Track the assistant turn
+  // that got ahead of a still-untranscribed user utterance so the late user
+  // turn can be inserted BEFORE the response it prompted.
+  let userSpeechPending = false; // user spoke; their transcript hasn't rendered yet
+  let anchorTurnId = null; // first assistant turn rendered ahead of that user turn
+
+  const userTurnPlaced = () => {
+    userSpeechPending = false;
+    anchorTurnId = null;
+  };
+
   const beginOrAppend = (role, e) => {
     const { itemId, delta } = e.detail;
     let turnId = turnByItem.get(itemId);
     if (!turnId) {
-      if (role === 'assistant') transcript.hideTypingIndicator();
-      turnId = transcript.startTurn(role);
+      if (role === 'assistant') {
+        transcript.hideTypingIndicator();
+        turnId = transcript.startTurn(role);
+        if (userSpeechPending && !anchorTurnId) anchorTurnId = turnId;
+      } else {
+        turnId = transcript.startTurn(role, { before: anchorTurnId || undefined });
+        userTurnPlaced();
+      }
       turnByItem.set(itemId, turnId);
     }
     transcript.appendDelta(turnId, delta);
@@ -364,20 +384,38 @@ function attachTranscriptRendering(session) {
     const { itemId, text } = e.detail;
     const turnId = turnByItem.get(itemId);
     if (turnId) {
-      transcript.completeTurn(turnId);
+      // Pass the final text through: the completed transcript is
+      // authoritative and updates the streamed bubble in place when they
+      // differ (transcript.mjs replaces via textContent).
+      transcript.completeTurn(turnId, { text });
       turnByItem.delete(itemId);
     } else if (text) {
-      // Final arrived with no streamed deltas (possible for user
-      // transcription) — render the whole turn at once.
+      // Final arrived with no streamed deltas (the normal GA path for user
+      // transcription) — render the whole turn at once, anchored before the
+      // response it prompted if that response is already rendering.
       if (role === 'assistant') transcript.hideTypingIndicator();
-      transcript.addMessage(role, text);
+      if (role === 'user') {
+        transcript.addMessage(role, text, { before: anchorTurnId || undefined });
+      } else {
+        transcript.addMessage(role, text);
+      }
     }
+    // Any user final ends that utterance's transcription (even an empty
+    // one) — drop the anchor so it can't misplace a later user turn.
+    if (role === 'user') userTurnPlaced();
   };
 
   session.addEventListener('assistantdelta', (e) => beginOrAppend('assistant', e));
   session.addEventListener('assistantfinal', (e) => finalize('assistant', e));
   session.addEventListener('userdelta', (e) => beginOrAppend('user', e));
   session.addEventListener('userfinal', (e) => finalize('user', e));
+  session.addEventListener('speechstarted', () => {
+    // A new utterance begins: any anchor left from a previous exchange is
+    // stale (its transcript was lost or absorbed) — never re-anchor to it.
+    userSpeechPending = true;
+    anchorTurnId = null;
+  });
+  session.addEventListener('usertranscriptfailed', () => userTurnPlaced());
   session.addEventListener('thinking', () => transcript.showTypingIndicator());
   session.addEventListener('responsedone', () => transcript.hideTypingIndicator());
   session.addEventListener('bargein', () => transcript.hideTypingIndicator());
@@ -665,6 +703,26 @@ if (composerInput && composerSend) {
   });
 }
 
+/** Render the tool calls the fallback turn executed server-side, using the
+ * exact same card treatment as live-session tools (spec §2.3). Each entry is
+ * the tool router's Result JSON ({tool, ok, output, error, ...}) — the same
+ * shape the live dispatcher hands to the toolresult listener. */
+function renderFallbackToolCalls(calls) {
+  if (!Array.isArray(calls) || calls.length === 0 || !showToolCalls()) return;
+  for (const call of calls) {
+    const failed = !(call && call.ok);
+    transcript.appendToolResultCard({
+      icon: '🛠',
+      title: toolTitle(call && call.tool),
+      badge: failed ? 'Failed' : 'Done',
+      badgeVariant: failed ? 'error' : 'teal',
+      fields: failed
+        ? [['Status', (call && call.error && call.error.message) || 'The tool call failed — the assistant was told.']]
+        : toolFields(call),
+    });
+  }
+}
+
 async function sendTyped(text) {
   transcript.addUserMessage(text);
   if (isLive()) {
@@ -684,6 +742,7 @@ async function sendTyped(text) {
       json: { text, persona: currentPersonaId() },
     });
     transcript.hideTypingIndicator();
+    renderFallbackToolCalls(resp && resp.toolCalls);
     transcript.addAssistantMessage((resp && resp.text) || '');
   } catch (err) {
     transcript.hideTypingIndicator();

@@ -42,11 +42,13 @@ static ln_backend_rsp_t s_rsp;
 
 static SemaphoreHandle_t s_lock;
 static char s_claim_url[256];
+static char s_user_code[LN_PAIR_USER_CODE_LEN];
 
-static void claim_url_set(const char *url)
+static void claim_set(const char *url, const char *code)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
     strlcpy(s_claim_url, url ? url : "", sizeof(s_claim_url));
+    strlcpy(s_user_code, code ? code : "", sizeof(s_user_code));
     xSemaphoreGive(s_lock);
 }
 
@@ -60,6 +62,19 @@ void ln_pairing_get_claim_url(char *buf, size_t len)
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
     strlcpy(buf, s_claim_url, len);
+    xSemaphoreGive(s_lock);
+}
+
+void ln_pairing_get_user_code(char *buf, size_t len)
+{
+    if (s_lock == NULL) {
+        if (len) {
+            buf[0] = '\0';
+        }
+        return;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    strlcpy(buf, s_user_code, len);
     xSemaphoreGive(s_lock);
 }
 
@@ -81,7 +96,9 @@ static esp_err_t make_pkce(char *verifier, size_t vlen,
     return ln_b64url_encode(digest, sizeof(digest), challenge, clen);
 }
 
-/* POST /auth/device/pair/start -> nonce + claimUrl + poll interval. */
+/* POST /auth/device/pair/start -> nonce + claimUrl + userCode + poll
+ * interval. userCode is the RFC 8628-style "XXXX-XXXX" the human types into
+ * the browser during account linking; it goes to the LCD + portal page. */
 static esp_err_t pair_register(const char *challenge, char *nonce, size_t nlen,
                                int *poll_s)
 {
@@ -104,10 +121,12 @@ static esp_err_t pair_register(const char *challenge, char *nonce, size_t nlen,
     err = ESP_FAIL;
     const cJSON *jn = cJSON_GetObjectItemCaseSensitive(root, "nonce");
     const cJSON *ju = cJSON_GetObjectItemCaseSensitive(root, "claimUrl");
+    const cJSON *jc = cJSON_GetObjectItemCaseSensitive(root, "userCode");
     const cJSON *jp = cJSON_GetObjectItemCaseSensitive(root, "pollIntervalSeconds");
     if (cJSON_IsString(jn) && jn->valuestring[0] != '\0' && cJSON_IsString(ju)) {
         strlcpy(nonce, jn->valuestring, nlen);
-        claim_url_set(ju->valuestring);
+        claim_set(ju->valuestring,
+                  cJSON_IsString(jc) ? jc->valuestring : "");
         *poll_s = (cJSON_IsNumber(jp) && jp->valueint > 0)
                       ? jp->valueint : PAIR_DEFAULT_POLL_S;
         err = ESP_OK;
@@ -153,6 +172,15 @@ static esp_err_t pair_poll_once(const char *nonce, const char *verifier)
     const cJSON *jstatus = cJSON_GetObjectItemCaseSensitive(root, "status");
     if (cJSON_IsString(jstatus) && strcmp(jstatus->valuestring, "pending") == 0) {
         ret = ESP_ERR_TIMEOUT;
+    } else if (cJSON_IsString(jstatus) &&
+               (strcmp(jstatus->valuestring, "failed") == 0 ||
+                strcmp(jstatus->valuestring, "invalidated") == 0)) {
+        /* Terminal: the human's browser leg failed (wrong code, denied,
+         * invalidated). Restart with a fresh nonce + PKCE material so the
+         * LCD/portal show a NEW user code. */
+        ESP_LOGW(TAG, "pair/poll -> status \"%s\"; re-registering",
+                 jstatus->valuestring);
+        ret = ESP_ERR_NOT_FOUND;
     } else if (cJSON_IsString(jstatus) && strcmp(jstatus->valuestring, "bound") == 0) {
         const cJSON *jdev  = cJSON_GetObjectItemCaseSensitive(root, "deviceId");
         const cJSON *jref  = cJSON_GetObjectItemCaseSensitive(root, "refreshToken");
@@ -240,16 +268,18 @@ esp_err_t ln_pairing_run(void)
 
             ln_net_pairing_info_t info = {0};
             ln_pairing_get_claim_url(info.claim_url, sizeof(info.claim_url));
+            ln_pairing_get_user_code(info.user_code, sizeof(info.user_code));
             info.expires_in_s = PAIR_TTL_S;
             esp_event_post(LN_NET_EVENT, LN_NET_EVENT_PAIRING_STARTED,
                            &info, sizeof(info), 0);
-            ESP_LOGI(TAG, "pairing registered; claim at %s", info.claim_url);
+            ESP_LOGI(TAG, "pairing registered; claim at %s (code %s)",
+                     info.claim_url, info.user_code);
         }
 
         vTaskDelay(pdMS_TO_TICKS(poll_s * 1000));
         esp_err_t err = pair_poll_once(nonce, verifier);
         if (err == ESP_OK) {
-            claim_url_set("");
+            claim_set("", "");
             return ESP_OK;
         }
         if (err == ESP_ERR_NOT_FOUND || --polls_left <= 0) {
@@ -257,6 +287,6 @@ esp_err_t ln_pairing_run(void)
         }
         /* ESP_ERR_TIMEOUT (pending) and transient failures just loop. */
     }
-    claim_url_set("");
+    claim_set("", "");
     return ESP_ERR_INVALID_STATE;   /* link dropped mid-pairing */
 }

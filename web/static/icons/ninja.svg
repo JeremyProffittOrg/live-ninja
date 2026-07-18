@@ -1,13 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Live Ninja">
-  <!-- Live Ninja app glyph. Colors are the mockup design tokens:
-       bg --ln-navy-900 #060d18, head --ln-surface-raised #142544,
-       eye band --ln-navy #0a1424, accents --ln-teal #22e0d0.
-       PNG raster variants in this directory are generated from the same
-       geometry by scripts/gen-icons (go run ./scripts/gen-icons). -->
+  <!-- Live Ninja app glyph: a HAL 9000 style glowing eye on a dark ninja
+       hood. Design tokens (see web/static/css/app.css):
+       bg is ln navy 900 (#060d18), hood is a lighter navy, eye band is
+       ln navy (#0a1424), the eye glow uses the HAL accent gradient
+       (warm highlight, orange-red iris, deep red glow).
+       Every shape is a flat fill (no gradients, filters, or external
+       refs) so it stays a portable, dependency-free rasterization
+       target; layered alpha circles simulate the glow. Eye content sits
+       well inside a circle of radius 205 around the center so it
+       survives an OS maskable safe-zone crop. -->
   <rect width="512" height="512" rx="116" fill="#060d18"/>
-  <circle cx="256" cy="264" r="148" fill="#142544"/>
-  <rect x="108" y="200" width="296" height="96" rx="48" fill="#0a1424"/>
-  <rect x="126" y="184" width="260" height="14" rx="7" fill="#22e0d0" opacity="0.85"/>
-  <circle cx="204" cy="248" r="24" fill="#22e0d0"/>
-  <circle cx="308" cy="248" r="24" fill="#22e0d0"/>
+  <circle cx="256" cy="256" r="196" fill="#16294a"/>
+  <rect x="98" y="206" width="316" height="104" rx="52" fill="#0a1424"/>
+
+  <circle cx="256" cy="258" r="130" fill="#ff5a4a" fill-opacity="0.18"/>
+  <circle cx="256" cy="258" r="95" fill="#ff5a4a" fill-opacity="0.35"/>
+  <circle cx="256" cy="258" r="68" fill="#e3432b"/>
+  <circle cx="256" cy="258" r="30" fill="#ffb199"/>
+  <circle cx="242" cy="244" r="10" fill="#fff8f2" fill-opacity="0.9"/>
 </svg>

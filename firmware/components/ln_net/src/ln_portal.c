@@ -10,7 +10,8 @@
  *   POST /api/wifi     {ssid, pass} -> store + async STA connect (202)
  *   POST /api/mode     {mode:"ap"|"sta"} -> record AP-only vs join choice
  *   POST /api/apconfig {subnet:"192.168.4"|"10.0.0"} -> re-IP the SoftAP
- *   GET  /api/status   {wifi:{state,ssid,ip}, paired, claimUrl, mode, gateway}
+ *   GET  /api/status   {wifi:{state,ssid,ip}, paired, claimUrl, userCode,
+ *                       mode, gateway}
  *   *                  captive-portal probes + any 404 -> 302 to /
  *
  * The AP runs alongside STA (APSTA) so the phone keeps seeing status while
@@ -312,19 +313,22 @@ static esp_err_t status_get(httpd_req_t *req)
     char claim[256];
     ln_pairing_get_claim_url(claim, sizeof(claim));
 
+    char code[LN_PAIR_USER_CODE_LEN];
+    ln_pairing_get_user_code(code, sizeof(code));
+
     char ssid_esc[100];
     json_escape(st.ssid, ssid_esc, sizeof(ssid_esc));
 
     char gw[16];
     ln_net_ap_gateway(gw, sizeof(gw));
 
-    char out[720];
+    char out[768];
     snprintf(out, sizeof(out),
              "{\"wifi\":{\"state\":\"%s\",\"ssid\":\"%s\",\"ip\":\"%s\"},"
-             "\"paired\":%s,\"claimUrl\":\"%s\","
+             "\"paired\":%s,\"claimUrl\":\"%s\",\"userCode\":\"%s\","
              "\"mode\":\"%s\",\"gateway\":\"%s\"}",
              wifi_state_str(&st), ssid_esc, st.ip,
-             ln_net_is_paired() ? "true" : "false", claim,
+             ln_net_is_paired() ? "true" : "false", claim, code,
              ln_net_is_ap_only() ? "ap" : "sta", gw);
 
     httpd_resp_set_type(req, "application/json");

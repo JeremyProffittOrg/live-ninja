@@ -201,7 +201,7 @@ static void on_net_event(void *arg, esp_event_base_t base, int32_t id,
     case LN_NET_EVENT_PAIRING_STARTED:
         if (data != NULL) {
             const ln_net_pairing_info_t *p = data;
-            ln_ui_onboarding_pairing(p->claim_url, NULL);
+            ln_ui_onboarding_pairing(p->claim_url, p->user_code);
         }
         break;
     case LN_NET_EVENT_PAIRED:

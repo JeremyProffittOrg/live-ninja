@@ -149,9 +149,14 @@ export class Transcript {
    * Begins a new turn bubble. Call appendDelta() as text streams in, then
    * completeTurn() once the turn is done (sets the timestamp, finalizes).
    * @param {TranscriptRole} role
-   * @param {{label?: string}} [opts] For assistant turns, overrides the
-   *   persona label for just this turn (defaults to the current
-   *   setPersonaLabel() value).
+   * @param {{label?: string, before?: string}} [opts] For assistant turns,
+   *   `label` overrides the persona label for just this turn (defaults to
+   *   the current setPersonaLabel() value). `before` is an existing turn id:
+   *   the new turn is inserted BEFORE that turn instead of appended — used
+   *   when a user transcription final arrives after the assistant response
+   *   it prompted has already started rendering (GA Realtime ordering), so
+   *   the question still lands above its answer. An unknown/removed id
+   *   falls back to appending.
    * @returns {string} An opaque turn id to pass to appendDelta/completeTurn.
    */
   startTurn(role, opts = {}) {
@@ -180,7 +185,12 @@ export class Transcript {
     wrapperEl.appendChild(bubbleEl);
     wrapperEl.appendChild(tsEl);
 
-    this._insertBeforeLiveMarkers(wrapperEl);
+    const anchor = opts.before ? this._turns.get(opts.before) : null;
+    if (anchor && anchor.wrapperEl.parentNode === this._listEl) {
+      this._listEl.insertBefore(wrapperEl, anchor.wrapperEl);
+    } else {
+      this._insertBeforeLiveMarkers(wrapperEl);
+    }
 
     this._turns.set(turnId, { role, wrapperEl, bubbleEl, contentEl, tsEl, label, done: false });
     this._afterMutation();
@@ -211,13 +221,21 @@ export class Transcript {
    * with just the role label — callers should avoid completing empty
    * turns where possible, but this never throws).
    * @param {string} turnId
-   * @param {{timestamp?: Date}} [opts]
+   * @param {{timestamp?: Date, text?: string}} [opts] When `text` is a
+   *   non-empty string it is the authoritative final transcript: the
+   *   bubble's streamed/placeholder content is replaced in place (via
+   *   textContent — still XSS-safe per FR-W04). The GA Realtime user
+   *   transcription final can differ from (or arrive without) the streamed
+   *   deltas, so a late final must be able to correct an existing bubble.
    */
   completeTurn(turnId, opts = {}) {
     const turn = this._turns.get(turnId);
     if (!turn) {
       console.warn("[transcript] completeTurn on unknown turn", turnId);
       return;
+    }
+    if (typeof opts.text === "string" && opts.text !== "" && turn.contentEl.textContent !== opts.text) {
+      turn.contentEl.textContent = opts.text;
     }
     turn.tsEl.textContent = formatTimestamp(opts.timestamp ?? new Date());
     turn.tsEl.hidden = false;
@@ -231,11 +249,12 @@ export class Transcript {
    * equivalent to startTurn + appendDelta + completeTurn in one call.
    * @param {TranscriptRole} role
    * @param {string} text
-   * @param {{label?: string, timestamp?: Date}} [opts]
+   * @param {{label?: string, timestamp?: Date, before?: string}} [opts]
+   *   `before` inserts the turn before an existing turn id (see startTurn).
    * @returns {string} the completed turn's id
    */
   addMessage(role, text, opts = {}) {
-    const turnId = this.startTurn(role, { label: opts.label });
+    const turnId = this.startTurn(role, { label: opts.label, before: opts.before });
     this.appendDelta(turnId, text);
     this.completeTurn(turnId, { timestamp: opts.timestamp });
     return turnId;

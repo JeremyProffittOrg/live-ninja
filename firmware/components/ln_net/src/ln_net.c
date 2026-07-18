@@ -137,6 +137,15 @@ esp_err_t ln_net_get_claim_url(char *buf, size_t len)
     return ESP_OK;
 }
 
+esp_err_t ln_net_get_user_code(char *buf, size_t len)
+{
+    if (buf == NULL || len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    ln_pairing_get_user_code(buf, len);
+    return ESP_OK;
+}
+
 /* -------------------------------------------------- SoftAP gateway/subnet */
 
 void ln_net_ap_gateway(char *buf, size_t len)

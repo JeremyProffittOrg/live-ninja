@@ -46,6 +46,7 @@ const (
 	PairStatusPending = "pending"
 	PairStatusClaimed = "claimed"
 	PairStatusBound   = "bound"
+	PairStatusFailed  = "failed"
 
 	DeviceStatusActive  = "active"
 	DeviceStatusRevoked = "revoked"
@@ -118,16 +119,44 @@ type OAuthState struct {
 }
 
 // Pair is the PAIR#<nonce>/PAIR item (15-minute TTL) tracking the device
-// pairing lifecycle: pending → bound → claimed (see
+// pairing lifecycle: pending → bound → claimed, or pending → failed when
+// the RFC 8628 user code is entered wrong too many times (see
 // internal/auth/device.go for the full state machine).
 type Pair struct {
 	Nonce         string `dynamodbav:"-"`
-	Status        string `dynamodbav:"status"` // pending | claimed | bound
+	Status        string `dynamodbav:"status"` // pending | claimed | bound | failed
 	DeviceID      string `dynamodbav:"deviceId,omitempty"`
 	UserID        string `dynamodbav:"userId,omitempty"`
 	CodeChallenge string `dynamodbav:"codeChallenge"`
-	CreatedAt     int64  `dynamodbav:"createdAt"` // unix seconds
-	TTL           int64  `dynamodbav:"ttl"`       // unix seconds
+	// UserCode is the RFC 8628-style anti-phishing code (8 chars from the
+	// "BCDFGHJKLMNPQRSTVWXZ" alphabet, undashed) shown on the device's
+	// screen; the browser confirm leg must present it before BindPairing
+	// will bind the device to an account. Required at creation — a PAIR
+	// row without a user code cannot exist.
+	UserCode string `dynamodbav:"userCode"`
+	// CodeAttempts counts wrong user-code entries (atomic ADD via
+	// IncrementPairAttempts); the auth layer invalidates the pairing
+	// (status=failed) when it reaches the max.
+	CodeAttempts int   `dynamodbav:"codeAttempts,omitempty"`
+	CreatedAt    int64 `dynamodbav:"createdAt"` // unix seconds
+	TTL          int64 `dynamodbav:"ttl"`       // unix seconds
+}
+
+// PairConfirm is the PAIRCONFIRM#<token>/CONFIRM item (10-minute TTL): the
+// browser confirm leg's short-lived link between a completed LWA sign-in
+// and the user-code entry form. The token is held by the authenticated
+// browser (hidden form field + HttpOnly cookie); the row carries the
+// LWA-verified identity forward to the confirm POST, since the one-shot
+// OAuth state was already consumed by the callback. Deleted on successful
+// bind or terminal failure; TTL reaps abandoned forms.
+type PairConfirm struct {
+	Token        string `dynamodbav:"-"`
+	Nonce        string `dynamodbav:"nonce"`
+	AmazonUserID string `dynamodbav:"amazonUserId"`
+	Email        string `dynamodbav:"email,omitempty"`
+	Name         string `dynamodbav:"name,omitempty"`
+	CreatedAt    int64  `dynamodbav:"createdAt"` // unix seconds
+	TTL          int64  `dynamodbav:"ttl"`       // unix seconds
 }
 
 // Device is the DEVICE#<deviceId>/META item. GSI2: DEVSEEN / <lastSeen
@@ -154,6 +183,7 @@ func sessGSI1PK(sessionID string) string   { return "SESS#" + sessionID }
 func sessGSI2PK(userID string) string      { return "USER#" + userID + "#SESS" }
 func oauthPK(state string) string          { return "OAUTH#" + state }
 func pairPK(nonce string) string           { return "PAIR#" + nonce }
+func pairConfirmPK(token string) string    { return "PAIRCONFIRM#" + token }
 func devicePK(deviceID string) string      { return "DEVICE#" + deviceID }
 func allowSK(key string) string            { return "ALLOW#" + key }
 func usageSK(period string) string         { return "USAGE#" + period }
@@ -166,6 +196,7 @@ const (
 	skMeta        = "META"
 	skState       = "STATE"
 	skPair        = "PAIR"
+	skConfirm     = "CONFIRM"
 	skBucketMint  = "BUCKET#mint"
 	gsi2pkDevSeen = "DEVSEEN"
 )

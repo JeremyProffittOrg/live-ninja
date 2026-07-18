@@ -45,13 +45,17 @@ var fallbackRetryDelays = []time.Duration{500 * time.Millisecond, 1 * time.Secon
 type FallbackClient struct {
 	httpc  *http.Client
 	loader *config.Loader
+	// chatURL is the chat-completions endpoint (chatCompletionsURL in
+	// production; tests point it at an httptest mock of OpenAI).
+	chatURL string
 }
 
 // NewFallbackClient builds a FallbackClient.
 func NewFallbackClient(loader *config.Loader) *FallbackClient {
 	return &FallbackClient{
-		httpc:  &http.Client{Timeout: 30 * time.Second},
-		loader: loader,
+		httpc:   &http.Client{Timeout: 30 * time.Second},
+		loader:  loader,
+		chatURL: chatCompletionsURL,
 	}
 }
 
@@ -71,7 +75,7 @@ func (c *FallbackClient) Turn(ctx context.Context, personaID, text string) (stri
 		return "", fmt.Errorf("realtime: marshal fallback turn: %w", err)
 	}
 
-	respBody, err := c.doJSON(ctx, chatCompletionsURL, "application/json", body)
+	respBody, err := c.doJSON(ctx, c.chatURL, "application/json", body)
 	if err != nil {
 		return "", err
 	}
