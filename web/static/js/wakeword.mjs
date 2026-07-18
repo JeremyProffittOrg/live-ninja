@@ -51,6 +51,8 @@
 
 'use strict';
 
+import { authFetch } from './toolclient.mjs';
+
 // ---------------------------------------------------------------------------
 // Pinned artifacts (verify-before-use).
 // onnxruntime-web 1.20.1 (dist/, cdn.jsdelivr.net, fetched at author time):
@@ -144,9 +146,12 @@ async function resolveModels(wakeWordId) {
     try {
       const ctl = new AbortController();
       const timer = setTimeout(() => ctl.abort(), 4000);
-      const resp = await fetch(
+      // authFetch, not raw fetch: the manifest route is JWT-gated and a
+      // cookie-only request 403s — which silently forced the bundled
+      // fallback even after a model was trained (prod bug 2026-07-18).
+      const resp = await authFetch(
         `/api/v1/wakeword/${encodeURIComponent(wakeWordId)}/model?platform=web`,
-        { credentials: 'same-origin', signal: ctl.signal },
+        { signal: ctl.signal },
       );
       clearTimeout(timer);
       if (resp.ok) {

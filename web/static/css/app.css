@@ -1064,3 +1064,33 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
   .ln-orb__core, .ln-orb__ring, .state-pill__dot { animation: none !important; }
   html { scroll-behavior: auto; }
 }
+
+/* ---- mic test dialog (conversation page "Test my mic") ---------------- */
+.mictest {
+  width: min(560px, calc(100vw - 32px));
+  border: 1px solid var(--ln-border-strong);
+  border-radius: 14px;
+  background: var(--ln-surface-raised);
+  color: var(--ln-text);
+  padding: 24px;
+}
+.mictest::backdrop { background: rgba(2, 8, 18, 0.65); }
+.mictest__title { margin: 0 0 10px; font-size: 1.25rem; }
+.mictest__status { margin: 0 0 14px; color: var(--ln-text-muted); }
+.mictest__status.is-good { color: #34e39b; }
+.mictest__status.is-bad  { color: #ff5c72; }
+.mictest__meter {
+  display: block;
+  width: 100%;
+  height: 72px;
+  border: 1px solid var(--ln-border);
+  border-radius: 10px;
+  background: var(--ln-surface);
+}
+.mictest__device { margin: 10px 0 0; color: var(--ln-text-dim); font-size: 0.85rem; }
+.mictest__tips { margin-top: 16px; }
+.mictest__tips summary { cursor: pointer; color: var(--ln-cyan); }
+.mictest__tips ul { margin: 10px 0 0; padding-left: 20px; }
+.mictest__tips li { margin-bottom: 10px; color: var(--ln-text-muted); line-height: 1.45; }
+.mictest__tips code { word-break: break-all; }
+.mictest__actions { display: flex; justify-content: flex-end; margin-top: 18px; }

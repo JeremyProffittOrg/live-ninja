@@ -73,6 +73,10 @@
         </div>
         <p class="wakeword-hint" id="wakeHint">Off — use the push-to-talk button to start a turn.</p>
       </div>
+
+      <div class="conv-divider" role="presentation"></div>
+
+      <button class="ln-btn ln-btn--ghost" type="button" id="micTestBtn">Test my mic</button>
     </section>
 
     <!-- Right column: transcript + composer -->
@@ -99,6 +103,27 @@
 {{- /* Remote assistant audio (realtime.mjs attaches the WebRTC track and
        routes it through a GainNode for the barge-in ramp). */}}
 <audio id="remoteAudio" autoplay hidden></audio>
+
+<dialog class="mictest" id="micTestDialog" aria-labelledby="micTestTitle">
+  <h2 class="mictest__title" id="micTestTitle">Microphone check</h2>
+  <p class="mictest__status" id="micTestStatus" aria-live="polite">Starting…</p>
+  <canvas class="mictest__meter" id="micTestMeter" height="72" aria-hidden="true"></canvas>
+  <p class="mictest__device" id="micTestDevice"></p>
+  <details class="mictest__tips" id="micTestTips">
+    <summary>Troubleshooting tips</summary>
+    <ul>
+      <li><strong>Flat line / no level?</strong> Check the mic's physical mute switch and that it's plugged in, then speak at normal volume about an arm's length away.</li>
+      <li><strong>Chrome blocked the mic:</strong> click the tune (or lock) icon at the left of the address bar &rarr; <em>Site settings</em> &rarr; set <em>Microphone</em> to <em>Allow</em>, then reload this page. You can also open <code>chrome://settings/content/microphone</code> and remove live.jeremy.ninja from the "Not allowed" list.</li>
+      <li><strong>Wrong microphone?</strong> Chrome records from your system default mic unless you pick one on the <a href="/settings">Settings</a> page. On Windows, change the default under Settings &rarr; System &rarr; Sound &rarr; Input.</li>
+      <li><strong>Windows is blocking desktop apps:</strong> Windows Settings &rarr; Privacy &amp; security &rarr; Microphone &mdash; turn on microphone access and "Let desktop apps access your microphone".</li>
+      <li><strong>Another app is holding the mic</strong> (shows as "could not open the microphone"): close Zoom, Teams, OBS, or other recording apps and test again.</li>
+      <li><strong>Level moves here but the assistant doesn't respond:</strong> raise the input volume in Windows Sound settings, and make sure you speak after the status pill says <em>Listening</em>.</li>
+    </ul>
+  </details>
+  <div class="mictest__actions">
+    <button class="ln-btn ln-btn--ghost" type="button" id="micTestClose">Close</button>
+  </div>
+</dialog>
 
 <div class="ln-toast" id="toast" role="status" aria-live="polite"></div>
 {{end}}

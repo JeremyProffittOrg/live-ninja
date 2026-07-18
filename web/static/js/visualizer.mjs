@@ -206,6 +206,12 @@ export class Visualizer {
     if (this._running) this._scheduleLoop();
   }
 
+  /** Most recent volume sample (0..1) — lets callers (the mic test) check
+   * whether any signal is arriving without their own audio graph. */
+  get level() {
+    return this._historyLen > 0 ? this._history[this._historyLen - 1] : 0;
+  }
+
   /** Resumes the AudioContext (if any) and begins the sample/draw loop. */
   start() {
     this._running = true;

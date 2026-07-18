@@ -72,7 +72,10 @@ import { authFetch, createToolDispatcher, ApiError } from './toolclient.mjs';
 const SESSION_PATH = '/api/v1/realtime/session';
 const OPENAI_CALLS_URL = 'https://api.openai.com/v1/realtime/calls';
 const DC_OPEN_TIMEOUT_MS = 10_000;
-const ICE_GATHER_TIMEOUT_MS = 2_000;
+// Trickle-less ICE wait cap. Host/srflx candidates land well inside this;
+// the old 2s cap added up to 1.5s of dead air to every connect (owner:
+// "takes a bit to pick up").
+const ICE_GATHER_TIMEOUT_MS = 600;
 const RATE_LIMIT_MAX_WAIT_S = 15;
 const DUCK_RAMP_S = 0.03; // spec §2.2: ~30ms ramp, not an abrupt cut
 
@@ -339,15 +342,33 @@ export class RealtimeSession extends EventTarget {
     }
     this.#closing = false;
 
-    const minted = await this.#mint();
+    // The mic stream is load-bearing for both transports: a WebRTC audio
+    // track for openai-direct, the PCM capture source for nova-bridge.
+    // `stream` may be a MediaStream OR a promise of one — kicking mic
+    // acquisition and the session mint off CONCURRENTLY shaves the mint's
+    // ~300-900ms off perceived connect time.
+    const streamPromise = Promise.resolve(
+      stream || acquireMicStream({ deviceId: micDeviceId }),
+    );
+
+    let minted;
+    try {
+      minted = await this.#mint();
+    } catch (err) {
+      // Don't leave a granted mic running if the mint failed.
+      streamPromise
+        .then((s) => {
+          for (const t of s.getTracks()) t.stop();
+        })
+        .catch(() => {});
+      throw err;
+    }
     this.#mode = minted.mode || 'openai-direct';
     this.#sessionId = minted.sessionId || 'web-' + Date.now().toString(36);
     this.#model = minted.model || '';
     this.#voice = minted.voice || '';
 
-    // The mic stream is load-bearing for both transports: a WebRTC audio track
-    // for openai-direct, the PCM capture source for nova-bridge.
-    this.#localStream = stream || (await acquireMicStream({ deviceId: micDeviceId }));
+    this.#localStream = await streamPromise;
 
     if (this.#mode === 'nova-bridge') {
       await this.#connectNovaBridge(minted);

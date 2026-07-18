@@ -20,6 +20,7 @@
 
 import { apiJSON, ApiError } from './toolclient.mjs';
 import { MicController, MicState } from './mic.mjs';
+import { createMicTest } from './mictest.mjs';
 import { Transcript } from './transcript.mjs';
 import { createTranscriptSink } from './transcriptsink.mjs';
 import { Visualizer } from './visualizer.mjs';
@@ -480,6 +481,14 @@ const mic = new MicController({
 
 const sink = createTranscriptSink();
 sink.observe(mic);
+
+// ---- mic test (self-serve diagnostics; button in the left rail) ----------
+
+const micTest = createMicTest({
+  getMicDeviceId: () => (settingsDoc && typeof settingsDoc.micDeviceId === 'string' ? settingsDoc.micDeviceId : null),
+});
+const micTestBtn = $('micTestBtn');
+if (micTestBtn) micTestBtn.addEventListener('click', () => void micTest.open());
 
 mic.addEventListener('sessioncreated', (e) => {
   const session = e.detail.session;

@@ -391,14 +391,11 @@ export class MicController extends EventTarget {
     }
     this.#errorInfo = null;
 
+    // Mic acquisition and the session mint run CONCURRENTLY (the promise is
+    // handed to connect(), which mints while the permission/device settles) —
+    // sequential awaits were adding the whole mint latency to every start.
     this.#setState(MicState.REQUESTING);
-    let stream;
-    try {
-      stream = await acquireMicStream({ deviceId: this.#getMicDeviceId() });
-    } catch (err) {
-      this.#handleMicError(err);
-      return;
-    }
+    const streamPromise = acquireMicStream({ deviceId: this.#getMicDeviceId() });
 
     this.#setState(MicState.CONNECTING);
     const session = this.#createSession();
@@ -407,10 +404,23 @@ export class MicController extends EventTarget {
     this.#emit('sessioncreated', { session });
 
     try {
-      await session.connect({ stream });
+      await session.connect({ stream: streamPromise });
     } catch (err) {
-      for (const t of stream.getTracks()) t.stop();
       this.#session = null;
+      // getUserMedia failures surface out of connect() now — route them to
+      // the mic-specific error copy, everything else to connection errors.
+      const name = err && err.name;
+      if (
+        name === 'NotAllowedError' ||
+        name === 'SecurityError' ||
+        name === 'NotFoundError' ||
+        name === 'OverconstrainedError' ||
+        name === 'NotReadableError' ||
+        name === 'AbortError'
+      ) {
+        this.#handleMicError(err);
+        return;
+      }
       this.#handleConnectError(err);
       return;
     }
