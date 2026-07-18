@@ -66,14 +66,14 @@
                copy on the toggle itself. */}}
         {{- /* Owner 2026-07-18 (2): wake toggle LEFT (phrase shown under its
                label), mic RIGHT. */}}
+        {{- /* Owner 2026-07-18 (3): slider ABOVE "Use Wake Word" (+phrase),
+               all left-aligned; mic right-aligned with space between. */}}
         <div class="ptt-zone">
-          <label class="ln-toggle" id="wakeToggleWrap">
+          <label class="ln-toggle ln-toggle--stacked" id="wakeToggleWrap">
             <input type="checkbox" id="wakeToggle" aria-describedby="wakeHint">
             <span class="ln-toggle-track" aria-hidden="true"><span class="ln-toggle-thumb"></span></span>
-            <span class="wake-toggle-col">
-              <span>Use Wake Word</span>
-              <span class="wakeword-phrase" id="wakePhrase" hidden></span>
-            </span>
+            <span>Use Wake Word</span>
+            <span class="wakeword-phrase" id="wakePhrase" hidden></span>
           </label>
           <button class="ptt" id="pttBtn" type="button" data-state="idle"
                   aria-pressed="false" aria-label="Push to talk, currently off — tap to start">

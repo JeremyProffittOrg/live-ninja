@@ -969,7 +969,15 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
 .ptt-wrap { display: flex; flex-direction: column; align-items: center; gap: var(--ln-sp-1); }
 /* Mic + wake-word slider share one row, vertical centers aligned
    (owner spec 2026-07-18). */
-.ptt-zone { display: flex; align-items: center; gap: var(--ln-sp-4); }
+.ptt-zone {
+  display: flex; align-items: center; justify-content: space-between;
+  width: 100%; gap: var(--ln-sp-4);
+}
+/* Slider stacked above its label + phrase, all left-aligned (owner spec). */
+.ln-toggle--stacked {
+  display: flex; flex-direction: column; align-items: flex-start;
+  gap: 6px; line-height: 1.25;
+}
 .ptt {
   position: relative;
   /* Halved from the earlier 2x (owner layout 2026-07-18). */
