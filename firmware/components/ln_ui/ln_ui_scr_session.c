@@ -151,7 +151,7 @@ lv_obj_t *ln_scr_thinking_create(void)
     ln_w_label(col, "Thinking through your request", LN_FONT_MD, LN_COL_MUTED);
 
     lv_obj_t *card = ln_w_card(col);
-    lv_obj_set_width(card, 760);
+    lv_obj_set_width(card, lv_pct(90)); /* 760px overflowed the 720px portrait panel */
     s_think_request = ln_w_label(card, "", LN_FONT_LG, LN_COL_TEXT);
     lv_label_set_long_mode(s_think_request, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(s_think_request, lv_pct(100));

@@ -548,14 +548,17 @@ lv_obj_t *ln_scr_config_create(void)
     lv_obj_t *title = ln_w_label(hdr, "Settings", LN_FONT_XL, LN_COL_TEXT);
     lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
 
-    /* body: left menu + right panel host */
+    /* body: left menu + right panel host. Full portrait height (1280)
+     * minus the 72px header — 720-72 was a landscape leftover that left
+     * the bottom 560px of the screen empty. */
     lv_obj_t *body = ln_w_plain(scr);
-    lv_obj_set_size(body, lv_pct(100), 720 - 72);
+    lv_obj_set_size(body, lv_pct(100), 1280 - 72);
     lv_obj_align(body, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_set_flex_flow(body, LV_FLEX_FLOW_ROW);
 
+    /* 260px menu leaves the detail panel ~460px on the 720px-wide panel. */
     lv_obj_t *menu = ln_w_col(body, 10);
-    lv_obj_set_size(menu, 320, lv_pct(100));
+    lv_obj_set_size(menu, 260, lv_pct(100));
     lv_obj_set_style_pad_all(menu, 20, 0);
     lv_obj_set_style_bg_color(menu, LN_COL_BG, 0);
     lv_obj_set_style_border_color(menu, LN_COL_BORDER, 0);

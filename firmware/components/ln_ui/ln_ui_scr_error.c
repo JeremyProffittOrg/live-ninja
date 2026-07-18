@@ -29,7 +29,7 @@ lv_obj_t *ln_scr_error_create(void)
 
     lv_obj_t *col = ln_w_col(scr, 18);
     lv_obj_center(col);
-    lv_obj_set_width(col, 820);
+    lv_obj_set_width(col, lv_pct(90)); /* 820px overflowed the 720px portrait panel */
     lv_obj_set_flex_align(col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
 

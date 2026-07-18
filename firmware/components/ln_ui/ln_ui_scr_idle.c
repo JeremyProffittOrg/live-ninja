@@ -1,11 +1,14 @@
 /*
  * ln_ui_scr_idle.c — Boot splash + Idle screen (mockups 03).
- * Idle: brand bar, big clock + date, wake-phrase hint, status chips,
- * settings button (posts LN_UI_SETTINGS_OPEN_REQUESTED).
+ * Idle: brand bar, big clock + date, wake-phrase hint, tap-to-talk orb
+ * (manual wake via ln_wake_trigger()), status chips, settings button
+ * (posts LN_UI_SETTINGS_OPEN_REQUESTED).
  */
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+
+#include "ln_wake.h"
 
 #include "ln_ui_internal.h"
 
@@ -49,6 +52,15 @@ static void settings_btn_cb(lv_event_t *e)
 {
     (void)e;
     ln_ui_post(LN_UI_SETTINGS_OPEN_REQUESTED, NULL, 0);
+}
+
+/* Tap-to-talk: manual wake, same path as the wake word (LN_WAKE_EVT_DETECTED
+ * with word_index 0 — ln_ctrl starts Listening from Idle). The pressed-state
+ * styles on the orb give the immediate visual feedback (LCD UI rule). */
+static void orb_cb(lv_event_t *e)
+{
+    (void)e;
+    ln_wake_trigger();
 }
 
 /* One "TITLE / value" chip in the bottom bar. */
@@ -117,6 +129,32 @@ lv_obj_t *ln_scr_idle_create(void)
     s_wake_hint = ln_w_label(center, "Say \"Hey Live Ninja\"", LN_FONT_XXL,
                              LN_COL_TEAL);
     lv_obj_set_style_pad_top(s_wake_hint, 18, 0);
+
+    /* Tap-to-talk orb — the touch path into a conversation (before this,
+     * the wake word was the only way in). ~160px target, well over the
+     * 48-64px rule. */
+    lv_obj_t *orb = lv_button_create(center);
+    lv_obj_remove_style_all(orb);
+    lv_obj_set_size(orb, 160, 160);
+    lv_obj_set_style_margin_top(orb, 26, 0);
+    lv_obj_set_style_radius(orb, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(orb, LN_COL_TEAL, 0);
+    lv_obj_set_style_bg_opa(orb, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(orb, LN_COL_TEAL_DARK, 0);
+    lv_obj_set_style_border_width(orb, 4, 0);
+    lv_obj_set_style_shadow_color(orb, LN_COL_TEAL, 0);
+    lv_obj_set_style_shadow_width(orb, 30, 0);
+    lv_obj_set_style_shadow_opa(orb, LV_OPA_40, 0);
+    /* immediate tap feedback: brighter fill + wider glow while pressed */
+    lv_obj_set_style_bg_color(orb, LN_COL_CYAN, LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(orb, 60, LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_opa(orb, LV_OPA_70, LV_STATE_PRESSED);
+    lv_obj_add_event_cb(orb, orb_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *orb_ico = ln_w_label(orb, LV_SYMBOL_AUDIO, LN_FONT_HUGE,
+                                   LN_COL_INK);
+    lv_obj_center(orb_ico);
+
+    ln_w_label(center, "or tap the orb to talk", LN_FONT_MD, LN_COL_MUTED);
 
     /* bottom status bar */
     lv_obj_t *bot = ln_w_plain(scr);

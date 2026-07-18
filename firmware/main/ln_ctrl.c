@@ -100,6 +100,7 @@ static volatile ln_app_state_t s_state = LN_STATE_BOOT;
 static int64_t s_state_since_us;
 static bool s_resp_done_pending;   /* response.done seen, waiting for drain */
 static esp_timer_handle_t s_tick;
+static int s_err_cd_last = -1;     /* last "Auto-retry in N s" value shown */
 
 /* ------------------------------------------------------------ NVS load  */
 
@@ -191,6 +192,16 @@ static void set_state(ln_app_state_t st)
     s_state_since_us = esp_timer_get_time();
     ln_iot_set_app_state(state_str(st));
     esp_event_post(LN_CTRL_EVENT, LN_CTRL_STATE_CHANGED, &ev, sizeof(ev), 0);
+
+    /* Error-screen auto-retry countdown: seed it on entry, clear on exit
+     * (the tick keeps it updated once per second while in Error). */
+    if (ev.prev == LN_STATE_ERROR) {
+        ln_ui_error_countdown(-1);
+    }
+    if (st == LN_STATE_ERROR) {
+        s_err_cd_last = (int)(LN_CTRL_ERROR_RETRY_US / 1000000);
+        ln_ui_error_countdown(s_err_cd_last);
+    }
 }
 
 static bool in_session(ln_app_state_t st)
@@ -678,6 +689,19 @@ static void tick_cb(void *arg)
         if (elapsed > LN_CTRL_ERROR_RETRY_US && ln_net_is_online() &&
             ln_net_is_paired()) {
             set_state(LN_STATE_IDLE); /* Error -> Idle: reconnected */
+        } else {
+            /* Drive the "Auto-retry in N s" line once per second. When the
+             * wait has expired but the network still isn't back, hide it —
+             * the retry is then gated on connectivity, not time. */
+            int remain = (int)((LN_CTRL_ERROR_RETRY_US - elapsed + 999999)
+                               / 1000000);
+            if (remain < 0) {
+                remain = -1;
+            }
+            if (remain != s_err_cd_last) {
+                s_err_cd_last = remain;
+                ln_ui_error_countdown(remain);
+            }
         }
         break;
     default:

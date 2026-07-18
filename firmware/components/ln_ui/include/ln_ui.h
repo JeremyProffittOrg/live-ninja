@@ -1,5 +1,5 @@
 /*
- * ln_ui — Live Ninja LVGL UI (M5Stack Tab5, 1280x720 landscape).
+ * ln_ui — Live Ninja LVGL UI (M5Stack Tab5, 720x1280 portrait).
  *
  * Owns every screen of the M5 state machine (Boot / Provisioning / Idle /
  * Listening / Thinking / Speaking / Config / Error) per mockups/m5stack/.

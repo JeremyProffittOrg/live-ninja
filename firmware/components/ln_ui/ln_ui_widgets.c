@@ -104,7 +104,9 @@ lv_obj_t *ln_w_kv_row(lv_obj_t *parent, const char *key, const char *val,
     ln_w_label(row, key, LN_FONT_SM, LN_COL_DIM);
     lv_obj_t *v = ln_w_label(row, val, LN_FONT_MD, LN_COL_TEXT);
     lv_label_set_long_mode(v, LV_LABEL_LONG_DOT);
-    lv_obj_set_style_max_width(v, 420, 0);
+    /* Config detail cards are ~350px inside on the 720px portrait panel;
+     * 420 (landscape-era) let long values overflow the card. */
+    lv_obj_set_style_max_width(v, 220, 0);
     if (val_out != NULL) {
         *val_out = v;
     }
