@@ -554,6 +554,8 @@ Cross-cutting gates (all milestones): `golangci-lint` + `go vet` clean; unit tes
 >
 > **Session ops notes (fresh-agent must-knows, adds to the 04:30 gotchas):** `aws logs` needs `MSYS_NO_PATHCONV=1` in git-bash (log-group paths get mangled). Browser-automation typing into this site's inputs is flaky — drive inputs via `javascript_tool` (set `.value` + dispatch `input` + `requestSubmit()`); mic-button clicks sometimes need a second click. Stable-URL JS modules are SW-cached stale-while-revalidate → changes need TWO reloads. Wake-word daily training quota: 3/day (`WWTRAIN#<day>` counter item under USER# — deleting it is the admin reset; today's was reset once after 3 system-bug failures). Batch queue `live-ninja-wakeword-train`; trainer log group `/aws/batch/job`. Firmware build/flash bats live at `%TEMP%\lnbuild.bat`/`lnflash.bat` (MSYSTEM unset + IDF_PYTHON_ENV_PATH + export.bat + `idf.py -p COM58`). Tab5 serial via python/pyserial on COM58 115200 (open AFTER esptool resets release the port).
 >
+> **[Background from the superseded 2026-07-18 ~04:30 checkpoint — details still accurate unless the 08:15 block above says otherwise:]**
+>
 > **All 13 milestones (M0–M12) are code-complete, committed, and deployed** (M12 Nova Sonic is deployed but *gated off* — see below). The bulk build ran M0–M12 autonomously overnight via parallel `Workflow` runs; the last several hours were interactive prod bug-fixing from the owner's live testing. `git log --oneline` is the source of truth for what landed.
 >
 > **Prod-VERIFIED in a real browser / on real hardware (owner is bound as OWNER, `amzn1.account.AEGRRHCM6JMXBTAYH5HY5GW6LK5Q`):**
