@@ -346,13 +346,15 @@ static void ap_apply_cb(lv_event_t *e)
 
 /* ------------------------------------------------------------ builders */
 
-/* Big two-line option button (title + subtitle), ~48-64px-rule compliant. */
+/* Big two-line option button (title + subtitle), ~48-64px-rule compliant.
+ * Full-width: the Tab5 panel is 720x1280 PORTRAIT (ln_ui logs "UI ready
+ * (720x1280)") — fixed-width side-by-side options overflowed it. */
 static lv_obj_t *make_option(lv_obj_t *parent, const char *title,
                              const char *sub, lv_event_cb_t cb)
 {
     lv_obj_t *btn = lv_button_create(parent);
     lv_obj_remove_style_all(btn);
-    lv_obj_set_size(btn, 500, 116);
+    lv_obj_set_size(btn, lv_pct(100), 116);
     lv_obj_set_style_bg_color(btn, LN_COL_SURFACE, 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(btn, LN_COL_SURFACE2, LV_STATE_PRESSED);
@@ -410,7 +412,9 @@ lv_obj_t *ln_scr_onboarding_create(void)
     lv_obj_set_width(s_subtitle, lv_pct(88));
     lv_obj_set_style_text_align(s_subtitle, LV_TEXT_ALIGN_CENTER, 0);
 
-    s_options_row = ln_w_row(s_view_main, 28);
+    /* Portrait screen: options stack vertically, full width. */
+    s_options_row = ln_w_col(s_view_main, 16);
+    lv_obj_set_width(s_options_row, lv_pct(100));
     lv_obj_set_style_pad_top(s_options_row, 10, 0);
     make_option(s_options_row, "Join a Wi-Fi network",
                 "Pick your network from a list and type its password here.",
@@ -419,13 +423,11 @@ lv_obj_t *ln_scr_onboarding_create(void)
                 "Keep this device as its own access point (AP mode).",
                 ap_option_cb);
 
-    /* spacer pushes the QR hero to the bottom */
-    lv_obj_t *spacer = ln_w_plain(s_view_main);
-    lv_obj_set_flex_grow(spacer, 1);
-
-    /* QR hero — bottom of the screen */
+    /* QR hero — fills all remaining screen below the options (the "box"
+     * is tall; the QR itself stays its normal size, centered in it). */
     lv_obj_t *hero = ln_w_card(s_view_main);
-    lv_obj_set_width(hero, 560);
+    lv_obj_set_width(hero, lv_pct(100));
+    lv_obj_set_flex_grow(hero, 1);
     lv_obj_set_flex_flow(hero, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(hero, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);

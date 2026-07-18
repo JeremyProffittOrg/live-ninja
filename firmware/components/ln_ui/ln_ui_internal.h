@@ -28,12 +28,14 @@
 #define LN_COL_ERROR     lv_color_hex(0xff5c72)
 #define LN_COL_INK       lv_color_hex(0x04211e) /* text on teal */
 
-#define LN_FONT_XS   (&lv_font_montserrat_14)
-#define LN_FONT_SM   (&lv_font_montserrat_16)
-#define LN_FONT_MD   (&lv_font_montserrat_20)
-#define LN_FONT_LG   (&lv_font_montserrat_24)
-#define LN_FONT_XL   (&lv_font_montserrat_28)
-#define LN_FONT_XXL  (&lv_font_montserrat_36)
+/* All sizes bumped >=20% (owner request 2026-07-18: on-device text was too
+ * small). HUGE stays 48 — the largest Montserrat LVGL ships. */
+#define LN_FONT_XS   (&lv_font_montserrat_18)
+#define LN_FONT_SM   (&lv_font_montserrat_20)
+#define LN_FONT_MD   (&lv_font_montserrat_24)
+#define LN_FONT_LG   (&lv_font_montserrat_30)
+#define LN_FONT_XL   (&lv_font_montserrat_34)
+#define LN_FONT_XXL  (&lv_font_montserrat_44)
 #define LN_FONT_HUGE (&lv_font_montserrat_48)
 
 #define LN_TOUCH_MIN  56 /* min touch-target px (48-64 rule) */
