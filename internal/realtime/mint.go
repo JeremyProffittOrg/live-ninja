@@ -368,6 +368,12 @@ func (m *Minter) Mint(ctx context.Context, personaID, voice, instructionsSuffix 
 					"type":               "semantic_vad",
 					"interrupt_response": true,
 				},
+				// Without this the API never emits
+				// conversation.item.input_audio_transcription.* events, so
+				// the user's own speech never appeared in any transcript.
+				"transcription": map[string]any{
+					"model": "gpt-4o-mini-transcribe",
+				},
 			},
 		},
 		"instructions": persona.Instructions + instructionsSuffix,

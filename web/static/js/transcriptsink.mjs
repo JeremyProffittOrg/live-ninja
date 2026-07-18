@@ -41,6 +41,10 @@ export function createTranscriptSink({
   let timer = null;
   let inFlight = false;
   let flushAgain = false;
+  // Set when the session has ended: the next flush carries final:true so the
+  // server releases the session's concurrency slot and kicks topic
+  // extraction. Cleared only once a final flush succeeds.
+  let finalPending = false;
 
   function armTimer() {
     if (timer !== null) return;
@@ -60,11 +64,12 @@ export function createTranscriptSink({
   /** Start (or restart) logging for a session. Flushes anything left over
    * from a previous session first. */
   function beginSession(id, sessionEngine = '') {
-    if (sessionId && pending.length) void flush();
+    if (sessionId && (pending.length || finalPending)) void flush();
     sessionId = id || '';
     engine = sessionEngine || '';
     seq = 0;
     pending = [];
+    finalPending = false;
   }
 
   /** Queue one finalized turn. role: "user" | "assistant". */
@@ -87,7 +92,7 @@ export function createTranscriptSink({
    * keepalive so the request survives the document going away). Failed
    * batches are re-queued at the front for the next flush. */
   async function flush({ keepalive = false } = {}) {
-    if (!sessionId || pending.length === 0) return;
+    if (!sessionId || (pending.length === 0 && !finalPending)) return;
     if (inFlight) {
       flushAgain = true;
       return;
@@ -95,13 +100,14 @@ export function createTranscriptSink({
     clearTimer();
 
     const batch = pending;
+    const isFinal = finalPending;
     pending = [];
     inFlight = true;
     let ok = false;
     try {
       const resp = await authFetch(endpoint, {
         method: 'POST',
-        json: { sessionId, turns: batch },
+        json: { sessionId, turns: batch, final: isFinal },
         keepalive,
       });
       ok = resp.ok;
@@ -117,6 +123,7 @@ export function createTranscriptSink({
       if (!keepalive) armTimer(); // retry on the normal cadence
       return;
     }
+    if (isFinal) finalPending = false;
     if (flushAgain || pending.length >= maxBatchTurns) {
       flushAgain = false;
       void flush();
@@ -126,9 +133,12 @@ export function createTranscriptSink({
   }
 
   /** Final flush for a finished session; keeps sessionId so a late retry
-   * can still land, but stops the cadence timer. */
+   * can still land, but stops the cadence timer. Marks the flush final so
+   * the server releases the realtime concurrency slot and runs topic
+   * extraction — a final-only flush with zero turns is valid. */
   function endSession() {
     clearTimer();
+    finalPending = true;
     void flush();
   }
 
@@ -164,7 +174,14 @@ export function createTranscriptSink({
     if (document.visibilityState === 'hidden') void flush({ keepalive: true });
   };
   document.addEventListener('visibilitychange', onHidden);
-  window.addEventListener('pagehide', () => void flush({ keepalive: true }));
+  window.addEventListener('pagehide', () => {
+    // The document is going away and any live session dies with it — mark
+    // final so the server frees the concurrency slot instead of letting it
+    // block new mints for the rest of the 10-minute cap. (visibilitychange
+    // alone is NOT final: a backgrounded tab keeps its session.)
+    if (sessionId) finalPending = true;
+    void flush({ keepalive: true });
+  });
 
   return {
     beginSession,

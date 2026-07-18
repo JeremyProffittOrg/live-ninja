@@ -42,7 +42,10 @@ const pageCSP = "default-src 'self'; " +
 	"script-src 'self' 'wasm-unsafe-eval'; " +
 	"style-src 'self' 'unsafe-inline'; " +
 	"img-src 'self' data:; " +
-	"connect-src 'self' https://api.openai.com; " +
+	// The wakewords bucket hosts trained wake-word detectors fetched via
+	// presigned S3 URLs (wakeword.mjs fetchVerified) — SHA-256-pinned
+	// client-side, so the wildcard-free bucket host is the only extra origin.
+	"connect-src 'self' https://api.openai.com https://live-ninja-wakewords-759775734231.s3.amazonaws.com https://live-ninja-wakewords-759775734231.s3.us-east-1.amazonaws.com; " +
 	"media-src 'self' blob:; " +
 	"worker-src 'self' blob:; " +
 	"base-uri 'self'; " +

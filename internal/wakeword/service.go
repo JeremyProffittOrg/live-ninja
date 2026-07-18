@@ -182,6 +182,7 @@ type storedManifest struct {
 // field-for-field the contracts/wakeword-manifest.md schema.
 type ModelManifest struct {
 	ID        string `json:"id"`
+	Phrase    string `json:"phrase"`
 	Platform  string `json:"platform"`
 	Engine    string `json:"engine"`
 	Format    string `json:"format"`
@@ -645,6 +646,22 @@ func (s *Service) Model(ctx context.Context, userID, id, platform string) (*Mode
 		return nil, err
 	}
 	if w == nil {
+		// Settings carry bare slugs (the pre-M6 catalog id "hey-live-ninja")
+		// while trained items get a user-scoped suffix (WakewordID) — resolve
+		// by normalized-phrase slug before giving up so a client whose
+		// settings still name the slug picks up the trained model.
+		list, lerr := s.store.ListWakewords(ctx, userID)
+		if lerr != nil {
+			return nil, fmt.Errorf("wakeword: list for slug resolve: %w", lerr)
+		}
+		for i := range list {
+			if Slug(list[i].NormalizedPhrase) == id {
+				w = &list[i]
+				break
+			}
+		}
+	}
+	if w == nil {
 		return nil, ErrNotFound
 	}
 	w = s.finalize(ctx, w)
@@ -691,6 +708,7 @@ func (s *Service) Model(ctx context.Context, userID, id, platform string) (*Mode
 	}
 	return &ModelManifest{
 		ID:        w.ID,
+		Phrase:    w.Phrase,
 		Platform:  platform,
 		Engine:    w.Engine,
 		Format:    format,

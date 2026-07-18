@@ -76,8 +76,10 @@ func TestWakewordIDDeterministicAndUserSalted(t *testing.T) {
 }
 
 func TestCollidesWithBuiltin(t *testing.T) {
-	// By phrase and by id-slug ("hey-live-ninja" builtin).
-	assert.True(t, collidesWithBuiltin("hey live ninja"))
+	// By phrase and by id-slug ("hey-jarvis" is the client-bundled builtin).
+	assert.True(t, collidesWithBuiltin("hey jarvis"))
 	assert.True(t, collidesWithBuiltin("hi esp"))
+	// "hey live ninja" is trainable — no client ships a model for it.
+	assert.False(t, collidesWithBuiltin("hey live ninja"))
 	assert.False(t, collidesWithBuiltin("hey purple parrot"))
 }

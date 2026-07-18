@@ -166,8 +166,25 @@ async function resolveModels(wakeWordId) {
             detector: { window: DEFAULT_DET_WINDOW, ...m.detector },
           };
         }
+        // M6 single-model manifest (internal/wakeword ModelManifest): the
+        // served artifact is the per-phrase DETECTOR only — openWakeWord's
+        // melspectrogram + embedding stages are phrase-independent and ship
+        // bundled, so pair the trained detector with them.
+        if (manifest && manifest.url && manifest.sha256) {
+          return {
+            id: wakeWordId,
+            phrase: manifest.phrase || wakeWordId,
+            melspectrogram: BUNDLED_MODELS.melspectrogram,
+            embedding: BUNDLED_MODELS.embedding,
+            detector: {
+              window: DEFAULT_DET_WINDOW,
+              url: manifest.url,
+              sha256: manifest.sha256,
+            },
+          };
+        }
       }
-      // 404 = manifest route not shipped yet (pre-M6) or unknown id — fall through.
+      // 404 = unknown id / model not trained yet — fall through to bundled.
     } catch {
       // Network/timeout/shape failure — fall through to bundled.
     }

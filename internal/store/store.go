@@ -111,6 +111,25 @@ func (s *Store) PutDeviceTelemetry(ctx context.Context, deviceID string, payload
 	return nil
 }
 
+// ReleaseSessionSlot deletes the realtime concurrency slot the broker
+// wrote at mint (pk=USER#<uid>, sk=BUCKET#sess#<sessionId> — the prefix
+// mirrors internal/realtime's sessSlotPrefix). Called from the transcript
+// route's final flush so a deliberately-ended session frees its slot
+// immediately instead of burning the full 10-minute hard cap; deleting a
+// missing item is a DynamoDB no-op, so this is safely idempotent.
+func (s *Store) ReleaseSessionSlot(ctx context.Context, userID, sessionID string) error {
+	if _, err := s.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: aws.String(s.table),
+		Key: map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: "USER#" + userID},
+			"sk": &types.AttributeValueMemberS{Value: "BUCKET#sess#" + sessionID},
+		},
+	}); err != nil {
+		return fmt.Errorf("store: release session slot: %w", err)
+	}
+	return nil
+}
+
 // ConditionalPut writes an item under pk/sk only if no item currently
 // occupies that key — the idempotency primitive used by email-dispatch
 // (pk=IDEMP#<messageId>, sk=IDEMP) and anywhere else "process exactly

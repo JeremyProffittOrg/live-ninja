@@ -70,7 +70,13 @@ var engines = []EngineInfo{
 // wakeModel field may select once flashed. Builtin model bytes are
 // distributed with the client/firmware, NOT via the model endpoint.
 var builtinEntries = []CatalogEntry{
-	{ID: "hey-live-ninja", Phrase: "hey live ninja", Engine: "openwakeword", Source: "builtin", Status: store.WakewordStatusReady, Platforms: []string{"web", "android"}},
+	// "hey jarvis" is the openWakeWord model the web/android clients bundle
+	// as their guaranteed fallback — reserved so training can't shadow it.
+	// "hey live ninja" is deliberately NOT here: no client ships a model
+	// for it, so it goes through the normal custom-training pipeline (the
+	// manifest route resolves the bare "hey-live-ninja" settings id to the
+	// trained item via slug match — see Model()).
+	{ID: "hey-jarvis", Phrase: "hey jarvis", Engine: "openwakeword", Source: "builtin", Status: store.WakewordStatusReady, Platforms: []string{"web", "android"}},
 	{ID: "wn9_hiesp", Phrase: "hi esp", Engine: "wakenet", Source: "builtin", Status: store.WakewordStatusReady, Platforms: []string{"esp32"}},
 	{ID: "wn9_hilexin", Phrase: "hi lexin", Engine: "wakenet", Source: "builtin", Status: store.WakewordStatusReady, Platforms: []string{"esp32"}},
 	{ID: "wn9_alexa", Phrase: "alexa", Engine: "wakenet", Source: "builtin", Status: store.WakewordStatusReady, Platforms: []string{"esp32"}},

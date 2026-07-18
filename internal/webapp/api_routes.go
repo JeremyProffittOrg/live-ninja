@@ -632,6 +632,14 @@ func handleTranscript(deps *Deps) fiber.Handler {
 		// extractor. Best-effort — history tagging must never fail a
 		// transcript flush.
 		if body.Final {
+			// Free the broker's concurrency slot now rather than letting it
+			// burn the rest of the 10-minute hard cap — leaked slots were
+			// blocking every new mint with 429 concurrent_sessions.
+			if err := deps.Store.ReleaseSessionSlot(c.Context(), userID, body.SessionID); err != nil {
+				deps.Log.Warn("api: session slot release failed",
+					slog.String("error", err.Error()), slog.String("sessionId", body.SessionID),
+					slog.String("userId", userID))
+			}
 			enqueueTopicExtraction(c.Context(), deps, userID, body.SessionID, DeviceID(c), surface, now)
 		}
 

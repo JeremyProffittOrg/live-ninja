@@ -35,8 +35,14 @@ func setTimerDefinition() *Definition {
 			"Provide the duration in seconds (e.g. 600 for 10 minutes).",
 		SideEffecting: true,
 		Params: []ParamSpec{
-			{Name: "inSeconds", Type: "integer", Required: true, Min: floatPtr(minLeadSeconds), Max: floatPtr(maxLead.Seconds()),
+			// "seconds" is an accepted alias: models routinely send it
+			// despite the schema naming "inSeconds" (observed in prod —
+			// every set_timer call failed invalid_args). Exactly one of the
+			// two is required, enforced in resolveFireTime.
+			{Name: "inSeconds", Type: "integer", Min: floatPtr(minLeadSeconds), Max: floatPtr(maxLead.Seconds()),
 				Description: "How many seconds from now the timer should fire."},
+			{Name: "seconds", Type: "integer", Min: floatPtr(minLeadSeconds), Max: floatPtr(maxLead.Seconds()),
+				Description: "Alias for inSeconds."},
 			{Name: "label", Type: "string", MaxLen: 200,
 				Description: "Short label for what the timer is for, e.g. 'pasta on the stove'."},
 		},
@@ -59,6 +65,8 @@ func setReminderDefinition() *Definition {
 				Description: "Absolute fire time, RFC3339 with offset, e.g. 2026-07-18T09:00:00-04:00."},
 			{Name: "inSeconds", Type: "integer", Min: floatPtr(minLeadSeconds), Max: floatPtr(maxLead.Seconds()),
 				Description: "Relative fire time: seconds from now. Use instead of 'at', not together."},
+			{Name: "seconds", Type: "integer", Min: floatPtr(minLeadSeconds), Max: floatPtr(maxLead.Seconds()),
+				Description: "Alias for inSeconds."},
 		},
 		Handler: func(ctx context.Context, deps *Deps, inv Invocation, args map[string]any) (map[string]any, *ToolError) {
 			return handleSchedule(ctx, deps, inv, args, "Reminder")
@@ -144,12 +152,15 @@ func resolveFireTime(now time.Time, args map[string]any) (time.Time, *ToolError)
 	atStr, hasAt := args["at"].(string)
 	hasAt = hasAt && atStr != ""
 	secs, hasSecs := args["inSeconds"].(int)
+	if !hasSecs {
+		secs, hasSecs = args["seconds"].(int) // accepted alias
+	}
 
 	switch {
 	case hasAt && hasSecs:
 		return time.Time{}, toolErrf(CodeInvalidArgs, "provide either 'at' or 'inSeconds', not both")
 	case !hasAt && !hasSecs:
-		return time.Time{}, toolErrf(CodeInvalidArgs, "provide 'at' (RFC3339) or 'inSeconds'")
+		return time.Time{}, toolErrf(CodeInvalidArgs, "provide 'at' (RFC3339) or 'inSeconds' (or 'seconds')")
 	}
 
 	var fireAt time.Time

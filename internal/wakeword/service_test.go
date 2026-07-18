@@ -350,9 +350,14 @@ func TestCreateCollisions(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
 
-	// Builtin phrase collides.
-	_, err := env.svc.Create(ctx, "u1", "Hey Live Ninja", "")
+	// Builtin phrase collides ("hey jarvis" is the client-bundled model).
+	_, err := env.svc.Create(ctx, "u1", "Hey Jarvis", "")
 	assert.ErrorIs(t, err, ErrCollision)
+
+	// "Hey Live Ninja" is NOT builtin (no client ships a model for it) —
+	// it must be trainable through the normal custom pipeline.
+	_, err = env.svc.Create(ctx, "u1", "Hey Live Ninja", "")
+	require.NoError(t, err)
 
 	// Own non-failed entry collides.
 	_, err = env.svc.Create(ctx, "u1", "hey parrot", "")
@@ -550,7 +555,7 @@ func TestCatalogMergesBuiltinsAndCustoms(t *testing.T) {
 	for _, e := range cat.Entries {
 		byID[e.ID] = e
 	}
-	assert.Equal(t, "builtin", byID["hey-live-ninja"].Source)
+	assert.Equal(t, "builtin", byID["hey-jarvis"].Source)
 	assert.Equal(t, "builtin", byID["wn9_hiesp"].Source)
 	custom := byID[w.ID]
 	assert.Equal(t, "custom", custom.Source)
@@ -617,12 +622,23 @@ func TestModelManifestErrorSurface(t *testing.T) {
 	ctx := context.Background()
 
 	// Builtin ids never serve bytes from this endpoint.
-	_, err := env.svc.Model(ctx, "u1", "hey-live-ninja", "web")
+	_, err := env.svc.Model(ctx, "u1", "hey-jarvis", "web")
 	assert.ErrorIs(t, err, ErrBuiltinModel)
 
 	// Unknown id.
 	_, err = env.svc.Model(ctx, "u1", "nope-nope-abc123", "web")
 	assert.ErrorIs(t, err, ErrNotFound)
+
+	// A bare slug ("hey-live-ninja" from pre-M6 settings) resolves to the
+	// user's trained item whose normalized phrase slugs to it.
+	lw, err := env.svc.Create(ctx, "u1", "Hey Live Ninja", "")
+	require.NoError(t, err)
+	env.putManifests(t, lw.ID)
+	env.svc.cache.invalidate("u1")
+	man, err := env.svc.Model(ctx, "u1", "hey-live-ninja", "web")
+	require.NoError(t, err)
+	assert.Equal(t, lw.ID, man.ID)
+	assert.Equal(t, "hey live ninja", man.Phrase)
 
 	// Invalid platform value.
 	w, err := env.svc.Create(ctx, "u1", "hey parrot", "")
@@ -691,6 +707,6 @@ func TestDeleteCancelsJobAndPurgesArtifacts(t *testing.T) {
 	assert.Nil(t, got)
 
 	// Builtins are not deletable; absent ids 404.
-	assert.ErrorIs(t, env.svc.Delete(ctx, "u1", "hey-live-ninja"), ErrBuiltinModel)
+	assert.ErrorIs(t, env.svc.Delete(ctx, "u1", "hey-jarvis"), ErrBuiltinModel)
 	assert.ErrorIs(t, env.svc.Delete(ctx, "u1", w.ID), ErrNotFound)
 }

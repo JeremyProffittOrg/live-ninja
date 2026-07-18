@@ -90,7 +90,10 @@ Globals:
     Environment:
       Variables:
         TABLE_NAME: !Ref Table
-        LOG_LEVEL: info
+        # debug: verbose request/response logging on every function (owner
+        # request 2026-07-18) — log groups have short retention (5d), so the
+        # extra volume is cheap.
+        LOG_LEVEL: debug
 
 Conditions:
   # M12: gate the nova-bridge ECS TaskDefinition + Service on the image being
@@ -1753,7 +1756,7 @@ Resources:
             - Name: BEDROCK_REGION
               Value: us-east-1
             - Name: LOG_LEVEL
-              Value: info
+              Value: debug
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -2186,198 +2189,6 @@ Resources:
           - complaint
         SnsDestination:
           TopicARN: !Ref OpsTopic
-
-  TableReadCapacityAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: live-ninja-table-read-capacity
-      AlarmDescription: DynamoDB live-ninja consumed read capacity exceeds 50000 units in 5 minutes (possible Scan / runaway reads).
-      Namespace: AWS/DynamoDB
-      MetricName: ConsumedReadCapacityUnits
-      Dimensions:
-        - Name: TableName
-          Value: !Ref Table
-      Statistic: Sum
-      Period: 300
-      EvaluationPeriods: 1
-      Threshold: 50000
-      ComparisonOperator: GreaterThanThreshold
-      TreatMissingData: notBreaching
-      AlarmActions:
-        - !Ref OpsTopic
-
-  TableWriteCapacityAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: live-ninja-table-write-capacity
-      AlarmDescription: DynamoDB live-ninja consumed write capacity exceeds 25000 units in 5 minutes.
-      Namespace: AWS/DynamoDB
-      MetricName: ConsumedWriteCapacityUnits
-      Dimensions:
-        - Name: TableName
-          Value: !Ref Table
-      Statistic: Sum
-      Period: 300
-      EvaluationPeriods: 1
-      Threshold: 25000
-      ComparisonOperator: GreaterThanThreshold
-      TreatMissingData: notBreaching
-      AlarmActions:
-        - !Ref OpsTopic
-
-  TableThrottleAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: live-ninja-table-throttles
-      AlarmDescription: DynamoDB live-ninja read or write throttle events detected.
-      Metrics:
-        - Id: throttles
-          Label: TotalThrottleEvents
-          Expression: readThrottles + writeThrottles
-          ReturnData: true
-        - Id: readThrottles
-          ReturnData: false
-          MetricStat:
-            Metric:
-              Namespace: AWS/DynamoDB
-              MetricName: ReadThrottleEvents
-              Dimensions:
-                - Name: TableName
-                  Value: !Ref Table
-            Period: 300
-            Stat: Sum
-        - Id: writeThrottles
-          ReturnData: false
-          MetricStat:
-            Metric:
-              Namespace: AWS/DynamoDB
-              MetricName: WriteThrottleEvents
-              Dimensions:
-                - Name: TableName
-                  Value: !Ref Table
-            Period: 300
-            Stat: Sum
-      EvaluationPeriods: 1
-      Threshold: 1
-      ComparisonOperator: GreaterThanOrEqualToThreshold
-      TreatMissingData: notBreaching
-      AlarmActions:
-        - !Ref OpsTopic
-
-  WebFunctionErrorsAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: live-ninja-web-errors
-      AlarmDescription: live-ninja-web Lambda errors >= 5 in 5 minutes.
-      Namespace: AWS/Lambda
-      MetricName: Errors
-      Dimensions:
-        - Name: FunctionName
-          Value: !Ref WebFunction
-      Statistic: Sum
-      Period: 300
-      EvaluationPeriods: 1
-      Threshold: 5
-      ComparisonOperator: GreaterThanOrEqualToThreshold
-      TreatMissingData: notBreaching
-      AlarmActions:
-        - !Ref OpsTopic
-
-  # ---- M7 alarms ----
-  BrokerErrorsAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: live-ninja-broker-errors
-      AlarmDescription: live-ninja-realtime-broker Lambda errors >= 3 in 5 minutes (ephemeral-token mint / fallback / topic-extract failures).
-      Namespace: AWS/Lambda
-      MetricName: Errors
-      Dimensions:
-        - Name: FunctionName
-          Value: !Ref RealtimeBrokerFunction
-      Statistic: Sum
-      Period: 300
-      EvaluationPeriods: 1
-      Threshold: 3
-      ComparisonOperator: GreaterThanOrEqualToThreshold
-      TreatMissingData: notBreaching
-      AlarmActions:
-        - !Ref OpsTopic
-
-  AuthorizerErrorsAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: live-ninja-authorizer-errors
-      AlarmDescription: live-ninja-authorizer Lambda errors >= 5 in 5 minutes — auth outage risk; every API route depends on this function.
-      Namespace: AWS/Lambda
-      MetricName: Errors
-      Dimensions:
-        - Name: FunctionName
-          Value: !Ref AuthorizerFunction
-      Statistic: Sum
-      Period: 300
-      EvaluationPeriods: 1
-      Threshold: 5
-      ComparisonOperator: GreaterThanOrEqualToThreshold
-      TreatMissingData: notBreaching
-      AlarmActions:
-        - !Ref OpsTopic
-
-  EmailQueueDepthAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: live-ninja-email-queue-depth
-      AlarmDescription: live-ninja-email queue backlog > 100 visible messages — email-dispatch is stalled or SES is rejecting sends.
-      Namespace: AWS/SQS
-      MetricName: ApproximateNumberOfMessagesVisible
-      Dimensions:
-        - Name: QueueName
-          Value: !GetAtt EmailQueue.QueueName
-      Statistic: Maximum
-      Period: 300
-      EvaluationPeriods: 1
-      Threshold: 100
-      ComparisonOperator: GreaterThanThreshold
-      TreatMissingData: notBreaching
-      AlarmActions:
-        - !Ref OpsTopic
-
-  EmailDlqAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: live-ninja-email-dlq
-      AlarmDescription: live-ninja-email-dlq has >= 1 message — an email job exhausted its 5 receives and was dead-lettered.
-      Namespace: AWS/SQS
-      MetricName: ApproximateNumberOfMessagesVisible
-      Dimensions:
-        - Name: QueueName
-          Value: !GetAtt EmailDeadLetterQueue.QueueName
-      Statistic: Maximum
-      Period: 300
-      EvaluationPeriods: 1
-      Threshold: 1
-      ComparisonOperator: GreaterThanOrEqualToThreshold
-      TreatMissingData: notBreaching
-      AlarmActions:
-        - !Ref OpsTopic
-
-  HttpApi5xxAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: live-ninja-http-5xx
-      AlarmDescription: HTTP API 5xx responses >= 10 in 5 minutes.
-      Namespace: AWS/ApiGateway
-      MetricName: 5xx
-      Dimensions:
-        - Name: ApiId
-          Value: !Ref HttpApi
-      Statistic: Sum
-      Period: 300
-      EvaluationPeriods: 1
-      Threshold: 10
-      ComparisonOperator: GreaterThanOrEqualToThreshold
-      TreatMissingData: notBreaching
-      AlarmActions:
-        - !Ref OpsTopic
 
   # M7: single-pane ops dashboard. Custom metrics are EMF-emitted
   # (internal/observ) so SEARCH expressions are used for them — they match
