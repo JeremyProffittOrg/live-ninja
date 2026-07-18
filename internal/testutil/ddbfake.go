@@ -12,6 +12,7 @@
 //	Update:         SET a = :v, b = :w [ADD c :n]
 //	Key condition:  pk = :pk [AND sk = :sk | AND begins_with(sk, :pfx)]
 //	Filter:         a = :v (AND-joined)
+//	Pagination:     ExclusiveStartKey / LastEvaluatedKey on the sort attr
 //
 // It is deliberately NOT a general DynamoDB emulator — an unsupported
 // expression fails the test loudly instead of silently passing.
@@ -482,8 +483,27 @@ func (f *FakeDynamo) Query(ctx context.Context, params *dynamodb.QueryInput, opt
 			matched[i], matched[j] = matched[j], matched[i]
 		}
 	}
+	// Pagination: ExclusiveStartKey positions strictly past the given sort
+	// value (in the active scan direction), and LastEvaluatedKey is
+	// returned whenever Limit truncated the result — the two halves of the
+	// cursor round-trip ListDeliverables and friends depend on.
+	if len(params.ExclusiveStartKey) > 0 {
+		start := sVal(params.ExclusiveStartKey[sortAttr])
+		forward := params.ScanIndexForward == nil || *params.ScanIndexForward
+		kept := matched[:0]
+		for _, it := range matched {
+			v := sVal(it[sortAttr])
+			if (forward && v > start) || (!forward && v < start) {
+				kept = append(kept, it)
+			}
+		}
+		matched = kept
+	}
+	var lastKey map[string]types.AttributeValue
 	if params.Limit != nil && len(matched) > int(*params.Limit) {
 		matched = matched[:int(*params.Limit)]
+		last := matched[len(matched)-1]
+		lastKey = map[string]types.AttributeValue{"pk": last["pk"], "sk": last["sk"]}
 	}
-	return &dynamodb.QueryOutput{Items: matched, Count: int32(len(matched))}, nil
+	return &dynamodb.QueryOutput{Items: matched, Count: int32(len(matched)), LastEvaluatedKey: lastKey}, nil
 }

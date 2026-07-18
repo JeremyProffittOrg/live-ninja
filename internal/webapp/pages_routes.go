@@ -60,6 +60,7 @@ var pageMetas = map[string]pageMeta{
 	"pages/landing":      {Title: "Live Ninja — your private realtime voice assistant", Path: "/"},
 	"pages/conversation": {Title: "Conversation — Live Ninja", Path: "/conversation"},
 	"pages/settings":     {Title: "Settings — Live Ninja", Path: "/settings"},
+	"pages/downloads":    {Title: "Downloads — Live Ninja", Path: "/downloads"},
 	"pages/error":        {Title: "Live Ninja"},
 }
 
@@ -172,14 +173,16 @@ type errorPageView struct {
 }
 
 // RegisterPageRoutes mounts the SSR page routes that pages_routes.go owns:
-// GET / (landing, or redirect to /conversation when signed in) and
-// GET /conversation (redirect to / when signed out). GET /settings is
-// registered by RegisterSettingsRoutes (settings_routes.go) because its
-// handler SSRs the settings document. Must be registered after
-// ExtractAuthContext so the cookie/JWT auth gate sees the request context.
+// GET / (landing, or redirect to /conversation when signed in),
+// GET /conversation and GET /downloads (both redirect to / when signed
+// out). GET /settings is registered by RegisterSettingsRoutes
+// (settings_routes.go) because its handler SSRs the settings document.
+// Must be registered after ExtractAuthContext so the cookie/JWT auth gate
+// sees the request context.
 func RegisterPageRoutes(app *fiber.App, deps *Deps) {
 	app.Get("/", handleLandingPage(deps))
 	app.Get("/conversation", handleConversationPage(deps))
+	app.Get("/downloads", handleDownloadsPage(deps))
 }
 
 // webPageUser resolves the signed-in user for a plain browser page
@@ -211,6 +214,21 @@ func handleConversationPage(deps *Deps) fiber.Handler {
 		}
 		c.Set(fiber.HeaderCacheControl, "no-cache")
 		return c.Render("pages/conversation", nil)
+	}
+}
+
+// handleDownloadsPage serves the M9 Download Center shell (FR-DLV-05).
+// The deliverable list itself is fetched client-side by downloads.mjs
+// via GET /api/v1/deliverables (Query-backed, paginated) — the page
+// renders a real loading state on first paint, so no SSR data island is
+// needed here (unlike /settings, which SSRs its document by spec §3.2).
+func handleDownloadsPage(deps *Deps) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if webPageUser(c, deps) == "" {
+			return c.Redirect("/", fiber.StatusFound)
+		}
+		c.Set(fiber.HeaderCacheControl, "no-cache")
+		return c.Render("pages/downloads", nil)
 	}
 }
 

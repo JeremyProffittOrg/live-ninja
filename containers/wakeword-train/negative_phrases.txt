@@ -1,0 +1,73 @@
+# Adversarial negative phrases for wake-word training (one per line, # = comment).
+# Spoken by the same synthetic voices as the positives so the detector head learns
+# the phrase, not the TTS timbre. train.py additionally derives near-miss negatives
+# from the target phrase itself (single words, dropped last word, shuffled order).
+# Everyday commands and questions a device actually overhears:
+what time is it
+turn on the lights
+turn off the lights
+set a timer for ten minutes
+play some music
+stop the music
+what's the weather today
+is it going to rain
+remind me to call mom
+add milk to the shopping list
+how far is the airport
+open the garage door
+lock the front door
+turn up the volume
+turn down the volume
+next song please
+pause the movie
+resume playback
+good morning everyone
+good night see you tomorrow
+thank you very much
+no thank you
+yes please
+that sounds great
+i don't think so
+can you help me with this
+where are my keys
+what day is it tomorrow
+call me back later
+send a message to john
+read my notifications
+cancel the alarm
+snooze for five minutes
+what's on my calendar
+how do you spell necessary
+tell me a joke
+never mind forget it
+that's not what i meant
+let's go to the store
+dinner is almost ready
+the game starts at seven
+did you feed the dog
+close the window please
+it's cold in here
+warm it up a little
+switch to the news channel
+lower the thermostat
+raise the blinds
+who is at the door
+i'll be right back
+see you later
+have a good day
+# Phonetically busy fillers / common conversation fragments:
+hey everybody listen up
+okay let's get started
+hello how are you doing
+hi there nice to meet you
+hey wait a minute
+hold on a second
+listen to this song
+watch this video
+look at that
+over here right now
+come on let's go
+are you serious
+absolutely not
+maybe later tonight
+sounds good to me

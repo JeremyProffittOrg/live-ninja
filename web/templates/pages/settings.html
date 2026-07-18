@@ -31,8 +31,60 @@
              value="{{.WakeWord}}" data-selected-id="{{.WakeWord}}"
              aria-describedby="wakeWordHint">
       <ul class="ln-combobox-panel" id="wakeWordListbox" role="listbox" aria-label="Wake phrases" hidden></ul>
-      <p class="ln-hint" id="wakeWordHint">Pick from the built-in phrases. Training your own phrase arrives with the wake-word studio.</p>
+      <p class="ln-hint" id="wakeWordHint">Pick a built-in phrase, or train your own below.</p>
     </div>
+
+    <!-- ==================== wake-word-section:BEGIN ====================
+         M6 custom wake-word studio (FR-K02/K03), owned by the M6 web-UI
+         workstream — edit only inside these markers. settings.mjs's
+         matching marked block drives everything here: it reveals the
+         form when GET /api/v1/wakewords responds (training backend
+         deployed), renders the user's custom phrases as status chips,
+         polls pending/training jobs, and swaps ready models into the
+         combobox catalog above. -->
+    <style>
+      /* Scoped styles for the studio (style-src allows inline styles;
+         app.css is shared with concurrent workstreams, so page-local
+         additions live here). */
+      .ww-studio { margin-top: var(--ln-sp-4); }
+      .ww-form-row { display: flex; gap: var(--ln-sp-3); flex-wrap: wrap; align-items: flex-start; }
+      .ww-form-row .ln-input { flex: 1 1 240px; }
+      .ww-chips { display: flex; flex-wrap: wrap; gap: var(--ln-sp-2); margin-top: var(--ln-sp-3); }
+      .ww-chip {
+        display: inline-flex; align-items: center; gap: var(--ln-sp-2);
+        padding: 6px 12px; border-radius: var(--ln-r-pill);
+        border: 1px solid var(--ln-border-strong); background: var(--ln-input-bg);
+        font-size: var(--ln-fs-sm); font-weight: 600;
+      }
+      .ww-chip .ln-badge { font-size: 11px; }
+      .ww-badge--warn { background: var(--ln-warn-tint); color: var(--ln-warn-ink); border-color: currentColor; }
+      .ww-chip .ln-btn { min-height: 28px; padding: 0 10px; font-size: var(--ln-fs-xs); }
+    </style>
+
+    <div class="ww-studio" id="wwStudio" hidden>
+      <div class="ln-field">
+        <label for="wwPhraseInput">Train your own phrase</label>
+        <div class="ww-form-row">
+          {{- /* Genuinely open-ended input (a novel phrase that does not
+                 exist anywhere yet) — the one case free text is correct.
+                 Everything selectable stays in the combobox above. */}}
+          <input class="ln-input" id="wwPhraseInput" type="text" maxlength="48"
+                 autocomplete="off" spellcheck="false"
+                 placeholder="e.g. Hey Computer"
+                 aria-describedby="wwPhraseHint wwPhraseError">
+          <button class="ln-btn ln-btn--primary" id="wwTrainBtn" type="button">Start training</button>
+        </div>
+        <p class="ln-hint" id="wwPhraseHint">2–4 words, letters only. Training takes a few minutes on our servers
+          (openWakeWord — works in this browser and the Android app; up to 3 requests per day).
+          We’ll email you when it’s ready.</p>
+        <p class="ln-error-text" id="wwPhraseError" role="alert" hidden></p>
+      </div>
+      <div id="wwChipsWrap" hidden>
+        <span class="ln-label">Your custom phrases</span>
+        <div class="ww-chips" id="wwChips" role="list" aria-label="Your custom wake phrases"></div>
+      </div>
+    </div>
+    <!-- ==================== wake-word-section:END ==================== -->
 
     <fieldset class="ln-fieldset">
       <legend>Wake engine</legend>

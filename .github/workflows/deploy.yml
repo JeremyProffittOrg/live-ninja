@@ -40,8 +40,105 @@ jobs:
       - name: go test
         run: go test ./...
 
+  # Path filter: the wakeword-train container image is only rebuilt when
+  # containers/** changes (or on manual dispatch, as a recovery lever).
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      containers: ${{ steps.filter.outputs.containers }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect changed paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            containers:
+              - 'containers/**'
+
+  # Builds containers/wakeword-train for linux/arm64 and pushes :latest + :<sha>
+  # to the live-ninja-wakeword-train ECR repo. Runs BEFORE deploy so a template
+  # change and its matching image land together. Bootstrap ordering: the ECR
+  # repo itself is created by the SAM template, so on the very first run the
+  # push target does not exist yet - in that case this job only *builds* (to
+  # validate the Dockerfile) and the push-wakeword-container-bootstrap job
+  # below pushes after deploy has created the repo.
+  build-wakeword-container:
+    needs: [test, changes]
+    if: needs.changes.outputs.containers == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # required for OIDC
+      contents: read
+    outputs:
+      pushed: ${{ steps.build.outputs.pushed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Tolerate a dispatch run from before containers/ exists in the tree.
+      - name: Check container source present
+        id: precheck
+        run: |
+          if [ -f containers/wakeword-train/Dockerfile ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "containers/wakeword-train/Dockerfile not in tree; nothing to build"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure AWS credentials (OIDC)
+        if: steps.precheck.outputs.present == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-live-ninja-container-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up QEMU (arm64 emulation)
+        if: steps.precheck.outputs.present == 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.precheck.outputs.present == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Amazon ECR
+        if: steps.precheck.outputs.present == 'true'
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build (and push when the ECR repo exists)
+        if: steps.precheck.outputs.present == 'true'
+        id: build
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -eu
+          IMAGE="$REGISTRY/live-ninja-wakeword-train"
+          if aws ecr describe-repositories --repository-names live-ninja-wakeword-train >/dev/null 2>&1; then
+            docker buildx build --platform linux/arm64 \
+              -t "$IMAGE:latest" -t "$IMAGE:${GITHUB_SHA}" \
+              --push containers/wakeword-train
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ECR repo not created yet (first deploy); build-only, push happens post-deploy"
+            docker buildx build --platform linux/arm64 containers/wakeword-train
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+          fi
+
   deploy:
-    needs: test
+    # build-wakeword-container is usually skipped (no containers/** change);
+    # deploy must still run then - but never after a failed test or container build.
+    needs: [test, build-wakeword-container]
+    if: >-
+      always() &&
+      needs.test.result == 'success' &&
+      contains(fromJSON('["success", "skipped"]'), needs.build-wakeword-container.result)
     runs-on: ubuntu-latest
     permissions:
       id-token: write # required for OIDC
@@ -159,3 +256,48 @@ jobs:
           done
           echo "smoke test did not pass after retries (tolerated pre-DNS-propagation)"
           exit 1
+
+  # First-deploy bootstrap only: when build-wakeword-container found no ECR repo
+  # (created by the SAM template in the deploy job above), rebuild and push now
+  # that the repo exists. Skipped on every subsequent run (pushed == 'true' or
+  # the container job didn't run at all).
+  push-wakeword-container-bootstrap:
+    needs: [build-wakeword-container, deploy]
+    if: >-
+      always() &&
+      needs.deploy.result == 'success' &&
+      needs.build-wakeword-container.outputs.pushed == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # required for OIDC
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-live-ninja-container-boot-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up QEMU (arm64 emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push wakeword-train image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -eu
+          IMAGE="$REGISTRY/live-ninja-wakeword-train"
+          docker buildx build --platform linux/arm64 \
+            -t "$IMAGE:latest" -t "$IMAGE:${GITHUB_SHA}" \
+            --push containers/wakeword-train

@@ -30,11 +30,13 @@ import (
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	lambdasvc "github.com/aws/aws-sdk-go-v2/service/lambda"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/gofiber/fiber/v2"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
+	"github.com/JeremyProffittOrg/live-ninja/internal/deliv"
 	"github.com/JeremyProffittOrg/live-ninja/internal/observ"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	"github.com/JeremyProffittOrg/live-ninja/internal/webapp"
@@ -97,6 +99,8 @@ func main() {
 	webapp.RegisterAuthRoutes(app, deps)
 	webapp.RegisterAPIRoutes(app, deps)
 	webapp.RegisterSettingsRoutes(app, deps)
+	webapp.RegisterDeliverablesRoutes(app, deps)
+	webapp.RegisterWakewordRoutes(app, deps)
 	webapp.RegisterPageRoutes(app, deps)
 
 	// Catch-all: HTML error page for browser navigations, JSON 404 for
@@ -165,7 +169,8 @@ func buildDeps(ctx context.Context, cfg config.App, logger *slog.Logger) (*webap
 		return nil, err
 	}
 
-	return &webapp.Deps{
+	lambdaClient := lambdasvc.NewFromConfig(awsCfg)
+	deps := &webapp.Deps{
 		Store:       st,
 		LWA:         lwa,
 		Signer:      signer,
@@ -175,8 +180,34 @@ func buildDeps(ctx context.Context, cfg config.App, logger *slog.Logger) (*webap
 		BrokerFn:    os.Getenv("BROKER_FUNCTION_NAME"),
 		SQSEmailURL: cfg.EmailQueueURL,
 		SQS:         sqs.NewFromConfig(awsCfg),
-		Lambda:      lambdasvc.NewFromConfig(awsCfg),
-	}, nil
+		Lambda:      lambdaClient,
+	}
+
+	// M9 deliverables service: only wired when the dedicated bucket is
+	// configured (DELIVERABLES_BUCKET + ZIPPER_FUNCTION_NAME env, set by
+	// template.yaml). Absent config degrades cleanly: deliverables routes
+	// answer 503 and the deliverable_* tools report not_configured.
+	if bucket := os.Getenv("DELIVERABLES_BUCKET"); bucket != "" {
+		s3c := s3.NewFromConfig(awsCfg)
+		svc, err := deliv.New(deliv.Config{
+			S3:           s3c,
+			Presign:      s3.NewPresignClient(s3c),
+			Lambda:       lambdaClient,
+			Store:        st,
+			Bucket:       bucket,
+			ZipperFn:     os.Getenv("ZIPPER_FUNCTION_NAME"),
+			EnqueueEmail: deps.EnqueueEmail,
+			Log:          logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		deps.Deliv = svc
+	} else {
+		logger.Warn("deliverables store disabled (DELIVERABLES_BUCKET not set)")
+	}
+
+	return deps, nil
 }
 
 func healthzHandler(c *fiber.Ctx) error {

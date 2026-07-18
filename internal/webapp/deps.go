@@ -19,6 +19,7 @@ import (
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
+	"github.com/JeremyProffittOrg/live-ninja/internal/deliv"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 )
 
@@ -62,6 +63,12 @@ type Deps struct {
 
 	SQS    SQSSendAPI
 	Lambda LambdaInvokeAPI
+
+	// Deliv is the M9 deliverables service (S3-backed Download Center;
+	// internal/deliv). nil when DELIVERABLES_BUCKET is unset — the
+	// deliverables routes then answer 503 and the deliverable_* tools
+	// report not_configured.
+	Deliv *deliv.Service
 }
 
 // emailMessage mirrors cmd/email-dispatch's EmailMessage — the SQS body

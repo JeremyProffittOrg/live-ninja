@@ -36,6 +36,28 @@
 
     <string name="files_empty_title">No files yet</string>
     <string name="files_empty_body">Deliverables and uploads from your conversations will appear here.</string>
+    <string name="files_title">Files</string>
+    <string name="files_refresh">Refresh files</string>
+    <string name="files_error_title">Couldn\'t load your files</string>
+    <string name="files_error_body">Check your connection and try again.</string>
+    <string name="files_retry">Try again</string>
+    <string name="files_load_more">Load more</string>
+    <string name="files_status_pending">Preparing…</string>
+    <string name="files_selected_count">%1$d selected</string>
+    <string name="files_action_zip">Zip selected files</string>
+    <string name="files_action_share">Share download links</string>
+    <string name="files_action_delete">Delete</string>
+    <string name="files_action_clear_selection">Clear selection</string>
+    <string name="files_share_chooser_title">Share download link</string>
+    <string name="files_download_started">Download started — check your notifications.</string>
+    <string name="files_download_failed">Download failed. Check your connection and try again.</string>
+    <string name="files_zip_requested">Zip requested — the bundle will appear here shortly.</string>
+    <string name="files_zip_failed">Couldn\'t create the zip. Try again.</string>
+    <string name="files_deleted">Deleted.</string>
+    <string name="files_delete_failed">Some files couldn\'t be deleted. Pull refresh and try again.</string>
+    <string name="files_share_failed">Couldn\'t create share links. Try again.</string>
+    <string name="files_delete_confirm_title">Delete files?</string>
+    <string name="files_delete_confirm_body">This permanently deletes %1$d file(s) from your account on every device. Downloads you already saved are not affected.</string>
 
     <string name="assistant_service_label">Live Ninja assistant</string>
     <string name="recognition_service_label">Live Ninja speech service</string>
@@ -137,6 +159,27 @@
     <string name="settings_engine_porcupine_unavailable">Not included in this build — requires a Picovoice access key</string>
     <string name="settings_sensitivity_label">Sensitivity — %1$d%%</string>
     <string name="settings_sensitivity_hint">Higher reacts to quieter or less exact speech but may trigger on similar-sounding words.</string>
+    <string name="settings_custom_wake_title">Custom wake phrase</string>
+    <string name="settings_custom_wake_body">Train your own phrase. Training runs in the cloud and usually takes a few minutes — you\'ll also get an email when it\'s ready. Up to 3 requests per day.</string>
+    <string name="settings_custom_wake_label">New wake phrase</string>
+    <string name="settings_custom_wake_hint">2–6 words, letters only — e.g. “hey computer”</string>
+    <string name="settings_custom_wake_invalid">Use 3–40 letters (spaces, apostrophes and hyphens allowed), up to 6 words.</string>
+    <string name="settings_custom_wake_submit">Request training</string>
+    <string name="settings_custom_wake_status_pending">Queued for training…</string>
+    <string name="settings_custom_wake_status_training">Training — usually a few minutes…</string>
+    <string name="settings_custom_wake_status_ready">Ready to use</string>
+    <string name="settings_custom_wake_status_failed">Training failed</string>
+    <string name="settings_custom_wake_use">Use this phrase</string>
+    <string name="settings_custom_wake_dismiss">Dismiss</string>
+    <string name="settings_wake_model_ready">Wake model downloaded — now listening for the new phrase.</string>
+    <string name="settings_wake_model_signed_out">Sign in to download wake models. The built-in phrase keeps working.</string>
+    <string name="settings_wake_model_failed">Couldn\'t fetch this phrase\'s model — the previous model keeps listening.</string>
+    <string name="settings_wake_train_requested">Training requested. You can keep using the app — we\'ll let you know when it\'s ready.</string>
+    <string name="settings_wake_train_ready">Your custom wake phrase is trained and ready.</string>
+    <string name="settings_wake_train_failed">Training failed. Try a different phrase.</string>
+    <string name="settings_wake_train_limit">Daily training limit reached (3 per day). Try again tomorrow.</string>
+    <string name="settings_wake_train_invalid">That phrase was rejected — try a different one.</string>
+    <string name="settings_wake_train_request_failed">Couldn\'t request training. Check your connection and try again.</string>
 
     <string name="settings_section_conversation">Conversation</string>
     <string name="settings_persona_label">Assistant persona</string>

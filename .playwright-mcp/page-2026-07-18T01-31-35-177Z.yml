@@ -1,0 +1,51 @@
+- generic [ref=e2]:
+  - navigation "Primary" [ref=e3]:
+    - generic [ref=e4]: Live Ninja
+    - link "Features" [ref=e7] [cursor=pointer]:
+      - /url: "#features"
+    - link "Sign in" [ref=e8] [cursor=pointer]:
+      - /url: "#login"
+  - generic [ref=e10]:
+    - generic [ref=e11]: Voice-first AI assistant
+    - heading "Just say \"Hey Live Ninja.\"" [level=1] [ref=e12]: Just say"Hey Live Ninja."
+    - paragraph [ref=e13]: A calm, capable voice assistant powered by GPT-Realtime — always listening for its wake phrase, never listening for anything else. Ask it to check your calendar, control your smart home, or think through a problem out loud.
+    - generic [ref=e14]: 🎙 "Hey Live Ninja, what's on my calendar today?"
+    - generic [ref=e15]:
+      - link "Continue with Amazon" [ref=e16] [cursor=pointer]:
+        - /url: /auth/lwa/login
+      - link "See how it works" [ref=e18] [cursor=pointer]:
+        - /url: "#features"
+  - region "Features" [ref=e26]:
+    - generic [ref=e27]:
+      - generic [ref=e28]: ⚡
+      - heading "Realtime, natural conversation" [level=3] [ref=e29]
+      - paragraph [ref=e30]: Low-latency GPT-Realtime voice, not a request/response chatbot — interrupt it, change your mind, keep talking.
+    - generic [ref=e31]:
+      - generic [ref=e32]: 🏠
+      - heading "Works where you already are" [level=3] [ref=e33]
+      - paragraph [ref=e34]: Android, the web, and your M5Stack desktop console — one account, one memory, everywhere you speak.
+    - generic [ref=e35]:
+      - generic [ref=e36]: 🔒
+      - heading "Private by default" [level=3] [ref=e37]
+      - paragraph [ref=e38]: Audio is processed for your request only. Wake-word detection runs on-device — nothing streams until it hears you.
+  - region "Sign in" [ref=e39]:
+    - generic [ref=e40]:
+      - generic [ref=e41]: Secure sign-in
+      - heading "Sign in to Live Ninja" [level=2] [ref=e42]
+      - paragraph [ref=e43]: One tap with the Amazon account you already use. We never see or store your Amazon password.
+      - link "Continue with Amazon" [ref=e44] [cursor=pointer]:
+        - /url: /auth/lwa/login
+        - generic [ref=e45]: 🛒
+      - note [ref=e47]:
+        - generic [ref=e51]:
+          - text: You'll stay signed in on this device for
+          - strong [ref=e52]: 30 days
+          - text: . You can sign out any time from Settings.
+      - paragraph [ref=e53]: By continuing you agree to Live Ninja's Terms of Service and Privacy Policy. Login with Amazon is provided by Amazon and subject to Amazon's privacy notice.
+  - generic [ref=e54]:
+    - generic [ref=e55]: 🔐 OAuth via Login with Amazon
+    - generic [ref=e56]: 🎙 On-device wake-word
+    - generic [ref=e57]: 🧠 GPT-Realtime voice engine
+    - generic [ref=e58]: 📶 Android · Web · M5Stack
+  - contentinfo [ref=e59]:
+    - generic [ref=e60]: © 2026 Live Ninja. Not affiliated with Amazon.com, Inc.

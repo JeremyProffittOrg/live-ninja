@@ -7,7 +7,7 @@
 SHELL := /bin/sh
 
 # Logical function name -> ./cmd/<name> directory (per shared spec).
-FUNCTIONS := web authorizer realtime-broker iot-ingest usage-rollup email-dispatch
+FUNCTIONS := web authorizer realtime-broker iot-ingest usage-rollup email-dispatch deliverables-zipper shadow-ingest
 
 .PHONY: all build test vet lint clean
 

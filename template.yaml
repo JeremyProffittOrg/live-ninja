@@ -21,6 +21,13 @@ Parameters:
     Type: String
     Default: gpt-realtime
     Description: OpenAI Realtime model id the realtime broker mints client secrets for.
+  WakewordTrainImageTag:
+    Type: String
+    Default: latest
+    Description: >-
+      Image tag of the wakeword-train container the Batch job definition references.
+      The deploy workflow pushes both :latest and :<git sha>; default tracks :latest
+      so a container push alone (no template change) is picked up by the next job.
 
 Globals:
   Function:
@@ -83,6 +90,16 @@ Resources:
           SCHEDULER_GROUP: !Ref SchedulerGroup
           SCHEDULER_ROLE_ARN: !GetAtt SchedulerRole.Arn
           OWNER_EMAIL: proffitt.jeremy@gmail.com
+          # M6/M9 (wake word training + deliverables). No IOT_DATA_ENDPOINT env:
+          # the app resolves the IoT data-plane endpoint at runtime via a cached
+          # iot:DescribeEndpoint call (permission granted below) instead of a
+          # CloudFormation custom resource — deliberate, keeps the stack free of
+          # custom-resource Lambdas.
+          WAKEWORDS_BUCKET: !Ref WakewordsBucket
+          DELIVERABLES_BUCKET: !Ref DeliverablesBucket
+          BATCH_JOB_QUEUE: !Ref WakewordTrainJobQueue
+          BATCH_JOB_DEFINITION: !Ref WakewordTrainJobDefinition
+          ZIPPER_FUNCTION_NAME: !Ref DeliverablesZipperFunction
       Events:
         CatchAll:
           Type: HttpApi
@@ -169,6 +186,85 @@ Resources:
               Condition:
                 StringEquals:
                   iam:PassedToService: scheduler.amazonaws.com
+            # ---- M6: wake-word training (AWS Batch) ----
+            - Sid: WakewordTrainSubmit
+              Effect: Allow
+              Action:
+                - batch:SubmitJob
+              Resource:
+                # Job-definition ARN without the revision suffix so newer
+                # revisions stay submittable without a policy update.
+                - !Ref WakewordTrainJobQueue
+                - !Sub "arn:${AWS::Partition}:batch:${AWS::Region}:${AWS::AccountId}:job-definition/live-ninja-wakeword-train*"
+            - Sid: WakewordTrainDescribe
+              Effect: Allow
+              Action:
+                - batch:DescribeJobs
+              # batch:DescribeJobs does not support resource-level permissions.
+              Resource: "*"
+            - Sid: WakewordModelsRw
+              Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource:
+                # Model layout per contracts/wakeword-manifest.md:
+                # wakewords/<wwId>/<platform>/model.onnx + manifest.json
+                - !Sub "${WakewordsBucket.Arn}/wakewords/*"
+            - Sid: WakewordModelsList
+              Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource:
+                - !GetAtt WakewordsBucket.Arn
+              Condition:
+                StringLike:
+                  s3:prefix: "wakewords/*"
+            # ---- M6: settings fan-out to the M5Stack via IoT named shadow
+            # "config" (contracts/shadow.md). Shadow actions are resourced on
+            # the Thing ARN; the "config" shadow name is enforced in code
+            # (there is no reliable IAM condition key for named shadows).
+            - Sid: ConfigShadowRw
+              Effect: Allow
+              Action:
+                - iot:GetThingShadow
+                - iot:UpdateThingShadow
+              Resource:
+                - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:thing/*"
+            # Runtime discovery of the account's IoT data-plane (ATS) endpoint;
+            # called once per cold start and cached (replaces an IOT_DATA_ENDPOINT
+            # env / CFN custom resource). No resource-level support.
+            - Sid: IotEndpointDiscovery
+              Effect: Allow
+              Action:
+                - iot:DescribeEndpoint
+              Resource: "*"
+            # ---- M9: deliverables store ----
+            - Sid: DeliverablesRw
+              Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                # deliverables/<uid>/... — download handlers MUST additionally
+                # prefix-check deliverables/<uid>/ before presigning (api.md).
+                - !Sub "${DeliverablesBucket.Arn}/deliverables/*"
+            - Sid: DeliverablesList
+              Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource:
+                - !GetAtt DeliverablesBucket.Arn
+              Condition:
+                StringLike:
+                  s3:prefix: "deliverables/*"
+            - Sid: InvokeDeliverablesZipper
+              Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource:
+                - !GetAtt DeliverablesZipperFunction.Arn
 
   AuthorizerFunction:
     Type: AWS::Serverless::Function
@@ -253,6 +349,54 @@ Resources:
               Resource:
                 - !GetAtt Table.Arn
 
+  ShadowIngestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: live-ninja-shadow-ingest
+      Description: >-
+        IoT rule target (M6) - consumes named-shadow "config" update/accepted events and
+        folds device reported state back into DynamoDB (DEVICE# lastSeen/reportedVersion;
+        never downgrades the canonical SETTINGS# version - contracts/shadow.md).
+      CodeUri: .build/shadow-ingest/
+      Events:
+        ConfigShadowAccepted:
+          Type: IoTRule
+          Properties:
+            AwsIotSqlVersion: "2016-03-23"
+            # topic(3) is <thingName> in $aws/things/<thingName>/shadow/name/config/update/accepted
+            Sql: "SELECT topic(3) as thingName, * FROM '$aws/things/+/shadow/name/config/update/accepted'"
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Sid: TableReconcile
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+              Resource:
+                - !GetAtt Table.Arn
+                - !Sub "${Table.Arn}/index/*"
+            # Re-publish desired when a device reports a stale settingsVersion
+            # (self-healing push-down, contracts/shadow.md step 2/4). Named
+            # shadow "config" enforced in code; shadow actions resource on the
+            # Thing ARN.
+            - Sid: ConfigShadowRepublish
+              Effect: Allow
+              Action:
+                - iot:GetThingShadow
+                - iot:UpdateThingShadow
+              Resource:
+                - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:thing/*"
+            # Cached cold-start lookup of the IoT data-plane endpoint (no
+            # IOT_DATA_ENDPOINT env / custom resource; no resource-level support).
+            - Sid: IotEndpointDiscovery
+              Effect: Allow
+              Action:
+                - iot:DescribeEndpoint
+              Resource: "*"
+
   UsageRollupFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -316,6 +460,51 @@ Resources:
                 - sqs:GetQueueAttributes
               Resource:
                 - !GetAtt EmailQueue.Arn
+
+  DeliverablesZipperFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: live-ninja-deliverables-zipper
+      Description: >-
+        Direct-invoke streaming zipper (M9) - invoked async by the web function's
+        deliverable_zip tool; streams S3 objects through archive/zip + io.Pipe into a
+        new deliverable object (no /tmp spooling of the full archive).
+      CodeUri: .build/deliverables-zipper/
+      MemorySize: 512
+      Timeout: 300
+      Environment:
+        Variables:
+          DELIVERABLES_BUCKET: !Ref DeliverablesBucket
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Sid: TableDeliverables
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+              Resource:
+                - !GetAtt Table.Arn
+                - !Sub "${Table.Arn}/index/*"
+            - Sid: DeliverablesRw
+              Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:AbortMultipartUpload
+              Resource:
+                - !Sub "${DeliverablesBucket.Arn}/deliverables/*"
+            - Sid: DeliverablesList
+              Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource:
+                - !GetAtt DeliverablesBucket.Arn
+              Condition:
+                StringLike:
+                  s3:prefix: "deliverables/*"
 
   # ------------------------------------------------------------------
   # DynamoDB single table
@@ -505,6 +694,31 @@ Resources:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
 
+  DeliverablesBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: live-ninja-deliverables-759775734231
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          # M9: deliverables are transient work products - expire after 180 days
+          # (locked decision) and clean up abandoned multipart zip uploads.
+          - Id: expire-deliverables-180d
+            Status: Enabled
+            ExpirationInDays: 180
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
   # ------------------------------------------------------------------
   # SQS email pipeline
   # ------------------------------------------------------------------
@@ -523,6 +737,234 @@ Resources:
     Properties:
       QueueName: live-ninja-email-dlq
       MessageRetentionPeriod: 1209600
+
+  # ------------------------------------------------------------------
+  # M6: wake-word training - ECR + AWS Batch on Fargate (arm64)
+  #
+  # openWakeWord training runs as a Batch job (2 vCPU / 8 GB, 20-min hard
+  # timeout). Concurrency <= 2 is enforced structurally: MaxvCpus 4 with
+  # 2-vCPU jobs means at most two run at once; the <=3/day/user quota is
+  # enforced by the web function before SubmitJob. Porcupine has NO
+  # server-side training path (needs a Picovoice account - locked
+  # decision); openWakeWord is the only engine trained here.
+  #
+  # Fargate requires VPC networking; the account has no stack VPC, so a
+  # minimal dedicated VPC (public subnets + IGW, NO NAT gateway - $0
+  # recurring) is created here. Jobs get a public IP for ECR pulls and
+  # S3/DynamoDB/SQS access; the security group allows egress only.
+  # ------------------------------------------------------------------
+  WakewordTrainRepo:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RepositoryName: live-ninja-wakeword-train
+      ImageTagMutability: MUTABLE
+      LifecyclePolicy:
+        LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"keep last 10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}'
+
+  BatchVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.42.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: live-ninja-batch
+
+  BatchInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: live-ninja-batch
+
+  BatchVpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref BatchVpc
+      InternetGatewayId: !Ref BatchInternetGateway
+
+  BatchPublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref BatchVpc
+      CidrBlock: 10.42.0.0/20
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: live-ninja-batch-a
+
+  BatchPublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref BatchVpc
+      CidrBlock: 10.42.16.0/20
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: live-ninja-batch-b
+
+  BatchRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref BatchVpc
+      Tags:
+        - Key: Name
+          Value: live-ninja-batch
+
+  BatchDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: BatchVpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref BatchRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref BatchInternetGateway
+
+  BatchSubnetARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref BatchPublicSubnetA
+      RouteTableId: !Ref BatchRouteTable
+
+  BatchSubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref BatchPublicSubnetB
+      RouteTableId: !Ref BatchRouteTable
+
+  BatchSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: live-ninja wakeword-train Fargate tasks - egress only, no ingress.
+      VpcId: !Ref BatchVpc
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+          Description: Allow all egress (ECR pull, S3/DynamoDB/SQS, TTS asset fetch).
+
+  WakewordTrainExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: live-ninja-wakeword-train-exec
+      Description: ECS task execution role for wakeword-train Batch jobs (ECR pull + CloudWatch logs).
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  WakewordTrainJobRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: live-ninja-wakeword-train-job
+      Description: >-
+        Task role assumed by the wakeword-train container: upload trained models +
+        manifests to the wakewords bucket, flip WAKEWORD# status in DynamoDB, and
+        enqueue the SES "ready" email.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: wakeword-train
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ModelUpload
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:AbortMultipartUpload
+                Resource:
+                  - !Sub "${WakewordsBucket.Arn}/wakewords/*"
+              - Sid: WakewordStatus
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:PutItem
+                Resource:
+                  - !GetAtt Table.Arn
+              - Sid: ReadyEmailEnqueue
+                Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource:
+                  - !GetAtt EmailQueue.Arn
+
+  WakewordTrainComputeEnv:
+    Type: AWS::Batch::ComputeEnvironment
+    Properties:
+      ComputeEnvironmentName: live-ninja-wakeword-train
+      Type: MANAGED
+      State: ENABLED
+      # No ServiceRole: Batch uses the AWSServiceRoleForBatch service-linked role.
+      ComputeResources:
+        Type: FARGATE
+        MaxvCpus: 4
+        Subnets:
+          - !Ref BatchPublicSubnetA
+          - !Ref BatchPublicSubnetB
+        SecurityGroupIds:
+          - !Ref BatchSecurityGroup
+
+  WakewordTrainJobQueue:
+    Type: AWS::Batch::JobQueue
+    Properties:
+      JobQueueName: live-ninja-wakeword-train
+      State: ENABLED
+      Priority: 1
+      ComputeEnvironmentOrder:
+        - Order: 1
+          ComputeEnvironment: !Ref WakewordTrainComputeEnv
+
+  WakewordTrainJobDefinition:
+    Type: AWS::Batch::JobDefinition
+    Properties:
+      JobDefinitionName: live-ninja-wakeword-train
+      Type: container
+      PlatformCapabilities:
+        - FARGATE
+      # 20-minute hard timeout (locked decision) - Batch kills the task after this.
+      Timeout:
+        AttemptDurationSeconds: 1200
+      RetryStrategy:
+        Attempts: 1
+      ContainerProperties:
+        Image: !Sub "${WakewordTrainRepo.RepositoryUri}:${WakewordTrainImageTag}"
+        ResourceRequirements:
+          - Type: VCPU
+            Value: "2"
+          - Type: MEMORY
+            Value: "8192"
+        RuntimePlatform:
+          CpuArchitecture: ARM64
+          OperatingSystemFamily: LINUX
+        NetworkConfiguration:
+          AssignPublicIp: ENABLED
+        ExecutionRoleArn: !GetAtt WakewordTrainExecutionRole.Arn
+        JobRoleArn: !GetAtt WakewordTrainJobRole.Arn
+        # Per-job parameters (wwId, userId, phrase) are passed by SubmitJob
+        # containerOverrides.environment from the web function.
+        Environment:
+          - Name: TABLE_NAME
+            Value: !Ref Table
+          - Name: WAKEWORDS_BUCKET
+            Value: !Ref WakewordsBucket
+          - Name: EMAIL_QUEUE_URL
+            Value: !Ref EmailQueue
 
   # ------------------------------------------------------------------
   # EventBridge Scheduler (set_timer / set_reminder one-shot schedules)
@@ -913,3 +1355,15 @@ Outputs:
   OpsTopicArn:
     Description: SNS ops/alerts topic ARN.
     Value: !Ref OpsTopic
+  DeliverablesBucketName:
+    Description: S3 bucket holding user deliverables (M9, 180-day lifecycle).
+    Value: !Ref DeliverablesBucket
+  WakewordTrainRepositoryUri:
+    Description: ECR repository URI the deploy workflow pushes the wakeword-train image to.
+    Value: !GetAtt WakewordTrainRepo.RepositoryUri
+  WakewordTrainJobQueueArn:
+    Description: AWS Batch job queue ARN for wake-word training submissions.
+    Value: !Ref WakewordTrainJobQueue
+  WakewordTrainJobDefinitionArn:
+    Description: AWS Batch job definition ARN (revision-pinned) for wake-word training.
+    Value: !Ref WakewordTrainJobDefinition

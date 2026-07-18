@@ -215,6 +215,10 @@ type Deps struct {
 
 	IoT IoTDataAPI // device_control publish
 
+	// Deliverables backs the deliverable_create/zip/deliver tools (M9);
+	// nil → those tools report not_configured (interface in deliverable.go).
+	Deliverables DeliverableService
+
 	HTTPClient *http.Client // get_weather / web_lookup; defaulted by NewRegistry
 
 	Reauthorize ReauthorizeFunc
@@ -265,6 +269,9 @@ func NewRegistry(deps *Deps) (*Registry, error) {
 		webLookupDefinition(),
 		rememberNoteDefinition(),
 		recallNoteDefinition(),
+		deliverableCreateDefinition(),
+		deliverableZipDefinition(),
+		deliverableDeliverDefinition(),
 	} {
 		if err := r.register(def); err != nil {
 			return nil, err

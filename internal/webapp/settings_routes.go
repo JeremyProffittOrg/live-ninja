@@ -21,11 +21,13 @@
 package webapp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +36,7 @@ import (
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
+	lnsync "github.com/JeremyProffittOrg/live-ninja/internal/sync"
 )
 
 // RegisterSettingsRoutes mounts the settings page and the settings/
@@ -225,13 +228,37 @@ func buildSettingsPageView(doc map[string]any) (*settingsPageView, error) {
 	return v, nil
 }
 
-// ---- GET /api/v1/settings ----
+// ---- GET /api/v1/settings[?since=<v>] ----
 
+// Without `since` the response is the bare canonical document
+// (unchanged M3 behavior). With `?since=<v>` this is the M6
+// reconciliation fetch (contracts/api.md): the poll-based fan-out for
+// web (30s + visibilitychange/focus) and Android (foreground +
+// wake-service 15-min tick) — the locked M6 decision replacing the
+// WebSocket/FCM push sketch (no Firebase account; no WebSocket API).
+// `{changed:false, version}` is the cheap steady-state answer;
+// `{changed:true, version, settings}` delivers the newer document.
 func handleGetSettings(deps *Deps) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		doc, err := deps.Store.GetSettings(c.Context(), UserID(c))
 		if err != nil {
 			return apiInternalError(c, deps, "get settings", err)
+		}
+
+		if sinceRaw := c.Query("since"); sinceRaw != "" {
+			since, perr := strconv.ParseInt(sinceRaw, 10, 64)
+			if perr != nil || since < 0 {
+				return apiBadRequest(c, "since must be a non-negative integer (the version you last saw)")
+			}
+			cur := lnsync.DocVersion(doc)
+			if cur <= since {
+				// Fast path: nothing newer than what the caller holds.
+				// (cur < since can only mean the caller is from the
+				// future/confused — it still gets changed:false plus the
+				// authoritative version so it can re-sync with a plain GET.)
+				return c.JSON(fiber.Map{"changed": false, "version": cur})
+			}
+			return c.JSON(fiber.Map{"changed": true, "version": cur, "settings": doc})
 		}
 		return c.JSON(doc)
 	}
@@ -273,7 +300,34 @@ func handlePutSettings(deps *Deps) fiber.Handler {
 		}
 
 		body.Settings["version"] = newVersion
+
+		// M6 fan-out: push the committed document to the user's M5Stack
+		// devices as IoT shadow desired state (the only real-push surface
+		// — web/Android reconcile via ?since polling, per the locked M6
+		// decisions documented in internal/sync). Best-effort by design:
+		// the write is already committed, and a fan-out failure must
+		// never turn a successful PUT into an error — offline devices
+		// converge through the shadow's persistence / their next poll.
+		publishSettingsShadow(c.Context(), deps, userID, body.Settings, newVersion)
+
 		return c.JSON(fiber.Map{"settings": body.Settings, "version": newVersion})
+	}
+}
+
+// publishSettingsShadow publishes the freshly-written settings document
+// as the `config` shadow desired state for every ACTIVE IoT-provisioned
+// device of the user (contracts/shadow.md; internal/sync). Declared as a
+// package var so tests can intercept the fan-out without IoT clients.
+var publishSettingsShadow = func(ctx context.Context, deps *Deps, userID string, doc map[string]any, version int64) {
+	pub, err := lnsync.SharedPublisher(ctx, deps.Log)
+	if err != nil {
+		deps.Log.Warn("settings: shadow publisher unavailable; skipping device fan-out",
+			"error", err.Error())
+		return
+	}
+	if err := pub.PublishDesired(ctx, deps.Store, userID, doc, version); err != nil {
+		deps.Log.Warn("settings: shadow desired fan-out failed",
+			"userId", userID, "error", err.Error())
 	}
 }
 

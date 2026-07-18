@@ -1,0 +1,6 @@
+[     740ms] [LOG] [Affirm Extension] Detection signal set in page context: true @ :0
+[     748ms] [LOG] [Sentry] Initialized for content context in production environment @ chrome-extension://cmfijaapnnkcglahdngmjnhkfnkihkbg/content.js:1
+[     748ms] [LOG] [Affirm Extension] Extension detection signal injected successfully @ chrome-extension://cmfijaapnnkcglahdngmjnhkfnkihkbg/content.js:1
+[     869ms] [WARNING] Error while trying to use the following icon from the Manifest: https://live.jeremy.ninja/static/icons/ninja.svg (Download error or resource isn't a valid image) @ https://live.jeremy.ninja/:0
+[   12545ms] [ERROR] Failed to load resource: the server responded with a status of 403 () @ https://live.jeremy.ninja/api/v1/me:0
+[   12595ms] [ERROR] Failed to load resource: the server responded with a status of 403 () @ https://live.jeremy.ninja/nonexistent-page-xyz:0

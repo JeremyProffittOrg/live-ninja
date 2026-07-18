@@ -409,6 +409,9 @@ func buildAPIToolsRegistry(deps *Deps) *tools.Registry {
 		SchedulerRoleARN: os.Getenv("SCHEDULER_ROLE_ARN"),
 		Reauthorize:      apiReauthorize(deps),
 	}
+	if deps.Deliv != nil { // M9 deliverable_* tools (nil interface stays nil → not_configured)
+		toolDeps.Deliverables = deps.Deliv
+	}
 	// IoT.Publish requires a per-account/region data-plane endpoint; only
 	// wire the client when one is configured (leaving the field a true
 	// nil interface, not a typed-nil *iotdataplane.Client, when it

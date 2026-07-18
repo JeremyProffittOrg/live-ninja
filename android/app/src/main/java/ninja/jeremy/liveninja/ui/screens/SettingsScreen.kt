@@ -21,6 +21,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -88,6 +90,15 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 SettingsNotice.SIGNED_OUT -> R.string.settings_signed_out
                 SettingsNotice.SIGNED_OUT_EVERYWHERE -> R.string.settings_signed_out_everywhere
                 SettingsNotice.SIGN_OUT_FAILED -> R.string.settings_sign_out_failed
+                SettingsNotice.WAKE_MODEL_READY -> R.string.settings_wake_model_ready
+                SettingsNotice.WAKE_MODEL_SIGNED_OUT -> R.string.settings_wake_model_signed_out
+                SettingsNotice.WAKE_MODEL_FAILED -> R.string.settings_wake_model_failed
+                SettingsNotice.WAKE_TRAIN_REQUESTED -> R.string.settings_wake_train_requested
+                SettingsNotice.WAKE_TRAIN_READY -> R.string.settings_wake_train_ready
+                SettingsNotice.WAKE_TRAIN_FAILED -> R.string.settings_wake_train_failed
+                SettingsNotice.WAKE_TRAIN_LIMIT -> R.string.settings_wake_train_limit
+                SettingsNotice.WAKE_TRAIN_INVALID -> R.string.settings_wake_train_invalid
+                SettingsNotice.WAKE_TRAIN_REQUEST_FAILED -> R.string.settings_wake_train_request_failed
             }
             snackbarHostState.showSnackbar(context.getString(messageRes))
         }
@@ -209,6 +220,108 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            // ---------- Custom wake phrase (M6 FR-K03) ----------
+            // The phrase field is genuinely free text (a novel phrase the user
+            // invents) — the training pipeline turns it into a catalog entry
+            // that then appears in the combobox above. Training is server-side
+            // (openWakeWord on AWS Batch); status is polled + emailed.
+            Text(
+                stringResource(R.string.settings_custom_wake_title),
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+            Text(
+                stringResource(R.string.settings_custom_wake_body),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = state.customPhrase,
+                onValueChange = viewModel::setCustomPhrase,
+                label = { Text(stringResource(R.string.settings_custom_wake_label)) },
+                supportingText = {
+                    Text(
+                        if (state.customPhrase.isNotBlank() && !state.customPhraseValid) {
+                            stringResource(R.string.settings_custom_wake_invalid)
+                        } else {
+                            stringResource(R.string.settings_custom_wake_hint)
+                        },
+                    )
+                },
+                singleLine = true,
+                enabled = !state.customRequestInProgress,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(
+                onClick = viewModel::requestCustomWakeWord,
+                enabled = state.customPhraseValid && !state.customRequestInProgress,
+                modifier = Modifier.heightIn(min = 48.dp),
+            ) { Text(stringResource(R.string.settings_custom_wake_submit)) }
+
+            state.customJob?.let { job ->
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text(
+                            "“${job.phrase}”",
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        val statusText = when (job.status) {
+                            "pending" -> stringResource(R.string.settings_custom_wake_status_pending)
+                            "training" -> stringResource(R.string.settings_custom_wake_status_training)
+                            "ready" -> stringResource(R.string.settings_custom_wake_status_ready)
+                            "failed" -> stringResource(R.string.settings_custom_wake_status_failed)
+                            else -> job.status
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (job.inFlight) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier
+                                        .padding(end = 8.dp)
+                                        .size(16.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                            }
+                            Text(
+                                statusText,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (job.status == "failed") {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                        }
+                        job.error?.takeIf { it.isNotBlank() }?.let { message ->
+                            Text(
+                                message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp),
+                            horizontalArrangement = Arrangement.End,
+                        ) {
+                            TextButton(
+                                onClick = viewModel::clearCustomJob,
+                                modifier = Modifier.heightIn(min = 48.dp),
+                            ) { Text(stringResource(R.string.settings_custom_wake_dismiss)) }
+                            if (job.ready) {
+                                Button(
+                                    onClick = viewModel::useCustomWakeWord,
+                                    modifier = Modifier
+                                        .padding(start = 8.dp)
+                                        .heightIn(min = 48.dp),
+                                ) { Text(stringResource(R.string.settings_custom_wake_use)) }
+                            }
+                        }
+                    }
+                }
+            }
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
 

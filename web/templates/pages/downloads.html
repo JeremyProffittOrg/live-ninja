@@ -1,0 +1,165 @@
+{{define "head"}}
+<script type="module" src="{{asset "/static/js/downloads.mjs"}}"></script>
+{{- /* Page-scoped styles live here rather than app.css: app.css is a
+       shared file other M6/M9 workstreams touch concurrently, and the
+       page CSP already allows inline <style> (style-src 'unsafe-inline',
+       pages_routes.go pageCSP). Everything data-driven is built by
+       downloads.mjs with textContent — no inline scripts anywhere. */}}
+<style>
+  .dl-shell { padding: var(--ln-sp-6) var(--ln-sp-5) var(--ln-sp-8); max-width: 1040px; margin: 0 auto; width: 100%; }
+  .dl-page-head { margin-bottom: var(--ln-sp-5); }
+  .dl-page-head p { margin-bottom: 0; }
+
+  .dl-toolbar { display: flex; align-items: center; gap: var(--ln-sp-3); margin-bottom: var(--ln-sp-3); flex-wrap: wrap; }
+  .dl-count { margin: 0; font-size: var(--ln-fs-sm); flex: 1 1 auto; }
+
+  /* Bulk-selection bar (appears when >=1 row is checked) */
+  .dl-bulkbar {
+    display: flex; align-items: center; gap: var(--ln-sp-3); flex-wrap: wrap;
+    padding: var(--ln-sp-3) var(--ln-sp-4); margin-bottom: var(--ln-sp-3);
+    background: var(--ln-accent-tint); border: 1px solid var(--ln-accent-ink);
+    border-radius: var(--ln-r-md);
+  }
+  .dl-bulkbar__count { font-weight: 700; font-size: var(--ln-fs-sm); color: var(--ln-accent-ink); flex: 1 1 auto; }
+
+  /* Wide table scrolls inside its own container, never the page body. */
+  .dl-tablewrap { overflow-x: auto; border: 1px solid var(--ln-border); border-radius: var(--ln-r-md); }
+  .dl-table { width: 100%; min-width: 680px; border-collapse: collapse; font-size: var(--ln-fs-sm); }
+  .dl-table thead th {
+    position: sticky; top: 0; z-index: 1;
+    background: var(--ln-surface-raised);
+    text-align: left; font-size: var(--ln-fs-xs); font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.05em; color: var(--ln-text-muted);
+    padding: var(--ln-sp-3) var(--ln-sp-4);
+    border-bottom: 1px solid var(--ln-border-strong);
+    white-space: nowrap;
+  }
+  .dl-table tbody td { padding: var(--ln-sp-3) var(--ln-sp-4); border-top: 1px solid var(--ln-border); vertical-align: middle; }
+  .dl-table tbody tr:first-child td { border-top: none; }
+  .dl-table tbody tr:hover { background: var(--ln-surface-2); }
+  .dl-col-check { width: 44px; }
+  .dl-col-check input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--ln-teal-600); cursor: pointer; }
+  .dl-col-check input[type="checkbox"]:focus-visible { box-shadow: var(--ln-focus); outline: none; }
+  .dl-name { font-weight: 650; word-break: break-word; min-width: 200px; }
+  .dl-num, .dl-table th.dl-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .dl-date { white-space: nowrap; color: var(--ln-text-muted); }
+  .dl-actions-cell, .dl-table th.dl-actions-cell { text-align: right; white-space: nowrap; }
+  .dl-actions-cell .ln-btn { min-height: 36px; padding: 0 var(--ln-sp-3); font-size: var(--ln-fs-xs); }
+  .dl-actions-cell .ln-btn + .ln-btn { margin-left: var(--ln-sp-2); }
+
+  /* Sortable column headers */
+  .dl-sort {
+    background: none; border: none; cursor: pointer; padding: 0;
+    font: inherit; color: inherit; text-transform: inherit; letter-spacing: inherit;
+    display: inline-flex; align-items: center; gap: 4px; min-height: 24px;
+  }
+  .dl-sort:hover { color: var(--ln-text); }
+  .dl-sort:focus-visible { box-shadow: var(--ln-focus); outline: none; border-radius: 4px; }
+  .dl-sort .arrow { font-size: 10px; opacity: 0; }
+  th[aria-sort="ascending"] .dl-sort .arrow,
+  th[aria-sort="descending"] .dl-sort .arrow { opacity: 1; color: var(--ln-accent-ink); }
+
+  /* States */
+  .dl-state { padding: var(--ln-sp-7) var(--ln-sp-5); text-align: center; }
+  .dl-state h3 { font-size: var(--ln-fs-md); margin-bottom: var(--ln-sp-2); }
+  .dl-state p { color: var(--ln-text-muted); font-size: var(--ln-fs-sm); margin-bottom: var(--ln-sp-4); }
+  .dl-state--error { border: 1px solid var(--ln-error-border); border-radius: var(--ln-r-md); background: var(--ln-error-tint); }
+  .dl-state--error h3 { color: var(--ln-error-ink); }
+
+  /* Loading skeleton (scoped to the table area) */
+  .dl-skeleton { padding: var(--ln-sp-4); }
+  .dl-skeleton .bar {
+    height: 18px; border-radius: 6px; margin: var(--ln-sp-4) 0;
+    background: linear-gradient(90deg, var(--ln-track) 25%, var(--ln-surface-2) 50%, var(--ln-track) 75%);
+    background-size: 200% 100%; animation: dl-shimmer 1.2s linear infinite;
+  }
+  @keyframes dl-shimmer { to { background-position: -200% 0; } }
+  @media (prefers-reduced-motion: reduce) { .dl-skeleton .bar { animation: none; } }
+
+  .dl-more { display: flex; justify-content: center; padding: var(--ln-sp-4) 0 0; }
+
+  /* Inline delete confirmation (replaces the row's action cell content) */
+  .dl-confirm { display: inline-flex; align-items: center; gap: var(--ln-sp-2); flex-wrap: wrap; justify-content: flex-end; }
+  .dl-confirm span { font-size: var(--ln-fs-xs); color: var(--ln-error-ink); font-weight: 700; }
+
+  .dl-badge-zip { background: var(--ln-warn-tint); color: var(--ln-warn-ink); border-color: currentColor; }
+</style>
+{{end}}
+
+{{define "body"}}
+{{template "nav" .}}
+
+<main class="dl-shell" id="main">
+  <div class="dl-page-head">
+    <h1>Downloads</h1>
+    <p class="ln-muted">Files Live Ninja has created for you. Files are kept for 180 days; shared links expire after about 15 minutes.</p>
+  </div>
+
+  <section class="ln-card" aria-labelledby="dlHeading">
+    <h2 class="ln-sr-only" id="dlHeading">Your files</h2>
+
+    <div class="dl-toolbar">
+      <p class="dl-count" id="dlCount" role="status" aria-live="polite"></p>
+      <button class="ln-btn ln-btn--ghost" id="dlRefresh" type="button">Refresh</button>
+    </div>
+
+    <div class="dl-bulkbar" id="dlBulkBar" hidden>
+      <span class="dl-bulkbar__count" id="dlBulkCount">0 selected</span>
+      <button class="ln-btn ln-btn--primary" id="dlZipBtn" type="button">Zip selected</button>
+      <button class="ln-btn ln-btn--ghost" id="dlClearSel" type="button">Clear selection</button>
+    </div>
+
+    {{- /* Loading state: skeleton scoped to the table area, visible on
+           first paint until downloads.mjs resolves the list. */}}
+    <div class="dl-skeleton" id="dlLoading" role="status" aria-label="Loading your files">
+      <div class="bar" style="width: 90%;"></div>
+      <div class="bar" style="width: 75%;"></div>
+      <div class="bar" style="width: 82%;"></div>
+    </div>
+
+    <div class="dl-state" id="dlEmpty" hidden>
+      <h3>Nothing here yet</h3>
+      <p>Ask Live Ninja to create a file for you — “make me a packing list as a checklist” — and it will show up here.</p>
+    </div>
+
+    <div class="dl-state dl-state--error" id="dlError" hidden>
+      <h3>Couldn’t load your files</h3>
+      <p id="dlErrorMsg">Check your connection and try again.</p>
+      <button class="ln-btn ln-btn--ghost" id="dlRetry" type="button">Retry</button>
+    </div>
+
+    <div class="dl-tablewrap" id="dlTableWrap" hidden>
+      <table class="dl-table" id="dlTable">
+        <thead>
+          <tr>
+            <th scope="col" class="dl-col-check">
+              <input type="checkbox" id="dlSelectAll" aria-label="Select all files on this page">
+            </th>
+            <th scope="col" aria-sort="none" data-sort-col="name">
+              <button class="dl-sort" type="button" data-sort="name">Name <span class="arrow" aria-hidden="true">▲</span></button>
+            </th>
+            <th scope="col">Type</th>
+            <th scope="col" class="dl-num" aria-sort="none" data-sort-col="sizeBytes">
+              <button class="dl-sort" type="button" data-sort="sizeBytes">Size <span class="arrow" aria-hidden="true">▲</span></button>
+            </th>
+            <th scope="col" aria-sort="descending" data-sort-col="createdAt">
+              <button class="dl-sort" type="button" data-sort="createdAt">Created <span class="arrow" aria-hidden="true">▼</span></button>
+            </th>
+            <th scope="col" class="dl-actions-cell">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="dlBody"></tbody>
+      </table>
+    </div>
+
+    <div class="dl-more" id="dlMoreWrap" hidden>
+      <button class="ln-btn ln-btn--ghost" id="dlMore" type="button">Load more</button>
+    </div>
+  </section>
+</main>
+
+<div class="ln-toast" id="toast" role="status" aria-live="polite" hidden>
+  <span id="toastMsg"></span>
+  <button class="ln-btn ln-btn--ghost" id="toastActionBtn" type="button" hidden></button>
+</div>
+{{end}}

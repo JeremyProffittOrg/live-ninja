@@ -463,6 +463,295 @@ wakeInput.addEventListener('blur', () => {
   if (comboOpen) comboClose();
 });
 
+// ==================== wake-word-section:BEGIN ====================
+// M6 custom wake-word studio (FR-K02/K03), owned by the M6 web-UI
+// workstream — edit only inside these markers.
+//
+// Backend contract (contracts/api.md "Wake-word", M6 locked decisions;
+// concrete shapes from internal/wakeword/catalog.go + wakeword_routes.go):
+//   - GET  /api/v1/wakewords       — live authed catalog
+//     {engines:[{id, trainable, reason?}], entries:[{id, phrase, engine,
+//     source:"builtin"|"custom", status, platforms,...}],
+//     esp32CustomSupported}. Customs are the source=="custom" entries;
+//     the studio form only shows when the openwakeword engine reports
+//     trainable (honest capability flag — locked decision). While the
+//     training backend isn't deployed this route 404/503s and the studio
+//     stays hidden (progressive disclosure).
+//   - POST /api/v1/wakewords       — {phrase, engine} → 202 flat item
+//     {id, phrase, engine, status, createdAt}. Validation 400, phrase
+//     collision 409 {error:"phrase_conflict"}, ≤3/day + queue-full 429.
+//     openwakeword is the only training engine (Porcupine needs a
+//     Picovoice account — deferred, locked decision).
+//   - GET  /api/v1/wakewords/{id}  — poll one entry's status
+//     (pending|training|ready|failed); CatalogEntry shape.
+// Ready models are merged into the combobox catalog above (hot-swap: the
+// wakeword.mjs engine picks the model up through the standard
+// wakeword-manifest.md flow once the id is selected + settings sync).
+
+const wwStudio = $('wwStudio');
+const wwPhraseInput = $('wwPhraseInput');
+const wwTrainBtn = $('wwTrainBtn');
+const wwPhraseError = $('wwPhraseError');
+const wwChipsWrap = $('wwChipsWrap');
+const wwChips = $('wwChips');
+
+let userWakewords = []; // [{id, phrase, status, engine}]
+const wwPollTimers = new Map(); // id → timeout handle
+const WW_POLL_MS = 12000;
+const WW_POLL_DEADLINE_MS = 30 * 60 * 1000; // jobs hard-cap at 20 min
+
+function wwNormalize(w) {
+  if (!w || typeof w !== 'object' || !w.id) return null;
+  return {
+    id: String(w.id),
+    phrase: String(w.phrase || w.id),
+    status: String(w.status || 'pending'),
+    engine: String(w.engine || 'openwakeword'),
+  };
+}
+
+// Merge a ready custom phrase into the combobox catalog (selection-only
+// invariant intact: users still pick ids, never free-type the value).
+function wwMergeIntoCatalog(w) {
+  if (w.status !== 'ready') return;
+  if (!wakeCatalog.some((c) => c.id === w.id)) {
+    wakeCatalog.push({ id: w.id, phrase: w.phrase, default: false, custom: true });
+  }
+  syncWakeWordDisplay(); // stored id may be this custom phrase
+}
+
+// loadWakeCatalog (combobox module above, outside these markers) REPLACES
+// the wakeCatalog array when the static /static/wakewords/catalog.json
+// fetch resolves — if wwInit's customs merged first they'd be lost. Both
+// loads run concurrently at init, so after the customs arrive we re-merge
+// once the static catalog has settled (either loaded or failed), polling
+// briefly instead of touching the combobox module's code.
+function wwRemergeAll() {
+  for (const w of userWakewords) wwMergeIntoCatalog(w);
+}
+
+function wwSyncWithCatalog(attempt = 0) {
+  if (wakeCatalog.length > 0 || wakeCatalogFailed || attempt >= 40) {
+    wwRemergeAll();
+    return;
+  }
+  setTimeout(() => wwSyncWithCatalog(attempt + 1), 250);
+}
+
+function wwStatusBadge(status) {
+  const b = document.createElement('span');
+  b.className = 'ln-badge ln-badge--dot-none';
+  if (status === 'ready') {
+    b.classList.add('ln-badge--teal');
+    b.textContent = 'Ready';
+  } else if (status === 'failed') {
+    b.classList.add('ln-badge--error');
+    b.textContent = 'Failed';
+  } else {
+    b.classList.add('ww-badge--warn');
+    b.textContent = status === 'training' ? 'Training…' : 'Pending';
+  }
+  return b;
+}
+
+function wwRenderChips() {
+  wwChips.textContent = '';
+  wwChipsWrap.hidden = userWakewords.length === 0;
+  for (const w of userWakewords) {
+    const chip = document.createElement('span');
+    chip.className = 'ww-chip';
+    chip.setAttribute('role', 'listitem');
+
+    const phrase = document.createElement('span');
+    phrase.textContent = w.phrase;
+    chip.appendChild(phrase);
+    chip.appendChild(wwStatusBadge(w.status));
+
+    if (w.status === 'ready' && doc.wakeWord !== w.id) {
+      const use = document.createElement('button');
+      use.type = 'button';
+      use.className = 'ln-btn ln-btn--ghost';
+      use.textContent = 'Use';
+      use.setAttribute('aria-label', `Use ${w.phrase} as your wake phrase`);
+      use.addEventListener('click', () => {
+        comboSelect(w.id);
+        wwRenderChips(); // drop this chip's Use button
+      });
+      chip.appendChild(use);
+    }
+    wwChips.appendChild(chip);
+  }
+}
+
+function wwUpsert(w) {
+  const i = userWakewords.findIndex((x) => x.id === w.id);
+  if (i >= 0) userWakewords[i] = w;
+  else userWakewords.push(w);
+  wwMergeIntoCatalog(w);
+  wwRenderChips();
+}
+
+function wwStopPoll(id) {
+  const t = wwPollTimers.get(id);
+  if (t) clearTimeout(t);
+  wwPollTimers.delete(id);
+}
+
+function wwStartPoll(id, startedAt = Date.now()) {
+  wwStopPoll(id);
+  const tick = async () => {
+    wwPollTimers.delete(id);
+    if (Date.now() - startedAt > WW_POLL_DEADLINE_MS) return; // SES email covers the rest
+    let w;
+    try {
+      const resp = await apiJSON(`/api/v1/wakewords/${encodeURIComponent(id)}`);
+      w = wwNormalize(resp.wakeword || resp);
+    } catch {
+      // transient — keep polling until the deadline
+    }
+    if (w) {
+      wwUpsert(w);
+      if (w.status === 'ready') {
+        showToast(`Your wake phrase “${w.phrase}” is ready.`, {
+          label: 'Use it now',
+          onClick: () => {
+            comboSelect(w.id);
+            wwRenderChips();
+          },
+        });
+        return;
+      }
+      if (w.status === 'failed') {
+        showToast(`Training “${w.phrase}” failed — try a different phrase.`, { error: true });
+        return;
+      }
+    }
+    wwPollTimers.set(id, setTimeout(tick, WW_POLL_MS));
+  };
+  wwPollTimers.set(id, setTimeout(tick, WW_POLL_MS));
+}
+
+function wwSetError(msg) {
+  wwPhraseError.textContent = msg || '';
+  wwPhraseError.hidden = !msg;
+  wwPhraseInput.setAttribute('aria-invalid', msg ? 'true' : 'false');
+}
+
+// Client-side validation mirrors the server's cheap checks (length/word
+// count/charset) with specific, actionable copy; phoneme/profanity/
+// collision depth stays server-side (FR-K03).
+function wwValidate(raw) {
+  const phrase = raw.trim().replace(/\s+/g, ' ');
+  if (!phrase) return { error: 'Enter a phrase to train — e.g. “Hey Computer”.' };
+  if (!/^[A-Za-z][A-Za-z' -]*$/.test(phrase)) {
+    return { error: 'Letters, spaces, apostrophes and hyphens only — no digits or symbols.' };
+  }
+  const words = phrase.split(' ');
+  if (words.length < 2 || words.length > 4) {
+    return { error: 'Use 2–4 words — short phrases wake reliably, single words false-trigger.' };
+  }
+  if (phrase.length < 6) return { error: 'That phrase is too short — use at least 6 letters.' };
+  const lower = phrase.toLowerCase();
+  if (wakeCatalog.some((c) => c.phrase.toLowerCase() === lower)) {
+    return { error: 'That phrase already exists — pick it from the list above instead.' };
+  }
+  return { phrase };
+}
+
+async function wwSubmit() {
+  const { phrase, error } = wwValidate(wwPhraseInput.value);
+  if (error) {
+    wwSetError(error);
+    wwPhraseInput.focus();
+    return;
+  }
+  wwSetError('');
+  wwTrainBtn.disabled = true;
+  wwTrainBtn.setAttribute('aria-busy', 'true');
+  try {
+    const resp = await apiJSON('/api/v1/wakewords', {
+      method: 'POST',
+      json: { phrase, engine: 'openwakeword' },
+    });
+    const w = wwNormalize(resp.wakeword || resp) || { id: '', phrase, status: 'pending', engine: 'openwakeword' };
+    if (w.id) {
+      wwUpsert(w);
+      if (w.status === 'pending' || w.status === 'training') wwStartPoll(w.id);
+    }
+    wwPhraseInput.value = '';
+    showToast(`Training “${phrase}” — usually takes a few minutes. We’ll email you when it’s ready.`);
+  } catch (err) {
+    // Server copy is specific (validation detail, phrase_conflict 409,
+    // daily_limit vs queue_full 429 — wakeword_routes.go) — prefer it.
+    const serverMsg = err instanceof ApiError && err.body && typeof err.body.message === 'string'
+      ? err.body.message : '';
+    if (serverMsg && err.status >= 400 && err.status < 500) {
+      wwSetError(serverMsg);
+    } else if (err instanceof ApiError && err.status === 429) {
+      wwSetError('Daily limit reached — up to 3 custom phrases per day. Try again tomorrow.');
+    } else if (err instanceof ApiError && err.status === 409) {
+      wwSetError('That phrase already exists — pick it from the list above instead.');
+    } else {
+      wwSetError("Couldn't start training — check your connection and try again.");
+    }
+  } finally {
+    wwTrainBtn.disabled = false;
+    wwTrainBtn.removeAttribute('aria-busy');
+  }
+}
+
+wwTrainBtn.addEventListener('click', wwSubmit);
+wwPhraseInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    wwSubmit();
+  }
+});
+wwPhraseInput.addEventListener('input', () => wwSetError(''));
+
+// Feature probe + initial load. While the M6 training backend isn't
+// deployed, GET /api/v1/wakewords 404/503s: the studio stays hidden and
+// the combobox hint reverts to the built-ins-only copy — no fake
+// capability. On success the response is the live catalog
+// {engines, entries, esp32CustomSupported} (internal/wakeword/catalog.go):
+// source=="custom" entries become the user's status chips; builtins stay
+// sourced from the static combobox catalog per contracts/api.md.
+async function wwInit() {
+  let resp;
+  try {
+    resp = await apiJSON('/api/v1/wakewords');
+  } catch {
+    $('wakeWordHint').textContent =
+      'Pick from the built-in phrases. Training your own phrase arrives with the wake-word studio.';
+    return;
+  }
+
+  // Honest capability gate: only reveal the training form when the
+  // server says openwakeword can actually train (EngineInfo.trainable).
+  const engines = Array.isArray(resp.engines) ? resp.engines : [];
+  const oww = engines.find((e) => e && e.id === 'openwakeword');
+  const trainable = oww ? !!oww.trainable : true; // absent list = legacy OK
+  wwStudio.hidden = !trainable;
+  if (!trainable) {
+    $('wakeWordHint').textContent =
+      'Pick from the built-in phrases. Custom phrase training is unavailable right now.';
+  }
+
+  const list = Array.isArray(resp.entries) ? resp.entries
+    : Array.isArray(resp.wakewords) ? resp.wakewords : [];
+  for (const raw of list) {
+    if (raw && raw.source && raw.source !== 'custom') continue; // builtins: static catalog owns them
+    const w = wwNormalize(raw);
+    if (!w) continue;
+    wwUpsert(w);
+    if (w.status === 'pending' || w.status === 'training') wwStartPoll(w.id);
+  }
+  if (userWakewords.length > 0) wwSyncWithCatalog();
+}
+
+wwInit();
+// ==================== wake-word-section:END ====================
+
 // ---- wake engine / sensitivity ----------------------------------------
 
 for (const r of document.querySelectorAll('input[name="wakeEngine"]')) {

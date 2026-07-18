@@ -10,18 +10,26 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.Optional
 import javax.inject.Inject
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import ninja.jeremy.liveninja.net.LiveNinjaApi
+import ninja.jeremy.liveninja.net.WakeWordCreateRequest
 import ninja.jeremy.liveninja.ui.state.AccountActions
 import ninja.jeremy.liveninja.ui.state.SettingsDocument
 import ninja.jeremy.liveninja.ui.state.SettingsStore
 import ninja.jeremy.liveninja.ui.state.SignInLauncher
 import ninja.jeremy.liveninja.ui.state.WakeWordCatalogRepository
 import ninja.jeremy.liveninja.ui.state.WakeWordOption
+import ninja.jeremy.liveninja.wake.ModelManager
+import ninja.jeremy.liveninja.wake.ModelSyncResult
+import ninja.jeremy.liveninja.wake.WakePreferences
+import retrofit2.HttpException
 
 /** One persona catalog entry (server resolves the actual instructions by ID). */
 data class PersonaPreset(val id: String, val label: String, val description: String)
@@ -35,6 +43,15 @@ enum class SettingsNotice {
     SIGNED_OUT,
     SIGNED_OUT_EVERYWHERE,
     SIGN_OUT_FAILED,
+    WAKE_MODEL_READY,
+    WAKE_MODEL_SIGNED_OUT,
+    WAKE_MODEL_FAILED,
+    WAKE_TRAIN_REQUESTED,
+    WAKE_TRAIN_READY,
+    WAKE_TRAIN_FAILED,
+    WAKE_TRAIN_LIMIT,
+    WAKE_TRAIN_INVALID,
+    WAKE_TRAIN_REQUEST_FAILED,
 }
 
 data class SettingsUiState(
@@ -47,13 +64,24 @@ data class SettingsUiState(
     val accountActionsAvailable: Boolean = false,
     val signedIn: Boolean = false,
     val signOutInProgress: Boolean = false,
-)
+    // ---- custom wake-word training (M6 FR-K03) ----
+    val customPhrase: String = "",
+    val customJob: CustomWakeJob? = null,
+    val customRequestInProgress: Boolean = false,
+) {
+    val customPhraseValid: Boolean
+        get() = SettingsViewModel.isValidWakePhrase(customPhrase)
+}
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val settingsStore: SettingsStore,
     private val catalog: WakeWordCatalogRepository,
+    private val api: LiveNinjaApi,
+    private val modelManager: ModelManager,
+    private val wakePrefs: WakePreferences,
+    private val customStore: CustomWakeWordStore,
     private val accountActions: Optional<AccountActions>,
     signInLauncher: Optional<SignInLauncher>,
 ) : ViewModel() {
@@ -61,16 +89,20 @@ class SettingsViewModel @Inject constructor(
     private val _state = MutableStateFlow(
         SettingsUiState(
             doc = settingsStore.document.value,
-            wakeOptions = catalog.options.value,
+            wakeOptions = mergedOptions(catalog.options.value, customStore.load()),
             micDevices = enumerateMicDevices(),
             porcupineAvailable = ninja.jeremy.liveninja.BuildConfig.PORCUPINE_ENABLED,
             accountActionsAvailable = accountActions.isPresent,
+            customJob = customStore.load(),
         ),
     )
     val state: StateFlow<SettingsUiState> = _state
 
     private val _notices = MutableSharedFlow<SettingsNotice>(extraBufferCapacity = 4)
     val notices: SharedFlow<SettingsNotice> = _notices
+
+    private var modelSyncJob: Job? = null
+    private var pollJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -80,7 +112,7 @@ class SettingsViewModel @Inject constructor(
             catalog.refresh()
             _state.update {
                 it.copy(
-                    wakeOptions = catalog.options.value,
+                    wakeOptions = mergedOptions(catalog.options.value, it.customJob),
                     wakeCatalogOffline = catalog.lastFetchFailed.value,
                 )
             }
@@ -90,12 +122,176 @@ class SettingsViewModel @Inject constructor(
                 launcher.isSignedIn.collect { signed -> _state.update { it.copy(signedIn = signed) } }
             }
         }
+        // Resume polling a training job that outlived the previous process
+        // (Batch jobs run up to 20 min; the SES "ready" email is the backstop).
+        startPollingCustomJob()
     }
 
     // ---- Wake word ----
-    fun setWakeWord(id: String) = settingsStore.setWakeWord(id)
-    fun setWakeEngine(engine: String) = settingsStore.setWakeEngine(engine)
-    fun setSensitivity(value: Float) = settingsStore.setSensitivity(value.coerceIn(0f, 1f))
+
+    /**
+     * Select a wake word: canonical settings doc + write-through to the wake
+     * stack's own prefs (the running FGS reads those), then fetch + SHA-verify
+     * the model manifest so [ModelManager.headModel] hot-swaps the live engine
+     * (wakeword-manifest.md client sequence). On any failure the previous
+     * model keeps listening — never a gap.
+     */
+    fun setWakeWord(id: String) {
+        settingsStore.setWakeWord(id)
+        wakePrefs.wakeWordId = id
+        syncWakeModel(id, wakePrefs.wakeEngine)
+    }
+
+    fun setWakeEngine(engine: String) {
+        settingsStore.setWakeEngine(engine)
+        wakePrefs.wakeEngine = engine
+        syncWakeModel(wakePrefs.wakeWordId, engine)
+    }
+
+    fun setSensitivity(value: Float) {
+        val clamped = value.coerceIn(0f, 1f)
+        settingsStore.setSensitivity(clamped)
+        // Write-through: the engine consumes sensitivityFlow live.
+        wakePrefs.sensitivity = clamped
+    }
+
+    private fun syncWakeModel(id: String, engine: String) {
+        modelSyncJob?.cancel()
+        modelSyncJob = viewModelScope.launch {
+            when (modelManager.sync(id, engine)) {
+                is ModelSyncResult.Active -> _notices.tryEmit(SettingsNotice.WAKE_MODEL_READY)
+                is ModelSyncResult.NoAuth -> _notices.tryEmit(SettingsNotice.WAKE_MODEL_SIGNED_OUT)
+                // VerifyFailed / UnsupportedFormat / Failed: previous model
+                // stays active per contract; surface one honest notice.
+                else -> _notices.tryEmit(SettingsNotice.WAKE_MODEL_FAILED)
+            }
+        }
+    }
+
+    // ---- Custom wake-word training (M6 FR-K03) ----
+
+    fun setCustomPhrase(text: String) =
+        _state.update { it.copy(customPhrase = text.take(MAX_PHRASE_LENGTH)) }
+
+    /** POST the phrase to the training pipeline and start status polling. */
+    fun requestCustomWakeWord() {
+        val phrase = _state.value.customPhrase.trim()
+        if (!isValidWakePhrase(phrase) || _state.value.customRequestInProgress) return
+        _state.update { it.copy(customRequestInProgress = true) }
+        viewModelScope.launch {
+            try {
+                val dto = api.createWakeWord(
+                    // openWakeWord is the only server-side training path (M6
+                    // locked decision — Porcupine needs a Picovoice account).
+                    WakeWordCreateRequest(
+                        phrase = phrase,
+                        engine = WakePreferences.ENGINE_OPENWAKEWORD,
+                    ),
+                )
+                val job = CustomWakeJob(
+                    id = dto.id,
+                    phrase = dto.phrase ?: phrase,
+                    engine = dto.engine ?: WakePreferences.ENGINE_OPENWAKEWORD,
+                    status = dto.status ?: "pending",
+                    error = dto.error,
+                )
+                customStore.save(job)
+                _state.update {
+                    it.copy(
+                        customJob = job,
+                        customPhrase = "",
+                        wakeOptions = mergedOptions(catalog.options.value, job),
+                    )
+                }
+                _notices.tryEmit(SettingsNotice.WAKE_TRAIN_REQUESTED)
+                startPollingCustomJob()
+            } catch (e: HttpException) {
+                _notices.tryEmit(
+                    when (e.code()) {
+                        429 -> SettingsNotice.WAKE_TRAIN_LIMIT // ≤3/day/user, conc ≤2
+                        400, 409, 422 -> SettingsNotice.WAKE_TRAIN_INVALID
+                        else -> SettingsNotice.WAKE_TRAIN_REQUEST_FAILED
+                    },
+                )
+            } catch (e: Exception) {
+                _notices.tryEmit(SettingsNotice.WAKE_TRAIN_REQUEST_FAILED)
+            } finally {
+                _state.update { it.copy(customRequestInProgress = false) }
+            }
+        }
+    }
+
+    /** Ready job → select it (settings + model download + engine hot-swap). */
+    fun useCustomWakeWord() {
+        val job = _state.value.customJob ?: return
+        if (!job.ready) return
+        setWakeWord(job.id)
+    }
+
+    /**
+     * Dismiss the status card. A ready job's catalog entry stays in the
+     * combobox for this session; long-term the shared catalog snapshot
+     * carries the user's ready models.
+     */
+    fun clearCustomJob() {
+        pollJob?.cancel()
+        customStore.clear()
+        _state.update { it.copy(customJob = null) }
+    }
+
+    private fun startPollingCustomJob() {
+        pollJob?.cancel()
+        val job = customStore.load() ?: return
+        if (!job.inFlight) return
+        pollJob = viewModelScope.launch {
+            while (true) {
+                delay(POLL_INTERVAL_MS)
+                val current = customStore.load() ?: return@launch
+                val dto = try {
+                    api.getWakeWord(current.id)
+                } catch (e: Exception) {
+                    continue // transient — keep polling while the VM lives
+                }
+                val updated = current.copy(
+                    status = dto.status ?: current.status,
+                    error = dto.error,
+                )
+                customStore.save(updated)
+                _state.update {
+                    it.copy(
+                        customJob = updated,
+                        wakeOptions = mergedOptions(catalog.options.value, updated),
+                    )
+                }
+                when {
+                    updated.ready -> {
+                        _notices.tryEmit(SettingsNotice.WAKE_TRAIN_READY)
+                        return@launch
+                    }
+                    updated.status == "failed" -> {
+                        _notices.tryEmit(SettingsNotice.WAKE_TRAIN_FAILED)
+                        return@launch
+                    }
+                }
+            }
+        }
+    }
+
+    /** Catalog entries + this user's ready custom model (server wins on id collision). */
+    private fun mergedOptions(
+        catalogOptions: List<WakeWordOption>,
+        job: CustomWakeJob?,
+    ): List<WakeWordOption> {
+        if (job == null || !job.ready || catalogOptions.any { it.id == job.id }) {
+            return catalogOptions
+        }
+        return catalogOptions + WakeWordOption(
+            id = job.id,
+            label = "“${job.phrase}”",
+            description = "Custom trained phrase",
+            engines = listOf(job.engine),
+        )
+    }
 
     // ---- Conversation ----
     fun setPersona(presetId: String) {
@@ -204,6 +400,26 @@ class SettingsViewModel @Inject constructor(
 
     companion object {
         const val CUSTOM_INSTRUCTIONS_MAX = 4000
+
+        /** Client-side pre-check mirror of the backend phrase validation. */
+        const val MAX_PHRASE_LENGTH = 40
+        const val MIN_PHRASE_LENGTH = 3
+        private const val MAX_PHRASE_WORDS = 6
+
+        /** Poll cadence for an in-flight training job (jobs run minutes, not seconds). */
+        const val POLL_INTERVAL_MS = 15_000L
+
+        /**
+         * Cheap client-side gate for the training form (backend re-validates
+         * phonemes/profanity/collision authoritatively): letters, spaces,
+         * apostrophes, hyphens; 3–40 chars; ≤6 words.
+         */
+        fun isValidWakePhrase(raw: String): Boolean {
+            val phrase = raw.trim()
+            if (phrase.length !in MIN_PHRASE_LENGTH..MAX_PHRASE_LENGTH) return false
+            if (!phrase.all { it.isLetter() || it == ' ' || it == '\'' || it == '-' }) return false
+            return phrase.split(Regex("\\s+")).size <= MAX_PHRASE_WORDS
+        }
 
         /**
          * Persona catalog (mockups/android/09-settings.html). IDs only travel to
