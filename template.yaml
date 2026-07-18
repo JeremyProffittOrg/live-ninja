@@ -440,9 +440,20 @@ Resources:
           # primary domain plus the /nova prefix and BuildBridgeSession appends
           # /session -> wss://<domain>/nova/session (matches NovaBridgeWsUrl).
           NOVA_BRIDGE_URL: !Sub "wss://${DomainName}/nova"
+          # M12: the broker mints the short-lived scope=nova JWT embedded in
+          # the bridge URL (wireNovaBridge). Without this the nova path 502s
+          # nova_bridge_unavailable even with the bridge healthy.
+          JWT_KMS_KEY_ID: !GetAtt JwtKey.Arn
       Policies:
         - Version: "2012-10-17"
           Statement:
+            - Sid: NovaBridgeTokenSign
+              Effect: Allow
+              Action:
+                - kms:Sign
+                - kms:GetPublicKey
+              Resource:
+                - !GetAtt JwtKey.Arn
             - Sid: SuspendAlertEnqueue
               Effect: Allow
               Action:
