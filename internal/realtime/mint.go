@@ -36,6 +36,19 @@ const clientSecretsURL = "https://api.openai.com/v1/realtime/client_secrets"
 // deliberately tight (shared spec: expires_after 60).
 const ephemeralTTLSeconds = 60
 
+// memoryUsageDirective is appended to every session's instructions (between
+// the persona text and the guide-injection suffix). The memory layer proved
+// write-heavy but read-never in prod (2026-07-18: 6× memory_write, 0×
+// memory_search while the owner asked "what is my home address") — the model
+// answers personal-fact questions from the conversation alone unless told,
+// per session, that persistent memory exists and must be consulted.
+const memoryUsageDirective = "\n\nYou have persistent long-term memory from previous conversations, " +
+	"accessed through the memory_search tool. Before answering any question about the user's " +
+	"personal facts — addresses, people, dates, preferences, projects, plans, or anything they may " +
+	"have told you before — call memory_search first. Never claim you don't know or can't remember " +
+	"a personal fact without having searched. Use memory_write to save new lasting facts the user " +
+	"shares."
+
 // toolManifest is the OpenAI Realtime function-tool declaration set bound
 // into every session at mint. Execution never happens client-side or in
 // OpenAI: every function_call is routed to POST /api/v1/tools/invoke where
@@ -231,7 +244,9 @@ var toolManifest = []map[string]any{
 		"type": "function",
 		"name": "memory_search",
 		"description": "Search the user's long-term memory (people, places, information, projects, tasks, plans) " +
-			"by meaning. Use before asking the user to repeat something they may have told you before.",
+			"by meaning. ALWAYS call this before answering any question about the user's personal facts — " +
+			"their home or work address, names, birthdays, preferences, plans, or anything they may have " +
+			"told you in a past conversation — and before saying you don't know such a fact.",
 		"parameters": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -481,7 +496,7 @@ func (m *Minter) Mint(ctx context.Context, personaID, voice, eagerness, instruct
 			// "Unknown parameter" (broke every mint in prod 2026-07-18).
 			"input": buildAudioInput(eagerness),
 		},
-		"instructions": persona.Instructions + instructionsSuffix,
+		"instructions": persona.Instructions + memoryUsageDirective + instructionsSuffix,
 		"tools":        toolManifest,
 	}
 	body, err := json.Marshal(map[string]any{
