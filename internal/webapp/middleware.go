@@ -343,6 +343,17 @@ func CSRFProtect() fiber.Handler {
 		case fiber.MethodGet, fiber.MethodHead, fiber.MethodOptions:
 			return c.Next()
 		}
+		// The device-pairing confirm POST carries its own, stronger CSRF
+		// defense: the one-shot PAIRCONFIRM token double-submitted as a
+		// hidden form field + the __Host-ln_pair HttpOnly cookie, both
+		// constant-time matched in the handler (auth_routes.go). The generic
+		// header check must not apply — a phone that ALSO holds a signed-in
+		// web session hits this middleware with a plain HTML form POST that
+		// cannot send X-LN-CSRF (live repro: Tab5 pairing 403 csrf_failed,
+		// 2026-07-18).
+		if c.Path() == "/auth/device/pair/confirm" {
+			return c.Next()
+		}
 		if c.Cookies(RefreshCookieName) == "" {
 			return c.Next()
 		}
