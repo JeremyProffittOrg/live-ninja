@@ -92,6 +92,7 @@ void ln_scr_config_set_about(const char *fw, const char *thing,
 lv_obj_t *ln_scr_onboarding_create(void);
 void ln_scr_onboarding_portal(const char *ssid, const char *url);
 void ln_scr_onboarding_pairing(const char *claim_url, const char *code);
+void ln_scr_onboarding_connected(const char *ip);
 void ln_scr_onboarding_status(const char *text);
 
 lv_obj_t *ln_scr_error_create(void);

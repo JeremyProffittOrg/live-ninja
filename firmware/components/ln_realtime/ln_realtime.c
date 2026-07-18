@@ -92,7 +92,7 @@ static bool s_have_carry;
 
 static char *s_uplink_buf; /* PSRAM, JSON frame + base64 payload */
 
-static char s_ws_url[1024];   /* OpenAI URL is short; Nova bridge URL carries a token query param */
+static char s_ws_url[1280];   /* OpenAI URL is short; Nova bridge URL (ws_url[640]) + "?token=" + token[512] needs headroom */
 static char s_ws_headers[576]; /* "Authorization: Bearer ek_...\r\n" (OpenAI-direct only) */
 
 /* Transport the current session negotiated (set in ws_open, read by the WS

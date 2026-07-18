@@ -10,6 +10,7 @@
  *                    phone page can hand the human to the claim URL
  *   online+paired -> auth rotation task owns credentials (ln_auth.c)
  */
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -21,6 +22,7 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "nvs.h"
 #include "sdkconfig.h"
@@ -54,6 +56,37 @@ static ln_wifi_status_t s_status;         /* portal-visible snapshot */
 static char s_ssid[33];
 static char s_pass[65];
 static bool s_have_creds;
+
+/* ---- SoftAP gateway / subnet (guarded by s_lock) ---- */
+static char s_ap_gw[16] = LN_PORTAL_IP_DEFAULT;  /* active gateway IP string */
+static bool s_ap_only;                            /* "keep as AP" portal choice */
+static esp_timer_handle_t s_subnet_timer;         /* deferred live-swap timer */
+static char s_pending_subnet[16];                 /* subnet awaiting the swap */
+static int  s_ap_clients;                         /* associated SoftAP stations */
+
+static const char *const k_allowed_subnets[] = { "192.168.4", "10.0.0" };
+
+/* ---- async scan cache (guarded by s_scan_lock) ---- */
+#define LN_SCAN_CACHE_MAX 24
+static SemaphoreHandle_t s_scan_lock;
+static wifi_ap_record_t  s_scan_recs[LN_SCAN_CACHE_MAX];
+static int      s_scan_count;
+static int64_t  s_scan_ts_us;             /* esp_timer_get_time of last fill */
+static volatile bool s_scanning;
+static TaskHandle_t s_scan_task;
+
+static bool subnet_allowed(const char *s)
+{
+    if (s == NULL) {
+        return false;
+    }
+    for (size_t i = 0; i < sizeof(k_allowed_subnets) / sizeof(k_allowed_subnets[0]); i++) {
+        if (strcmp(s, k_allowed_subnets[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
 
 /* ---------------------------------------------------------------- utils */
 
@@ -100,6 +133,125 @@ esp_err_t ln_net_get_claim_url(char *buf, size_t len)
     return ESP_OK;
 }
 
+/* -------------------------------------------------- SoftAP gateway/subnet */
+
+void ln_net_ap_gateway(char *buf, size_t len)
+{
+    if (buf == NULL || len == 0) {
+        return;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    strlcpy(buf, s_ap_gw, len);
+    xSemaphoreGive(s_lock);
+}
+
+void ln_net_ap_gateway_octets(uint8_t out[4])
+{
+    unsigned a = 192, b = 168, c = 4, d = 1;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    sscanf(s_ap_gw, "%u.%u.%u.%u", &a, &b, &c, &d);
+    xSemaphoreGive(s_lock);
+    out[0] = (uint8_t)a; out[1] = (uint8_t)b;
+    out[2] = (uint8_t)c; out[3] = (uint8_t)d;
+}
+
+/* Swap the AP netif DHCP-server IP + gateway to <subnet>.1 (subnet = "a.b.c").
+ * Caller must have the AP netif created. Updates the cached gateway string. */
+static void ap_subnet_set_netif(const char *subnet)
+{
+    if (s_ap_netif == NULL) {
+        return;
+    }
+    unsigned a, b, c;
+    if (sscanf(subnet, "%u.%u.%u", &a, &b, &c) != 3) {
+        return;
+    }
+    esp_netif_ip_info_t ip = { 0 };
+    esp_netif_set_ip4_addr(&ip.ip,      a, b, c, 1);
+    esp_netif_set_ip4_addr(&ip.gw,      a, b, c, 1);
+    esp_netif_set_ip4_addr(&ip.netmask, 255, 255, 255, 0);
+
+    esp_netif_dhcps_stop(s_ap_netif);
+    esp_err_t err = esp_netif_set_ip_info(s_ap_netif, &ip);
+    esp_netif_dhcps_start(s_ap_netif);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "AP subnet set_ip_info failed: %s", esp_err_to_name(err));
+        return;
+    }
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    snprintf(s_ap_gw, sizeof(s_ap_gw), "%u.%u.%u.1", a, b, c);
+    xSemaphoreGive(s_lock);
+    ESP_LOGI(TAG, "SoftAP subnet -> %u.%u.%u.0/24 (gw %u.%u.%u.1)", a, b, c, a, b, c);
+}
+
+/* Deferred swap: runs ~600ms after /api/apconfig so the HTTP 200 reaches the
+ * phone before its link to the old gateway drops. Re-announces the portal URL
+ * so the LCD QR refreshes to the new gateway. */
+static void subnet_timer_cb(void *arg)
+{
+    (void)arg;
+    ap_subnet_set_netif(s_pending_subnet);
+
+    ln_net_portal_info_t info = { 0 };
+    strlcpy(info.ap_ssid, CONFIG_LN_PORTAL_AP_SSID, sizeof(info.ap_ssid));
+    char gw[16];
+    ln_net_ap_gateway(gw, sizeof(gw));
+    snprintf(info.portal_url, sizeof(info.portal_url), "http://%s", gw);
+    esp_event_post(LN_NET_EVENT, LN_NET_EVENT_PORTAL_STARTED,
+                   &info, sizeof(info), 0);
+}
+
+esp_err_t ln_net_apply_ap_subnet(const char *subnet)
+{
+    if (!subnet_allowed(subnet)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    nvs_handle_t h;
+    if (nvs_open(LN_NVS_NS_NET, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_str(h, "ap_subnet", subnet);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    strlcpy(s_pending_subnet, subnet, sizeof(s_pending_subnet));
+    if (s_subnet_timer == NULL) {
+        const esp_timer_create_args_t args = {
+            .callback = subnet_timer_cb,
+            .name = "ap_subnet",
+        };
+        if (esp_timer_create(&args, &s_subnet_timer) != ESP_OK) {
+            /* Timer unavailable — apply immediately (drops the caller's link,
+             * but the choice still takes effect). */
+            ap_subnet_set_netif(subnet);
+            return ESP_OK;
+        }
+    }
+    esp_timer_stop(s_subnet_timer);
+    return esp_timer_start_once(s_subnet_timer, 600 * 1000);
+}
+
+esp_err_t ln_net_set_ap_only(bool ap_only)
+{
+    nvs_handle_t h;
+    if (nvs_open(LN_NVS_NS_NET, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "ap_only", ap_only ? 1 : 0);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_ap_only = ap_only;
+    xSemaphoreGive(s_lock);
+    return ESP_OK;
+}
+
+bool ln_net_is_ap_only(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool v = s_ap_only;
+    xSemaphoreGive(s_lock);
+    return v;
+}
+
 /* ------------------------------------------------------------- NVS creds */
 
 static void creds_load(void)
@@ -111,6 +263,10 @@ static void creds_load(void)
     size_t sl = sizeof(s_ssid), pl = sizeof(s_pass);
     esp_err_t e1 = nvs_get_str(h, "ssid", s_ssid, &sl);
     esp_err_t e2 = nvs_get_str(h, "pass", s_pass, &pl);
+    uint8_t apo = 0;
+    if (nvs_get_u8(h, "ap_only", &apo) == ESP_OK) {
+        s_ap_only = (apo != 0);
+    }
     nvs_close(h);
     if (e1 == ESP_OK && s_ssid[0] != '\0') {
         if (e2 != ESP_OK) {
@@ -233,6 +389,18 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         xSemaphoreGive(s_lock);
         s_online = true;
         xEventGroupSetBits(s_bits, BIT_GOT_IP);
+    } else if (base == WIFI_EVENT && (id == WIFI_EVENT_AP_STACONNECTED ||
+                                      id == WIFI_EVENT_AP_STADISCONNECTED)) {
+        /* Track associated SoftAP stations so the LCD onboarding footer can
+         * advance from "Waiting for a device to connect…". */
+        if (id == WIFI_EVENT_AP_STACONNECTED) {
+            s_ap_clients++;
+        } else if (s_ap_clients > 0) {
+            s_ap_clients--;
+        }
+        int count = s_ap_clients;
+        esp_event_post(LN_NET_EVENT, LN_NET_EVENT_PORTAL_CLIENT,
+                       &count, sizeof(count), 0);
     }
 }
 
@@ -312,25 +480,82 @@ static bool sta_try_connect(int retry_count)
 }
 
 /* --------------------------------------------------------------- scan */
-
-int ln_net_wifi_scan(void *out_records, int max_records)
+/*
+ * The portal's GET /api/scan must never block on the radio: a blocking
+ * esp_wifi_scan_start over the C6 esp-hosted RPC stalls the single httpd
+ * worker for seconds AND channel-hops the SoftAP, so the phone loses the HTTP
+ * response entirely. Instead a background task owns the (blocking) scan and
+ * publishes deduped-later results into a cache the handler reads instantly.
+ */
+static void scan_task(void *arg)
 {
-    wifi_scan_config_t sc = {
-        .show_hidden = false,
-        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
-        .scan_time.active = {.min = 80, .max = 200},
-    };
-    esp_err_t err = esp_wifi_scan_start(&sc, true /* block */);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "scan failed: %s", esp_err_to_name(err));
-        return -1;
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);   /* wait for a trigger */
+
+        wifi_scan_config_t sc = {
+            .show_hidden = false,
+            .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+            .scan_time.active = {.min = 80, .max = 200},
+        };
+        esp_err_t err = esp_wifi_scan_start(&sc, true /* block: on THIS task */);
+        if (err == ESP_OK) {
+            static wifi_ap_record_t tmp[LN_SCAN_CACHE_MAX];
+            uint16_t n = LN_SCAN_CACHE_MAX;
+            if (esp_wifi_scan_get_ap_records(&n, tmp) == ESP_OK) {
+                if (n > LN_SCAN_CACHE_MAX) {
+                    n = LN_SCAN_CACHE_MAX;
+                }
+                xSemaphoreTake(s_scan_lock, portMAX_DELAY);
+                memcpy(s_scan_recs, tmp, (size_t)n * sizeof(wifi_ap_record_t));
+                s_scan_count = n;
+                s_scan_ts_us = esp_timer_get_time();
+                xSemaphoreGive(s_scan_lock);
+                ESP_LOGD(TAG, "bg scan: %u APs cached", n);
+            } else {
+                esp_wifi_clear_ap_list();
+            }
+        } else {
+            /* Busy (a connect's own scan is running, etc.) — leave the last
+             * cache intact; the handler will retrigger on the next poll. */
+            ESP_LOGD(TAG, "bg scan start busy: %s", esp_err_to_name(err));
+        }
+        s_scanning = false;
     }
-    uint16_t n = (uint16_t)max_records;
-    err = esp_wifi_scan_get_ap_records(&n, (wifi_ap_record_t *)out_records);
-    if (err != ESP_OK) {
-        return -1;
+}
+
+void ln_net_wifi_scan_trigger(void)
+{
+    if (s_scan_task == NULL || s_scanning) {
+        return;
     }
-    return (int)n;
+    s_scanning = true;
+    xTaskNotifyGive(s_scan_task);
+}
+
+int ln_net_wifi_scan_cached(void *out_records, int max_records,
+                            bool *scanning, int64_t *age_ms)
+{
+    if (out_records == NULL || max_records <= 0) {
+        if (scanning) *scanning = s_scanning;
+        if (age_ms)   *age_ms = -1;
+        return 0;
+    }
+    xSemaphoreTake(s_scan_lock, portMAX_DELAY);
+    int n = s_scan_count;
+    if (n > max_records) {
+        n = max_records;
+    }
+    if (n > 0) {
+        memcpy(out_records, s_scan_recs, (size_t)n * sizeof(wifi_ap_record_t));
+    }
+    int64_t age = (s_scan_ts_us == 0)
+                      ? -1
+                      : (esp_timer_get_time() - s_scan_ts_us) / 1000;
+    xSemaphoreGive(s_scan_lock);
+    if (scanning) *scanning = s_scanning;
+    if (age_ms)   *age_ms = age;
+    return n;
 }
 
 /* ------------------------------------------------------------ portal glue */
@@ -342,9 +567,13 @@ static void portal_ensure_started(void)
     }
     if (ln_portal_start() == ESP_OK) {
         s_portal_up = true;
+        /* Prime the scan cache so the first page load has data within ~2s. */
+        ln_net_wifi_scan_trigger();
         ln_net_portal_info_t info = {0};
         strlcpy(info.ap_ssid, CONFIG_LN_PORTAL_AP_SSID, sizeof(info.ap_ssid));
-        strlcpy(info.portal_url, "http://" LN_PORTAL_IP_STR, sizeof(info.portal_url));
+        char gw[16];
+        ln_net_ap_gateway(gw, sizeof(gw));
+        snprintf(info.portal_url, sizeof(info.portal_url), "http://%s", gw);
         esp_event_post(LN_NET_EVENT, LN_NET_EVENT_PORTAL_STARTED,
                        &info, sizeof(info), 0);
     }
@@ -364,6 +593,21 @@ esp_netif_t *ln_net_take_ap_netif(void)
 {
     if (s_ap_netif == NULL) {
         s_ap_netif = esp_netif_create_default_wifi_ap();
+        if (s_ap_netif != NULL) {
+            /* Apply a previously-selected non-default subnet, if any. */
+            char sub[16] = {0};
+            nvs_handle_t h;
+            if (nvs_open(LN_NVS_NS_NET, NVS_READONLY, &h) == ESP_OK) {
+                size_t l = sizeof(sub);
+                if (nvs_get_str(h, "ap_subnet", sub, &l) != ESP_OK) {
+                    sub[0] = '\0';
+                }
+                nvs_close(h);
+            }
+            if (subnet_allowed(sub)) {
+                ap_subnet_set_netif(sub);
+            }
+        }
     }
     return s_ap_netif;
 }
@@ -483,7 +727,8 @@ esp_err_t ln_net_init(void)
     }
     s_lock = xSemaphoreCreateMutex();
     s_bits = xEventGroupCreate();
-    if (s_lock == NULL || s_bits == NULL) {
+    s_scan_lock = xSemaphoreCreateMutex();
+    if (s_lock == NULL || s_bits == NULL || s_scan_lock == NULL) {
         return ESP_ERR_NO_MEM;
     }
 
@@ -522,6 +767,11 @@ esp_err_t ln_net_init(void)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(err));
         return err;
+    }
+
+    /* Background scan worker for the portal's non-blocking /api/scan. */
+    if (xTaskCreate(scan_task, "ln_scan", 4096, NULL, 4, &s_scan_task) != pdPASS) {
+        return ESP_ERR_NO_MEM;
     }
 
     creds_load();

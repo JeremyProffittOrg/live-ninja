@@ -89,6 +89,8 @@ void ln_ui_config_values(const ln_ui_config_t *cfg);
 void ln_ui_onboarding_portal(const char *ssid, const char *url);
 /** Phase 2: WiFi done, account pairing — show claim URL QR + pairing code. */
 void ln_ui_onboarding_pairing(const char *claim_url, const char *code);
+/** WiFi joined — refresh the QR to the device's new STA URL (http://<ip>/). */
+void ln_ui_onboarding_connected(const char *ip);
 /** Footer status line, e.g. "Waiting for a device to connect…". */
 void ln_ui_onboarding_status(const char *text);
 

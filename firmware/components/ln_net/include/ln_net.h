@@ -62,6 +62,10 @@ typedef enum {
      *  invalid). Stored auth has been wiped; device must re-pair
      *  (state diagram: Error -> Provisioning). No data. */
     LN_NET_EVENT_AUTH_INVALID,
+    /** A station (phone/laptop) joined or left the provisioning SoftAP.
+     *  Data: int (current associated-client count). Lets the LCD onboarding
+     *  screen advance its footer from "Waiting for a device to connect…". */
+    LN_NET_EVENT_PORTAL_CLIENT,
 } ln_net_event_id_t;
 
 typedef struct {

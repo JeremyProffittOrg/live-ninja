@@ -4,11 +4,14 @@
  * DNS hijack (ln_dns.c) so phones auto-open the page.
  *
  * Endpoints:
- *   GET  /            single self-contained rich-UI page (embedded)
- *   GET  /api/scan    live SSID scan -> JSON list (dedup, strongest first)
- *   POST /api/wifi    {ssid, pass} -> store + async STA connect (202)
- *   GET  /api/status  {wifi:{state,ssid,ip,reason}, paired, claimUrl}
- *   *                 captive-portal probes + any 404 -> 302 to /
+ *   GET  /             single self-contained rich-UI page (embedded)
+ *   GET  /api/scan     cached SSID list (never blocks) ->
+ *                      {networks:[{ssid,rssi,secure}],scanning,ageMs}
+ *   POST /api/wifi     {ssid, pass} -> store + async STA connect (202)
+ *   POST /api/mode     {mode:"ap"|"sta"} -> record AP-only vs join choice
+ *   POST /api/apconfig {subnet:"192.168.4"|"10.0.0"} -> re-IP the SoftAP
+ *   GET  /api/status   {wifi:{state,ssid,ip}, paired, claimUrl, mode, gateway}
+ *   *                  captive-portal probes + any 404 -> 302 to /
  *
  * The AP runs alongside STA (APSTA) so the phone keeps seeing status while
  * the device tries the selected network and then pairs with the backend.
@@ -40,10 +43,36 @@ static httpd_handle_t s_httpd;
 
 static esp_err_t redirect_to_root(httpd_req_t *req)
 {
+    char gw[16];
+    ln_net_ap_gateway(gw, sizeof(gw));
+    char loc[32];
+    snprintf(loc, sizeof(loc), "http://%s/", gw);
     httpd_resp_set_status(req, "302 Found");
-    httpd_resp_set_hdr(req, "Location", "http://" LN_PORTAL_IP_STR "/");
+    /* httpd sends headers inside httpd_resp_send below, while loc is still in
+     * scope, so a stack buffer for the (uncopied) header value is safe. */
+    httpd_resp_set_hdr(req, "Location", loc);
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, NULL, 0);
+}
+
+/* Read a bounded JSON request body into buf (NUL-terminated). Returns the
+ * length, or -1 on a missing/oversized body / transport error. */
+static int read_body(httpd_req_t *req, char *buf, size_t cap)
+{
+    int to_read = req->content_len;
+    if (to_read <= 0 || to_read >= (int)cap) {
+        return -1;
+    }
+    int total = 0;
+    while (total < to_read) {
+        int r = httpd_req_recv(req, buf + total, to_read - total);
+        if (r <= 0) {
+            return -1;
+        }
+        total += r;
+    }
+    buf[total] = '\0';
+    return total;
 }
 
 /* Minimal JSON string escaper (SSIDs can contain quotes/backslashes). */
@@ -76,24 +105,26 @@ static esp_err_t root_get(httpd_req_t *req)
                            portal_html_end - portal_html_start - 1);
 }
 
+/* Always returns immediately from the cache — never blocks on the radio.
+ * Shape: {"networks":[{ssid,rssi,secure}...],"scanning":<bool>,"ageMs":<n>}
+ * (ageMs = -1 before the first scan completes). Triggers a background refresh
+ * when the cache is stale (>5s) or empty and no scan is already in flight. */
+#define SCAN_STALE_MS 5000
+
 static esp_err_t scan_get(httpd_req_t *req)
 {
     static wifi_ap_record_t recs[SCAN_MAX_RECORDS]; /* ~2KB; keep off stack */
-    static SemaphoreHandle_t scan_lock;
-    if (scan_lock == NULL) {
-        scan_lock = xSemaphoreCreateMutex();
-    }
+    bool scanning = false;
+    int64_t age_ms = -1;
+    int n = ln_net_wifi_scan_cached(recs, SCAN_MAX_RECORDS, &scanning, &age_ms);
 
-    xSemaphoreTake(scan_lock, portMAX_DELAY);
-    int n = ln_net_wifi_scan(recs, SCAN_MAX_RECORDS);
+    if (!scanning && (age_ms < 0 || age_ms > SCAN_STALE_MS)) {
+        ln_net_wifi_scan_trigger();
+        scanning = true;
+    }
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    if (n < 0) {
-        xSemaphoreGive(scan_lock);
-        httpd_resp_set_status(req, "503 Service Unavailable");
-        return httpd_resp_sendstr(req, "{\"error\":\"scan_busy\"}");
-    }
 
     httpd_resp_sendstr_chunk(req, "{\"networks\":[");
     bool first = true;
@@ -123,9 +154,11 @@ static esp_err_t scan_get(httpd_req_t *req)
         httpd_resp_sendstr_chunk(req, row);
         first = false;
     }
-    httpd_resp_sendstr_chunk(req, "]}");
+    char tail[64];
+    snprintf(tail, sizeof(tail), "],\"scanning\":%s,\"ageMs\":%lld}",
+             scanning ? "true" : "false", (long long)age_ms);
+    httpd_resp_sendstr_chunk(req, tail);
     httpd_resp_sendstr_chunk(req, NULL);
-    xSemaphoreGive(scan_lock);
     return ESP_OK;
 }
 
@@ -169,6 +202,68 @@ static esp_err_t wifi_post(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
+/* POST /api/mode {mode:"ap"|"sta"} — records the user's top-level choice
+ * between "keep this device as its own access point" and "join a Wi-Fi
+ * network". Persisted so the LCD / status can reflect it; STA credentials
+ * still arrive via /api/wifi. */
+static esp_err_t mode_post(httpd_req_t *req)
+{
+    char body[128];
+    esp_err_t err = ESP_ERR_INVALID_ARG;
+    if (read_body(req, body, sizeof(body)) > 0) {
+        cJSON *root = cJSON_Parse(body);
+        if (root != NULL) {
+            const cJSON *m = cJSON_GetObjectItemCaseSensitive(root, "mode");
+            if (cJSON_IsString(m) && m->valuestring != NULL) {
+                if (strcmp(m->valuestring, "ap") == 0) {
+                    err = ln_net_set_ap_only(true);
+                } else if (strcmp(m->valuestring, "sta") == 0) {
+                    err = ln_net_set_ap_only(false);
+                }
+            }
+            cJSON_Delete(root);
+        }
+    }
+    httpd_resp_set_type(req, "application/json");
+    if (err != ESP_OK) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"bad_mode\"}");
+    }
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
+/* POST /api/apconfig {subnet:"192.168.4"|"10.0.0"} — reconfigure the SoftAP
+ * subnet. The swap is deferred ~600ms so this 200 reaches the phone before its
+ * link to the old gateway drops; the phone must then reconnect to the new
+ * gateway (returned as "url"). */
+static esp_err_t apconfig_post(httpd_req_t *req)
+{
+    char body[128];
+    esp_err_t err = ESP_ERR_INVALID_ARG;
+    char subnet[16] = {0};
+    if (read_body(req, body, sizeof(body)) > 0) {
+        cJSON *root = cJSON_Parse(body);
+        if (root != NULL) {
+            const cJSON *s = cJSON_GetObjectItemCaseSensitive(root, "subnet");
+            if (cJSON_IsString(s) && s->valuestring != NULL) {
+                strlcpy(subnet, s->valuestring, sizeof(subnet));
+                err = ln_net_apply_ap_subnet(subnet);
+            }
+            cJSON_Delete(root);
+        }
+    }
+    httpd_resp_set_type(req, "application/json");
+    if (err != ESP_OK) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"bad_subnet\"}");
+    }
+    char out[96];
+    snprintf(out, sizeof(out),
+             "{\"ok\":true,\"gateway\":\"%s.1\",\"url\":\"http://%s.1/\"}",
+             subnet, subnet);
+    return httpd_resp_sendstr(req, out);
+}
+
 static const char *wifi_state_str(const ln_wifi_status_t *st)
 {
     switch (st->state) {
@@ -201,12 +296,17 @@ static esp_err_t status_get(httpd_req_t *req)
     char ssid_esc[100];
     json_escape(st.ssid, ssid_esc, sizeof(ssid_esc));
 
-    char out[640];
+    char gw[16];
+    ln_net_ap_gateway(gw, sizeof(gw));
+
+    char out[720];
     snprintf(out, sizeof(out),
              "{\"wifi\":{\"state\":\"%s\",\"ssid\":\"%s\",\"ip\":\"%s\"},"
-             "\"paired\":%s,\"claimUrl\":\"%s\"}",
+             "\"paired\":%s,\"claimUrl\":\"%s\","
+             "\"mode\":\"%s\",\"gateway\":\"%s\"}",
              wifi_state_str(&st), ssid_esc, st.ip,
-             ln_net_is_paired() ? "true" : "false", claim);
+             ln_net_is_paired() ? "true" : "false", claim,
+             ln_net_is_ap_only() ? "ap" : "sta", gw);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -255,7 +355,7 @@ esp_err_t ln_portal_start(void)
     }
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 14;
+    cfg.max_uri_handlers = 16;
     cfg.stack_size = 8192;
     cfg.lru_purge_enable = true;
     cfg.uri_match_fn = httpd_uri_match_wildcard;
@@ -269,6 +369,8 @@ esp_err_t ln_portal_start(void)
         {.uri = "/",            .method = HTTP_GET,  .handler = root_get},
         {.uri = "/api/scan",    .method = HTTP_GET,  .handler = scan_get},
         {.uri = "/api/wifi",    .method = HTTP_POST, .handler = wifi_post},
+        {.uri = "/api/mode",    .method = HTTP_POST, .handler = mode_post},
+        {.uri = "/api/apconfig",.method = HTTP_POST, .handler = apconfig_post},
         {.uri = "/api/status",  .method = HTTP_GET,  .handler = status_get},
         /* Captive-portal detection probes (Android/Apple/Windows). */
         {.uri = "/generate_204",             .method = HTTP_GET, .handler = captive_probe},
@@ -285,13 +387,15 @@ esp_err_t ln_portal_start(void)
     }
     httpd_register_err_handler(s_httpd, HTTPD_404_NOT_FOUND, err_404);
 
+    char gw[16];
+    ln_net_ap_gateway(gw, sizeof(gw));
     err = ln_dns_start();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "DNS hijack unavailable (%s); portal reachable at "
-                 "http://" LN_PORTAL_IP_STR " only", esp_err_to_name(err));
+                 "http://%s only", esp_err_to_name(err), gw);
     }
-    ESP_LOGI(TAG, "portal up: SSID \"%s\", http://" LN_PORTAL_IP_STR,
-             CONFIG_LN_PORTAL_AP_SSID);
+    ESP_LOGI(TAG, "portal up: SSID \"%s\", http://%s",
+             CONFIG_LN_PORTAL_AP_SSID, gw);
     return ESP_OK;
 }
 

@@ -147,6 +147,9 @@ static void on_net_event(void *arg, esp_event_base_t base, int32_t id,
             snprintf(buf, sizeof(buf), "%s · %s", w->ssid,
                      rssi_word(w->rssi));
             ln_ui_set_wifi_status(buf);
+            /* Refresh the onboarding QR to the new STA URL (task 5). Pairing,
+             * which starts moments later, overrides it with the claim-URL QR. */
+            ln_ui_onboarding_connected(w->ip);
             if (ui_lock()) {
                 ln_scr_config_set_net(w->ssid, w->ip, rssi_word(w->rssi));
                 snprintf(buf, sizeof(buf), "%s · connected", w->ssid);
@@ -185,6 +188,16 @@ static void on_net_event(void *arg, esp_event_base_t base, int32_t id,
         break;
     case LN_NET_EVENT_PAIRED:
         ln_ui_onboarding_status("Device claimed — finishing up…");
+        break;
+    case LN_NET_EVENT_PORTAL_CLIENT:
+        /* A phone joined/left the SoftAP — advance the onboarding footer so it
+         * stops saying "Waiting for a device to connect…" (task 4). */
+        if (data != NULL) {
+            int count = *(const int *)data;
+            ln_ui_onboarding_status(count > 0
+                ? "Phone connected — open the setup page to continue…"
+                : "Waiting for a device to connect…");
+        }
         break;
     case LN_NET_EVENT_AUTH_INVALID:
         ln_ui_error_show("Sign-in no longer valid",
@@ -547,6 +560,15 @@ void ln_ui_onboarding_pairing(const char *claim_url, const char *code)
         return;
     }
     ln_scr_onboarding_pairing(claim_url, code);
+    bsp_display_unlock();
+}
+
+void ln_ui_onboarding_connected(const char *ip)
+{
+    if (ip == NULL || !ui_lock()) {
+        return;
+    }
+    ln_scr_onboarding_connected(ip);
     bsp_display_unlock();
 }
 

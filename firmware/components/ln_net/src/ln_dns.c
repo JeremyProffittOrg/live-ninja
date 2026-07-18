@@ -82,13 +82,15 @@ static void dns_task(void *arg)
 
         int out = qend;
         if (qtype == 1 /* A */ || qtype == 255 /* ANY */) {
-            static const uint8_t answer[] = {
+            uint8_t gw[4];
+            ln_net_ap_gateway_octets(gw);          /* active SoftAP gateway */
+            const uint8_t answer[] = {
                 0xC0, 0x0C,             /* name: pointer to question */
                 0x00, 0x01,             /* type A */
                 0x00, 0x01,             /* class IN */
                 0x00, 0x00, 0x00, 0x3C, /* TTL 60s */
                 0x00, 0x04,             /* RDLENGTH */
-                192, 168, 4, 1,         /* RDATA */
+                gw[0], gw[1], gw[2], gw[3], /* RDATA: gateway IP */
             };
             if (out + (int)sizeof(answer) <= (int)sizeof(pkt)) {
                 memcpy(&pkt[out], answer, sizeof(answer));
@@ -136,7 +138,9 @@ esp_err_t ln_dns_start(void)
         s_running = false;
         return ESP_ERR_NO_MEM;
     }
-    ESP_LOGI(TAG, "captive DNS up on :%d -> %s", DNS_PORT, LN_PORTAL_IP_STR);
+    char gw[16];
+    ln_net_ap_gateway(gw, sizeof(gw));
+    ESP_LOGI(TAG, "captive DNS up on :%d -> %s", DNS_PORT, gw);
     return ESP_OK;
 }
 

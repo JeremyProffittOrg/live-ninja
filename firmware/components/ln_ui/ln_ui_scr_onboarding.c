@@ -172,6 +172,25 @@ void ln_scr_onboarding_pairing(const char *claim_url, const char *code)
     lv_label_set_text(s_status, "Waiting for you to approve in the browser…");
 }
 
+void ln_scr_onboarding_connected(const char *ip)
+{
+    if (s_title == NULL || ip == NULL || ip[0] == '\0') {
+        return;
+    }
+    lv_label_set_text(s_title, "Wi-Fi connected");
+
+    set_step(1, "Wi-Fi connected", "This device is online.");
+    set_step(2, "Linking your account", "Fetching a pairing link…");
+    set_step(3, "Almost there", "The QR will update when the link is ready.");
+
+    char url[40];
+    snprintf(url, sizeof(url), "http://%s/", ip);
+    lv_qrcode_update(s_qr, url, (uint32_t)strlen(url));
+    lv_label_set_text(s_qr_caption, url);
+    lv_obj_add_flag(s_code_label, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(s_status, "Connected — linking your account…");
+}
+
 void ln_scr_onboarding_status(const char *text)
 {
     if (s_status != NULL && text != NULL) {

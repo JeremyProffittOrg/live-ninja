@@ -27,6 +27,13 @@ h2{font-size:16px;font-weight:600;margin-bottom:4px}
 .hint{font-size:14px;color:var(--muted);margin-bottom:12px}
 fieldset{border:0}
 legend{font-size:16px;font-weight:600;margin-bottom:4px}
+.seg{display:flex;gap:8px;margin-top:10px}
+.seg button{flex:1;min-height:56px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+  border:1px solid var(--border-strong);border-radius:var(--r);background:var(--surface2);color:var(--text);
+  font-size:15px;font-weight:600;padding:8px 6px;line-height:1.25}
+.seg button small{font-weight:400;font-size:12px;color:var(--muted)}
+.seg button[aria-pressed="true"]{border-color:var(--teal);background:rgba(34,224,208,.12);box-shadow:0 0 0 1px var(--teal-glow)}
+.seg button[aria-pressed="true"] small{color:var(--text)}
 .netlist{list-style:none;margin-top:10px}
 .netlist li+li{margin-top:8px}
 .net{display:flex;align-items:center;gap:12px;width:100%;min-height:52px;padding:10px 14px;border:1px solid var(--border);
@@ -57,6 +64,8 @@ button{font:inherit;cursor:pointer}
 .alert{display:none;margin-top:12px;padding:10px 14px;border-radius:var(--r);font-size:14px;
   background:rgba(255,92,114,.12);border:1px solid rgba(255,92,114,.45);color:#ffd7dd}
 .alert.show{display:block}
+.note{margin-top:12px;padding:10px 14px;border-radius:var(--r);font-size:13px;color:var(--muted);
+  background:var(--surface2);border:1px solid var(--border)}
 .status-line{display:flex;align-items:center;gap:10px;font-size:15px;color:var(--muted);margin-top:6px}
 .spin{width:18px;height:18px;border:2px solid var(--border-strong);border-top-color:var(--teal);border-radius:50%;
   animation:spin .9s linear infinite;flex:none}
@@ -82,34 +91,74 @@ button{font:inherit;cursor:pointer}
     <div class="step" id="step" aria-live="polite">Step 1 of 3</div>
   </header>
 
-  <!-- STEP 1: pick a network -->
+  <!-- STEP 1: choose how to connect -->
   <section class="card" id="panel-wifi">
     <fieldset>
-      <legend>Choose your Wi-Fi network</legend>
-      <p class="hint" id="scanHint">Networks near your device, strongest first.</p>
-      <ul class="netlist" id="netlist" aria-describedby="scanHint"></ul>
-      <div class="row">
-        <span class="hint" id="netCount" style="margin:0" aria-live="polite"></span>
-        <button type="button" class="btn-ghost" id="rescan">&#10227; Rescan</button>
+      <legend>How should this device connect?</legend>
+      <p class="hint" id="modeHint">Join your home Wi-Fi for the cloud voice assistant, or keep this device as its own hotspot.</p>
+      <div class="seg" role="radiogroup" aria-label="Connection mode">
+        <button type="button" id="modeStaBtn" role="radio" aria-checked="true" aria-pressed="true">
+          Join Wi-Fi<small>Recommended</small></button>
+        <button type="button" id="modeApBtn" role="radio" aria-checked="false" aria-pressed="false">
+          Keep as hotspot<small>Stay an access point</small></button>
       </div>
     </fieldset>
 
-    <div id="hiddenWrap" class="hidden">
-      <label for="hiddenSsid">Hidden network name (SSID)</label>
-      <input type="text" id="hiddenSsid" autocomplete="off" autocapitalize="none" spellcheck="false">
+    <!-- 1a: join an existing Wi-Fi network -->
+    <div id="sub-sta">
+      <fieldset style="margin-top:18px">
+        <legend>Choose your Wi-Fi network</legend>
+        <p class="hint" id="scanHint">Networks near your device, strongest first.</p>
+        <ul class="netlist" id="netlist" aria-describedby="scanHint"></ul>
+        <div class="row">
+          <span class="hint" id="netCount" style="margin:0" aria-live="polite"></span>
+          <button type="button" class="btn-ghost" id="rescan">&#10227; Rescan</button>
+        </div>
+      </fieldset>
+
+      <div id="hiddenWrap" class="hidden">
+        <label for="hiddenSsid">Hidden network name (SSID)</label>
+        <input type="text" id="hiddenSsid" autocomplete="off" autocapitalize="none" spellcheck="false">
+      </div>
+
+      <form id="joinForm" class="hidden">
+        <label for="pw" id="pwLabel">Password</label>
+        <div class="pwrow">
+          <input type="password" id="pw" autocomplete="current-password" autocapitalize="none" spellcheck="false"
+                 aria-describedby="pwHint">
+          <button type="button" class="toggle" id="pwToggle" aria-pressed="false" aria-label="Show password">Show</button>
+        </div>
+        <p class="hint" id="pwHint" style="margin-top:6px">Your password stays on this device — it is only used to join the network.</p>
+        <div class="alert" id="joinError" role="alert"></div>
+        <button type="submit" class="btn btn-primary" id="joinBtn">Join network</button>
+      </form>
     </div>
 
-    <form id="joinForm" class="hidden">
-      <label for="pw" id="pwLabel">Password</label>
-      <div class="pwrow">
-        <input type="password" id="pw" autocomplete="current-password" autocapitalize="none" spellcheck="false"
-               aria-describedby="pwHint">
-        <button type="button" class="toggle" id="pwToggle" aria-pressed="false" aria-label="Show password">Show</button>
-      </div>
-      <p class="hint" id="pwHint" style="margin-top:6px">Your password stays on this device — it is only used to join the network.</p>
-      <div class="alert" id="joinError" role="alert"></div>
-      <button type="submit" class="btn btn-primary" id="joinBtn">Join network</button>
-    </form>
+    <!-- 1b: keep this device as its own access point -->
+    <div id="sub-ap" class="hidden">
+      <fieldset style="margin-top:18px">
+        <legend>Keep this device as its own hotspot</legend>
+        <p class="hint">The device stays as the Wi-Fi network you are on now. Pick the local IP range it should hand out.</p>
+        <div class="seg" role="radiogroup" aria-label="Local IP range">
+          <button type="button" class="subnet" data-subnet="192.168.4" role="radio" aria-checked="true" aria-pressed="true">
+            192.168.4.x<small>Default</small></button>
+          <button type="button" class="subnet" data-subnet="10.0.0" role="radio" aria-checked="false" aria-pressed="false">
+            10.0.0.x<small>Alternate</small></button>
+        </div>
+        <p class="note" id="apNote">Gateway will be <span id="apGw">192.168.4.1</span>. Changing the range disconnects
+          everyone currently on the hotspot — reconnect to the new address shown after you save.</p>
+        <div class="alert" id="apError" role="alert"></div>
+        <button type="button" class="btn btn-primary" id="apSaveBtn">Keep as hotspot</button>
+      </fieldset>
+    </div>
+  </section>
+
+  <!-- AP saved confirmation -->
+  <section class="card hidden" id="panel-ap-done" role="status">
+    <h2><span class="ok">&#10003;</span> Hotspot mode set</h2>
+    <p class="hint" style="margin-top:8px" id="apDoneMsg">This device will keep running as its own Wi-Fi hotspot.</p>
+    <span class="url hidden" id="apDoneUrl"></span>
+    <button type="button" class="btn btn-ghost" id="apBack" style="margin-top:16px">Choose a different option</button>
   </section>
 
   <!-- STEP 1b: connecting -->
@@ -150,14 +199,81 @@ button{font:inherit;cursor:pointer}
 "use strict";
 var $=function(id){return document.getElementById(id);};
 var selSsid=null, selSecure=true, hiddenMode=false, submitted=false, pollTimer=null;
+var scanTimer=null, mode="sta", subnet="192.168.4", curGateway="192.168.4.1";
 
 function show(el,on){el.classList.toggle("hidden",!on);}
 function setStep(n){$("step").textContent="Step "+n+" of 3";}
 function panels(active){
-  ["panel-wifi","panel-connecting","panel-pair","panel-done"].forEach(function(id){
+  ["panel-wifi","panel-ap-done","panel-connecting","panel-pair","panel-done"].forEach(function(id){
     show($(id),id===active);
   });
 }
+
+/* ---------- connection mode (Join Wi-Fi vs keep as hotspot) ---------- */
+function setMode(m){
+  mode=m;
+  var sta=m==="sta";
+  $("modeStaBtn").setAttribute("aria-checked",String(sta));
+  $("modeStaBtn").setAttribute("aria-pressed",String(sta));
+  $("modeApBtn").setAttribute("aria-checked",String(!sta));
+  $("modeApBtn").setAttribute("aria-pressed",String(!sta));
+  show($("sub-sta"),sta);
+  show($("sub-ap"),!sta);
+  if(sta && !scanTimer && !$("netlist").children.length){scan();}
+}
+$("modeStaBtn").addEventListener("click",function(){setMode("sta");});
+$("modeApBtn").addEventListener("click",function(){setMode("ap");});
+
+/* ---------- subnet picker (AP mode) ---------- */
+function setSubnet(s){
+  subnet=s;
+  var btns=document.querySelectorAll(".subnet");
+  for(var i=0;i<btns.length;i++){
+    var on=btns[i].getAttribute("data-subnet")===s;
+    btns[i].setAttribute("aria-checked",String(on));
+    btns[i].setAttribute("aria-pressed",String(on));
+  }
+  $("apGw").textContent=s+".1";
+}
+(function(){
+  var btns=document.querySelectorAll(".subnet");
+  for(var i=0;i<btns.length;i++){
+    (function(b){b.addEventListener("click",function(){setSubnet(b.getAttribute("data-subnet"));});})(btns[i]);
+  }
+})();
+
+$("apSaveBtn").addEventListener("click",function(){
+  var changed=(subnet+".1")!==curGateway;
+  $("apSaveBtn").disabled=true;$("apSaveBtn").textContent="Saving…";
+  $("apError").classList.remove("show");
+  fetch("/api/mode",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({mode:"ap"})})
+  .then(function(r){if(!r.ok)throw new Error("mode");
+    if(!changed)return null;
+    return fetch("/api/apconfig",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({subnet:subnet})}).then(function(r2){if(!r2.ok)throw new Error("subnet");return r2.json();});
+  })
+  .then(function(j){
+    $("apSaveBtn").disabled=false;$("apSaveBtn").textContent="Keep as hotspot";
+    if(j&&j.url){
+      $("apDoneMsg").textContent="The device is switching its network range now. Reconnect your phone to the hotspot, then open:";
+      $("apDoneUrl").textContent=j.url;show($("apDoneUrl"),true);
+    }else{
+      $("apDoneMsg").textContent="This device will keep running as its own Wi-Fi hotspot at http://"+curGateway+"/.";
+      show($("apDoneUrl"),false);
+    }
+    panels("panel-ap-done");
+  })
+  .catch(function(){
+    $("apSaveBtn").disabled=false;$("apSaveBtn").textContent="Keep as hotspot";
+    var a=$("apError");a.textContent="Couldn’t save that to the device. Try again.";a.classList.add("show");
+  });
+});
+$("apBack").addEventListener("click",function(){
+  fetch("/api/mode",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({mode:"sta"})}).catch(function(){});
+  setMode("sta");panels("panel-wifi");
+});
 
 /* ---------- scan / network list ---------- */
 function bars(rssi){
@@ -208,13 +324,26 @@ function pick(ssid,secure,hidden){
   markPressed();
   (hidden?$("hiddenSsid"):$("pw")).focus();
 }
+/* Non-blocking scan: poll the cached endpoint every ~2.5s until APs arrive. */
 function scan(){
+  if(scanTimer){clearTimeout(scanTimer);scanTimer=null;}
   renderSkeleton();
+  pollScan();
+}
+function pollScan(){
+  scanTimer=null;
   fetch("/api/scan").then(function(r){return r.json();}).then(function(j){
-    renderList(j.networks||[]);
+    var nets=j.networks||[];
+    if(nets.length){renderList(nets);return;}          /* results in — stop */
+    if(j.scanning||j.ageMs<0){                          /* still working */
+      $("netCount").textContent="Scanning…";
+      scanTimer=setTimeout(pollScan,2500);
+    }else{
+      renderList(nets);                                 /* done, none found */
+    }
   }).catch(function(){
     $("netCount").textContent="Scan busy — trying again…";
-    setTimeout(scan,2500);
+    scanTimer=setTimeout(pollScan,2500);
   });
 }
 $("rescan").addEventListener("click",scan);
@@ -250,6 +379,7 @@ function resetJoin(){$("joinBtn").disabled=false;$("joinBtn").textContent="Join 
 /* ---------- status polling ---------- */
 function poll(){
   fetch("/api/status").then(function(r){return r.json();}).then(function(st){
+    if(st.gateway){curGateway=st.gateway;}
     if(st.paired){setStep(3);panels("panel-done");return;}
     var w=st.wifi||{};
     if(w.state==="connected"){
@@ -262,8 +392,11 @@ function poll(){
         show(a,true);show($("claimUrlText"),true);show($("pairNote"),true);show($("pairWait"),false);
         $("claimUrlText").textContent=st.claimUrl;
       }
+    }else if(w.state==="connecting"&&submitted){
+      $("connMsg").textContent="Connecting to “"+(w.ssid||selSsid||"your network")+"”…";
+      panels("panel-connecting");
     }else if(submitted&&(w.state==="wrong_password"||w.state==="ap_not_found"||w.state==="failed")){
-      submitted=false;resetJoin();panels("panel-wifi");setStep(1);
+      submitted=false;resetJoin();setMode("sta");panels("panel-wifi");setStep(1);
       showError(w.state==="wrong_password"?
         "Wrong password for “"+w.ssid+"” — try again.":
         w.state==="ap_not_found"?
@@ -273,6 +406,12 @@ function poll(){
     }
   }).catch(function(){/* device busy switching networks; keep polling */});
 }
+
+/* ---------- init: seed subnet/mode from the device ---------- */
+fetch("/api/status").then(function(r){return r.json();}).then(function(st){
+  if(st.gateway){curGateway=st.gateway;var pfx=st.gateway.replace(/\.\d+$/,"");if(pfx!=="")setSubnet(pfx);}
+  if(st.mode==="ap"){setMode("ap");}
+}).catch(function(){});
 
 setStep(1);panels("panel-wifi");scan();
 pollTimer=setInterval(poll,1500);
