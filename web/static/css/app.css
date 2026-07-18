@@ -985,6 +985,8 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
    the rail. --ln-text-muted keeps AA on the HAL dark rail (same ink as the
    status line); the checked state brightens to full text ink. */
 .ptt-zone .ln-toggle { font-size: var(--ln-fs-sm); font-weight: 600; color: var(--ln-text-muted); }
+.wake-toggle-col { display: flex; flex-direction: column; line-height: 1.25; }
+.wake-toggle-col .wakeword-phrase { font-size: 12px; font-weight: 400; color: var(--ln-text-dim); }
 .ptt-zone .ln-toggle:has(input:checked) { color: var(--ln-text); }
 .ptt:hover { filter: brightness(1.06); }
 .ptt:active { transform: scale(0.96); }

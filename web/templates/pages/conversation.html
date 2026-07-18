@@ -64,18 +64,22 @@
                WASM/AudioWorklet is unavailable. The active phrase surfaces
                in #statusText; sr-only #wakePhrase keeps the accessible
                copy on the toggle itself. */}}
+        {{- /* Owner 2026-07-18 (2): wake toggle LEFT (phrase shown under its
+               label), mic RIGHT. */}}
         <div class="ptt-zone">
+          <label class="ln-toggle" id="wakeToggleWrap">
+            <input type="checkbox" id="wakeToggle" aria-describedby="wakeHint">
+            <span class="ln-toggle-track" aria-hidden="true"><span class="ln-toggle-thumb"></span></span>
+            <span class="wake-toggle-col">
+              <span>Use Wake Word</span>
+              <span class="wakeword-phrase" id="wakePhrase" hidden></span>
+            </span>
+          </label>
           <button class="ptt" id="pttBtn" type="button" data-state="idle"
                   aria-pressed="false" aria-label="Push to talk, currently off — tap to start">
             <span aria-hidden="true">🎙</span>
             <span class="ln-sr-only" data-ln-label>Start talking</span>
           </button>
-          <label class="ln-toggle" id="wakeToggleWrap">
-            <input type="checkbox" id="wakeToggle" aria-describedby="wakeHint">
-            <span class="ln-toggle-track" aria-hidden="true"><span class="ln-toggle-thumb"></span></span>
-            <span>Use Wake Word</span>
-            <span class="wakeword-phrase ln-sr-only" id="wakePhrase" hidden></span>
-          </label>
         </div>
         <p class="wakeword-hint ln-sr-only" id="wakeHint">Off — use the push-to-talk button to start a turn.</p>
       </div>
