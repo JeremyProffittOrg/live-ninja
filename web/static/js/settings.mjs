@@ -662,7 +662,13 @@ function wwValidate(raw) {
   }
   if (phrase.length < 6) return { error: 'That phrase is too short — use at least 6 letters.' };
   const lower = phrase.toLowerCase();
-  if (wakeCatalog.some((c) => c.phrase.toLowerCase() === lower)) {
+  // Block only phrases that already have a WORKING model (client-bundled
+  // builtin like "Hey Jarvis", or an existing custom). Catalog entries with
+  // modelAvailable.web === false (e.g. "Hey Live Ninja" pre-training) are
+  // exactly the ones training exists to fill — the server resolves the
+  // catalog id to the trained model by phrase slug.
+  const hit = wakeCatalog.find((c) => c.phrase.toLowerCase() === lower);
+  if (hit && (hit.custom || !hit.modelAvailable || hit.modelAvailable.web !== false)) {
     return { error: 'That phrase already exists — pick it from the list above instead.' };
   }
   return { phrase };
