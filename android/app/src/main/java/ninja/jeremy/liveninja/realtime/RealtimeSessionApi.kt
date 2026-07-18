@@ -17,7 +17,14 @@ import org.json.JSONObject
  * session-mint shape — internal/webapp/api_routes.go handleRealtimeSession).
  */
 data class RealtimeSession(
-    /** Short-lived OpenAI ephemeral client secret (Bearer for the SDP POST). */
+    /**
+     * Which transport to use (FR-VE-03), resolved server-side from the
+     * device's `voiceEngine` pin. `"openai-direct"` (default / pre-M12 shape)
+     * → client-direct WebRTC to OpenAI; `"nova-bridge"` → WebSocket + PCM to
+     * the backend Nova Sonic bridge ([NovaBridgeTransport]).
+     */
+    val mode: String = MODE_OPENAI_DIRECT,
+    /** Short-lived OpenAI ephemeral client secret (Bearer for the SDP POST). Empty in nova-bridge mode. */
     val clientSecret: String,
     /** RFC3339 expiry of the client secret (~60s TTL). */
     val expiresAt: String?,
@@ -26,9 +33,18 @@ data class RealtimeSession(
     val sessionId: String?,
     /** `X-LN-Quota-Warning` header when the user is near their daily cap. */
     val quotaWarning: String?,
-    /** Where to POST the SDP offer. */
+    /** Where to POST the SDP offer (openai-direct only). */
     val callsUrl: String = BackendConfig.OPENAI_REALTIME_CALLS_URL,
-)
+    /** Nova bridge WebSocket URL (`wss://nova.live.jeremy.ninja/session?...`), nova-bridge only. */
+    val wsUrl: String? = null,
+    /** Single-use bridge token scoped to this sessionId (nova-bridge only); may already be in [wsUrl]. */
+    val bridgeToken: String? = null,
+) {
+    companion object {
+        const val MODE_OPENAI_DIRECT = "openai-direct"
+        const val MODE_NOVA_BRIDGE = "nova-bridge"
+    }
+}
 
 /**
  * Session bootstrap failure with the backend's error taxonomy
@@ -76,9 +92,22 @@ class RealtimeSessionApi @Inject constructor(
                     httpCode = response.code,
                 )
             }
+            // Two valid success shapes (FR-VE-03); a missing `mode` is the
+            // pre-M12 openai-direct shape.
+            val mode = json.optString("mode").ifEmpty { RealtimeSession.MODE_OPENAI_DIRECT }
             val secret = json.optJSONObject("clientSecret")
             val value = secret?.optString("value").orEmpty()
-            if (value.isEmpty()) {
+            val wsUrl = json.optString("wsUrl").ifEmpty { null }
+
+            if (mode == RealtimeSession.MODE_NOVA_BRIDGE) {
+                if (wsUrl == null) {
+                    throw RealtimeSessionException(
+                        kind = "invalid_response",
+                        message = "Nova bridge session response is missing wsUrl.",
+                        httpCode = response.code,
+                    )
+                }
+            } else if (value.isEmpty()) {
                 throw RealtimeSessionException(
                     kind = "invalid_response",
                     message = "Realtime session response is missing clientSecret.value.",
@@ -86,12 +115,15 @@ class RealtimeSessionApi @Inject constructor(
                 )
             }
             RealtimeSession(
+                mode = mode,
                 clientSecret = value,
-                expiresAt = secret.optString("expiresAt").ifEmpty { null },
+                expiresAt = secret?.optString("expiresAt")?.ifEmpty { null },
                 model = json.optString("model").ifEmpty { null },
                 voice = json.optString("voice").ifEmpty { null },
                 sessionId = json.optString("sessionId").ifEmpty { null },
                 quotaWarning = response.header("X-LN-Quota-Warning"),
+                wsUrl = wsUrl,
+                bridgeToken = json.optString("token").ifEmpty { null },
             )
         }
     }

@@ -35,10 +35,20 @@ import org.json.JSONObject
  */
 @Singleton
 class RealtimeSessionCoordinator @Inject constructor(
-    private val transport: RealtimeTransport,
+    @OpenAiRealtimeTransport private val webRtcTransport: RealtimeTransport,
+    @NovaSonicTransport private val novaBridgeTransport: RealtimeTransport,
     private val sessionApi: RealtimeSessionApi,
     private val toolRouter: ToolCallRouter,
 ) : RealtimeSessionController {
+
+    /**
+     * The transport for the *current* session, selected per the resolved
+     * `voiceEngine` pin (FR-VE-03): WebRTC-to-OpenAI for `openai-direct`, the
+     * Nova Sonic bridge for `nova-bridge`. Both satisfy [RealtimeTransport],
+     * so every method below is engine-agnostic.
+     */
+    @Volatile
+    private var transport: RealtimeTransport = webRtcTransport
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val lifecycleMutex = Mutex()
@@ -65,11 +75,21 @@ class RealtimeSessionCoordinator @Inject constructor(
 
             val session = sessionApi.fetchSession()
 
+            // Route by the resolved engine pin. connect()'s two string params
+            // are reused engine-agnostically: (credential, endpointUrl).
+            val (credential, endpointUrl) = if (session.mode == RealtimeSession.MODE_NOVA_BRIDGE) {
+                transport = novaBridgeTransport
+                session.bridgeToken.orEmpty() to session.wsUrl.orEmpty()
+            } else {
+                transport = webRtcTransport
+                session.clientSecret to session.callsUrl
+            }
+
             emittedChars.clear()
             eventsJob?.cancel()
             eventsJob = scope.launch { transport.events.collect(::onTransportEvent) }
             try {
-                transport.connect(session.clientSecret, session.callsUrl)
+                transport.connect(credential, endpointUrl)
             } catch (t: Throwable) {
                 eventsJob?.cancel()
                 eventsJob = null

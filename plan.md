@@ -676,4 +676,10 @@ _(combined with M6 in workflow `wf_4bf35707` — see M6 notes: partial, resume a
 _(no notes yet)_
 
 ### M12 — Secondary Voice Engine (Nova Sonic)
-_(no notes yet)_
+
+**2026-07-18 02:00–02:45 EDT — 5 authors + integrator (workflow `wf_49a175f0`).** Bedrock `amazon.nova-sonic-v1:0` confirmed available in us-east-1.
+- Architecture (locked): OpenAI-pinned devices stay **client-direct** (unchanged); Nova-pinned devices route audio device⇄backend-bridge⇄Bedrock (Bedrock bidirectional streaming can't be client-direct). Bridge = an **ECS Fargate arm64 service** `nova-bridge` (Go WSS server holding both the client WS and the Bedrock `InvokeModelWithBidirectionalStream` for the session), behind an internal ALB fronted by the **existing CloudFront** at `wss://live.jeremy.ninja/nova/*` (new origin+behavior — no new cert/subdomain). Auth: client presents its first-party JWT on WS connect, bridge verifies via JWKS + quota gate before opening Bedrock.
+- `internal/voiceengine`: common event schema; OpenAI Realtime ⇄ common ⇄ Nova Sonic normalization so topics/memory/tools work identically (bridge posts transcript turns to the same sink, routes function_calls to the same `/api/v1/tools/invoke`).
+- Session bootstrap returns `{mode:"openai-direct", clientSecret,...}` OR `{mode:"nova-bridge", wsUrl, token}` per the device's `voiceEngine` pin (default openai-realtime). Web `realtime.mjs` + Android `RealtimeTransport` gained the dual path; firmware `ln_realtime` gained the branch (HIL-unverified). Per-device engine picker on web + Android settings.
+- Integrator fixed a deploy-breaking Docker build-context bug (nova-bridge builds the whole Go module, needs repo-root context not `containers/nova-bridge`) + reconciled the parallel-author type collisions in `voiceengine`. Verified: `go build/vet/test ./...` green, arm64 cross-build of `cmd/nova-bridge` + `cmd/realtime-broker`, `sam validate --lint`, `node --check`, `gradlew compileDebugKotlin`.
+- Bundled in this push — **wake-word wasm fix (prod)**: the 11 MB onnxruntime-web WASM exceeds Lambda's ~6 MB response cap (500'd). Added an S3-origin (OAC, private bucket) CloudFront behavior for `/static/vendor/*` + `/static/models/*` → `AssetsBucket`, and a deploy step syncing those dirs to S3 (immutable). Files stay embedded as a local-dev fallback; prod serves them from S3.

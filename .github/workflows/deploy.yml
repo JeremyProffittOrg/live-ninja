@@ -48,6 +48,7 @@ jobs:
       contents: read
     outputs:
       containers: ${{ steps.filter.outputs.containers }}
+      nova: ${{ steps.filter.outputs.nova }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -58,7 +59,13 @@ jobs:
         with:
           filters: |
             containers:
-              - 'containers/**'
+              - 'containers/wakeword-train/**'
+            nova:
+              - 'containers/nova-bridge/**'
+              - 'cmd/nova-bridge/**'
+              - 'internal/**'
+              - 'go.mod'
+              - 'go.sum'
 
   # Builds containers/wakeword-train for linux/arm64 and pushes :latest + :<sha>
   # to the live-ninja-wakeword-train ECR repo. Runs BEFORE deploy so a template
@@ -131,14 +138,90 @@ jobs:
             echo "pushed=false" >> "$GITHUB_OUTPUT"
           fi
 
+  # Builds containers/nova-bridge for linux/arm64 and pushes :latest + :<sha> to
+  # the live-ninja-nova-bridge ECR repo. Same bootstrap ordering as wakeword: the
+  # ECR repo is created by the SAM template, so on the very first run the repo
+  # doesn't exist yet — this job build-only-validates the Dockerfile and the
+  # push-nova-container-bootstrap job pushes after deploy has created the repo.
+  # Unlike wakeword (Batch pulls the image only when a job runs), the nova-bridge
+  # ECS service needs a pullable image to reach steady state, so the deploy job
+  # passes NovaBridgeDesiredCount=0 whenever the :latest image is absent (see
+  # there), and the bootstrap job scales the service to 1 after pushing.
+  build-nova-container:
+    needs: [test, changes]
+    if: needs.changes.outputs.nova == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # required for OIDC
+      contents: read
+    outputs:
+      pushed: ${{ steps.build.outputs.pushed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Tolerate a dispatch run from before containers/nova-bridge exists.
+      - name: Check container source present
+        id: precheck
+        run: |
+          if [ -f containers/nova-bridge/Dockerfile ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "containers/nova-bridge/Dockerfile not in tree; nothing to build"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure AWS credentials (OIDC)
+        if: steps.precheck.outputs.present == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-live-ninja-nova-container-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up QEMU (arm64 emulation)
+        if: steps.precheck.outputs.present == 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.precheck.outputs.present == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Amazon ECR
+        if: steps.precheck.outputs.present == 'true'
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build (and push when the ECR repo exists)
+        if: steps.precheck.outputs.present == 'true'
+        id: build
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -eu
+          IMAGE="$REGISTRY/live-ninja-nova-bridge"
+          if aws ecr describe-repositories --repository-names live-ninja-nova-bridge >/dev/null 2>&1; then
+            docker buildx build --platform linux/arm64 \
+              -f containers/nova-bridge/Dockerfile \
+              -t "$IMAGE:latest" -t "$IMAGE:${GITHUB_SHA}" \
+              --push .
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ECR repo not created yet (first deploy); build-only, push happens post-deploy"
+            docker buildx build --platform linux/arm64 -f containers/nova-bridge/Dockerfile .
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+          fi
+
   deploy:
-    # build-wakeword-container is usually skipped (no containers/** change);
-    # deploy must still run then - but never after a failed test or container build.
-    needs: [test, build-wakeword-container]
+    # build-wakeword-container / build-nova-container are usually skipped (no
+    # matching container change); deploy must still run then - but never after a
+    # failed test or container build.
+    needs: [test, build-wakeword-container, build-nova-container]
     if: >-
       always() &&
       needs.test.result == 'success' &&
-      contains(fromJSON('["success", "skipped"]'), needs.build-wakeword-container.result)
+      contains(fromJSON('["success", "skipped"]'), needs.build-wakeword-container.result) &&
+      contains(fromJSON('["success", "skipped"]'), needs.build-nova-container.result)
     runs-on: ubuntu-latest
     permissions:
       id-token: write # required for OIDC
@@ -229,6 +312,25 @@ jobs:
             aws cloudformation wait stack-delete-complete --stack-name live-ninja
           fi
 
+      # M12: the nova-bridge ECS service can only reach steady state once a
+      # pullable image exists. On the very first deploy the ECR repo/image do
+      # not exist yet, so create the service at desiredCount 0 (stabilizes
+      # instantly); the push-nova-container-bootstrap job then pushes the image
+      # and scales to 1. Once :latest is present every deploy uses 1.
+      - name: Determine nova-bridge desired count
+        id: nova
+        run: |
+          set -eu
+          if aws ecr describe-images \
+              --repository-name live-ninja-nova-bridge \
+              --image-ids imageTag=latest >/dev/null 2>&1; then
+            echo "desired=1" >> "$GITHUB_OUTPUT"
+            echo "nova-bridge :latest present -> desiredCount=1"
+          else
+            echo "desired=0" >> "$GITHUB_OUTPUT"
+            echo "nova-bridge :latest absent (first deploy) -> desiredCount=0"
+          fi
+
       # No `sam build`: binaries are prebuilt by `make build` into .build/<fn>/
       # (SAM's default builder for provided.* runtimes would demand a Makefile
       # inside each CodeUri dir). `sam deploy` zips the CodeUri dirs directly.
@@ -246,7 +348,39 @@ jobs:
               DomainName=${{ vars.DOMAIN_NAME }} \
               CertificateArn=${{ vars.CERTIFICATE_ARN }} \
               HostedZoneId=${{ vars.HOSTED_ZONE_ID }} \
-              OpenAIRealtimeModel=${{ vars.OPENAI_REALTIME_MODEL || 'gpt-realtime' }}
+              OpenAIRealtimeModel=${{ vars.OPENAI_REALTIME_MODEL || 'gpt-realtime' }} \
+              NovaBridgeDesiredCount=${{ steps.nova.outputs.desired }}
+
+      # Oversized static binaries (ORT WASM ~11 MB, wake-word ONNX models) can't
+      # be served through the Fiber Lambda (>6 MB response cap → 500). Publish
+      # them to the assets bucket; CloudFront serves /static/vendor/* and
+      # /static/models/* from S3 (immutable). Runs after deploy so the bucket +
+      # CloudFront behaviors exist.
+      - name: Publish oversized static assets to S3
+        run: |
+          set -eu
+          aws s3 sync web/static/vendor "s3://live-ninja-assets-759775734231/static/vendor" \
+            --cache-control "public, max-age=31536000, immutable" --delete
+          aws s3 sync web/static/models "s3://live-ninja-assets-759775734231/static/models" \
+            --cache-control "public, max-age=31536000, immutable" --delete
+
+      # M12: the nova-bridge task definition pins the image to :latest (like the
+      # wakeword-train job def), so a rebuilt image with an unchanged tag string
+      # produces no CloudFormation diff and the running task would keep the old
+      # image. When this run rebuilt+pushed a new :latest (containers/nova-bridge
+      # changed and the repo already existed), force a rolling deployment so the
+      # service pulls it. Skipped on first deploy (pushed=='false' -> the
+      # container-bootstrap job handles the initial 0->1 rollout instead) and on
+      # runs that didn't touch the container (job skipped -> output is empty).
+      - name: Roll nova-bridge service on new image
+        if: needs.build-nova-container.outputs.pushed == 'true'
+        run: |
+          set -eu
+          aws ecs update-service \
+            --cluster live-ninja-nova-bridge \
+            --service live-ninja-nova-bridge \
+            --force-new-deployment >/dev/null
+          echo "nova-bridge service rolled to the freshly pushed :latest image"
 
       # M7 log-retention hygiene: functions now log to stack-managed
       # /live-ninja/lambda/<fn> groups (30d retention) via LoggingConfig,
@@ -332,3 +466,65 @@ jobs:
           docker buildx build --platform linux/arm64 \
             -t "$IMAGE:latest" -t "$IMAGE:${GITHUB_SHA}" \
             --push containers/wakeword-train
+
+  # First-deploy bootstrap only: when build-nova-container found no ECR repo
+  # (created by the SAM template in the deploy job), push the image now that the
+  # repo exists, then scale the nova-bridge service from its first-deploy
+  # desiredCount 0 up to 1 (the image is now pullable). Skipped on every
+  # subsequent run (pushed == 'true', or the container job didn't run at all).
+  push-nova-container-bootstrap:
+    needs: [build-nova-container, deploy]
+    if: >-
+      always() &&
+      needs.deploy.result == 'success' &&
+      needs.build-nova-container.outputs.pushed == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # required for OIDC
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-live-ninja-nova-container-boot-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up QEMU (arm64 emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push nova-bridge image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -eu
+          IMAGE="$REGISTRY/live-ninja-nova-bridge"
+          docker buildx build --platform linux/arm64 \
+            -f containers/nova-bridge/Dockerfile \
+            -t "$IMAGE:latest" -t "$IMAGE:${GITHUB_SHA}" \
+            --push .
+
+      # The service was created at desiredCount 0 (image was absent at deploy
+      # time). Now that :latest is pushed, scale it to 1 so a task is placed and
+      # registers with the ALB target group. CloudFormation's stored parameter
+      # stays 0 until the next deploy, which passes 1 (image now present) and
+      # reconciles — no drift surprises because deploys only ever run here.
+      - name: Scale nova-bridge service to 1
+        run: |
+          set -eu
+          aws ecs update-service \
+            --cluster live-ninja-nova-bridge \
+            --service live-ninja-nova-bridge \
+            --desired-count 1 \
+            --force-new-deployment >/dev/null
+          echo "nova-bridge service scaled to desiredCount=1"

@@ -7,9 +7,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
+	"github.com/JeremyProffittOrg/live-ninja/internal/voiceengine"
 )
 
 // DefaultRealtimeModel is the model used when OPENAI_REALTIME_MODEL is
@@ -441,4 +449,149 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// ─── Voice-engine pin resolution & Nova bridge bootstrap (M12, FR-VE-03) ──────
+
+// DefaultBridgeBaseURL is the WSS base of the Nova Sonic backend bridge used
+// when NOVA_BRIDGE_URL is unset. The bridge is NOT exposed on its own
+// subdomain — it sits behind the same CloudFront distribution under the
+// /nova/* behavior (the ALB is a second origin), so the base is the primary
+// domain plus the /nova prefix and BuildBridgeSession appends /session ->
+// wss://live.jeremy.ninja/nova/session (matches template output NovaBridgeWsUrl).
+// Production overrides this via NOVA_BRIDGE_URL (!Sub wss://${DomainName}/nova).
+// The bridge is the only place AWS sits in the audio media path, and only for
+// nova-pinned devices (PRD N-6 exception / FR-VE-02).
+const DefaultBridgeBaseURL = "wss://live.jeremy.ninja/nova"
+
+// NovaModel is the Bedrock model id the bridge invokes for nova-pinned
+// sessions (confirmed available in us-east-1).
+const NovaModel = "amazon.nova-sonic-v1:0"
+
+// NovaScope is the JWT `scope` claim stamped on the short-lived first-party
+// token embedded in the bridge URL. The bridge verifies the token via JWKS and
+// requires this scope before opening the Bedrock bidirectional stream.
+const NovaScope = "nova"
+
+// SettingsGetter is the single DynamoDB read voice-engine pin resolution needs.
+// A *dynamodb.Client satisfies it; tests inject a fake.
+type SettingsGetter interface {
+	GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
+}
+
+// ResolveEngine reads the caller's settings document and returns the voice
+// engine pinned for deviceID, applying the locked rule
+// (settings.schema.json#/properties/voiceEngine):
+//
+//	devices[deviceID] ?? default ?? openai-realtime
+//
+// deviceID may be "" (a browser session with no device pin) → always the
+// account default. A missing settings document, an unreadable item, or any
+// unrecognized engine string falls back to openai-realtime: voice must never
+// fail closed to "no engine". The returned error is non-nil only for an
+// infrastructure failure (the caller logs it and proceeds on the default).
+func ResolveEngine(ctx context.Context, g SettingsGetter, table, userID, deviceID string) (voiceengine.Engine, error) {
+	if g == nil {
+		return voiceengine.EngineOpenAIRealtime, nil
+	}
+	out, err := g.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(table),
+		Key: map[string]ddbtypes.AttributeValue{
+			"pk": &ddbtypes.AttributeValueMemberS{Value: "USER#" + userID},
+			"sk": &ddbtypes.AttributeValueMemberS{Value: settingsSK},
+		},
+		ProjectionExpression: aws.String("voiceEngine"),
+	})
+	if err != nil {
+		return voiceengine.EngineOpenAIRealtime, fmt.Errorf("realtime: get settings for engine pin: %w", err)
+	}
+	if len(out.Item) == 0 {
+		return voiceengine.EngineOpenAIRealtime, nil
+	}
+	var doc struct {
+		VoiceEngine struct {
+			Default string            `dynamodbav:"default"`
+			Devices map[string]string `dynamodbav:"devices"`
+		} `dynamodbav:"voiceEngine"`
+	}
+	if err := attributevalue.UnmarshalMap(out.Item, &doc); err != nil {
+		return voiceengine.EngineOpenAIRealtime, fmt.Errorf("realtime: unmarshal voiceEngine pin: %w", err)
+	}
+	return PinToEngine(doc.VoiceEngine.Default, doc.VoiceEngine.Devices, deviceID), nil
+}
+
+// settingsSK is the sort key of the canonical settings item (mirrors
+// internal/store's settingsSK; realtime reads voiceEngine directly at mint so
+// it needn't import the store package into the broker's OpenAI-key isolate).
+const settingsSK = "SETTINGS"
+
+// PinToEngine applies the pure resolution rule devices[deviceID] ?? default ??
+// openai-realtime, validating each candidate against the known engine set (an
+// unrecognized pin is treated as absent and falls through to the next level).
+func PinToEngine(def string, devices map[string]string, deviceID string) voiceengine.Engine {
+	if deviceID != "" {
+		if pin, ok := devices[deviceID]; ok {
+			if e, valid := validEngine(pin); valid {
+				return e
+			}
+		}
+	}
+	if e, valid := validEngine(def); valid {
+		return e
+	}
+	return voiceengine.EngineOpenAIRealtime
+}
+
+// validEngine reports whether s names a known engine, returning it typed.
+func validEngine(s string) (voiceengine.Engine, bool) {
+	switch voiceengine.Engine(s) {
+	case voiceengine.EngineOpenAIRealtime,
+		voiceengine.EngineOpenAIRealtimeMini,
+		voiceengine.EngineNovaSonic:
+		return voiceengine.Engine(s), true
+	default:
+		return "", false
+	}
+}
+
+// NovaTokenMinter mints the short-lived first-party JWT scoped to the Nova
+// bridge for one session. The broker supplies this backed by auth.Signer
+// (kms:Sign); it is a function value so this package needs no KMS/auth import
+// and stays unit-testable without AWS.
+type NovaTokenMinter func(ctx context.Context, userID, deviceID, surface, sessionID string) (token string, expiresAt time.Time, err error)
+
+// BridgeSession is the nova-bridge bootstrap payload returned to a nova-pinned
+// caller by GET /v1/realtime/session (FR-VE-03): the WSS URL to open and the
+// per-session token (also embedded in WSURL as a query param for clients whose
+// WS stack can't set a header/subprotocol on upgrade).
+type BridgeSession struct {
+	WSURL     string
+	Token     string
+	ExpiresAt time.Time
+}
+
+// BuildBridgeSession assembles the nova-bridge bootstrap: it mints the scoped
+// per-session token via mint and builds the WSS URL as
+// baseURL + "/session?sid=<sessionID>&token=<token>". baseURL defaults to
+// DefaultBridgeBaseURL when empty. sessionID is the ledger session id the
+// broker already generated for this mint; the token binds to it (sid claim).
+func BuildBridgeSession(ctx context.Context, mint NovaTokenMinter, baseURL, userID, deviceID, surface, sessionID string) (*BridgeSession, error) {
+	if mint == nil {
+		return nil, fmt.Errorf("realtime: nova bridge not configured (no token minter)")
+	}
+	if baseURL == "" {
+		baseURL = DefaultBridgeBaseURL
+	}
+	token, expiresAt, err := mint(ctx, userID, deviceID, surface, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("realtime: mint nova bridge token: %w", err)
+	}
+	q := url.Values{}
+	q.Set("sid", sessionID)
+	q.Set("token", token)
+	return &BridgeSession{
+		WSURL:     strings.TrimRight(baseURL, "/") + "/session?" + q.Encode(),
+		Token:     token,
+		ExpiresAt: expiresAt,
+	}, nil
 }

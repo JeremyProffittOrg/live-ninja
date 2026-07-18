@@ -316,6 +316,9 @@ class SettingsViewModel @Inject constructor(
 
     fun setTurnDetection(value: String) = settingsStore.setTurnDetection(value)
 
+    /** Voice engine picker (M12 FR-VE-04): sets voiceEngine.default. */
+    fun setVoiceEngine(engine: String) = settingsStore.setVoiceEngineDefault(engine)
+
     // ---- Audio ----
     fun setMicDevice(id: String?) = settingsStore.setMicDeviceId(id)
 

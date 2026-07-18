@@ -475,6 +475,35 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 onSelect = viewModel::setTurnDetection,
             )
 
+            // Voice engine picker (M12 FR-VE-04). Sets voiceEngine.default —
+            // the engine this device uses; all engines share tools, memory,
+            // and transcripts, differing only in cost, latency, and quality.
+            LabeledRadioGroup(
+                label = stringResource(R.string.settings_voice_engine_label),
+                options = listOf(
+                    RadioOption(
+                        value = "openai-realtime",
+                        label = stringResource(R.string.settings_engine_openai),
+                        description = stringResource(R.string.settings_engine_openai_desc),
+                        enabled = true,
+                    ),
+                    RadioOption(
+                        value = "openai-realtime-mini",
+                        label = stringResource(R.string.settings_engine_openai_mini),
+                        description = stringResource(R.string.settings_engine_openai_mini_desc),
+                        enabled = true,
+                    ),
+                    RadioOption(
+                        value = "nova-sonic",
+                        label = stringResource(R.string.settings_engine_nova),
+                        description = stringResource(R.string.settings_engine_nova_desc),
+                        enabled = true,
+                    ),
+                ),
+                selected = doc.voiceEngineDefault,
+                onSelect = viewModel::setVoiceEngine,
+            )
+
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
 
             // ---------- Audio ----------

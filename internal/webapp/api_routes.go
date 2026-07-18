@@ -259,6 +259,8 @@ type brokerResponse struct {
 	RetryAfterSeconds int     `json:"retryAfterSeconds,omitempty"`
 
 	// Session-mint success shape.
+	Mode         string `json:"mode,omitempty"`   // "openai-direct" | "nova-bridge"
+	Engine       string `json:"engine,omitempty"` // resolved voiceEngine pin
 	ClientSecret *struct {
 		Value     string `json:"value"`
 		ExpiresAt string `json:"expiresAt"`
@@ -268,7 +270,11 @@ type brokerResponse struct {
 	SessionConfig json.RawMessage `json:"sessionConfig,omitempty"`
 	ToolManifest  json.RawMessage `json:"toolManifest,omitempty"`
 	SessionID     string          `json:"sessionId,omitempty"`
-	QuotaWarning  string          `json:"quotaWarning,omitempty"`
+	// Nova-bridge fields (Mode == "nova-bridge" only).
+	WSURL                string `json:"wsUrl,omitempty"`
+	BridgeToken          string `json:"bridgeToken,omitempty"`
+	BridgeTokenExpiresAt string `json:"bridgeTokenExpiresAt,omitempty"`
+	QuotaWarning         string `json:"quotaWarning,omitempty"`
 
 	// Fallback success shapes: Text for turn/stt; audio for tts.
 	Text        string `json:"text,omitempty"`
@@ -369,7 +375,30 @@ func handleRealtimeSession(deps *Deps) fiber.Handler {
 		if resp.QuotaWarning != "" {
 			c.Set("X-LN-Quota-Warning", resp.QuotaWarning)
 		}
+
+		// Session bootstrap is engine-aware (FR-VE-03): a nova-pinned device
+		// gets a backend-bridge WSS URL + short-lived token instead of an
+		// OpenAI ephemeral secret. Default the mode to openai-direct for
+		// backward compatibility with a broker that predates M12.
+		mode := resp.Mode
+		if mode == "" {
+			mode = "openai-direct"
+		}
+		if mode == "nova-bridge" {
+			return c.JSON(fiber.Map{
+				"mode":                 mode,
+				"engine":               resp.Engine,
+				"model":                resp.Model,
+				"wsUrl":                resp.WSURL,
+				"token":                resp.BridgeToken,
+				"bridgeTokenExpiresAt": resp.BridgeTokenExpiresAt,
+				"toolManifest":         resp.ToolManifest,
+				"sessionId":            resp.SessionID,
+			})
+		}
 		return c.JSON(fiber.Map{
+			"mode":          mode,
+			"engine":        resp.Engine,
 			"clientSecret":  resp.ClientSecret,
 			"model":         resp.Model,
 			"voice":         resp.Voice,

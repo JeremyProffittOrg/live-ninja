@@ -1,7 +1,13 @@
 /*
- * ln_realtime — OpenAI Realtime WSS client for the Live Ninja M5Stack Tab5.
+ * ln_realtime — realtime voice WSS client for the Live Ninja M5Stack Tab5.
  *
- * Owns the realtime voice transport (plan.md M5, WS-F):
+ * The device's per-device voiceEngine pin (settings.schema.json) selects the
+ * transport at session bootstrap: OpenAI-direct (default, below) or, when
+ * pinned to nova-sonic, the backend Nova Sonic media bridge (M12, FR-VE-03) —
+ * same pcm16 framing and same public API, only the WSS URL + auth differ. The
+ * branch is internal; callers use the identical start/stop/send_audio surface.
+ *
+ * Owns the realtime voice transport (plan.md M5, WS-F; OpenAI-direct path):
  *   1. Session bootstrap over HTTPS: GET {backend}/v1/realtime/session with the
  *      device JWT (contracts/api.md) -> broker-minted OpenAI ephemeral token.
  *   2. WSS to wss://api.openai.com/v1/realtime?model=... with

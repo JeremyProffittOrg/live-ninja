@@ -76,6 +76,9 @@ class RealtimeSessionCoordinatorTest {
     }
 
     private val transport = FakeTransport()
+    // Nova transport for the second (qualified) constructor slot; the default
+    // session below is openai-direct, so the coordinator selects [transport].
+    private val novaTransport = FakeTransport()
     private val sessionApi = mockk<RealtimeSessionApi>()
     private val toolRouter = mockk<ToolCallRouter>()
 
@@ -88,7 +91,7 @@ class RealtimeSessionCoordinatorTest {
             sessionId = "rs-1",
             quotaWarning = null,
         )
-        return RealtimeSessionCoordinator(transport, sessionApi, toolRouter)
+        return RealtimeSessionCoordinator(transport, novaTransport, sessionApi, toolRouter)
     }
 
     /** Collect coordinator UI events into [sink] and wait until [predicate] matches one. */

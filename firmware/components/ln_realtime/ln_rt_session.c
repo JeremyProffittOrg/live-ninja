@@ -5,12 +5,27 @@
  *   Authorization: Bearer <device JWT from ln_auth_get_jwt (ln_net)>
  *   X-LN-Client: m5stack/<semver>+<build>          (contracts/headers.md)
  *
- * The broker (plan.md M2) returns a config-bound OpenAI ephemeral token. The
- * response shape is parsed defensively: the OpenAI client_secrets passthrough
- * shape ({"value":"ek_...","session":{"model":...}}) plus common wrapper
- * spellings ({"client_secret":{"value":...}}, {"token":...},
- * {"ephemeralToken":...}) all resolve. A Nova Sonic bridge response (M12,
- * "bridgeUrl" without a token) is rejected as unsupported on this firmware.
+ * The broker (plan.md M2) resolves the device's per-device `voiceEngine` pin
+ * (settings.schema.json) and returns ONE of two shapes:
+ *
+ *   1. OpenAI-direct (default) — a config-bound OpenAI ephemeral token. Parsed
+ *      defensively: the client_secrets passthrough shape
+ *      ({"value":"ek_...","session":{"model":...}}) plus common wrapper
+ *      spellings ({"client_secret":{"value":...}}, {"token":...},
+ *      {"ephemeralToken":...}) all resolve.
+ *
+ *   2. Nova Sonic bridge (M12, FR-VE-03) — for a device pinned to `nova-sonic`:
+ *      {"mode":"nova-bridge","wsUrl":"wss://nova.live.jeremy.ninja/...","token":...}.
+ *      No OpenAI ephemeral is minted; ln_realtime connects its WSS to wsUrl
+ *      (the single-use bridge token is normally already embedded in wsUrl; a
+ *      separate "token" field, when present, is carried for URL composition).
+ *      The backend bridge holds the Bedrock InvokeModelWithBidirectionalStream
+ *      session and speaks the same pcm16 event framing this client already
+ *      uses, so only the transport URL + auth differ.
+ *
+ * Detection is by an explicit {"mode":"nova-bridge"} OR the presence of a
+ * bridge URL field; both are recognized so the exact broker spelling can be
+ * finalized independently. HIL-unverified on real Tab5 hardware (M12).
  */
 #include <stdlib.h>
 #include <string.h>
@@ -86,6 +101,60 @@ static esp_err_t parse_session_body(const char *body, size_t len,
         return ESP_ERR_INVALID_RESPONSE;
     }
 
+    /* --- Nova Sonic bridge shape (M12, FR-VE-03)? ------------------------- *
+     * Selected when the broker resolved this device's voiceEngine pin to
+     * nova-sonic. Detected by mode=="nova-bridge" or the presence of a bridge
+     * WSS URL. ln_realtime then connects to ws_url instead of OpenAI and skips
+     * the ephemeral step entirely. */
+    const char *mode = json_str_at(root, "mode", NULL);
+    const char *ws_url = json_str_at(root, "wsUrl", NULL);
+    if (ws_url == NULL) {
+        ws_url = json_str_at(root, "ws_url", NULL);
+    }
+    if (ws_url == NULL) {
+        ws_url = json_str_at(root, "bridgeUrl", NULL);
+    }
+    if (ws_url == NULL) {
+        ws_url = json_str_at(root, "bridge_url", NULL);
+    }
+    bool nova = (mode != NULL && strcmp(mode, "nova-bridge") == 0) || ws_url != NULL;
+    if (nova) {
+        if (ws_url == NULL) {
+            set_err(err_out, "bad_response", "nova-bridge response missing wsUrl", false);
+            cJSON_Delete(root);
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        if (strlen(ws_url) >= sizeof(out->ws_url)) {
+            set_err(err_out, "bad_response", "Bridge wsUrl longer than expected", false);
+            cJSON_Delete(root);
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        out->mode = LN_RT_ENGINE_NOVA_BRIDGE;
+        strlcpy(out->ws_url, ws_url, sizeof(out->ws_url));
+
+        /* Optional separate single-use token; usually already embedded in
+         * ws_url, in which case ln_realtime uses ws_url verbatim. */
+        const char *btok = json_str_at(root, "token", NULL);
+        if (btok == NULL) {
+            btok = json_str_at(root, "bridgeToken", NULL);
+        }
+        if (btok == NULL) {
+            btok = json_str_at(root, "bridge_token", NULL);
+        }
+        if (btok != NULL) {
+            if (strlen(btok) >= sizeof(out->token)) {
+                set_err(err_out, "bad_response", "Bridge token longer than expected", false);
+                cJSON_Delete(root);
+                return ESP_ERR_INVALID_RESPONSE;
+            }
+            strlcpy(out->token, btok, sizeof(out->token));
+        }
+        cJSON_Delete(root);
+        return ESP_OK;
+    }
+
+    /* --- OpenAI-direct shape (default) ----------------------------------- */
+    out->mode = LN_RT_ENGINE_OPENAI_DIRECT;
     const char *token = json_str_at(root, "value", NULL);
     if (token == NULL) {
         token = json_str_at(root, "client_secret", "value");
@@ -101,16 +170,7 @@ static esp_err_t parse_session_body(const char *body, size_t len,
     }
 
     if (token == NULL) {
-        /* M12 Nova-pinned device? This firmware build only speaks the
-         * OpenAI-direct WSS path; surface a clear fatal error. */
-        if (json_str_at(root, "bridgeUrl", NULL) != NULL ||
-            json_str_at(root, "bridge_url", NULL) != NULL) {
-            set_err(err_out, "engine_unsupported",
-                    "Device is pinned to a bridged voice engine this firmware does not support",
-                    true);
-        } else {
-            set_err(err_out, "bad_response", "No ephemeral token in broker response", false);
-        }
+        set_err(err_out, "bad_response", "No ephemeral token in broker response", false);
         cJSON_Delete(root);
         return ESP_ERR_INVALID_RESPONSE;
     }
@@ -222,7 +282,11 @@ esp_err_t ln_rt_session_fetch(ln_rt_session_info_t *out, ln_rt_error_info_t *err
 
     err = parse_session_body(s_body, body_len, out, err_out);
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "ephemeral session minted (model=%s)", out->model);
+        if (out->mode == LN_RT_ENGINE_NOVA_BRIDGE) {
+            ESP_LOGI(TAG, "nova-bridge session bootstrapped");
+        } else {
+            ESP_LOGI(TAG, "ephemeral session minted (model=%s)", out->model);
+        }
     }
     /* Best-effort scrub of the JWT copy between sessions. */
     memset(s_jwt, 0, sizeof(s_jwt));

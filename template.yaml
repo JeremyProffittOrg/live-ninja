@@ -28,6 +28,34 @@ Parameters:
       Image tag of the wakeword-train container the Batch job definition references.
       The deploy workflow pushes both :latest and :<git sha>; default tracks :latest
       so a container push alone (no template change) is picked up by the next job.
+  NovaBridgeImageTag:
+    Type: String
+    Default: latest
+    Description: >-
+      M12: image tag of the nova-bridge container the ECS task definition runs. The
+      deploy workflow pushes both :latest and :<git sha>; default tracks :latest so a
+      container-only push is picked up by the next deploy without a template change.
+  NovaBridgeDesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 0
+    Description: >-
+      M12: desired running task count for the nova-bridge Fargate service. The deploy
+      workflow passes 0 on the very first deploy (when the ECR image has not been
+      pushed yet) so the AWS::ECS::Service create does not block waiting for a task to
+      pull an image that does not exist; the container-bootstrap job then pushes the
+      image and scales the service to 1. Every subsequent deploy leaves this at the
+      default 1.
+  CloudFrontPrefixListId:
+    Type: String
+    Default: pl-3b927c52
+    Description: >-
+      M12: the AWS-managed "com.amazonaws.global.cloudfront.origin-facing" prefix list
+      id for us-east-1 (stable, documented value). The nova-bridge ALB security group
+      allows ingress ONLY from this prefix list so the internet-facing ALB is reachable
+      solely through the CloudFront distribution (which fronts it at /nova/*), never
+      directly. This stack is pinned to us-east-1 (samconfig.toml); change this only if
+      the region changes.
 
 Globals:
   Function:
@@ -368,6 +396,13 @@ Resources:
           EMAIL_QUEUE_URL: !Ref EmailQueue
           OWNER_EMAIL: proffitt.jeremy@gmail.com
           RETENTION_DAYS: "30"
+          # M12 FR-VE-03: WSS base the session bootstrap hands nova-sonic-pinned
+          # devices. The bridge is NOT on a subdomain — it is fronted by the same
+          # CloudFront distribution under the /nova/* behavior (see the
+          # nova-bridge origin + PathPattern /nova/* below), so the base is the
+          # primary domain plus the /nova prefix and BuildBridgeSession appends
+          # /session -> wss://<domain>/nova/session (matches NovaBridgeWsUrl).
+          NOVA_BRIDGE_URL: !Sub "wss://${DomainName}/nova"
       Policies:
         - Version: "2012-10-17"
           Statement:
@@ -957,6 +992,37 @@ Resources:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
 
+  # Oversized static assets (the ~11 MB onnxruntime-web WASM, wake-word ONNX
+  # models) cannot be served through the Fiber Lambda — they exceed Lambda's
+  # ~6 MB synchronous response payload limit (the WASM 500'd in prod). They
+  # live in AssetsBucket and are served directly by CloudFront via an
+  # origin-access-control (the bucket stays fully private).
+  AssetsOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: live-ninja-assets-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  AssetsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AssetsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "arn:aws:s3:::${AssetsBucket}/static/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}"
+
   LogsBucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
@@ -1403,6 +1469,289 @@ Resources:
             Value: !Ref EmailQueue
 
   # ------------------------------------------------------------------
+  # M12: Nova Sonic media bridge (FR-VE-01..04)
+  #
+  # OpenAI-pinned devices stay client-direct (unchanged). Devices pinned to
+  # nova-sonic (settings.voiceEngine) cannot go client-direct: Bedrock
+  # InvokeModelWithBidirectionalStream is an HTTP/2 + SigV4, server-held
+  # session — so a device pinned to Nova routes audio
+  # device <-> nova-bridge <-> Bedrock Nova Sonic. Lambda cannot hold a
+  # bidirectional stream, so the bridge is a small long-lived Go WSS server
+  # on Fargate (arm64, 256 CPU / 512 MB, one task) that holds both the
+  # client WebSocket and the Bedrock bidirectional stream for the session.
+  #
+  # Edge exposure: rather than a new cert/subdomain (the ACM cert covers
+  # live.jeremy.ninja only), the bridge is fronted by the EXISTING CloudFront
+  # distribution as a /nova/* behavior over a second origin (the ALB). So the
+  # session bootstrap hands clients wss://live.jeremy.ninja/nova/session and
+  # CloudFront terminates TLS with the existing cert — no SAN change, no new
+  # Route53 record. The ALB is internet-facing but its security group only
+  # admits CloudFront's origin-facing prefix list, so it is not directly
+  # reachable. Auth is in the bridge itself: it verifies the first-party JWT
+  # (public JWKS at https://live.jeremy.ninja/.well-known/jwks.json) and gates
+  # quota (DynamoDB) BEFORE opening the Bedrock stream.
+  #
+  # VPC: reuses the existing BatchVpc + its two public subnets (IGW route,
+  # MapPublicIpOnLaunch). Fargate tasks run with a public IP so ECR pulls,
+  # Bedrock, DynamoDB, CloudWatch Logs and the public JWKS are all reached via
+  # the IGW — no NAT gateway ($0 recurring), matching the wakeword design.
+  #
+  # The container (containers/nova-bridge, owned separately) MUST:
+  #   * listen on port 8080,
+  #   * answer GET /healthz with 200 (ALB target-group health check hits the
+  #     task directly, not via CloudFront's /nova/ prefix),
+  #   * serve the WebSocket bridge under the /nova/ path prefix that CloudFront
+  #     forwards verbatim (e.g. GET /nova/session).
+  # ------------------------------------------------------------------
+  NovaBridgeRepo:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RepositoryName: live-ninja-nova-bridge
+      ImageTagMutability: MUTABLE
+      LifecyclePolicy:
+        LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"keep last 10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}'
+
+  NovaBridgeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /live-ninja/ecs/nova-bridge
+      RetentionInDays: 30
+
+  NovaBridgeExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: live-ninja-nova-bridge-exec
+      Description: ECS task execution role for the nova-bridge service (ECR pull + CloudWatch Logs).
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  NovaBridgeTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: live-ninja-nova-bridge-task
+      Description: >-
+        Task role for the nova-bridge container: open the Bedrock Nova Sonic
+        bidirectional stream and read/record the per-user realtime quota in DynamoDB.
+        JWT verification uses the public JWKS endpoint (no IAM); transcript/tool
+        fan-out is HTTP to the first-party API with the user's JWT (no IAM).
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: nova-bridge
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Scoped to the single Nova Sonic model id; bidirectional-stream
+              # action only (Bedrock's held HTTP/2 session for realtime audio).
+              - Sid: NovaSonicBidirectionalStream
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModelWithBidirectionalStream
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/amazon.nova-sonic-v1:0"
+              # Realtime quota gate — same USAGE-partition access the broker
+              # uses (key lookups / Query only, no Scan).
+              - Sid: RealtimeQuota
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !GetAtt Table.Arn
+                  - !Sub "${Table.Arn}/index/*"
+
+  NovaBridgeCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: live-ninja-nova-bridge
+
+  # ALB security group: ingress ONLY from CloudFront's origin-facing managed
+  # prefix list, so the internet-facing ALB is reachable solely through the
+  # CloudFront /nova/* behavior (WAF + TLS applied there), never directly.
+  NovaBridgeAlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: live-ninja nova-bridge ALB - ingress from CloudFront origin-facing prefix list only.
+      VpcId: !Ref BatchVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourcePrefixListId: !Ref CloudFrontPrefixListId
+          Description: HTTP from CloudFront edge only (TLS terminated at CloudFront).
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+          Description: Allow all egress (to the Fargate service targets).
+
+  # Service security group: ingress on the container port from the ALB SG
+  # only; egress open (ECR pull, Bedrock, DynamoDB, Logs, public JWKS).
+  NovaBridgeServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: live-ninja nova-bridge Fargate tasks - ingress from the ALB SG only, egress open.
+      VpcId: !Ref BatchVpc
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+          Description: Allow all egress (ECR pull, Bedrock bidirectional stream, DynamoDB, CloudWatch Logs, public JWKS fetch).
+
+  NovaBridgeServiceIngressFromAlb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref NovaBridgeServiceSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      SourceSecurityGroupId: !Ref NovaBridgeAlbSecurityGroup
+      Description: Container port 8080 from the nova-bridge ALB only.
+
+  NovaBridgeAlb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: live-ninja-nova-bridge
+      Type: application
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      Subnets:
+        - !Ref BatchPublicSubnetA
+        - !Ref BatchPublicSubnetB
+      SecurityGroups:
+        - !Ref NovaBridgeAlbSecurityGroup
+      LoadBalancerAttributes:
+        # Long idle timeout so held WebSocket sessions are not reaped mid-turn.
+        - Key: idle_timeout.timeout_seconds
+          Value: "3600"
+
+  NovaBridgeTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: live-ninja-nova-bridge
+      # Fargate awsvpc networking -> IP targets.
+      TargetType: ip
+      VpcId: !Ref BatchVpc
+      Protocol: HTTP
+      Port: 8080
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /healthz
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: "200"
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "30"
+
+  NovaBridgeListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref NovaBridgeAlb
+      # HTTP only: TLS is terminated at CloudFront with the existing cert; the
+      # ALB is private to CloudFront via the origin-facing prefix-list SG.
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref NovaBridgeTargetGroup
+
+  NovaBridgeTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: live-ninja-nova-bridge
+      RequiresCompatibilities:
+        - FARGATE
+      NetworkMode: awsvpc
+      Cpu: "256"
+      Memory: "512"
+      RuntimePlatform:
+        CpuArchitecture: ARM64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt NovaBridgeExecutionRole.Arn
+      TaskRoleArn: !GetAtt NovaBridgeTaskRole.Arn
+      ContainerDefinitions:
+        - Name: nova-bridge
+          Image: !Sub "${NovaBridgeRepo.RepositoryUri}:${NovaBridgeImageTag}"
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          Environment:
+            - Name: PORT
+              Value: "8080"
+            - Name: TABLE_NAME
+              Value: !Ref Table
+            - Name: DOMAIN_NAME
+              Value: !Ref DomainName
+            - Name: JWKS_URL
+              Value: !Sub "https://${DomainName}/.well-known/jwks.json"
+            - Name: NOVA_SONIC_MODEL_ID
+              Value: amazon.nova-sonic-v1:0
+            - Name: BEDROCK_REGION
+              Value: us-east-1
+            - Name: LOG_LEVEL
+              Value: info
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref NovaBridgeLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: nova-bridge
+
+  NovaBridgeService:
+    Type: AWS::ECS::Service
+    # The listener must exist before the service registers with the target
+    # group (ELB association ordering).
+    DependsOn:
+      - NovaBridgeListener
+    Properties:
+      ServiceName: live-ninja-nova-bridge
+      Cluster: !Ref NovaBridgeCluster
+      LaunchType: FARGATE
+      TaskDefinition: !Ref NovaBridgeTaskDefinition
+      # Scale-to-1 baseline. On the very first deploy the workflow passes 0
+      # (image not pushed yet) so create does not block on an unpullable image;
+      # the container-bootstrap job then pushes and scales to 1.
+      DesiredCount: !Ref NovaBridgeDesiredCount
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+      # Give a freshly-placed task time to pass the first health checks before
+      # the ALB can mark it unhealthy.
+      HealthCheckGracePeriodSeconds: 60
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          # Public IP required for IGW-based egress (no NAT), matching the
+          # wakeword-train Fargate design.
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !Ref BatchPublicSubnetA
+            - !Ref BatchPublicSubnetB
+          SecurityGroups:
+            - !Ref NovaBridgeServiceSecurityGroup
+      LoadBalancers:
+        - ContainerName: nova-bridge
+          ContainerPort: 8080
+          TargetGroupArn: !Ref NovaBridgeTargetGroup
+
+  # ------------------------------------------------------------------
   # EventBridge Scheduler (set_timer / set_reminder one-shot schedules)
   # ------------------------------------------------------------------
   SchedulerGroup:
@@ -1590,6 +1939,22 @@ Resources:
               OriginProtocolPolicy: https-only
               OriginSSLProtocols:
                 - TLSv1.2
+          # M12: the nova-bridge ALB (HTTP; TLS terminated here at CloudFront).
+          # WebSocket upgrades to Bedrock Nova Sonic ride this origin under the
+          # /nova/* behavior below. OriginReadTimeout is bumped to CloudFront's
+          # 60s max so a slow first WS response is not cut short.
+          - Id: nova-bridge
+            DomainName: !GetAtt NovaBridgeAlb.DNSName
+            CustomOriginConfig:
+              OriginProtocolPolicy: http-only
+              HTTPPort: 80
+              OriginReadTimeout: 60
+          # Oversized static binaries (ORT WASM, wake models) served from S3.
+          - Id: assets-s3
+            DomainName: !Sub "${AssetsBucket}.s3.${AWS::Region}.amazonaws.com"
+            OriginAccessControlId: !GetAtt AssetsOAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
         DefaultCacheBehavior:
           TargetOriginId: http-api
           ViewerProtocolPolicy: redirect-to-https
@@ -1610,6 +1975,25 @@ Resources:
           OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
           ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
         CacheBehaviors:
+          # More-specific S3-backed patterns MUST precede /static/* (CloudFront
+          # uses the first matching behavior in order). These serve the oversized
+          # ORT WASM + wake-word models that can't go through Lambda.
+          - PathPattern: /static/vendor/*
+            TargetOriginId: assets-s3
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+            ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
+          - PathPattern: /static/models/*
+            TargetOriginId: assets-s3
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+            ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
           - PathPattern: /static/*
             TargetOriginId: http-api
             ViewerProtocolPolicy: redirect-to-https
@@ -1622,6 +2006,33 @@ Resources:
             Compress: true
             # Managed policy: CachingOptimized
             CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+            ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
+          # M12: WebSocket bridge to Nova Sonic. CloudFront supports WebSocket
+          # transparently; the client opens wss://live.jeremy.ninja/nova/session
+          # and CloudFront proxies the Upgrade to the ALB origin. No caching
+          # (CachingDisabled) and the AllViewer origin-request policy so the
+          # Upgrade / Connection / Sec-WebSocket-* headers, query string (the JWT
+          # is a query param) and everything else are forwarded verbatim. Compress
+          # is off — a WebSocket stream must not be content-encoded.
+          - PathPattern: /nova/*
+            TargetOriginId: nova-bridge
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+              - PUT
+              - POST
+              - PATCH
+              - DELETE
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: false
+            # Managed policies: CachingDisabled + AllViewer (forwards all headers
+            # incl. the WebSocket upgrade set, all cookies, all query strings).
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: 216adef6-8f8c-4e91-99ba-1e6b3ba22f52
             ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
 
   DnsRecordA:
@@ -2165,3 +2576,18 @@ Outputs:
   OpsDashboardName:
     Description: CloudWatch ops dashboard (M7).
     Value: !Ref OpsDashboard
+  NovaBridgeRepositoryUri:
+    Description: ECR repository URI the deploy workflow pushes the nova-bridge image to (M12).
+    Value: !GetAtt NovaBridgeRepo.RepositoryUri
+  NovaBridgeClusterName:
+    Description: ECS cluster hosting the nova-bridge Fargate service (M12).
+    Value: !Ref NovaBridgeCluster
+  NovaBridgeServiceName:
+    Description: nova-bridge ECS service name (used by the container-bootstrap scale-to-1 step) (M12).
+    Value: !GetAtt NovaBridgeService.Name
+  NovaBridgeAlbDnsName:
+    Description: Internal-only (CloudFront-fronted) ALB DNS name for the nova-bridge service (M12).
+    Value: !GetAtt NovaBridgeAlb.DNSName
+  NovaBridgeWsUrl:
+    Description: WebSocket URL the realtime session bootstrap hands to nova-sonic-pinned clients (M12).
+    Value: !Sub "wss://${DomainName}/nova/session"

@@ -42,9 +42,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
 	"github.com/JeremyProffittOrg/live-ninja/internal/observ"
 	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
+	"github.com/JeremyProffittOrg/live-ninja/internal/voiceengine"
 )
 
 const metricsNamespace = "LiveNinja/RealtimeBroker"
@@ -100,12 +102,23 @@ type Response struct {
 	RetryAfterSeconds int     `json:"retryAfterSeconds,omitempty"`
 
 	// Session-mint success shape.
+	// Mode is the session-bootstrap transport (FR-VE-03): "openai-direct"
+	// (client-direct WebRTC/WSS to OpenAI; ClientSecret populated) or
+	// "nova-bridge" (backend media bridge; WSURL+BridgeToken populated).
+	Mode          string                 `json:"mode,omitempty"`
+	Engine        string                 `json:"engine,omitempty"`
 	ClientSecret  *realtime.ClientSecret `json:"clientSecret,omitempty"`
 	Model         string                 `json:"model,omitempty"`
 	Voice         string                 `json:"voice,omitempty"`
 	SessionConfig json.RawMessage        `json:"sessionConfig,omitempty"`
 	ToolManifest  json.RawMessage        `json:"toolManifest,omitempty"`
 	SessionID     string                 `json:"sessionId,omitempty"`
+	// Nova-bridge success fields (Mode == "nova-bridge" only): the WSS URL
+	// to open and the short-lived per-session first-party token (also
+	// embedded in WSURL) the bridge verifies before opening Bedrock.
+	WSURL                string `json:"wsUrl,omitempty"`
+	BridgeToken          string `json:"bridgeToken,omitempty"`
+	BridgeTokenExpiresAt string `json:"bridgeTokenExpiresAt,omitempty"`
 	// QuotaWarning is the ready-to-emit X-LN-Quota-Warning header value
 	// (e.g. "daily_minutes=83%"); empty when below the 80% threshold.
 	QuotaWarning string `json:"quotaWarning,omitempty"`
@@ -139,6 +152,17 @@ type broker struct {
 	// to the persona instructions (FR-MEM-07).
 	ddb   realtime.GuideQuerier
 	table string
+
+	// settings reads the caller's voiceEngine pin at mint (FR-VE-03); the
+	// same *dynamodb.Client as ddb (it satisfies both Query and GetItem).
+	settings realtime.SettingsGetter
+	// novaMint mints the short-lived per-session bridge token for
+	// nova-pinned devices (auth.Signer-backed); nil when JWT_KMS_KEY_ID is
+	// unset, in which case a nova mint returns a "bridge unavailable" error.
+	novaMint realtime.NovaTokenMinter
+	// bridgeBaseURL is the Nova bridge WSS base (NOVA_BRIDGE_URL); empty
+	// falls back to realtime.DefaultBridgeBaseURL.
+	bridgeBaseURL string
 }
 
 func (b *broker) Handle(ctx context.Context, req Request) (Response, error) {
@@ -172,13 +196,31 @@ func (b *broker) Handle(ctx context.Context, req Request) (Response, error) {
 }
 
 func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Response {
-	voice, ok := realtime.ResolveVoice(req.VoiceOverride)
-	if !ok {
-		return badRequest("voiceOverride is not a supported realtime voice")
+	// Resolve the device's voiceEngine pin FIRST (FR-VE-03):
+	// devices[deviceId] ?? default ?? openai-realtime. Fail open to the
+	// openai-realtime default on any read error — a settings-read hiccup must
+	// not take voice down.
+	engine, err := realtime.ResolveEngine(ctx, b.settings, b.table, req.UserID, req.DeviceID)
+	if err != nil {
+		l.Warn("realtime-broker: voiceEngine pin resolve failed; defaulting to openai-realtime",
+			slog.String("error", err.Error()))
+		engine = voiceengine.EngineOpenAIRealtime
+	}
+
+	// OpenAI-direct engines validate the requested voice up front; nova-sonic
+	// uses its own voice set (resolved by the bridge) so it skips this check.
+	var voice string
+	if engine.IsClientDirect() {
+		v, ok := realtime.ResolveVoice(req.VoiceOverride)
+		if !ok {
+			return badRequest("voiceOverride is not a supported realtime voice")
+		}
+		voice = v
 	}
 
 	// Pre-spend gate: bucket -> daily -> monthly. Runs and settles before
-	// any OpenAI (or even SSM key) touch, so a rejection costs nothing.
+	// any OpenAI/Bedrock (or even SSM key) touch, so a rejection costs
+	// nothing — and gates both engines identically at session start.
 	warnings, err := b.gate.CheckMint(ctx, req.UserID)
 	if err != nil {
 		if resp, handled := gateErrResponse(l, err, "mint"); handled {
@@ -192,6 +234,13 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 	if err != nil {
 		l.Error("realtime-broker: session id generation failed", slog.String("error", err.Error()))
 		return internalError("session id generation failed")
+	}
+
+	// Nova-pinned device: return a backend-bridge WebSocket bootstrap rather
+	// than an OpenAI ephemeral token (the sole path where AWS is in the media
+	// path — PRD N-6 exception).
+	if engine == voiceengine.EngineNovaSonic {
+		return b.handleNovaBridge(ctx, l, req, sessionID, warnings)
 	}
 
 	// Guide Entity injection (FR-MEM-07): append the user's enabled guides
@@ -227,13 +276,16 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 	}
 
 	observ.EmitMetric(metricsNamespace, "SessionsBrokered", 1, "Count",
-		map[string]string{"Surface": req.Surface})
+		map[string]string{"Surface": req.Surface, "Engine": string(engine)})
 	l.Info("realtime-broker: session minted",
 		slog.String("sessionId", sessionID),
+		slog.String("engine", string(engine)),
 		slog.String("model", res.Model),
 		slog.String("voice", res.Voice))
 
 	return Response{
+		Mode:          "openai-direct",
+		Engine:        string(engine),
 		ClientSecret:  &res.ClientSecret,
 		Model:         res.Model,
 		Voice:         res.Voice,
@@ -241,6 +293,61 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 		ToolManifest:  res.ToolManifest,
 		SessionID:     sessionID,
 		QuotaWarning:  strings.Join(warnings, ","),
+	}
+}
+
+// handleNovaBridge issues the nova-bridge session bootstrap (FR-VE-03) for a
+// device pinned to nova-sonic: it mints a short-lived first-party token scoped
+// to the bridge (scope "nova", bound to sessionID) and returns the WSS URL the
+// client opens instead of an OpenAI ephemeral token. The quota gate has already
+// passed (caller); persona/voice/guide resolution and the Bedrock bidirectional
+// stream itself are the bridge's responsibility. warnings carries the same
+// X-LN-Quota-Warning payload the OpenAI path returns.
+func (b *broker) handleNovaBridge(ctx context.Context, l *slog.Logger, req Request, sessionID string, warnings []string) Response {
+	if b.novaMint == nil {
+		l.Error("realtime-broker: nova-sonic pinned but bridge token minter unavailable (JWT_KMS_KEY_ID unset)",
+			slog.String("sessionId", sessionID))
+		observ.EmitMetric(metricsNamespace, "MintErrors", 1, "Count",
+			map[string]string{"Surface": req.Surface, "Engine": string(voiceengine.EngineNovaSonic)})
+		return Response{Error: "nova_bridge_unavailable", Code: http.StatusBadGateway,
+			Message: "The Nova Sonic bridge is not configured; use the fallback cascade."}
+	}
+
+	bs, err := realtime.BuildBridgeSession(ctx, b.novaMint, b.bridgeBaseURL,
+		req.UserID, req.DeviceID, req.Surface, sessionID)
+	if err != nil {
+		l.Error("realtime-broker: nova bridge session build failed", slog.String("error", err.Error()),
+			slog.String("sessionId", sessionID))
+		observ.EmitMetric(metricsNamespace, "MintErrors", 1, "Count",
+			map[string]string{"Surface": req.Surface, "Engine": string(voiceengine.EngineNovaSonic)})
+		return Response{Error: "nova_bridge_failed", Code: http.StatusBadGateway,
+			Message: "Could not establish a Nova Sonic bridge session; use the fallback cascade."}
+	}
+
+	// Post-spend bookkeeping (same ledger marker + dayMints bump as the OpenAI
+	// path). Best-effort: the bridge session is already issued.
+	if err := b.gate.RecordMint(ctx, req.UserID, sessionID, req.Surface); err != nil {
+		l.Warn("realtime-broker: nova bridge bookkeeping failed", slog.String("error", err.Error()),
+			slog.String("sessionId", sessionID))
+	}
+
+	observ.EmitMetric(metricsNamespace, "SessionsBrokered", 1, "Count",
+		map[string]string{"Surface": req.Surface, "Engine": string(voiceengine.EngineNovaSonic)})
+	l.Info("realtime-broker: nova bridge session issued",
+		slog.String("sessionId", sessionID),
+		slog.String("engine", string(voiceengine.EngineNovaSonic)),
+		slog.String("model", realtime.NovaModel))
+
+	return Response{
+		Mode:                 "nova-bridge",
+		Engine:               string(voiceengine.EngineNovaSonic),
+		Model:                realtime.NovaModel,
+		WSURL:                bs.WSURL,
+		BridgeToken:          bs.Token,
+		BridgeTokenExpiresAt: bs.ExpiresAt.UTC().Format(time.RFC3339),
+		ToolManifest:         realtime.ToolManifestJSON(),
+		SessionID:            sessionID,
+		QuotaWarning:         strings.Join(warnings, ","),
 	}
 }
 
@@ -476,14 +583,51 @@ func main() {
 	wireSuspendAlerts(gate, logger, awsCfg, appCfg.EmailQueueURL, os.Getenv("OWNER_EMAIL"))
 
 	b := &broker{
-		log:      logger,
-		gate:     gate,
-		minter:   realtime.NewMinter(loader, model),
-		fallback: realtime.NewFallbackClient(loader),
-		ddb:      ddb,
-		table:    appCfg.TableName,
+		log:           logger,
+		gate:          gate,
+		minter:        realtime.NewMinter(loader, model),
+		fallback:      realtime.NewFallbackClient(loader),
+		ddb:           ddb,
+		table:         appCfg.TableName,
+		settings:      ddb, // *dynamodb.Client satisfies SettingsGetter (GetItem)
+		bridgeBaseURL: os.Getenv("NOVA_BRIDGE_URL"),
 	}
+	wireNovaBridge(b, logger, ctx, appCfg.JWTKmsKeyID)
 	lambda.Start(b.Handle)
+}
+
+// wireNovaBridge installs the Nova Sonic bridge token minter (M12, FR-VE-03):
+// an auth.Signer-backed closure that mints a short-lived first-party JWT scoped
+// to the bridge (scope "nova", sid=sessionID) for each nova-pinned session
+// bootstrap. Requires JWT_KMS_KEY_ID (the same KMS signing key the web function
+// uses) plus kms:Sign on this function's role. When JWT_KMS_KEY_ID is unset (or
+// signer init fails) the minter stays nil and nova-pinned devices receive a
+// nova_bridge_unavailable error rather than a broken session — OpenAI-pinned
+// devices are entirely unaffected.
+func wireNovaBridge(b *broker, logger *slog.Logger, ctx context.Context, kmsKeyID string) {
+	if kmsKeyID == "" {
+		logger.Warn("realtime-broker: JWT_KMS_KEY_ID unset; Nova Sonic bridge disabled (nova-pinned devices get nova_bridge_unavailable)")
+		return
+	}
+	signer, err := auth.NewSigner(ctx, kmsKeyID)
+	if err != nil {
+		logger.Error("realtime-broker: nova bridge signer init failed; nova mints unavailable",
+			slog.String("error", err.Error()))
+		return
+	}
+	b.novaMint = func(ctx context.Context, userID, deviceID, surface, sessionID string) (string, time.Time, error) {
+		tok, err := signer.SignAccessToken(ctx, auth.Claims{
+			Sub:     userID,
+			Sid:     sessionID,
+			Did:     deviceID,
+			Surface: surface,
+			Scope:   realtime.NovaScope,
+		})
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		return tok, time.Now().Add(auth.AccessTokenTTL), nil
+	}
 }
 
 // wireSuspendAlerts installs the auto-suspension owner notification: an

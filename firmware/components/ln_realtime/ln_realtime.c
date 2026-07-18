@@ -1,7 +1,18 @@
 /*
- * ln_realtime.c — OpenAI Realtime WSS client core (M5Stack Tab5).
+ * ln_realtime.c — realtime voice WSS client core (M5Stack Tab5).
  *
- * Worker task owns the connection lifecycle (token fetch -> WSS connect ->
+ * Two transports behind one lifecycle, chosen by the device's voiceEngine pin
+ * (resolved server-side; see ln_rt_session.c):
+ *   - OPENAI_DIRECT (default): client-direct WSS to wss://api.openai.com with a
+ *     Bearer ephemeral token; a session.update pins pcm16 in/out on connect.
+ *   - NOVA_BRIDGE (M12, FR-VE-03): WSS to the backend Nova Sonic media bridge
+ *     (nova.live.jeremy.ninja) with a single-use token carried in the URL and
+ *     no OpenAI ephemeral / no session.update — the bridge holds the Bedrock
+ *     bidirectional stream and speaks the same pcm16 event framing, so uplink
+ *     (input_audio_buffer.append), downlink (response.output_audio.delta),
+ *     transcripts and barge-in flow through unchanged. HIL-unverified.
+ *
+ * Worker task owns the connection lifecycle (session fetch -> WSS connect ->
  * supervise -> reconnect/backoff). The esp_websocket_client task delivers RX
  * frames to ws_event_handler(), which reassembles fragmented payloads,
  * cJSON-parses server events, streams audio deltas to ln_audio, and posts
@@ -81,8 +92,14 @@ static bool s_have_carry;
 
 static char *s_uplink_buf; /* PSRAM, JSON frame + base64 payload */
 
-static char s_ws_url[160];
-static char s_ws_headers[576]; /* "Authorization: Bearer ek_...\r\n" */
+static char s_ws_url[1024];   /* OpenAI URL is short; Nova bridge URL carries a token query param */
+static char s_ws_headers[576]; /* "Authorization: Bearer ek_...\r\n" (OpenAI-direct only) */
+
+/* Transport the current session negotiated (set in ws_open, read by the WS
+ * event handler on the esp_websocket_client task). Only the OpenAI-direct path
+ * sends OpenAI's session.update on connect; the Nova bridge owns session
+ * config server-side and would not understand that frame. */
+static volatile ln_rt_engine_mode_t s_engine_mode = LN_RT_ENGINE_OPENAI_DIRECT;
 
 /* ---------------------------------------------------------------- events -- */
 
@@ -294,7 +311,8 @@ static void handle_msg(const cJSON *root)
         s_response_active = false;
         post_evt(LN_RT_EVENT_RESPONSE_DONE);
     } else if (strcmp(type, "session.created") == 0 ||
-               strcmp(type, "session.updated") == 0) {
+               strcmp(type, "session.updated") == 0 ||
+               strcmp(type, "session.start") == 0) { /* Nova bridge common-schema alias */
         if (!s_session_ready_posted) {
             s_session_ready_posted = true;
             post_evt(LN_RT_EVENT_SESSION_READY);
@@ -372,17 +390,21 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t event_id,
     esp_websocket_event_data_t *d = (esp_websocket_event_data_t *)event_data;
     switch (event_id) {
     case WEBSOCKET_EVENT_CONNECTED: {
-        /* Locked decision: configure pcm16 in/out. The ephemeral token is
-         * config-bound by the broker; this only pins the audio wire format. */
-        static const char k_session_update[] =
-            "{\"type\":\"session.update\",\"session\":{"
-            "\"input_audio_format\":\"pcm16\",\"output_audio_format\":\"pcm16\"}}";
         s_rx_len = 0;
         s_have_carry = false;
         s_response_active = false;
         s_session_ready_posted = false;
-        esp_websocket_client_send_text(s_ws, k_session_update,
-                                       sizeof(k_session_update) - 1, LN_RT_SEND_TIMEOUT);
+        if (s_engine_mode == LN_RT_ENGINE_OPENAI_DIRECT) {
+            /* Locked decision: configure pcm16 in/out. The ephemeral token is
+             * config-bound by the broker; this only pins the audio wire format.
+             * The Nova bridge fixes pcm16 itself and normalizes events
+             * server-side, so no OpenAI session.update is sent on that path. */
+            static const char k_session_update[] =
+                "{\"type\":\"session.update\",\"session\":{"
+                "\"input_audio_format\":\"pcm16\",\"output_audio_format\":\"pcm16\"}}";
+            esp_websocket_client_send_text(s_ws, k_session_update,
+                                           sizeof(k_session_update) - 1, LN_RT_SEND_TIMEOUT);
+        }
         s_connected = true;
         xEventGroupSetBits(s_eg, EG_WS_CONNECTED);
         post_evt(LN_RT_EVENT_CONNECTED);
@@ -424,12 +446,32 @@ static void ws_teardown(void)
 
 static esp_err_t ws_open(const ln_rt_session_info_t *si)
 {
-    snprintf(s_ws_url, sizeof(s_ws_url), LN_RT_WS_URL_FMT, si->model);
-    snprintf(s_ws_headers, sizeof(s_ws_headers), "Authorization: Bearer %s\r\n", si->token);
+    const char *headers = NULL;
+    s_engine_mode = si->mode;
+
+    if (si->mode == LN_RT_ENGINE_NOVA_BRIDGE) {
+        /* Connect straight to the backend Nova Sonic bridge. Auth is the
+         * single-use bridge token carried in the URL query string (WS upgrade
+         * requests can't reliably carry a Bearer header across every client
+         * stack — contracts/api.md). If the broker returned the token as a
+         * separate field and it isn't already in the URL, append it. */
+        if (si->token[0] != '\0' && strstr(si->ws_url, "token=") == NULL) {
+            const char *sep = (strchr(si->ws_url, '?') != NULL) ? "&" : "?";
+            snprintf(s_ws_url, sizeof(s_ws_url), "%s%stoken=%s", si->ws_url, sep, si->token);
+        } else {
+            strlcpy(s_ws_url, si->ws_url, sizeof(s_ws_url));
+        }
+        s_ws_headers[0] = '\0';
+        headers = NULL;
+    } else {
+        snprintf(s_ws_url, sizeof(s_ws_url), LN_RT_WS_URL_FMT, si->model);
+        snprintf(s_ws_headers, sizeof(s_ws_headers), "Authorization: Bearer %s\r\n", si->token);
+        headers = s_ws_headers;
+    }
 
     esp_websocket_client_config_t cfg = {
         .uri = s_ws_url,
-        .headers = s_ws_headers,
+        .headers = headers,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .buffer_size = 4096,
         .task_stack = LN_RT_WS_TASK_STACK,

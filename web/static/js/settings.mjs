@@ -50,6 +50,7 @@ const pendingKeys = new Set(); // top-level keys edited since last confirm
 // not take down every control on the page.
 if (!doc.persona || typeof doc.persona !== 'object') doc.persona = { presetId: 'default', systemInstructions: null };
 if (!doc.privacy || typeof doc.privacy !== 'object') doc.privacy = { storeAudio: false, storeTranscripts: true, retentionDays: 30 };
+if (!doc.voiceEngine || typeof doc.voiceEngine !== 'object') doc.voiceEngine = { default: 'openai-realtime', devices: {} };
 
 // ---- save-status bar + toast ------------------------------------------
 
@@ -280,6 +281,15 @@ function renderField(key) {
     }
     case 'turnDetection': {
       const r = document.querySelector(`input[name="turnDetection"][value="${CSS.escape(doc.turnDetection)}"]`);
+      if (r) r.checked = true;
+      break;
+    }
+    case 'voiceEngine': {
+      // Reflect voiceEngine.default; an unknown value leaves all radios
+      // unchecked (the stored value is still preserved on write-back).
+      const val = (doc.voiceEngine && doc.voiceEngine.default) || 'openai-realtime';
+      const r = document.querySelector(`input[name="voiceEngine"][value="${CSS.escape(val)}"]`);
+      for (const el of document.querySelectorAll('input[name="voiceEngine"]')) el.checked = false;
       if (r) r.checked = true;
       break;
     }
@@ -905,6 +915,25 @@ for (const r of document.querySelectorAll('input[name="turnDetection"]')) {
     markChanged('turnDetection');
   });
 }
+
+// ==================== voice-engine-section:BEGIN ====================
+// M12 secondary-voice-engine picker (FR-VE-04), owned by the M12 web-client
+// workstream — edit only inside these markers. Bound to voiceEngine.default
+// (the engine this browser session and any un-pinned device use; the broker
+// resolves devices[deviceId] ?? default). The segmented radios are SSR'd
+// without a checked attribute — the current value is hydrated from the
+// settings island via renderField('voiceEngine') on init below. Unknown
+// forward-compat fields (e.g. voiceEngine.devices) are preserved untouched
+// by the spread + the autosave engine's whole-document PUT.
+for (const r of document.querySelectorAll('input[name="voiceEngine"]')) {
+  r.addEventListener('change', () => {
+    if (!r.checked) return;
+    doc.voiceEngine = { ...doc.voiceEngine, default: r.value };
+    markChanged('voiceEngine');
+  });
+}
+renderField('voiceEngine');
+// ==================== voice-engine-section:END ====================
 
 // ---- theme -------------------------------------------------------------
 

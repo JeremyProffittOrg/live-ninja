@@ -258,6 +258,13 @@
     <string name="settings_turn_semantic_desc">Waits until you finish a thought — recommended</string>
     <string name="settings_turn_server">Pause-based</string>
     <string name="settings_turn_server_desc">Responds after any pause in speech</string>
+    <string name="settings_voice_engine_label">Voice engine</string>
+    <string name="settings_engine_openai">OpenAI Realtime</string>
+    <string name="settings_engine_openai_desc">Highest quality, lowest latency — runs directly from this device (default)</string>
+    <string name="settings_engine_openai_mini">OpenAI Realtime Mini</string>
+    <string name="settings_engine_openai_mini_desc">Cheaper and faster, slightly less nuance — also device-direct</string>
+    <string name="settings_engine_nova">Amazon Nova Sonic</string>
+    <string name="settings_engine_nova_desc">Lowest cost — audio is relayed through Live Ninja\'s servers, which can add a little latency</string>
 
     <string name="settings_section_audio">Audio</string>
     <string name="settings_mic_label">Microphone</string>

@@ -82,6 +82,14 @@ class SettingsStore @Inject constructor(
     fun setSensitivity(value: Float) = update { it.put("sensitivity", value.toDouble()) }
     fun setVoice(voice: String) = update { it.put("voice", voice) }
     fun setTurnDetection(value: String) = update { it.put("turnDetection", value) }
+
+    /** Set the default voice engine (M12 FR-VE-04), preserving the per-device pin map. */
+    fun setVoiceEngineDefault(engine: String) = update {
+        val voiceEngine = it.optJSONObject("voiceEngine") ?: JSONObject().apply { put("devices", JSONObject()) }
+        voiceEngine.put("default", engine)
+        if (!voiceEngine.has("devices")) voiceEngine.put("devices", JSONObject())
+        it.put("voiceEngine", voiceEngine)
+    }
     fun setTheme(theme: String) = update { it.put("theme", theme) }
     fun setMicDeviceId(id: String?) = update { it.put("micDeviceId", id ?: JSONObject.NULL) }
 

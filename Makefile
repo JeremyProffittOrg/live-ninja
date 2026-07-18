@@ -7,6 +7,11 @@
 SHELL := /bin/sh
 
 # Logical function name -> ./cmd/<name> directory (per shared spec).
+# NOTE: container services are deliberately NOT here. containers/wakeword-train
+# (M6) and containers/nova-bridge (M12, the Nova Sonic media bridge Fargate
+# service) are Docker images built + pushed to ECR by the deploy workflow, not
+# Lambda `bootstrap` binaries — keep them OUT of FUNCTIONS so `make build` never
+# tries to `go build` a cmd/ dir for them.
 FUNCTIONS := web authorizer realtime-broker iot-ingest usage-rollup email-dispatch deliverables-zipper shadow-ingest topics-extract account-purge
 
 .PHONY: all build test vet lint clean
