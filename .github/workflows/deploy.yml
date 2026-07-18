@@ -511,11 +511,19 @@ jobs:
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push nova-bridge image
+      - name: Build and push nova-bridge image (skip while Nova is disabled)
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
           set -eu
+          # The nova-bridge subsystem is gated off (NovaBridgeEnable=false) and
+          # its ECR repo is not created by the stack in that state. Pushing to a
+          # non-existent repo would fail the pipeline for a feature that isn't
+          # deployed — so skip cleanly unless the repo actually exists.
+          if ! aws ecr describe-repositories --repository-names live-ninja-nova-bridge >/dev/null 2>&1; then
+            echo "nova-bridge ECR repo absent (Nova disabled) — skipping image build/push."
+            exit 0
+          fi
           IMAGE="$REGISTRY/live-ninja-nova-bridge"
           docker buildx build --platform linux/arm64 \
             -f containers/nova-bridge/Dockerfile \
