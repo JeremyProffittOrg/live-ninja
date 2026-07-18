@@ -14,7 +14,15 @@
 //   - Barge-in: on `input_audio_buffer.speech_started` while assistant audio
 //     is playing → 30ms gain ramp to silence + `response.cancel` +
 //     `output_audio_buffer.clear`, then immediate return to listening (never
-//     waits for the cancel ack, spec §2.2).
+//     waits for the cancel ack, spec §2.2). In "Patient" mode (settings Mic
+//     pickup = low → the minted session has turn_detection.interrupt_response
+//     false, so the SERVER no longer truncates on VAD blips) the client gates
+//     itself the same way: speech_started only soft-ducks the output and arms
+//     a confirm window; sustained speech (or the server committing the user's
+//     turn) escalates to the full barge-in, while a short ambient-noise blip
+//     (speech_stopped inside the window) just restores the audio. This is the
+//     false-barge-in fix: noise dips the assistant briefly instead of cutting
+//     it off mid-sentence, and a real close-mic interjection still interrupts.
 //
 // The mic *state machine* + UI binding live in mic.mjs — this module is the
 // transport and emits lifecycle events for it. Integration sketch:
@@ -78,6 +86,12 @@ const DC_OPEN_TIMEOUT_MS = 10_000;
 const ICE_GATHER_TIMEOUT_MS = 600;
 const RATE_LIMIT_MAX_WAIT_S = 15;
 const DUCK_RAMP_S = 0.03; // spec §2.2: ~30ms ramp, not an abrupt cut
+// Patient-mode (interrupt_response:false) barge-in gate: how long VAD speech
+// must persist before a speech_started escalates to a full barge-in, and the
+// gain the output ducks to while the gate is pending (audible dip, not
+// silence — a false trigger should feel like a flicker, not a dropout).
+const BARGE_CONFIRM_MS = 350;
+const PENDING_DUCK_LEVEL = 0.15;
 
 // Nova bridge: how long to wait for the bridge's `session.start` after the
 // WebSocket opens, and the PCM sample rates Nova Sonic uses when the bridge
@@ -230,6 +244,13 @@ export class RealtimeSession extends EventTarget {
   #audioCtx = null;
   #gain = null;
   #speaking = false;
+  // Whether the minted session config has turn_detection.interrupt_response
+  // true (server truncates the response itself on speech_started). When the
+  // server interrupts, the local hard cut mirrors it immediately (≤150ms,
+  // PRD FR-V03); when it does not (Mic pickup = low / "Patient"), the client
+  // owns the decision and gates it via #pendingBarge below.
+  #serverInterrupts = true;
+  #pendingBarge = null; // confirm-window timer id while a barge is pending
   #closing = false;
   #connected = false;
   #sessionId = '';
@@ -392,6 +413,15 @@ export class RealtimeSession extends EventTarget {
     this.#model = minted.model || '';
     this.#voice = minted.voice || '';
     this.#rates = minted.rates || null;
+    // Barge-in policy comes from the minted (server-authored) session
+    // config — single source of truth, never a separate client setting.
+    // Missing/legacy shapes default to server-driven interruption.
+    const td =
+      minted.sessionConfig &&
+      minted.sessionConfig.audio &&
+      minted.sessionConfig.audio.input &&
+      minted.sessionConfig.audio.input.turn_detection;
+    this.#serverInterrupts = !td || td.interrupt_response !== false;
 
     this.#localStream = await streamPromise;
 
@@ -538,8 +568,11 @@ export class RealtimeSession extends EventTarget {
         ws.onerror = () => {
           if (this.#novaReady) this.#novaReady.reject(new RealtimeError('bridge_failed', 'The voice bridge connection failed.'));
         };
-        ws.onclose = () => {
-          if (this.#novaReady) this.#novaReady.reject(new RealtimeError('bridge_failed', 'The voice bridge closed before starting.'));
+        ws.onclose = (e) => {
+          // A pre-upgrade rejection (auth/session) surfaces here as close
+          // 1006 — include the code so the error banner is diagnosable.
+          const code = e && e.code ? ' (close ' + e.code + ')' : '';
+          if (this.#novaReady) this.#novaReady.reject(new RealtimeError('bridge_failed', 'The voice bridge refused the connection' + code + '.'));
         };
       });
     } catch (err) {
@@ -880,6 +913,7 @@ export class RealtimeSession extends EventTarget {
     this.#connected = false;
     this.#dcOpen = false;
     this.#speaking = false;
+    this.#disarmBargeConfirm();
 
     // Nova bridge cleanup (no-ops in openai-direct mode).
     this.#novaReady = null;
@@ -966,13 +1000,13 @@ export class RealtimeSession extends EventTarget {
     this.#audioCtx.resume().catch(() => {});
   }
 
-  #duckOutput() {
+  #duckOutput(level = 0.0001) {
     if (!this.#gain || !this.#audioCtx) return;
     const now = this.#audioCtx.currentTime;
     const g = this.#gain.gain;
     g.cancelScheduledValues(now);
     g.setValueAtTime(Math.max(g.value, 0.0001), now);
-    g.linearRampToValueAtTime(0.0001, now + DUCK_RAMP_S);
+    g.linearRampToValueAtTime(level, now + DUCK_RAMP_S);
   }
 
   #restoreOutput() {
@@ -1021,10 +1055,33 @@ export class RealtimeSession extends EventTarget {
     }
   }
 
+  /** Patient-mode gate: soft-duck and wait BARGE_CONFIRM_MS; if VAD speech
+   * is still running when the window closes (no speech_stopped disarmed it),
+   * the interjection is real → full barge-in. */
+  #armBargeConfirm() {
+    if (this.#pendingBarge) return;
+    this.#duckOutput(PENDING_DUCK_LEVEL);
+    this.#pendingBarge = setTimeout(() => {
+      this.#pendingBarge = null;
+      if (this.#speaking) this.bargeIn();
+    }, BARGE_CONFIRM_MS);
+  }
+
+  /** Cancel a pending patient-mode barge (noise blip / assistant finished).
+   * `restore` ramps the ducked output back up when the assistant is still
+   * talking. */
+  #disarmBargeConfirm(restore = false) {
+    if (!this.#pendingBarge) return;
+    clearTimeout(this.#pendingBarge);
+    this.#pendingBarge = null;
+    if (restore && this.#speaking) this.#restoreOutput();
+  }
+
   /** Barge-in (spec §2.2): duck audio ~30ms, cancel the response, clear the
    * buffered assistant audio, return to listening immediately. Also called
    * by mic.mjs for a manual mid-speech tap. */
   bargeIn() {
+    this.#disarmBargeConfirm();
     if (this.#mode === 'nova-bridge') {
       if (!this.#connected) return;
       this.#novaBargeIn();
@@ -1079,13 +1136,33 @@ export class RealtimeSession extends EventTarget {
 
     switch (evt.type) {
       case 'input_audio_buffer.speech_started':
-        // Barge-in trigger: user spoke while the assistant was talking.
-        if (this.#speaking) this.bargeIn();
+        // Barge-in trigger: user (or, in a noisy room, *something*) spoke
+        // while the assistant was talking. When the session was minted with
+        // interrupt_response:true the server has already truncated the
+        // response, so mirror it instantly (≤150ms, PRD FR-V03). In Patient
+        // mode (interrupt_response:false, Mic pickup = low) hold: soft-duck
+        // and confirm before cancelling, so an ambient blip doesn't kill
+        // the response.
+        if (this.#speaking) {
+          if (this.#serverInterrupts) this.bargeIn();
+          else this.#armBargeConfirm();
+        }
         this.#emit('speechstarted');
         break;
 
       case 'input_audio_buffer.speech_stopped':
+        // Speech ended inside the confirm window → it was a blip, not an
+        // interjection: bring the assistant's audio back and keep going.
+        this.#disarmBargeConfirm(true);
         this.#emit('speechstopped');
+        break;
+
+      case 'input_audio_buffer.committed':
+        // The server judged that real user speech completed a turn. In
+        // Patient mode a very short real utterance ("stop") can end before
+        // the confirm window and get restored above — the commit is the
+        // server's word that it was speech, so honor it and barge now.
+        if (!this.#serverInterrupts && this.#speaking) this.bargeIn();
         break;
 
       case 'response.created':
@@ -1099,6 +1176,7 @@ export class RealtimeSession extends EventTarget {
         break;
 
       case 'output_audio_buffer.stopped':
+        this.#disarmBargeConfirm();
         if (this.#speaking) {
           this.#speaking = false;
           this.#emit('speakingended');
@@ -1106,6 +1184,7 @@ export class RealtimeSession extends EventTarget {
         break;
 
       case 'output_audio_buffer.cleared':
+        this.#disarmBargeConfirm();
         this.#speaking = false;
         break;
 

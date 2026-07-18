@@ -95,6 +95,10 @@ bool      ln_net_is_ap_only(void);
 /* ---- Captive portal (ln_portal.c) ---- */
 esp_err_t ln_portal_start(void);   /* raises SoftAP + HTTP server + DNS */
 void      ln_portal_stop(void);
+/* True once /api/status has returned a non-empty claimUrl to any client —
+ * the phone handoff got its pairing link, so the SoftAP grace window
+ * (ln_net.c teardown) can end early. Latched until reboot. */
+bool      ln_portal_claim_served(void);
 
 /* ---- DNS hijack (ln_dns.c) ---- */
 esp_err_t ln_dns_start(void);

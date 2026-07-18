@@ -389,12 +389,22 @@ $("joinForm").addEventListener("submit",function(ev){
 function showError(msg){var a=$("joinError");a.textContent=msg;a.classList.add("show");}
 function resetJoin(){$("joinBtn").disabled=false;$("joinBtn").textContent="Join network";}
 
-/* ---------- status polling ---------- */
-function poll(){
-  fetch("/api/status").then(function(r){return r.json();}).then(function(st){
+/* ---------- status polling ----------
+ * Once the device joins Wi-Fi, the shared radio can drag the hotspot to a
+ * new channel and this phone gets kicked off the SoftAP — a relative
+ * /api/status then points at a gateway we can no longer reach and the page
+ * stalls at "Getting a pairing link…". So as soon as status reports the
+ * device connected with a STA IP, retarget all further polling to the
+ * absolute http://<sta-ip>/api/status (the device answers there on the home
+ * LAN; its endpoints send permissive CORS for exactly this cross-origin
+ * hop). If the absolute fetch fails (e.g. still on the hotspot with AP
+ * isolation), fall back to the relative URL for that poll. */
+var apiBase="";
+function handleStatus(st){
     if(st.gateway){curGateway=st.gateway;}
     if(st.paired){setStep(3);panels("panel-done");return;}
     var w=st.wifi||{};
+    if(w.state==="connected"&&w.ip&&!apiBase){apiBase="http://"+w.ip;}
     if(w.state==="connected"){
       setStep(2);
       $("pairSsid").textContent=w.ssid||"";
@@ -412,6 +422,7 @@ function poll(){
       $("connMsg").textContent="Connecting to “"+(w.ssid||selSsid||"your network")+"”…";
       panels("panel-connecting");
     }else if(submitted&&(w.state==="wrong_password"||w.state==="ap_not_found"||w.state==="failed")){
+      apiBase="";/* device fell back to the portal — the STA IP is dead */
       submitted=false;resetJoin();setMode("sta");panels("panel-wifi");setStep(1);
       showError(w.state==="wrong_password"?
         "Wrong password for “"+w.ssid+"” — try again.":
@@ -420,7 +431,17 @@ function poll(){
         "Couldn’t connect to “"+w.ssid+"”. Try again.");
       if($("pw").parentElement&&!$("pw").parentElement.classList.contains("hidden"))$("pw").focus();
     }
-  }).catch(function(){/* device busy switching networks; keep polling */});
+}
+function poll(){
+  var base=apiBase;
+  fetch(base+"/api/status").then(function(r){return r.json();}).then(handleStatus)
+  .catch(function(){
+    if(base){/* STA path unreachable — try the hotspot-relative URL once */
+      fetch("/api/status").then(function(r){return r.json();}).then(handleStatus)
+        .catch(function(){/* neither path reachable; keep polling */});
+    }
+    /* else: device busy switching networks; keep polling */
+  });
 }
 
 /* ---------- init: seed subnet/mode from the device ---------- */

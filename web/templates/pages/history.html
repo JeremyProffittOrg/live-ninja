@@ -98,11 +98,30 @@
   @media (prefers-reduced-motion: reduce) { .hist-skeleton .bar { animation: none; } }
   .hist-more { display: flex; justify-content: center; padding: var(--ln-sp-4) 0 0; }
 
+  /* "Transcript storage is off" notice (list view, shown while
+     settings.privacy.storeTranscripts === false). */
+  .hist-storage-note {
+    display: flex; align-items: center; gap: var(--ln-sp-3); flex-wrap: wrap;
+    margin-bottom: var(--ln-sp-5); padding: var(--ln-sp-3) var(--ln-sp-4);
+    border: 1px solid var(--ln-border-strong); border-radius: var(--ln-r-md);
+    background: var(--ln-surface-2); color: var(--ln-text-muted); font-size: var(--ln-fs-sm);
+  }
+  .hist-storage-note a { color: var(--ln-accent-ink); font-weight: 650; }
+
   /* Conversation detail view (master list → detail) */
   .hist-detail-head { display: flex; align-items: center; gap: var(--ln-sp-3); flex-wrap: wrap; margin-bottom: var(--ln-sp-4); }
   .hist-detail-head h2 { font-size: var(--ln-fs-lg); margin: 0; flex: 1 1 auto; }
   .hist-detail-meta { display: flex; flex-wrap: wrap; gap: var(--ln-sp-2); margin-bottom: var(--ln-sp-4); align-items: center; }
   .hist-transcript { display: flex; flex-direction: column; gap: var(--ln-sp-3); max-width: 720px; }
+
+  /* Tool-call cards in the detail transcript: hidden until the
+     "Show tool calls" toggle turns them on (default off, remembered). */
+  .hist-transcript .hist-toolcard { display: none; }
+  .hist-transcript.show-tools .hist-toolcard { display: block; }
+  .hist-toolbar-detail { display: flex; align-items: center; margin-bottom: var(--ln-sp-4); }
+  .hist-toolbar-detail .ln-toggle { font-size: var(--ln-fs-sm); font-weight: 600; color: var(--ln-text-muted); }
+  .hist-toolbar-detail .ln-toggle:has(input:checked) { color: var(--ln-text); }
+  .hist-toolcard dd { word-break: break-word; }
 
   /* Topic manager */
   .hist-manage summary {
@@ -151,6 +170,14 @@
   </div>
 
   <div id="histListView">
+    {{- /* Shown by history.mjs while settings.privacy.storeTranscripts is
+           false — new conversations are being dropped client-side, so the
+           page must say so instead of sitting silently empty. */}}
+    <div class="hist-storage-note" id="histStorageOff" role="status" hidden>
+      <span>Transcript storage is off — new conversations aren’t being saved.</span>
+      <a href="/settings">Turn it on in Settings</a>
+    </div>
+
     <section class="ln-card" aria-labelledby="filterHeading">
       <h2 class="ln-sr-only" id="filterHeading">Filters</h2>
       <div class="hist-filters">
@@ -260,6 +287,17 @@
       <h2 id="detailHeading">Conversation</h2>
     </div>
     <div class="hist-detail-meta" id="detailMeta"></div>
+
+    {{- /* "Show tool calls" — ln-toggle slider, default off, remembered in
+           localStorage; only visible when the conversation has tool-call
+           entries to show. */}}
+    <div class="hist-toolbar-detail" id="toolToggleWrap" hidden>
+      <label class="ln-toggle">
+        <input type="checkbox" id="showToolCalls">
+        <span class="ln-toggle-track" aria-hidden="true"><span class="ln-toggle-thumb"></span></span>
+        <span>Show tool calls</span>
+      </label>
+    </div>
 
     <div class="hist-skeleton" id="detailLoading" role="status" aria-label="Loading the conversation">
       <div class="bar" style="width: 85%;"></div>

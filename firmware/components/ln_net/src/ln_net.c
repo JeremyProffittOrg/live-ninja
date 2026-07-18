@@ -721,6 +721,41 @@ static void portal_ensure_stopped(void)
     esp_event_post(LN_NET_EVENT, LN_NET_EVENT_PORTAL_STOPPED, NULL, 0, 0);
 }
 
+/* Portal-handoff grace (HIL 2026-07-18): when the STA join lands on another
+ * channel the shared radio drags the SoftAP with it, kicking the phone that
+ * drove setup; the page retargets its polling to the STA IP but a slow phone
+ * needs the AP (and this httpd) alive long enough to pick that up, fetch the
+ * claim URL, and observe paired:true. So after pairing, keep the portal up
+ * until the claim URL has been served to at least one client (plus a short
+ * tail for the paired:true poll) or ~90s pass. Skipped when no client ever
+ * joined the SoftAP (LCD-only provisioning) and abandoned if the link drops
+ * (the retry loop wants the portal up anyway). */
+#define PORTAL_GRACE_TOTAL_MS 90000
+#define PORTAL_GRACE_TAIL_MS  5000
+
+static void portal_stop_after_grace(void)
+{
+    if (!s_portal_up) {
+        return;
+    }
+    if (s_ap_clients > 0) {
+        int64_t deadline = esp_timer_get_time() + PORTAL_GRACE_TOTAL_MS * 1000LL;
+        while (!ln_portal_claim_served() && s_online &&
+               esp_timer_get_time() < deadline) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+        if (ln_portal_claim_served() && s_online) {
+            vTaskDelay(pdMS_TO_TICKS(PORTAL_GRACE_TAIL_MS));
+        }
+        ESP_LOGI(TAG, "portal handoff grace over (claim served: %s)",
+                 ln_portal_claim_served() ? "yes" : "no");
+    }
+    if (!s_online) {
+        return;     /* link dropped mid-grace; keep the portal for the retry */
+    }
+    portal_ensure_stopped();
+}
+
 esp_netif_t *ln_net_take_ap_netif(void)
 {
     if (s_ap_netif == NULL) {
@@ -834,7 +869,7 @@ static void net_task(void *arg)
         }
 
         ln_auth_on_online();
-        portal_ensure_stopped();
+        portal_stop_after_grace();
 
         /* Park until the link drops (or creds are wiped). */
         xEventGroupWaitBits(s_bits, BIT_LINK_DOWN, pdTRUE, pdFALSE,

@@ -164,6 +164,18 @@ func (e *ConcurrentLimitError) Error() string {
 		e.Limit, e.RetryAfterSeconds)
 }
 
+// SessionUnknownError is returned by CheckSession when the session being
+// redeemed has no live concurrency slot: either it was never minted
+// (RecordMint never ran for this sessionID) or its slot has passed the
+// hard session cap. The bridge maps it to HTTP 401.
+type SessionUnknownError struct {
+	SessionID string
+}
+
+func (e *SessionUnknownError) Error() string {
+	return fmt.Sprintf("realtime: session %q unknown or expired", e.SessionID)
+}
+
 // SuspendAlert carries the details of an auto-suspension to the
 // broker-provided alert hook (SetAlerter) — the hook owns delivery (SES
 // via the email queue) and its own error logging.
@@ -306,6 +318,53 @@ func (g *Gate) CheckMint(ctx context.Context, userID string) ([]string, error) {
 		warnings = append(warnings, fmt.Sprintf("monthly_tokens=%d%%", pct))
 	}
 	return warnings, nil
+}
+
+// CheckSession validates that an already-minted session may be REDEEMED
+// (M12 nova-bridge connect): the account must not be suspended (fresh
+// read, same kill-switch as CheckMint) and the BUCKET#sess#<sessionID>
+// concurrency slot RecordMint wrote at mint time must still exist and be
+// unexpired (the FR-V08 hard session cap bounds token replay).
+//
+// It deliberately does NOT re-run the pre-spend mint gate: the broker ran
+// CheckMint and RecordMint before issuing the session token, so the spend
+// caps and rate bucket were already enforced for this session — and
+// re-running checkConcurrent at redemption counts the session's OWN slot,
+// which self-rejected every legitimate bridge connect with "concurrent
+// session limit" (prod, 2026-07-18).
+//
+// On rejection the error is a *SuspendedError or *SessionUnknownError;
+// anything else is an infrastructure failure.
+func (g *Gate) CheckSession(ctx context.Context, userID, sessionID string) error {
+	if sessionID == "" {
+		return &SessionUnknownError{SessionID: sessionID}
+	}
+	if err := g.checkSuspended(ctx, userID); err != nil {
+		return err
+	}
+	out, err := g.ddb.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName:      aws.String(g.table),
+		ConsistentRead: aws.Bool(true),
+		Key: map[string]ddbtypes.AttributeValue{
+			"pk": &ddbtypes.AttributeValueMemberS{Value: "USER#" + userID},
+			"sk": &ddbtypes.AttributeValueMemberS{Value: sessSlotPrefix + sessionID},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("realtime: read session slot: %w", err)
+	}
+	if out.Item == nil {
+		return &SessionUnknownError{SessionID: sessionID}
+	}
+	n, ok := out.Item["exp"].(*ddbtypes.AttributeValueMemberN)
+	if !ok {
+		return &SessionUnknownError{SessionID: sessionID}
+	}
+	exp, perr := strconv.ParseInt(n.Value, 10, 64)
+	if perr != nil || exp <= g.now().UTC().Unix() {
+		return &SessionUnknownError{SessionID: sessionID}
+	}
+	return nil
 }
 
 // CheckFallback gates the text/STT/TTS fallback modes: suspension gate,

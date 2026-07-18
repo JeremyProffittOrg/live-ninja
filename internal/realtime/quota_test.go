@@ -498,3 +498,72 @@ func TestRecordMintWritesLedger(t *testing.T) {
 	mints, _ = usage["dayMints"].(*types.AttributeValueMemberN)
 	assert.Equal(t, "2", mints.Value)
 }
+
+// ---- CheckSession (M12 nova-bridge redemption) --------------------------
+
+func TestCheckSessionRedeemsRecordedMint(t *testing.T) {
+	g, _, _ := newTestGate()
+	ctx := context.Background()
+
+	// The broker's mint flow: full gate, then bookkeeping.
+	_, err := g.CheckMint(ctx, "u1")
+	require.NoError(t, err)
+	require.NoError(t, g.RecordMint(ctx, "u1", "sess-1", "web"))
+
+	// The bridge redeems the SAME session — must pass even though the
+	// session's own concurrency slot exists (the CheckMint double-gate bug).
+	require.NoError(t, g.CheckSession(ctx, "u1", "sess-1"))
+
+	// Redemption is repeatable inside the cap (reconnect after a drop).
+	require.NoError(t, g.CheckSession(ctx, "u1", "sess-1"))
+}
+
+func TestCheckSessionPassesAtConcurrencyCap(t *testing.T) {
+	g, _, clock := newTestGate()
+	ctx := context.Background()
+
+	// Fill every concurrency slot (default cap 3).
+	for i := 0; i < 3; i++ {
+		require.NoError(t, g.RecordMint(ctx, "u1", fmt.Sprintf("sess-%d", i), "web"))
+		clock.advance(5 * time.Second)
+	}
+
+	// A NEW mint is rejected (cap reached) ...
+	_, err := g.CheckMint(ctx, "u1")
+	var cle *ConcurrentLimitError
+	require.ErrorAs(t, err, &cle)
+
+	// ... but redeeming any of the already-minted sessions still works:
+	// connect must never be blocked by the session's own slot.
+	for i := 0; i < 3; i++ {
+		require.NoError(t, g.CheckSession(ctx, "u1", fmt.Sprintf("sess-%d", i)))
+	}
+}
+
+func TestCheckSessionRejectsUnknownAndExpired(t *testing.T) {
+	g, _, clock := newTestGate()
+	ctx := context.Background()
+
+	// Never minted.
+	var su *SessionUnknownError
+	require.ErrorAs(t, g.CheckSession(ctx, "u1", "nope"), &su)
+
+	// Empty session id.
+	require.ErrorAs(t, g.CheckSession(ctx, "u1", ""), &su)
+
+	// Minted but past the hard session cap (slot exp = mint + 600s).
+	require.NoError(t, g.RecordMint(ctx, "u1", "sess-1", "web"))
+	clock.advance(11 * time.Minute)
+	require.ErrorAs(t, g.CheckSession(ctx, "u1", "sess-1"), &su)
+}
+
+func TestCheckSessionRejectsSuspended(t *testing.T) {
+	g, fake, _ := newTestGate()
+	ctx := context.Background()
+
+	require.NoError(t, g.RecordMint(ctx, "u1", "sess-1", "web"))
+	seedProfile(fake, "u1", "suspended")
+
+	var se *SuspendedError
+	require.ErrorAs(t, g.CheckSession(ctx, "u1", "sess-1"), &se)
+}

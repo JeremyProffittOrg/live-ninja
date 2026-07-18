@@ -90,6 +90,57 @@ func conversationJSON(cv *store.Conversation) fiber.Map {
 	return out
 }
 
+// toolAuditPattern parses the audit line internal/tools writeAudit
+// persists as a role=tool LOG# row:
+//
+//	tool=<name> outcome=<ok|error|duplicate> callId=<id> args=<json>[ error=<code>]
+//
+// (the line may be truncated at the router's maxAuditText cap, in which
+// case only the raw text survives — parsing is best-effort).
+var toolAuditPattern = regexp.MustCompile(`^tool=(\S+) outcome=(\S+) callId=(\S*) args=(.*)$`)
+
+// toolAuditErrSuffix matches the " error=<code>" tail writeAudit appends
+// on failed invocations (ToolError codes are snake_case identifiers).
+var toolAuditErrSuffix = regexp.MustCompile(` error=([A-Za-z0-9_.-]+)$`)
+
+// toolTurnJSON projects one role=tool audit row into a history tool-call
+// entry: the raw audit text always ships (Android renders it as a plain
+// bubble), plus the parsed tool/outcome/callId/args fields and the stored
+// output snippet the web detail view renders as a tool card.
+func toolTurnJSON(t *store.Turn) fiber.Map {
+	entry := fiber.Map{"role": "tool", "text": t.Text}
+	if t.TS != "" {
+		entry["ts"] = t.TS
+	}
+	if t.Engine != "" {
+		entry["engine"] = t.Engine
+	}
+	if t.Surface != "" {
+		entry["surface"] = t.Surface
+	}
+	if t.Output != "" {
+		entry["output"] = t.Output
+	}
+	m := toolAuditPattern.FindStringSubmatch(t.Text)
+	if m == nil {
+		return entry // truncated/legacy line — raw text only
+	}
+	args := m[4]
+	if m[2] != "ok" {
+		if em := toolAuditErrSuffix.FindStringSubmatch(args); em != nil {
+			entry["error"] = em[1]
+			args = strings.TrimSuffix(args, em[0])
+		}
+	}
+	entry["tool"] = m[1]
+	entry["outcome"] = m[2]
+	if m[3] != "" {
+		entry["callId"] = m[3]
+	}
+	entry["args"] = args
+	return entry
+}
+
 func topicJSON(t *store.Topic) fiber.Map {
 	out := fiber.Map{
 		"id":        t.TopicID,
@@ -255,29 +306,56 @@ func handleGetConversation(deps *Deps) fiber.Handler {
 		}
 
 		// Transcript turns from the LOG#<sessionId># range the transcript
-		// sink wrote (api_routes.go handleTranscript), seq order. The
+		// sink wrote (api_routes.go handleTranscript), plus the tool
+		// router's role=tool audit rows (internal/tools writeAudit). The
 		// broker's seq-0 role=system session-start marker is skipped —
 		// it's bookkeeping, not conversation.
+		//
+		// The two writers use disjoint seq schemes (the sink counts 0,1,2…
+		// while the tool router derives seq from the millisecond clock), so
+		// sk order does NOT interleave them chronologically — the merged
+		// view is stable-sorted by each row's ts instead. Rows without a
+		// parseable ts inherit the previous row's (carry-forward), which
+		// preserves their original seq position.
 		raw, err := deps.Store.ListSessionTurns(c.Context(), userID, conv.SessionID)
 		if err != nil {
 			return apiInternalError(c, deps, "list session turns", err)
 		}
-		turns := make([]fiber.Map, 0, len(raw))
+		type timedEntry struct {
+			entry fiber.Map
+			at    time.Time
+		}
+		entries := make([]timedEntry, 0, len(raw))
+		var lastTS time.Time
 		for i := range raw {
 			if raw[i].Role == "system" {
 				continue
 			}
-			turn := fiber.Map{"role": raw[i].Role, "text": raw[i].Text}
-			if raw[i].TS != "" {
-				turn["ts"] = raw[i].TS
+			if t, perr := time.Parse(time.RFC3339Nano, raw[i].TS); perr == nil {
+				lastTS = t
 			}
-			if raw[i].Engine != "" {
-				turn["engine"] = raw[i].Engine
+			var entry fiber.Map
+			if raw[i].Role == "tool" {
+				entry = toolTurnJSON(&raw[i])
+			} else {
+				entry = fiber.Map{"role": raw[i].Role, "text": raw[i].Text}
+				if raw[i].TS != "" {
+					entry["ts"] = raw[i].TS
+				}
+				if raw[i].Engine != "" {
+					entry["engine"] = raw[i].Engine
+				}
+				if raw[i].Surface != "" {
+					entry["surface"] = raw[i].Surface
+				}
 			}
-			if raw[i].Surface != "" {
-				turn["surface"] = raw[i].Surface
-			}
-			turns = append(turns, turn)
+			entries = append(entries, timedEntry{entry: entry, at: lastTS})
+		}
+		sort.SliceStable(entries, func(i, j int) bool { return entries[i].at.Before(entries[j].at) })
+
+		turns := make([]fiber.Map, 0, len(entries))
+		for i := range entries {
+			turns = append(turns, entries[i].entry)
 		}
 
 		resp := conversationJSON(conv)

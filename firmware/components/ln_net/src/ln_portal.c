@@ -40,7 +40,37 @@ extern const char portal_html_end[]   asm("_binary_portal_html_end");
 
 static httpd_handle_t s_httpd;
 
+/* Latched true once /api/status has handed a non-empty claimUrl to any
+ * portal client (AP- or STA-side) — the "the phone got its pairing link"
+ * signal ln_net.c uses to decide how long to hold the SoftAP up. */
+static volatile bool s_claim_served;
+
+bool ln_portal_claim_served(void)
+{
+    return s_claim_served;
+}
+
 /* ------------------------------------------------------------- helpers */
+
+/* Portal-handoff CORS (HIL 2026-07-18): after a successful join the page
+ * retargets its polling to http://<sta-ip>/api/... — a cross-origin fetch
+ * from the http://<ap-gw>/ origin, so every JSON endpoint must answer with
+ * permissive CORS or the browser discards the response. */
+static void set_cors(httpd_req_t *req)
+{
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+}
+
+/* Preflight for the POST endpoints (Content-Type: application/json makes
+ * them non-simple requests once cross-origin). */
+static esp_err_t api_options(httpd_req_t *req)
+{
+    set_cors(req);
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type");
+    httpd_resp_set_hdr(req, "Access-Control-Max-Age", "3600");
+    return httpd_resp_send(req, NULL, 0);
+}
 
 static esp_err_t redirect_to_root(httpd_req_t *req)
 {
@@ -145,6 +175,7 @@ static esp_err_t scan_get(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    set_cors(req);
 
     httpd_resp_sendstr_chunk(req, "{\"networks\":[");
     bool first = true;
@@ -184,6 +215,7 @@ static esp_err_t scan_get(httpd_req_t *req)
 
 static esp_err_t wifi_post(httpd_req_t *req)
 {
+    set_cors(req);
     char body[256];
     int total = 0;
     int to_read = req->content_len;
@@ -228,6 +260,7 @@ static esp_err_t wifi_post(httpd_req_t *req)
  * still arrive via /api/wifi. */
 static esp_err_t mode_post(httpd_req_t *req)
 {
+    set_cors(req);
     char body[128];
     esp_err_t err = ESP_ERR_INVALID_ARG;
     if (read_body(req, body, sizeof(body)) > 0) {
@@ -258,6 +291,7 @@ static esp_err_t mode_post(httpd_req_t *req)
  * gateway (returned as "url"). */
 static esp_err_t apconfig_post(httpd_req_t *req)
 {
+    set_cors(req);
     char body[128];
     esp_err_t err = ESP_ERR_INVALID_ARG;
     char subnet[16] = {0};
@@ -333,7 +367,12 @@ static esp_err_t status_get(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_sendstr(req, out);
+    set_cors(req);
+    esp_err_t err = httpd_resp_sendstr(req, out);
+    if (err == ESP_OK && claim[0] != '\0') {
+        s_claim_served = true;   /* a portal client has the pairing link */
+    }
+    return err;
 }
 
 static esp_err_t captive_probe(httpd_req_t *req)
@@ -395,6 +434,7 @@ esp_err_t ln_portal_start(void)
         {.uri = "/api/mode",    .method = HTTP_POST, .handler = mode_post},
         {.uri = "/api/apconfig",.method = HTTP_POST, .handler = apconfig_post},
         {.uri = "/api/status",  .method = HTTP_GET,  .handler = status_get},
+        {.uri = "/api/*",       .method = HTTP_OPTIONS, .handler = api_options},
         /* Captive-portal detection probes (Android/Apple/Windows). */
         {.uri = "/generate_204",             .method = HTTP_GET, .handler = captive_probe},
         {.uri = "/gen_204",                  .method = HTTP_GET, .handler = captive_probe},

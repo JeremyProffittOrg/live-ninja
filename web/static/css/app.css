@@ -945,7 +945,13 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
   background-color: var(--ln-bg);
 }
 .conv-rail__orbwrap { position: relative; margin-top: var(--ln-sp-3); }
-.conv-status-text { text-align: center; font-size: var(--ln-fs-sm); color: var(--ln-text-muted); min-height: 20px; margin: 0; }
+/* Status sits tight under the visualizer (owner spec 2026-07-18): pull it up
+   against the rail's sp-5 gap, leaving sp-1. */
+.conv-status-text {
+  text-align: center; font-size: var(--ln-fs-sm); color: var(--ln-text-muted);
+  min-height: 20px;
+  margin: calc(var(--ln-sp-1) - var(--ln-sp-5)) 0 0;
+}
 .conv-rail__top {
   width: 100%;
   display: flex;
@@ -959,7 +965,9 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
 
 /* Push to talk */
 .ptt-wrap { display: flex; flex-direction: column; align-items: center; gap: var(--ln-sp-1); }
-.ptt-zone { display: flex; align-items: flex-end; gap: var(--ln-sp-2); }
+/* Mic + wake-word slider share one row, vertical centers aligned
+   (owner spec 2026-07-18). */
+.ptt-zone { display: flex; align-items: center; gap: var(--ln-sp-4); }
 .ptt {
   position: relative;
   /* Halved from the earlier 2x (owner layout 2026-07-18). */
@@ -969,29 +977,15 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
   color: var(--ln-text-on-teal);
   border: none; cursor: pointer;
   box-shadow: var(--ln-ptt-shadow, var(--ln-shadow-teal));
-  font-size: 30px;
+  /* Icon grew +50% while the button stayed 84px (owner spec 2026-07-18). */
+  font-size: 45px;
   transition: transform .1s ease, box-shadow .2s ease;
 }
-/* Wake word as a compact toggle-button at the mic's lower-left. The checkbox
-   stays for wakeword.mjs/mic.mjs; the chip is its visible control. */
-.wake-chip {
-  display: inline-flex; align-items: center; gap: 6px;
-  min-height: 44px; padding: 6px 12px; border-radius: 999px;
-  border: 1px solid var(--ln-border-strong);
-  background: var(--ln-surface-2);
-  color: var(--ln-text-muted);
-  cursor: pointer; user-select: none;
-}
-.wake-chip input { position: absolute; opacity: 0; pointer-events: none; }
-.wake-chip__text { display: flex; flex-direction: column; line-height: 1.15; }
-.wake-chip__text .ln-label { font-size: var(--ln-fs-xs); }
-.wake-chip .wakeword-phrase { font-size: 11px; }
-.wake-chip:has(input:checked) {
-  border-color: var(--ln-accent, var(--ln-teal));
-  color: var(--ln-text);
-  box-shadow: 0 0 10px color-mix(in srgb, var(--ln-accent, var(--ln-teal)) 35%, transparent);
-}
-.wake-chip:has(input:focus-visible) { box-shadow: var(--ln-focus); }
+/* Wake-word slider next to the mic: the shared ln-toggle pattern, sized for
+   the rail. --ln-text-muted keeps AA on the HAL dark rail (same ink as the
+   status line); the checked state brightens to full text ink. */
+.ptt-zone .ln-toggle { font-size: var(--ln-fs-sm); font-weight: 600; color: var(--ln-text-muted); }
+.ptt-zone .ln-toggle:has(input:checked) { color: var(--ln-text); }
 .ptt:hover { filter: brightness(1.06); }
 .ptt:active { transform: scale(0.96); }
 .ptt[aria-pressed="true"] {
@@ -1001,12 +995,6 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
 }
 .ptt:focus-visible { box-shadow: var(--ln-focus); }
 .ptt:disabled { opacity: .55; cursor: not-allowed; }
-.ptt-hint { font-size: var(--ln-fs-xs); color: var(--ln-text-dim); text-align: center; }
-.ptt-hint kbd {
-  display: inline-block; padding: 1px 7px; border-radius: 5px;
-  background: var(--ln-surface-2); border: 1px solid var(--ln-border-strong);
-  font-size: 11px; color: var(--ln-text-muted);
-}
 
 /* Wake word block */
 .wakeword-block { width: 100%; }
@@ -1177,17 +1165,19 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
 .mictest__tips code { word-break: break-all; }
 .mictest__actions { display: flex; justify-content: flex-end; margin-top: 18px; }
 
-/* ---- tool-call toggle (lives in the rail since the 2026-07-18 rework) - */
-.conv-topbar__toggle {
-  display: inline-flex;
+/* ---- rail bottom row (owner spec 2026-07-18): "Test my mic" left,
+   "Show tool calls" slider right, vertical centers aligned. margin-top:auto
+   pins the row to the bottom of the flex-column rail. */
+.conv-rail__bottom {
+  margin-top: auto;
+  width: 100%;
+  display: flex;
   align-items: center;
-  gap: 8px;
-  color: var(--ln-text-muted);
-  font-size: 0.9rem;
-  cursor: pointer;
-  user-select: none;
+  justify-content: space-between;
+  gap: var(--ln-sp-3);
 }
-.conv-topbar__toggle input { accent-color: var(--ln-cyan); width: 16px; height: 16px; }
+.conv-rail__bottom .ln-toggle { font-size: var(--ln-fs-sm); font-weight: 600; color: var(--ln-text-muted); }
+.conv-rail__bottom .ln-toggle:has(input:checked) { color: var(--ln-text); }
 
 /* ---- tool-activity badge (upper-left of the orb) ---------------------- */
 .conv-rail__orbwrap { position: relative; }

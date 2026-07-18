@@ -182,18 +182,31 @@ func TestGetConversationDetail(t *testing.T) {
 	ctx := context.Background()
 	seedConversation(t, st, "2026-07-10T12:00:00Z", "sess-1", "devA", "t1")
 
-	// Transcript rows as the sink writes them, including the broker's
-	// seq-0 system marker (which the detail view must skip).
+	// Transcript rows as the sink writes them (including the broker's
+	// seq-0 system marker, which the detail view must skip) plus the tool
+	// router's role=tool audit rows. Tool seq values come from the
+	// millisecond clock (large numbers), so sk order does NOT interleave
+	// them with the sink's 0,1,2… — the route must merge by ts instead.
 	for _, row := range []struct {
-		sk, role, text string
+		sk, role, text, ts, output string
 	}{
-		{"LOG#sess-1#000000", "system", "session-start"},
-		{"LOG#sess-1#000001", "user", "hello there"},
-		{"LOG#sess-1#000002", "assistant", "hi! how can I help?"},
+		{"LOG#sess-1#000000", "system", "session-start", "2026-07-10T12:00:00Z", ""},
+		{"LOG#sess-1#000001", "user", "hello there", "2026-07-10T12:00:01Z", ""},
+		{"LOG#sess-1#000002", "assistant", "hi! how can I help?", "2026-07-10T12:00:05Z", ""},
+		// Ran between the two spoken turns; must land between them.
+		{"LOG#sess-1#734512", "tool", `tool=weather outcome=ok callId=call_1 args={"city":"Tampa"}`,
+			"2026-07-10T12:00:03.250Z", `{"tempF":90}`},
+		// Failed invocation: " error=<code>" suffix parsed off the args.
+		{"LOG#sess-1#734890", "tool", `tool=send_email outcome=error callId=call_2 args={"to":"x"} error=forbidden`,
+			"2026-07-10T12:00:06Z", ""},
 	} {
-		if err := st.ConditionalPut(ctx, "USER#u1", row.sk, map[string]any{
-			"role": row.role, "text": row.text, "ts": "2026-07-10T12:00:01Z", "engine": "openai-realtime",
-		}, 0); err != nil {
+		attrs := map[string]any{
+			"role": row.role, "text": row.text, "ts": row.ts, "engine": "openai-realtime",
+		}
+		if row.output != "" {
+			attrs["output"] = row.output
+		}
+		if err := st.ConditionalPut(ctx, "USER#u1", row.sk, attrs, 0); err != nil {
 			t.Fatalf("seed turn %s: %v", row.sk, err)
 		}
 	}
@@ -208,12 +221,34 @@ func TestGetConversationDetail(t *testing.T) {
 		t.Errorf("detail conversation = %v", body)
 	}
 	turns, _ := body["turns"].([]any)
-	if len(turns) != 2 {
-		t.Fatalf("turns len = %d, want 2 (system row skipped)", len(turns))
+	if len(turns) != 4 {
+		t.Fatalf("turns len = %d, want 4 (system row skipped, tool rows merged)", len(turns))
+	}
+	wantRoles := []string{"user", "tool", "assistant", "tool"}
+	for i, want := range wantRoles {
+		row, _ := turns[i].(map[string]any)
+		if row["role"] != want {
+			t.Fatalf("turns[%d].role = %v, want %s (ts-merged order %v)", i, row["role"], want, turns)
+		}
 	}
 	turn0, _ := turns[0].(map[string]any)
-	if turn0["role"] != "user" || turn0["text"] != "hello there" {
+	if turn0["text"] != "hello there" {
 		t.Errorf("turn[0] = %v", turn0)
+	}
+	// Parsed tool-call fields on the ok invocation, output snippet included.
+	toolOK, _ := turns[1].(map[string]any)
+	if toolOK["tool"] != "weather" || toolOK["outcome"] != "ok" || toolOK["callId"] != "call_1" ||
+		toolOK["args"] != `{"city":"Tampa"}` || toolOK["output"] != `{"tempF":90}` {
+		t.Errorf("ok tool entry = %v", toolOK)
+	}
+	if _, hasErr := toolOK["error"]; hasErr {
+		t.Errorf("ok tool entry must not carry an error field: %v", toolOK)
+	}
+	// The failed invocation: error code split off the args tail.
+	toolErr, _ := turns[3].(map[string]any)
+	if toolErr["tool"] != "send_email" || toolErr["outcome"] != "error" ||
+		toolErr["error"] != "forbidden" || toolErr["args"] != `{"to":"x"}` {
+		t.Errorf("error tool entry = %v", toolErr)
 	}
 
 	// Bare-sessionId fallback resolve.

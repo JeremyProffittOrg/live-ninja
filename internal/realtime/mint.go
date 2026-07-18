@@ -400,6 +400,66 @@ func NewMinter(loader *config.Loader, model string) *Minter {
 // Model returns the realtime model this Minter binds into sessions.
 func (m *Minter) Model() string { return m.model }
 
+// buildTurnDetection maps the settings' micEagerness ("Mic pickup":
+// low|medium|high, anything else = auto) to the GA realtime
+// audio.input.turn_detection object.
+//
+// All modes use semantic_vad. eagerness tunes how quickly the semantic
+// classifier calls the user's turn done; it is only forwarded for the
+// explicit non-default choices — auto/empty/unknown keeps the API default
+// (which the docs equate to medium).
+//
+// interrupt_response is the barge-in knob: with it true (the platform
+// default) the server truncates any in-flight assistant response the moment
+// VAD reports speech_started — which means ambient noise (a door, a cough,
+// TV audio) that trips VAD cuts the assistant off mid-sentence. For
+// micEagerness=low ("Patient") we therefore set interrupt_response=false
+// and move the interrupt decision to the client, which soft-ducks on
+// speech_started and only hard-cancels once the speech is confirmed
+// (sustained past a confirm window, or the server commits the user's turn)
+// — see web/static/js/realtime.mjs. A real close-mic interjection still
+// barges in; a noise blip only causes a brief dip in the assistant's audio.
+//
+// Asymmetric config (auto eagerness while listening, low while the
+// assistant speaks) was considered and rejected: the GA API has no
+// per-state turn_detection, so it would need a session.update flap on
+// every speaking transition — racy against in-flight VAD events and easy
+// to leave stuck in the wrong state after a drop.
+func buildTurnDetection(eagerness string) map[string]any {
+	td := map[string]any{
+		"type":               "semantic_vad",
+		"interrupt_response": true,
+	}
+	switch eagerness {
+	case "low":
+		td["eagerness"] = "low"
+		td["interrupt_response"] = false
+	case "medium", "high":
+		td["eagerness"] = eagerness
+	}
+	return td
+}
+
+// buildAudioInput assembles the GA session's audio.input object.
+func buildAudioInput(eagerness string) map[string]any {
+	return map[string]any{
+		"turn_detection": buildTurnDetection(eagerness),
+		// Server-side input noise reduction runs BEFORE VAD and the model,
+		// so it directly reduces false speech_started events (the trigger
+		// for barge-in truncation) from ambient noise. near_field is the
+		// documented choice for close-talking mics — every Live Ninja
+		// surface (browser/phone mic, M5Stack on-device mic at arm's
+		// length) is closer to a headset than to a conference-room array.
+		"noise_reduction": map[string]any{"type": "near_field"},
+		// Without this the API never emits
+		// conversation.item.input_audio_transcription.* events, so
+		// the user's own speech never appeared in any transcript.
+		"transcription": map[string]any{
+			"model": "gpt-4o-mini-transcribe",
+		},
+	}
+}
+
 // Mint resolves the persona server-side and POSTs to OpenAI's
 // client_secrets endpoint for a ~60s ephemeral token whose session config
 // (model, voice, instructions, tools, semantic-VAD barge-in) is fixed at
@@ -411,18 +471,6 @@ func (m *Minter) Model() string { return m.model }
 func (m *Minter) Mint(ctx context.Context, personaID, voice, eagerness, instructionsSuffix string) (*MintResult, error) {
 	persona := ResolvePersona(personaID)
 
-	turnDetection := map[string]any{
-		"type":               "semantic_vad",
-		"interrupt_response": true,
-	}
-	// Settings' micEagerness ("Mic pickup"): how quickly semantic VAD calls
-	// the turn done. Only forwarded for the explicit non-default choices —
-	// auto/empty/unknown keeps the API default.
-	switch eagerness {
-	case "low", "medium", "high":
-		turnDetection["eagerness"] = eagerness
-	}
-
 	sessionConfig := map[string]any{
 		"type":  "realtime",
 		"model": m.model,
@@ -431,15 +479,7 @@ func (m *Minter) Mint(ctx context.Context, personaID, voice, eagerness, instruct
 			// GA realtime API nests turn detection under audio.input —
 			// a top-level session.turn_detection is rejected with 400
 			// "Unknown parameter" (broke every mint in prod 2026-07-18).
-			"input": map[string]any{
-				"turn_detection": turnDetection,
-				// Without this the API never emits
-				// conversation.item.input_audio_transcription.* events, so
-				// the user's own speech never appeared in any transcript.
-				"transcription": map[string]any{
-					"model": "gpt-4o-mini-transcribe",
-				},
-			},
+			"input": buildAudioInput(eagerness),
 		},
 		"instructions": persona.Instructions + instructionsSuffix,
 		"tools":        toolManifest,

@@ -66,6 +66,7 @@ func RegisterAPIRoutes(app *fiber.App, deps *Deps) {
 	api.Post("/admin/allowlist", RequireOwner(), handleAddAllowlist(deps))
 	api.Delete("/admin/allowlist", RequireOwner(), handleRemoveAllowlist(deps))
 
+	registerPersonaRoutes(api, deps)
 
 	api.Get("/realtime/session", handleRealtimeSession(deps))
 	api.Post("/tools/invoke", handleToolsInvoke(deps, registry))
@@ -433,6 +434,11 @@ func handleRealtimeSession(deps *Deps) fiber.Handler {
 				slog.String("error", derr.Error()), slog.String("userId", userID))
 		}
 
+		// Turn the client/settings persona ID into the server-composed ref
+		// the broker resolves at mint (built-in -> own -> shared; refs are
+		// composed from the verified auth context, never taken from the
+		// client — personas_routes.go's qualifyPersonaRef).
+		persona = qualifyPersonaRef(c.Context(), deps, userID, persona)
 
 		resp, err := invokeRealtimeBroker(c.Context(), deps, brokerRequest{
 			TxID:          TxID(c),
@@ -798,7 +804,10 @@ func handleFallbackTurn(deps *Deps, registry *tools.Registry) fiber.Handler {
 		if err := c.BodyParser(&body); err != nil || strings.TrimSpace(body.Text) == "" {
 			return apiBadRequest(c, "text is required")
 		}
-		personaRef := body.Persona
+		// Same mint-side qualification as handleRealtimeSession: the typed
+		// fallback turn accepts only a persona ID and composes the stored-
+		// persona ref server-side (anti-injection).
+		personaRef := qualifyPersonaRef(c.Context(), deps, userID, body.Persona)
 
 		invokeTurn := func(payloadObj map[string]any) (*brokerResponse, error) {
 			payload, err := json.Marshal(payloadObj)

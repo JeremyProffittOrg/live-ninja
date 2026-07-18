@@ -39,7 +39,6 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	"github.com/google/uuid"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
@@ -160,18 +159,42 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 	claims, err := auth.VerifyJWT(token, jwks)
 	if err != nil {
 		observ.EmitMetric(metricsNamespace, "AuthRejections", 1, "Count", nil)
+		// Log the verification failure (claims detail only — never the token)
+		// so rejected connects are visible in the bridge logs.
+		s.log.Warn("nova-bridge: session token rejected", slog.String("error", err.Error()))
 		http.Error(w, "invalid session token", http.StatusUnauthorized)
 		return
 	}
-
-	// Pre-spend quota gate — identical ceiling to the OpenAI mint path so a
-	// Nova session cannot bypass metering (contracts/metering.md).
-	if _, err := s.gate.CheckMint(r.Context(), claims.Sub); err != nil {
-		s.rejectQuota(w, err, claims.Sub)
+	// Only tokens the broker minted for the bridge (scope "nova",
+	// realtime.NovaScope) may open a Bedrock stream — an ordinary web/session
+	// JWT for the same user must not pass, even though it verifies.
+	if claims.Scope != realtime.NovaScope {
+		observ.EmitMetric(metricsNamespace, "AuthRejections", 1, "Count", nil)
+		s.log.Warn("nova-bridge: token not scoped for the bridge",
+			slog.String("scope", claims.Scope), slog.String("userId", claims.Sub))
+		http.Error(w, "token not scoped for the nova bridge", http.StatusForbidden)
 		return
 	}
 
-	sessionID := firstNonEmptyStr(r.URL.Query().Get("sessionId"), claims.Sid, uuid.NewString())
+	// The session id comes from the token's sid claim (BuildBridgeSession
+	// binds the token to the ledger session id the broker generated); the
+	// url's sid query param is informational only and never trusted.
+	sessionID := claims.Sid
+
+	// Redeem the session the broker already minted. The broker ran the full
+	// pre-spend gate (Gate.CheckMint) and recorded this session
+	// (Gate.RecordMint) BEFORE minting the token — re-running CheckMint here
+	// counted this session's own concurrency slot and rejected every
+	// legitimate connect with 429 "concurrent session limit" (prod
+	// 2026-07-18: client stuck at the door, nothing in the bridge logs).
+	// CheckSession keeps the enforcement that must hold at redemption time:
+	// fresh suspension gate + the RecordMint slot must exist and be inside
+	// the hard session cap (bounds replay of a leaked token).
+	if err := s.gate.CheckSession(r.Context(), claims.Sub, sessionID); err != nil {
+		s.rejectSession(w, err, claims.Sub, sessionID)
+		return
+	}
+
 	surface := claims.Surface
 	l := observ.WithRequest(s.log, "", claims.Sub, surface).With(slog.String("sessionId", sessionID))
 
@@ -202,29 +225,28 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 	l.Info("nova-bridge: session closed", slog.Duration("duration", time.Since(start)))
 }
 
-// rejectQuota maps the gate's typed rejections onto HTTP statuses. The
-// bridge is pre-upgrade here, so a plain status is all the client needs.
-func (s *server) rejectQuota(w http.ResponseWriter, err error, userID string) {
-	var qe *realtime.QuotaExceededError
-	var rl *realtime.RateLimitedError
+// rejectSession maps CheckSession's typed rejections onto HTTP statuses.
+// The bridge is pre-upgrade here, so a plain status is all the client
+// needs. Every rejection is logged (token never included) — silent 4xxs
+// here are exactly what made the concurrent-limit bug undiagnosable.
+func (s *server) rejectSession(w http.ResponseWriter, err error, userID, sessionID string) {
 	var se *realtime.SuspendedError
-	var cl *realtime.ConcurrentLimitError
+	var su *realtime.SessionUnknownError
 	switch {
-	case errors.As(err, &qe):
-		observ.EmitMetric(metricsNamespace, "QuotaRejections", 1, "Count", map[string]string{"Kind": qe.Kind})
-		http.Error(w, "quota exceeded: "+qe.Kind, http.StatusPaymentRequired)
-	case errors.As(err, &rl):
-		observ.EmitMetric(metricsNamespace, "QuotaRejections", 1, "Count", map[string]string{"Kind": "rate_limited"})
-		http.Error(w, "rate limited", http.StatusTooManyRequests)
 	case errors.As(err, &se):
 		observ.EmitMetric(metricsNamespace, "QuotaRejections", 1, "Count", map[string]string{"Kind": "suspended"})
+		s.log.Warn("nova-bridge: session rejected: account suspended",
+			slog.String("userId", userID), slog.String("sessionId", sessionID))
 		http.Error(w, "account suspended", http.StatusForbidden)
-	case errors.As(err, &cl):
-		observ.EmitMetric(metricsNamespace, "QuotaRejections", 1, "Count", map[string]string{"Kind": "concurrent_sessions"})
-		http.Error(w, "concurrent session limit", http.StatusTooManyRequests)
+	case errors.As(err, &su):
+		observ.EmitMetric(metricsNamespace, "QuotaRejections", 1, "Count", map[string]string{"Kind": "session_unknown"})
+		s.log.Warn("nova-bridge: session rejected: unknown or expired session",
+			slog.String("userId", userID), slog.String("sessionId", sessionID))
+		http.Error(w, "unknown or expired session", http.StatusUnauthorized)
 	default:
-		s.log.Error("nova-bridge: quota gate failed", slog.String("error", err.Error()), slog.String("userId", userID))
-		http.Error(w, "quota gate unavailable", http.StatusServiceUnavailable)
+		s.log.Error("nova-bridge: session gate failed", slog.String("error", err.Error()),
+			slog.String("userId", userID), slog.String("sessionId", sessionID))
+		http.Error(w, "session gate unavailable", http.StatusServiceUnavailable)
 	}
 }
 
@@ -363,11 +385,3 @@ func durationEnv(key string, def time.Duration) time.Duration {
 	return secs
 }
 
-func firstNonEmptyStr(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}

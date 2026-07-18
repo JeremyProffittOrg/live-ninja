@@ -935,6 +935,7 @@ void ln_scr_onboarding_portal(const char *ssid, const char *url)
     lv_obj_add_flag(s_code_label, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_code_hint, LV_OBJ_FLAG_HIDDEN);
     set_qr(url);
+    lv_obj_remove_flag(s_qr_caption, LV_OBJ_FLAG_HIDDEN);
     set_status_text("Waiting for a device to connect…");
     upd_collapse();
     panel_close(false);
@@ -961,6 +962,9 @@ void ln_scr_onboarding_pairing(const char *claim_url, const char *code)
         lv_obj_add_flag(s_code_hint, LV_OBJ_FLAG_HIDDEN);
     }
     set_qr(claim_url);
+    /* Owner decision 2026-07-18: no raw claim-URL text on the pairing
+     * screen — the QR + user code are the whole story. */
+    lv_obj_add_flag(s_qr_caption, LV_OBJ_FLAG_HIDDEN);
     set_status_text("Waiting for you to approve in the browser…");
     upd_collapse();
     panel_close(false);
@@ -981,6 +985,7 @@ void ln_scr_onboarding_connected(const char *ip)
     char url[40];
     snprintf(url, sizeof(url), "http://%s/", ip);
     set_qr(url);
+    lv_obj_remove_flag(s_qr_caption, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_code_label, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_code_hint, LV_OBJ_FLAG_HIDDEN);
     set_status_text("Connected — linking your account…");

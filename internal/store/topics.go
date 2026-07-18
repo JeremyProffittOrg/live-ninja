@@ -116,6 +116,10 @@ type TopicRef struct {
 
 // Turn is one LOG#<sessionId>#<seq> transcript row as read back by the
 // topic extractor (written by the transcript sink, internal/webapp).
+// role=tool rows are the tool router's audit lines (internal/tools
+// writeAudit): Text carries "tool=<name> outcome=<o> callId=<id>
+// args=<json>[ error=<code>]" and Output (when present) a capped JSON
+// snippet of the tool's successful output.
 type Turn struct {
 	SK      string `dynamodbav:"sk"`
 	Role    string `dynamodbav:"role"`
@@ -123,6 +127,7 @@ type Turn struct {
 	Engine  string `dynamodbav:"engine,omitempty"`
 	Surface string `dynamodbav:"surface,omitempty"`
 	TS      string `dynamodbav:"ts,omitempty"`
+	Output  string `dynamodbav:"output,omitempty"`
 }
 
 // ---- topics CRUD ----

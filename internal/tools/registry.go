@@ -529,17 +529,33 @@ func (r *Registry) writeAudit(ctx context.Context, l *slog.Logger, inv Invocatio
 		text = text[:maxAuditText]
 	}
 
+	// Output snippet (capped like args) so History can render the same
+	// tool card the live transcript shows without replaying the call.
+	outputSnippet := ""
+	if res.OK && len(res.Output) > 0 {
+		if outJSON, err := json.Marshal(res.Output); err == nil {
+			outputSnippet = string(outJSON)
+			if len(outputSnippet) > maxAuditText {
+				outputSnippet = outputSnippet[:maxAuditText]
+			}
+		}
+	}
+
 	now := r.deps.Now().UTC()
 	seq := int(now.UnixMilli() % 1_000_000)
 	for attempt := 0; attempt < 3; attempt++ {
 		sk := fmt.Sprintf("LOG#%s#%06d", sessionID, (seq+attempt)%1_000_000)
-		err := r.deps.Store.ConditionalPut(ctx, "USER#"+inv.UserID, sk, map[string]any{
+		item := map[string]any{
 			"role":    "tool",
 			"text":    text,
 			"surface": inv.Surface,
 			"engine":  auditEngine,
 			"ts":      now.Format(time.RFC3339Nano),
-		}, now.Add(auditTTL).Unix())
+		}
+		if outputSnippet != "" {
+			item["output"] = outputSnippet
+		}
+		err := r.deps.Store.ConditionalPut(ctx, "USER#"+inv.UserID, sk, item, now.Add(auditTTL).Unix())
 		if err == nil {
 			return
 		}

@@ -654,8 +654,9 @@ export class MicController extends EventTarget {
   }
 
   #idleHint(forWakeResume = false) {
-    // The static "Press Space or click mic to talk" hint lives under the mic
-    // (owner 2026-07-18), so idle status only carries wake-specific state.
+    // The status line under the visualizer carries the how-to-talk copy
+    // (owner spec 2026-07-18 — the old static ptt-hint element is gone):
+    // wake ON tells the user the phrase, wake OFF tells them Space/mic.
     if (this.handsFree) {
       const phrase = this.#getWakePhrase();
       if (forWakeResume) {
@@ -663,7 +664,7 @@ export class MicController extends EventTarget {
       }
       return phrase ? `Say “${phrase}” anytime` : 'Hands-free listening';
     }
-    return '';
+    return 'Press SPACE or click mic to talk';
   }
 
   #statusFor(state) {

@@ -1,0 +1,187 @@
+{{define "head"}}
+<script type="module" src="{{asset "/static/js/personas.mjs"}}"></script>
+{{- /* Page-scoped styles (same rationale as memory.html: app.css is a
+       shared file other workstreams touch concurrently; the page CSP
+       allows inline <style>). All data-driven markup is built by
+       personas.mjs with textContent — never innerHTML. */}}
+<style>
+  .per-shell { padding: var(--ln-sp-6) var(--ln-sp-5) var(--ln-sp-8); max-width: 1040px; margin: 0 auto; width: 100%; }
+  .per-page-head { margin-bottom: var(--ln-sp-5); }
+  .per-page-head p { margin-bottom: 0; }
+  .per-shell .ln-card + .ln-card { margin-top: var(--ln-sp-5); }
+
+  .per-section-head { display: flex; align-items: center; gap: var(--ln-sp-3); margin-bottom: var(--ln-sp-2); flex-wrap: wrap; }
+  .per-section-head h2 { font-size: var(--ln-fs-lg); flex: 1 1 auto; margin: 0; }
+
+  .per-tablewrap { overflow-x: auto; border: 1px solid var(--ln-border); border-radius: var(--ln-r-md); }
+  .per-table { width: 100%; min-width: 640px; border-collapse: collapse; font-size: var(--ln-fs-sm); }
+  .per-table thead th {
+    position: sticky; top: 0; z-index: 1;
+    background: var(--ln-surface-raised);
+    text-align: left; font-size: var(--ln-fs-xs); font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.05em; color: var(--ln-text-muted);
+    padding: var(--ln-sp-3) var(--ln-sp-4);
+    border-bottom: 1px solid var(--ln-border-strong);
+    white-space: nowrap;
+  }
+  .per-table tbody td { padding: var(--ln-sp-3) var(--ln-sp-4); border-top: 1px solid var(--ln-border); vertical-align: middle; }
+  .per-table tbody tr:first-child td { border-top: none; }
+  .per-table tbody tr:hover { background: var(--ln-surface-2); }
+  .per-name { font-weight: 650; word-break: break-word; min-width: 140px; }
+  .per-desc { color: var(--ln-text-muted); max-width: 340px; }
+  .per-voice { white-space: nowrap; color: var(--ln-text-muted); text-transform: capitalize; }
+  .per-actions-cell, .per-table th.per-actions-cell { text-align: right; white-space: nowrap; }
+  .per-actions-cell .ln-btn { min-height: 36px; padding: 0 var(--ln-sp-3); font-size: var(--ln-fs-xs); }
+  .per-actions-cell .ln-btn + .ln-btn { margin-left: var(--ln-sp-2); }
+
+  .per-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: var(--ln-fs-xs); font-weight: 700; white-space: nowrap;
+    border: 1px solid var(--ln-border-strong); color: var(--ln-text-muted);
+  }
+  .per-badge--builtin { border-color: var(--ln-border-strong); }
+  .per-badge--mine { color: var(--ln-accent, var(--ln-text)); border-color: currentColor; }
+  .per-badge--shared { color: var(--ln-ok-ink, var(--ln-text)); border-color: currentColor; }
+  .per-owner { display: block; font-size: var(--ln-fs-xs); color: var(--ln-text-muted); margin-top: 2px; }
+
+  .per-share-cell { white-space: nowrap; }
+  .per-share-cell .ln-toggle { margin: 0; }
+
+  /* States */
+  .per-state { padding: var(--ln-sp-7) var(--ln-sp-5); text-align: center; }
+  .per-state h3 { font-size: var(--ln-fs-md); margin-bottom: var(--ln-sp-2); }
+  .per-state p { color: var(--ln-text-muted); font-size: var(--ln-fs-sm); margin-bottom: var(--ln-sp-4); }
+  .per-state--error { border: 1px solid var(--ln-error-border); border-radius: var(--ln-r-md); background: var(--ln-error-tint); }
+  .per-state--error h3 { color: var(--ln-error-ink); }
+
+  .per-skeleton { padding: var(--ln-sp-4); }
+  .per-skeleton .bar {
+    height: 18px; border-radius: 6px; margin: var(--ln-sp-4) 0;
+    background: linear-gradient(90deg, var(--ln-track) 25%, var(--ln-surface-2) 50%, var(--ln-track) 75%);
+    background-size: 200% 100%; animation: per-shimmer 1.2s linear infinite;
+  }
+  @keyframes per-shimmer { to { background-position: -200% 0; } }
+  @media (prefers-reduced-motion: reduce) { .per-skeleton .bar { animation: none; } }
+
+  /* Dialogs (native <dialog> = built-in focus trap + Esc). */
+  .per-dialog {
+    border: 1px solid var(--ln-border-strong); border-radius: var(--ln-r-lg);
+    background: var(--ln-surface-raised); color: var(--ln-text);
+    padding: var(--ln-sp-6); width: min(640px, calc(100vw - 2 * var(--ln-sp-4)));
+    max-height: calc(100vh - 2 * var(--ln-sp-5)); box-shadow: var(--ln-shadow-lg);
+    overflow-y: auto;
+  }
+  .per-dialog::backdrop { background: rgba(3, 8, 16, 0.62); }
+  .per-dialog h2 { font-size: var(--ln-fs-lg); margin-bottom: var(--ln-sp-4); }
+  .per-dialog-actions { display: flex; justify-content: flex-end; gap: var(--ln-sp-3); margin-top: var(--ln-sp-5); }
+  .per-dialog .ln-textarea { min-height: 180px; }
+  .per-char-count { font-size: var(--ln-fs-xs); color: var(--ln-text-muted); text-align: right; margin-top: 2px; }
+  .per-delete-warn { color: var(--ln-error-ink); font-weight: 650; }
+</style>
+{{end}}
+
+{{define "body"}}
+{{template "nav" .}}
+
+<main class="per-shell" id="main">
+  <div class="per-page-head">
+    <h1>Personas</h1>
+    <p class="ln-muted">How Live Ninja talks. Pick a built-in personality, write your own, or share yours with everyone on this Live Ninja.</p>
+  </div>
+
+  <section class="ln-card" aria-labelledby="perHeading">
+    <div class="per-section-head">
+      <h2 id="perHeading">Persona library</h2>
+      <button class="ln-btn ln-btn--ghost" id="perRefresh" type="button">Refresh</button>
+      <button class="ln-btn ln-btn--primary" id="perNew" type="button">New persona</button>
+    </div>
+
+    <div class="per-skeleton" id="perLoading" role="status" aria-label="Loading personas">
+      <div class="bar" style="width: 90%;"></div>
+      <div class="bar" style="width: 72%;"></div>
+      <div class="bar" style="width: 84%;"></div>
+    </div>
+
+    <div class="per-state per-state--error" id="perError" hidden>
+      <h3>Couldn’t load personas</h3>
+      <p id="perErrorMsg">Check your connection and try again.</p>
+      <button class="ln-btn ln-btn--ghost" id="perRetry" type="button">Retry</button>
+    </div>
+
+    <div class="per-tablewrap" id="perTableWrap" hidden>
+      <table class="per-table">
+        <thead>
+          <tr>
+            <th scope="col">Name</th>
+            <th scope="col">Type</th>
+            <th scope="col">Description</th>
+            <th scope="col">Voice</th>
+            <th scope="col">Shared</th>
+            <th scope="col" class="per-actions-cell">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="perBody"></tbody>
+      </table>
+    </div>
+    <p class="ln-hint" id="perHint" hidden>Built-in personas can’t be edited or deleted — duplicate one to make it your own. Shared personas from other users are read-only; copy one to your library to customize it.</p>
+  </section>
+</main>
+
+{{- /* Create/edit dialog. Voice is populated from GET /api/v1/realtime/
+       voices (never a blind text box); instructions are genuinely
+       free-form persona style text. */}}
+<dialog class="per-dialog" id="perDialog" aria-labelledby="perDialogTitle">
+  <h2 id="perDialogTitle">Persona</h2>
+  <form id="perForm" method="dialog" novalidate>
+    <div class="ln-field">
+      <label for="perName">Name</label>
+      <input class="ln-input" id="perName" type="text" maxlength="80" required autocomplete="off">
+      <p class="ln-error-text" id="perNameErr" hidden>Enter a name — e.g. “Radio DJ”.</p>
+    </div>
+    <div class="ln-field">
+      <label for="perDesc">Description <span class="ln-muted">(optional)</span></label>
+      <input class="ln-input" id="perDesc" type="text" maxlength="200" autocomplete="off"
+             placeholder="One line shown in the persona picker">
+    </div>
+    <div class="ln-field">
+      <label for="perInstructions">Style instructions</label>
+      <textarea class="ln-textarea" id="perInstructions" maxlength="4000" required
+                placeholder="e.g. You are an enthusiastic 1970s radio DJ. Smooth patter, groovy slang, always upbeat…"></textarea>
+      <p class="per-char-count"><span id="perInstrCount">0</span>/4000</p>
+      <p class="ln-hint">Voice, tone, and mannerisms only — safety and tool rules always stay in effect underneath.</p>
+      <p class="ln-error-text" id="perInstrErr" hidden>Enter the persona’s style instructions.</p>
+    </div>
+    <div class="ln-field">
+      <label for="perVoice">Suggested voice</label>
+      <select class="ln-select" id="perVoice">
+        <option value="">No suggestion — use my voice setting</option>
+      </select>
+    </div>
+    <div class="per-dialog-actions">
+      <button class="ln-btn ln-btn--ghost" id="perCancel" type="button">Cancel</button>
+      <button class="ln-btn ln-btn--primary" id="perSave" type="submit">Save persona</button>
+    </div>
+  </form>
+</dialog>
+
+{{- /* Delete confirmation: typed-name guard (destructive, irreversible). */}}
+<dialog class="per-dialog" id="perDeleteDialog" aria-labelledby="perDeleteTitle">
+  <h2 id="perDeleteTitle">Delete persona</h2>
+  <form id="perDeleteForm" method="dialog" novalidate>
+    <p>This permanently deletes <strong id="perDeleteName"></strong><span id="perDeleteSharedNote" hidden> and removes it from everyone’s shared list</span>. <span class="per-delete-warn">This can’t be undone.</span></p>
+    <div class="ln-field">
+      <label for="perDeleteConfirm">Type the persona’s name to confirm</label>
+      <input class="ln-input" id="perDeleteConfirm" type="text" autocomplete="off">
+      <p class="ln-error-text" id="perDeleteErr" hidden>The name doesn’t match.</p>
+    </div>
+    <div class="per-dialog-actions">
+      <button class="ln-btn ln-btn--ghost" id="perDeleteCancel" type="button">Cancel</button>
+      <button class="ln-btn ln-btn--danger" id="perDeleteGo" type="submit" disabled>Delete persona</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="ln-toast" id="toast" role="status" aria-live="polite" hidden>
+  <span id="toastMsg"></span>
+</div>
+{{end}}

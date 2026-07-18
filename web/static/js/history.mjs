@@ -47,6 +47,14 @@ let toDate = '';
 
 let detailConvId = null; // non-null while the detail view is open
 
+// True while settings.privacy.storeTranscripts === false: the transcript
+// sink is dropping turns client-side, so History must say so instead of
+// sitting silently empty (the storage-off banner + empty-state copy).
+let transcriptsOff = false;
+
+// "Show tool calls" toggle state, remembered across visits (default off).
+const SHOW_TOOLS_KEY = 'ln.history.showToolCalls';
+
 // ---- toast ------------------------------------------------------------
 
 const toastEl = $('toast');
@@ -233,6 +241,28 @@ async function loadDevices() {
   deviceSelect.value = knownDevices.has(current) ? current : '';
 }
 
+// ---- transcript-storage hint ------------------------------------------
+
+const histStorageOffEl = $('histStorageOff');
+
+/** Best-effort settings probe: when privacy.storeTranscripts is false the
+ * transcript sink drops every turn client-side, so the page shows the
+ * storage-off banner (and the empty state explains itself) instead of
+ * looking silently broken. A failed fetch just leaves the hint off —
+ * history itself must never depend on settings loading. */
+async function loadStorageHint() {
+  try {
+    const doc = await apiJSON('/api/v1/settings');
+    transcriptsOff = !!(doc && doc.privacy && doc.privacy.storeTranscripts === false);
+  } catch {
+    transcriptsOff = false;
+  }
+  histStorageOffEl.hidden = !transcriptsOff;
+  // The list may already be sitting on the generic empty state — refresh
+  // its copy now that we know why it's empty.
+  if (transcriptsOff && !histEmptyEl.hidden) renderConversations();
+}
+
 // ---- conversations: loading -------------------------------------------
 
 const histLoadingEl = $('histLoading');
@@ -354,6 +384,10 @@ function renderConversations() {
       histEmptyTitle.textContent = 'No conversations match';
       histEmptyMsg.textContent = 'Nothing matches these filters — try widening the date range or clearing a topic.';
       histEmptyClear.hidden = false;
+    } else if (transcriptsOff) {
+      histEmptyTitle.textContent = 'Transcript storage is off';
+      histEmptyMsg.textContent = 'Conversations aren’t being saved because transcript storage is turned off in Settings. Turn it on to see new conversations here.';
+      histEmptyClear.hidden = true;
     } else {
       histEmptyTitle.textContent = 'No conversations yet';
       histEmptyMsg.textContent = 'Once you talk with Live Ninja, your conversations will appear here, tagged by topic.';
@@ -510,17 +544,128 @@ function extractTurns(resp) {
   return raw
     .map((t) => {
       if (!t || typeof t !== 'object') return null;
+      const role = String(t.role || t.speaker || '').toLowerCase();
+      if (role === 'tool') {
+        // Tool-call audit entry (server merges them into `turns` by
+        // timestamp): parsed fields when the server could parse the audit
+        // line, raw text as the fallback.
+        return {
+          role: 'tool',
+          tool: String(t.tool || ''),
+          outcome: String(t.outcome || ''),
+          callId: String(t.callId || ''),
+          args: typeof t.args === 'string' ? t.args : '',
+          error: String(t.error || ''),
+          output: typeof t.output === 'string' ? t.output : '',
+          text: String(t.text || ''),
+          ts: toMs(t.ts ?? t.at ?? t.createdAt),
+        };
+      }
       const text = String(t.text || t.content || '');
       if (!text) return null;
-      const role = String(t.role || t.speaker || '').toLowerCase() === 'user' ? 'user' : 'assistant';
-      return { role, text, ts: toMs(t.ts ?? t.at ?? t.createdAt) };
+      return { role: role === 'user' ? 'user' : 'assistant', text, ts: toMs(t.ts ?? t.at ?? t.createdAt) };
     })
     .filter(Boolean);
 }
 
+// ---- tool-call cards (same ln-toolcard style the live transcript's
+// appendToolResultCard renders — title/badge head + a <dl class="kv">,
+// never a raw object dump) ----
+
+const OUTCOME_BADGES = {
+  ok: ['OK', 'teal'],
+  error: ['Error', 'error'],
+  duplicate: ['Duplicate', 'muted'],
+};
+
+/** Compact one-line preview of a JSON string (args/output snippets are
+ * already capped server-side; this only keeps the card readable). */
+function jsonPreview(raw, max = 200) {
+  const s = String(raw || '').trim();
+  if (!s || s === '{}' || s === 'null') return '';
+  return s.length > max ? s.slice(0, max) + '…' : s;
+}
+
+function buildToolCard(turn) {
+  const outer = document.createElement('div');
+  outer.className = 'ln-toolcard hist-toolcard';
+
+  const card = document.createElement('div');
+  card.className = 'ln-card';
+
+  const head = document.createElement('div');
+  head.className = 'ln-toolcard__head';
+
+  const icon = document.createElement('span');
+  icon.className = 'ln-toolcard__icon';
+  icon.setAttribute('aria-hidden', 'true');
+  icon.textContent = '🔧';
+  head.appendChild(icon);
+
+  const titleWrap = document.createElement('div');
+  const title = document.createElement('div');
+  title.className = 'ln-toolcard__title';
+  title.textContent = turn.tool ? `Tool: ${turn.tool}` : 'Tool call';
+  titleWrap.appendChild(title);
+  if (turn.ts) {
+    const sub = document.createElement('div');
+    sub.className = 'ln-toolcard__sub';
+    sub.textContent = fmtDate(turn.ts);
+    titleWrap.appendChild(sub);
+  }
+  head.appendChild(titleWrap);
+
+  const [badgeText, badgeVariant] = OUTCOME_BADGES[turn.outcome] || ['Tool', 'muted'];
+  const badge = document.createElement('span');
+  badge.className = `ln-badge ln-badge--${badgeVariant} ln-badge--dot-none`;
+  badge.style.marginLeft = 'auto';
+  badge.textContent = badgeText;
+  head.appendChild(badge);
+
+  card.appendChild(head);
+
+  const fields = [];
+  const args = jsonPreview(turn.args);
+  if (args) fields.push(['Arguments', args]);
+  if (turn.error) fields.push(['Error', turn.error]);
+  const output = jsonPreview(turn.output);
+  if (output) fields.push(['Result', output]);
+  if (fields.length === 0 && !turn.tool && turn.text) {
+    // Unparseable/legacy audit line — show it verbatim rather than nothing.
+    fields.push(['Details', turn.text]);
+  }
+  if (fields.length > 0) {
+    const dl = document.createElement('dl');
+    dl.className = 'kv';
+    for (const [label, value] of fields) {
+      const dt = document.createElement('dt');
+      dt.textContent = label;
+      const dd = document.createElement('dd');
+      dd.textContent = value;
+      dl.appendChild(dt);
+      dl.appendChild(dd);
+    }
+    card.appendChild(dl);
+  }
+
+  outer.appendChild(card);
+  return outer;
+}
+
+// "Show tool calls" toggle — ln-toggle slider, default off, remembered.
+const toolToggleWrap = $('toolToggleWrap');
+const showToolCalls = $('showToolCalls');
+showToolCalls.checked = localStorage.getItem(SHOW_TOOLS_KEY) === '1';
+detailTranscript.classList.toggle('show-tools', showToolCalls.checked);
+showToolCalls.addEventListener('change', () => {
+  localStorage.setItem(SHOW_TOOLS_KEY, showToolCalls.checked ? '1' : '0');
+  detailTranscript.classList.toggle('show-tools', showToolCalls.checked);
+});
+
 async function loadDetail() {
   const id = detailConvId;
   setDetailState('loading');
+  toolToggleWrap.hidden = true;
   try {
     const resp = await apiJSON(`/api/v1/conversations/${encodeURIComponent(id)}`);
     if (detailConvId !== id) return; // navigated away meanwhile
@@ -530,7 +675,13 @@ async function loadDetail() {
       return;
     }
     detailTranscript.textContent = '';
+    let toolCount = 0;
     for (const turn of turns) {
+      if (turn.role === 'tool') {
+        toolCount++;
+        detailTranscript.appendChild(buildToolCard(turn));
+        continue;
+      }
       const bubble = document.createElement('div');
       bubble.className = `ln-bubble ln-bubble--${turn.role}`;
       const role = document.createElement('div');
@@ -542,6 +693,7 @@ async function loadDetail() {
       bubble.appendChild(body);
       detailTranscript.appendChild(bubble);
     }
+    toolToggleWrap.hidden = toolCount === 0;
     setDetailState('transcript');
   } catch (err) {
     if (detailConvId !== id) return;
@@ -847,4 +999,5 @@ histMoreBtn.addEventListener('click', () => loadConversations({ append: true }))
 loadTopics();
 loadDevices();
 loadConversations();
+loadStorageHint();
 syncClearButtons();

@@ -57,39 +57,42 @@
       <p class="conv-status-text" id="statusText"></p>
 
       <div class="ptt-wrap">
-        {{- /* Wake word is a compact toggle-button at the lower-left of the
-               mic (owner spec). Same ids as before so wakeword.mjs/mic.mjs
-               bindings are unchanged; wakeword.mjs hides #wakeToggleWrap
-               when WASM/AudioWorklet is unavailable. */}}
+        {{- /* One centered row (owner spec 2026-07-18): the mic button with
+               the wake-word slider toggle beside it, vertical centers
+               aligned. Ids are unchanged so wakeword.mjs/mic.mjs bindings
+               keep working; wakeword.mjs hides #wakeToggleWrap when
+               WASM/AudioWorklet is unavailable. The active phrase surfaces
+               in #statusText; sr-only #wakePhrase keeps the accessible
+               copy on the toggle itself. */}}
         <div class="ptt-zone">
-          <label class="wake-chip" id="wakeToggleWrap">
-            <input type="checkbox" id="wakeToggle" aria-labelledby="wakeToggleLabel" aria-describedby="wakeHint">
-            <span aria-hidden="true">👂</span>
-            <span class="wake-chip__text">
-              <span class="ln-label" id="wakeToggleLabel">Wake word</span>
-              <span class="wakeword-phrase" id="wakePhrase" hidden></span>
-            </span>
-          </label>
           <button class="ptt" id="pttBtn" type="button" data-state="idle"
                   aria-pressed="false" aria-label="Push to talk, currently off — tap to start">
             <span aria-hidden="true">🎙</span>
             <span class="ln-sr-only" data-ln-label>Start talking</span>
           </button>
+          <label class="ln-toggle" id="wakeToggleWrap">
+            <input type="checkbox" id="wakeToggle" aria-describedby="wakeHint">
+            <span class="ln-toggle-track" aria-hidden="true"><span class="ln-toggle-thumb"></span></span>
+            <span>Use Wake Word</span>
+            <span class="wakeword-phrase ln-sr-only" id="wakePhrase" hidden></span>
+          </label>
         </div>
-        <p class="ptt-hint">Press <kbd>Space</kbd> or click mic to talk</p>
         <p class="wakeword-hint ln-sr-only" id="wakeHint">Off — use the push-to-talk button to start a turn.</p>
       </div>
 
       <button class="ln-btn ln-btn--ghost" type="button" data-ln-end hidden>End conversation</button>
 
-      {{- /* Off by default (owner 2026-07-18); localStorage-persisted in
-             conversation.mjs. */}}
-      <label class="conv-topbar__toggle">
-        <input type="checkbox" id="showToolsToggle">
-        <span>Show tool calls</span>
-      </label>
-
-      <button class="ln-btn ln-btn--ghost" type="button" id="micTestBtn">Test my mic</button>
+      {{- /* Rail bottom row (owner spec 2026-07-18): mic test left, tool-call
+             visibility slider right. Off by default; localStorage-persisted
+             in conversation.mjs. */}}
+      <div class="conv-rail__bottom">
+        <button class="ln-btn ln-btn--ghost" type="button" id="micTestBtn">Test my mic</button>
+        <label class="ln-toggle">
+          <input type="checkbox" id="showToolsToggle">
+          <span class="ln-toggle-track" aria-hidden="true"><span class="ln-toggle-thumb"></span></span>
+          <span>Show tool calls</span>
+        </label>
+      </div>
     </section>
 
     <!-- Right column: transcript + composer -->
