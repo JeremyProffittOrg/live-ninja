@@ -43,6 +43,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/scheduler"
 	"github.com/gofiber/fiber/v2"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/memory"
+	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	"github.com/JeremyProffittOrg/live-ninja/internal/tools"
 )
@@ -63,6 +65,7 @@ func RegisterAPIRoutes(app *fiber.App, deps *Deps) {
 	api.Get("/admin/allowlist", RequireOwner(), handleListAllowlist(deps))
 	api.Post("/admin/allowlist", RequireOwner(), handleAddAllowlist(deps))
 	api.Delete("/admin/allowlist", RequireOwner(), handleRemoveAllowlist(deps))
+
 
 	api.Get("/realtime/session", handleRealtimeSession(deps))
 	api.Post("/tools/invoke", handleToolsInvoke(deps, registry))
@@ -430,6 +433,7 @@ func handleRealtimeSession(deps *Deps) fiber.Handler {
 				slog.String("error", derr.Error()), slog.String("userId", userID))
 		}
 
+
 		resp, err := invokeRealtimeBroker(c.Context(), deps, brokerRequest{
 			TxID:          TxID(c),
 			UserID:        userID,
@@ -481,6 +485,10 @@ func handleRealtimeSession(deps *Deps) fiber.Handler {
 			"sessionConfig": resp.SessionConfig,
 			"toolManifest":  resp.ToolManifest,
 			"sessionId":     resp.SessionID,
+			// Per-1M-token USD list rates for resp.Model (cost-badge estimate;
+			// see internal/realtime/rates.go). openai-direct only — nova-bridge
+			// usage events aren't surfaced to the client (internal/voiceengine).
+			"rates": realtime.RatesFor(resp.Model),
 		})
 	}
 }
@@ -518,6 +526,15 @@ func buildAPIToolsRegistry(deps *Deps) *tools.Registry {
 	if deps.Deliv != nil { // M9 deliverable_* tools (nil interface stays nil → not_configured)
 		toolDeps.Deliverables = deps.Deliv
 	}
+	// M10 memory_* / entity_get / plan_upsert / forget tools: the same
+	// Titan-embedder core RegisterMemoryRoutes serves over REST, adapted
+	// onto the tool seam. This wiring MUST be here — without it every
+	// voice-session memory tool answers not_configured ("Memory failed"
+	// in-session) even while IAM, Bedrock access, and the REST surface
+	// are all healthy (the prod incident of 2026-07-18).
+	if mem := buildAPIToolMemory(ctx, deps); mem != nil {
+		toolDeps.Memory = mem
+	}
 	// IoT.Publish requires a per-account/region data-plane endpoint; only
 	// wire the client when one is configured (leaving the field a true
 	// nil interface, not a typed-nil *iotdataplane.Client, when it
@@ -535,6 +552,30 @@ func buildAPIToolsRegistry(deps *Deps) *tools.Registry {
 		return nil
 	}
 	return registry
+}
+
+// buildAPIToolMemory wires tools.Deps.Memory: the M10 memory core
+// (internal/memory, Bedrock Titan v2 embedder over the shared store)
+// behind the tool seam via tools.NewMemoryService. Returns nil on a
+// construction failure — the memory tools then degrade to
+// not_configured, mirroring buildMemoryService in cmd/web/main.go for
+// the REST surface — but never nil silently: the degradation is logged
+// loudly so a missing embedder shows up in CloudWatch, not just as
+// in-session "Memory failed" replies.
+func buildAPIToolMemory(ctx context.Context, deps *Deps) tools.MemoryService {
+	embedder, err := memory.NewBedrockEmbedder(ctx)
+	if err != nil {
+		deps.Log.Warn("api: memory embedder unavailable; memory tools degraded to not_configured",
+			slog.String("error", err.Error()))
+		return nil
+	}
+	svc, err := memory.NewService(deps.Store, embedder)
+	if err != nil {
+		deps.Log.Warn("api: memory core unavailable; memory tools degraded to not_configured",
+			slog.String("error", err.Error()))
+		return nil
+	}
+	return tools.NewMemoryService(svc)
 }
 
 var errAPIUserNotAllowed = errors.New("api: user is not active or no longer allowed")
@@ -757,6 +798,7 @@ func handleFallbackTurn(deps *Deps, registry *tools.Registry) fiber.Handler {
 		if err := c.BodyParser(&body); err != nil || strings.TrimSpace(body.Text) == "" {
 			return apiBadRequest(c, "text is required")
 		}
+		personaRef := body.Persona
 
 		invokeTurn := func(payloadObj map[string]any) (*brokerResponse, error) {
 			payload, err := json.Marshal(payloadObj)
@@ -765,7 +807,7 @@ func handleFallbackTurn(deps *Deps, registry *tools.Registry) fiber.Handler {
 			}
 			return invokeRealtimeBroker(c.Context(), deps, brokerRequest{
 				Mode: "fallback-turn", TxID: TxID(c), UserID: userID, Surface: surface, DeviceID: deviceID,
-				Persona: body.Persona, Payload: payload,
+				Persona: personaRef, Payload: payload,
 			})
 		}
 

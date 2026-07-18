@@ -290,9 +290,11 @@ function renderField(key) {
       break;
     }
     case 'appearance': {
-      const ap = (doc.appearance && typeof doc.appearance === 'object') ? doc.appearance : {};
-      const r = document.querySelector(`input[name="themeStyle"][value="${CSS.escape(ap.themeStyle || 'hal9000')}"]`);
-      if (r) r.checked = true;
+      const ap = appearanceDoc();
+      const live = document.querySelector(`input[name="liveStyle"][value="${CSS.escape(ap.liveStyle || 'hal9000')}"]`);
+      if (live) live.checked = true;
+      const app = document.querySelector(`input[name="appStyle"][value="${CSS.escape(ap.appStyle || 'ninja')}"]`);
+      if (app) app.checked = true;
       const custom = document.getElementById('accentCustom');
       if (custom && /^#[0-9a-fA-F]{6}$/.test(ap.accentColor || '')) custom.value = ap.accentColor;
       if (window.__lnApplyAppearance) window.__lnApplyAppearance(ap);
@@ -508,7 +510,15 @@ wakeInput.addEventListener('blur', () => {
 //     openwakeword is the only training engine (Porcupine needs a
 //     Picovoice account — deferred, locked decision).
 //   - GET  /api/v1/wakewords/{id}  — poll one entry's status
-//     (pending|training|ready|failed); CatalogEntry shape.
+//     (pending|training|ready|failed); CatalogEntry shape (failed
+//     entries carry failureReason).
+//   - DELETE /api/v1/wakewords/{id} — 204; purges the model + item.
+//     409 training_in_progress while actively training (jobs hard-cap
+//     at 20 min, so the wait is bounded).
+//   - POST /api/v1/wakewords/{id}/retry — failed items only → 202 flat
+//     item (same shape as create). A retry consumes a ≤3/day training
+//     slot exactly like a fresh train (429 daily_limit when spent);
+//     409 not_retryable from any non-failed status.
 // Ready models are merged into the combobox catalog above (hot-swap: the
 // wakeword.mjs engine picks the model up through the standard
 // wakeword-manifest.md flow once the id is selected + settings sync).
@@ -532,6 +542,7 @@ function wwNormalize(w) {
     phrase: String(w.phrase || w.id),
     status: String(w.status || 'pending'),
     engine: String(w.engine || 'openwakeword'),
+    failureReason: String(w.failureReason || ''),
   };
 }
 
@@ -592,6 +603,15 @@ function wwRenderChips() {
     chip.appendChild(phrase);
     chip.appendChild(wwStatusBadge(w.status));
 
+    if (w.status === 'failed' && w.failureReason) {
+      const reason = document.createElement('span');
+      reason.className = 'ln-hint';
+      reason.style.marginTop = '0';
+      reason.textContent = w.failureReason;
+      reason.title = w.failureReason;
+      chip.appendChild(reason);
+    }
+
     if (w.status === 'ready' && doc.wakeWord !== w.id) {
       const use = document.createElement('button');
       use.type = 'button';
@@ -604,7 +624,86 @@ function wwRenderChips() {
       });
       chip.appendChild(use);
     }
+
+    if (w.status === 'failed') {
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'ln-btn ln-btn--ghost';
+      retry.textContent = 'Retry';
+      retry.setAttribute('aria-label', `Retry training ${w.phrase}`);
+      retry.addEventListener('click', () => wwRetry(w, retry));
+      chip.appendChild(retry);
+    }
+
+    if (w.status === 'failed' || w.status === 'ready') {
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'ln-btn ln-btn--ghost';
+      del.textContent = 'Delete';
+      del.setAttribute('aria-label', `Delete wake phrase ${w.phrase}`);
+      del.addEventListener('click', () => wwDelete(w, del));
+      chip.appendChild(del);
+    }
     wwChips.appendChild(chip);
+  }
+}
+
+// Retry a failed training run. The server re-submits through the normal
+// create path, so a retry spends one of the 3 daily training slots —
+// the toast says so explicitly.
+async function wwRetry(w, btn) {
+  btn.disabled = true;
+  btn.setAttribute('aria-busy', 'true');
+  try {
+    const resp = await apiJSON(`/api/v1/wakewords/${encodeURIComponent(w.id)}/retry`, { method: 'POST' });
+    const nw = wwNormalize(resp.wakeword || resp)
+      || { ...w, status: 'pending', failureReason: '' };
+    wwUpsert(nw); // re-renders chips (this button is replaced by the badge)
+    wwStartPoll(nw.id);
+    showToast(`Retraining “${nw.phrase}” — a retry uses one of your 3 daily training runs. We'll email you when it's ready.`);
+  } catch (err) {
+    const serverMsg = err instanceof ApiError && err.body && typeof err.body.message === 'string'
+      ? err.body.message : '';
+    if (err instanceof ApiError && err.status === 429) {
+      showToast(serverMsg || 'Daily training limit reached — up to 3 runs per day (retries count). Try again tomorrow.', { error: true });
+    } else {
+      showToast(serverMsg || "Couldn't restart training — check your connection and try again.", { error: true });
+    }
+    btn.disabled = false;
+    btn.removeAttribute('aria-busy');
+  }
+}
+
+// Delete a custom wake phrase (failed or ready) behind a native confirm.
+// Deleting the phrase a device currently uses is safe: clients fall back
+// to the bundled built-in phrase when the custom model disappears, and
+// we re-point the selection at the catalog default here.
+async function wwDelete(w, btn) {
+  const msg = w.status === 'ready'
+    ? `Delete “${w.phrase}”? Any device using it falls back to the bundled built-in wake phrase.`
+    : `Delete the failed wake phrase “${w.phrase}”? This clears its training record so you can start fresh.`;
+  if (!window.confirm(msg)) return;
+  btn.disabled = true;
+  btn.setAttribute('aria-busy', 'true');
+  try {
+    await apiJSON(`/api/v1/wakewords/${encodeURIComponent(w.id)}`, { method: 'DELETE' });
+    wwStopPoll(w.id);
+    userWakewords = userWakewords.filter((x) => x.id !== w.id);
+    const ci = wakeCatalog.findIndex((c) => c.id === w.id && c.custom);
+    if (ci >= 0) wakeCatalog.splice(ci, 1);
+    if (doc.wakeWord === w.id) {
+      const fallback = wakeCatalog.find((c) => c.default) || wakeCatalog[0];
+      if (fallback) comboSelect(fallback.id); // marks changed + autosaves
+    }
+    wwRenderChips();
+    syncWakeWordDisplay();
+    showToast(`Deleted “${w.phrase}”.`);
+  } catch (err) {
+    const serverMsg = err instanceof ApiError && err.body && typeof err.body.message === 'string'
+      ? err.body.message : '';
+    showToast(serverMsg || "Couldn't delete that wake phrase — try again.", { error: true });
+    btn.disabled = false;
+    btn.removeAttribute('aria-busy');
   }
 }
 
@@ -647,7 +746,7 @@ function wwStartPoll(id, startedAt = Date.now()) {
         return;
       }
       if (w.status === 'failed') {
-        showToast(`Training “${w.phrase}” failed — try a different phrase.`, { error: true });
+        showToast(`Training “${w.phrase}” failed — retry it or delete it from your phrase list.`, { error: true });
         return;
       }
     }
@@ -947,13 +1046,25 @@ for (const r of document.querySelectorAll('input[name="micEagerness"]')) {
   });
 }
 
-// ---- appearance: theme style + accent color -----------------------------
+// ---- appearance: two style zones + accent color -------------------------
+// appStyle themes everything outside the live panel (<html>); liveStyle
+// themes the conversation page's orb/mic rail (#livePanel). The server
+// migrates legacy {themeStyle} docs on read, but a stale island/cached
+// bundle may still carry one — migrate it here too so the pickers and
+// write-backs always use the two-zone shape.
 
 function appearanceDoc() {
   if (!doc.appearance || typeof doc.appearance !== 'object') {
-    doc.appearance = { themeStyle: 'hal9000', accentColor: '' };
+    doc.appearance = { appStyle: 'ninja', liveStyle: 'hal9000', accentColor: '' };
   }
-  return doc.appearance;
+  const ap = doc.appearance;
+  if (typeof ap.themeStyle === 'string' && ap.themeStyle && !ap.liveStyle) {
+    ap.liveStyle = ap.themeStyle;
+  }
+  delete ap.themeStyle;
+  if (!ap.liveStyle) ap.liveStyle = 'hal9000';
+  if (!ap.appStyle) ap.appStyle = 'ninja';
+  return ap;
 }
 
 function applyAppearanceLive() {
@@ -970,10 +1081,19 @@ function syncAccentSwatches() {
   }
 }
 
-for (const r of document.querySelectorAll('input[name="themeStyle"]')) {
+for (const r of document.querySelectorAll('input[name="liveStyle"]')) {
   r.addEventListener('change', () => {
     if (!r.checked) return;
-    appearanceDoc().themeStyle = r.value;
+    appearanceDoc().liveStyle = r.value;
+    applyAppearanceLive();
+    markChanged('appearance');
+  });
+}
+
+for (const r of document.querySelectorAll('input[name="appStyle"]')) {
+  r.addEventListener('change', () => {
+    if (!r.checked) return;
+    appearanceDoc().appStyle = r.value;
     applyAppearanceLive();
     markChanged('appearance');
   });
@@ -999,6 +1119,11 @@ if (accentCustom) {
     markChanged('appearance');
   });
 }
+
+// Hydrate from the island on load: normalizes any legacy shape, marks the
+// active swatch, and applies + caches the authoritative appearance (the
+// island beats a stale ln.appearance cache from another device/session).
+renderField('appearance');
 
 // ==================== voice-engine-section:BEGIN ====================
 // M12 secondary-voice-engine picker (FR-VE-04), owned by the M12 web-client

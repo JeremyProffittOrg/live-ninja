@@ -10,6 +10,10 @@
 //   - PATCH /api/v1/topics/{id}           — rename/color/archive/merge
 //     ({name?|color?|archived?|mergedInto?}); tags reference the stable
 //     topicId so none of these re-tag conversations (FR-TOP-02).
+//   - DELETE /api/v1/topics/{id}          — remove a topic and untag every
+//     conversation that carried it (conversations themselves are kept —
+//     see confirmDeleteTopic below for the confirmation copy). A topic
+//     name that comes back later is a brand-new topicId.
 //   - GET  /api/v1/conversations          — filterable list
 //     (?topic=&device=&from=&to=&cursor=&limit=), Query-only server-side
 //     (CONV#/TREF# partitions per the M11 locked item shapes).
@@ -406,16 +410,22 @@ function buildConvRow(c) {
     const wrap = document.createElement('span');
     wrap.className = 'hist-topic-badges';
     // De-duplicate after canonicalization (two merged topics can point
-    // at the same canonical topic).
+    // at the same canonical topic); a topic id with no live match (the
+    // topic was deleted — DeleteTopic never rewrites topicIds, see
+    // internal/store/topics.go) is filtered out here on read rather than
+    // rendered as a bare, unnamed id.
     const seen = new Set();
     for (const id of c.topicIds) {
       const t = canonicalTopic(id);
-      const key = t ? t.id : id;
-      if (seen.has(key)) continue;
-      seen.add(key);
+      if (!t) continue;
+      if (seen.has(t.id)) continue;
+      seen.add(t.id);
       wrap.appendChild(topicBadge(id));
     }
-    tdTopics.appendChild(wrap);
+    // Every tag on this conversation pointed at a deleted topic — same
+    // empty-state as never having been tagged.
+    if (wrap.children.length === 0) tdTopics.textContent = '—';
+    else tdTopics.appendChild(wrap);
   }
   tr.appendChild(tdTopics);
 
@@ -482,9 +492,9 @@ function openDetail(c) {
   const seen = new Set();
   for (const id of c.topicIds) {
     const t = canonicalTopic(id);
-    const key = t ? t.id : id;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (!t) continue; // deleted topic — filtered on read, see buildConvRow
+    if (seen.has(t.id)) continue;
+    seen.add(t.id);
     detailMeta.appendChild(topicBadge(id));
   }
 
@@ -570,6 +580,17 @@ function renderTopicManager() {
   }
 }
 
+/** Small action-button factory shared by buildTopicRow and its delete
+ * confirmation (confirmDeleteTopic) — module scope so both can use it. */
+function mkBtn(label, aria, cls = 'ln-btn ln-btn--ghost') {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = cls;
+  b.textContent = label;
+  b.setAttribute('aria-label', aria);
+  return b;
+}
+
 function buildTopicRow(t) {
   const row = document.createElement('div');
   row.className = 'hist-topicrow';
@@ -604,15 +625,6 @@ function buildTopicRow(t) {
     badge.textContent = 'Archived';
     row.appendChild(badge);
   }
-
-  const mkBtn = (label, aria, cls = 'ln-btn ln-btn--ghost') => {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = cls;
-    b.textContent = label;
-    b.setAttribute('aria-label', aria);
-    return b;
-  };
 
   // Rename — swaps the name span for an input with Save/Cancel.
   const renameBtn = mkBtn('Rename', `Rename the topic ${t.name}`);
@@ -730,7 +742,65 @@ function buildTopicRow(t) {
   });
   row.appendChild(mergeBtn);
 
+  // Delete — irreversible taxonomy removal, guarded by an explicit inline
+  // confirm (house destructive-action rule) that states exactly what
+  // happens: the topic and its TREF refs go away, but conversations are
+  // kept, only untagged (DeleteTopic never touches CONV rows). convCount
+  // came straight from the topic list response, no extra round trip.
+  const deleteBtn = mkBtn('Delete', `Delete the topic ${t.name}`, 'ln-btn ln-btn--danger');
+  deleteBtn.addEventListener('click', () => confirmDeleteTopic(t, deleteBtn));
+  row.appendChild(deleteBtn);
+
   return row;
+}
+
+/** Two-step inline delete confirmation for one topic (mirrors
+ * confirmForget in memory.mjs): the trigger button hides and an inline
+ * confirm — message + Confirm/Cancel — takes its place in the row. */
+function confirmDeleteTopic(t, trigger) {
+  trigger.hidden = true;
+  const n = t.convCount || 0;
+  const wrap = document.createElement('span');
+  wrap.className = 'hist-delconfirm';
+  const msg = document.createElement('span');
+  msg.textContent = `Delete “${t.name}”? Removes the topic and untags ${n} conversation${n === 1 ? '' : 's'} — conversations themselves are kept.`;
+  wrap.appendChild(msg);
+
+  const restore = () => {
+    wrap.remove();
+    trigger.hidden = false;
+  };
+
+  const go = mkBtn('Yes, delete', `Confirm deleting ${t.name}`, 'ln-btn ln-btn--danger');
+  const cancel = mkBtn('Cancel', `Cancel deleting ${t.name}`);
+  go.addEventListener('click', async () => {
+    go.disabled = true;
+    cancel.disabled = true;
+    try {
+      await apiJSON(`/api/v1/topics/${encodeURIComponent(t.id)}`, { method: 'DELETE' });
+      topics = topics.filter((x) => x.id !== t.id);
+      selectedTopics.delete(t.id);
+      showToast(`Deleted “${t.name}”.`);
+      renderTopicChips();
+      renderTopicManager();
+      renderConversations(); // badges for its (now-untagged) conversations drop
+    } catch (err) {
+      restore();
+      showToast(apiErrorMessage(err, `Couldn't delete “${t.name}” — try again.`), { error: true });
+    }
+  });
+  cancel.addEventListener('click', restore);
+  wrap.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') {
+      ev.stopPropagation();
+      restore();
+    }
+  });
+
+  wrap.appendChild(go);
+  wrap.appendChild(cancel);
+  trigger.after(wrap);
+  go.focus();
 }
 
 // ---- filters wiring ---------------------------------------------------

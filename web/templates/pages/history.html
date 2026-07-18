@@ -136,6 +136,8 @@
   .hist-topicrow .ln-btn { min-height: 36px; padding: 0 var(--ln-sp-3); font-size: var(--ln-fs-xs); }
   .hist-topicrow .ln-select { width: auto; min-width: 150px; min-height: 40px; padding-top: var(--ln-sp-2); padding-bottom: var(--ln-sp-2); }
   .hist-mergeform { display: inline-flex; gap: var(--ln-sp-2); align-items: center; flex-wrap: wrap; }
+  .hist-delconfirm { display: inline-flex; align-items: center; gap: var(--ln-sp-2); flex-wrap: wrap; justify-content: flex-end; }
+  .hist-delconfirm span { font-size: var(--ln-fs-xs); color: var(--ln-error-ink); font-weight: 700; }
 </style>
 {{end}}
 
@@ -239,11 +241,12 @@
     </section>
 
     {{- /* Topic Manager (FR-TOP-02/05): rename / recolor / archive /
-           merge — collapsed by default so the filter flow stays primary. */}}
+           merge / delete — collapsed by default so the filter flow stays
+           primary. */}}
     <details class="hist-manage" id="topicManager">
       <summary>Manage topics</summary>
       <div class="hist-manage-body">
-        <p class="ln-muted">Rename, recolor, archive, or merge topics. Conversations keep their tags through any rename or merge.</p>
+        <p class="ln-muted">Rename, recolor, archive, or merge topics. Conversations keep their tags through any rename or merge. Deleting a topic removes it and untags its conversations — the conversations themselves are kept.</p>
         <div id="topicMgrList"></div>
         <p class="ln-muted" id="topicMgrEmpty" hidden>No topics yet — they’re created automatically as you have conversations.</p>
       </div>

@@ -2,8 +2,8 @@
 //
 // FakeDynamo is an ephemeral in-memory DynamoDB implementing exactly the
 // call surface the production code uses (PutItem / GetItem / Query /
-// UpdateItem / DeleteItem / TransactWriteItems) with just enough of the
-// expression grammar those callers actually emit:
+// UpdateItem / DeleteItem / BatchWriteItem / TransactWriteItems) with just
+// enough of the expression grammar those callers actually emit:
 //
 //	Condition:      attribute_exists(x) | attribute_not_exists(x) |
 //	                a = :v | a > :v (AND-joined), or a single top-level
@@ -299,13 +299,22 @@ func (f *FakeDynamo) GetItem(ctx context.Context, params *dynamodb.GetItemInput,
 	return &dynamodb.GetItemOutput{Item: copyItem(it)}, nil
 }
 
-// DeleteItem implements the DynamoDB DeleteItem call (with ALL_OLD).
+// DeleteItem implements the DynamoDB DeleteItem call (with ALL_OLD and an
+// optional ConditionExpression — e.g. DeleteTopic's attribute_exists(pk)
+// guard, which must surface as ConditionalCheckFailedException on an
+// already-absent key, exactly like PutItem/UpdateItem's conditions).
 func (f *FakeDynamo) DeleteItem(ctx context.Context, params *dynamodb.DeleteItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	key := keyOfKey(params.Key)
 	existing, ok := f.items[key]
+	if params.ConditionExpression != nil {
+		if !evalCondition(*params.ConditionExpression, existing,
+			params.ExpressionAttributeNames, params.ExpressionAttributeValues) {
+			return nil, condFailedErr()
+		}
+	}
 	delete(f.items, key)
 
 	out := &dynamodb.DeleteItemOutput{}
@@ -393,6 +402,34 @@ func (f *FakeDynamo) TransactWriteItems(ctx context.Context, params *dynamodb.Tr
 		f.items[key] = item
 	}
 	return &dynamodb.TransactWriteItemsOutput{}, nil
+}
+
+// BatchWriteItem implements the DynamoDB BatchWriteItem call for the
+// single-table name Store always passes: PutRequest/DeleteRequest, no
+// conditions (BatchWriteItem never supports per-item conditions), applied
+// unconditionally like the real API. UnprocessedItems is always empty — the
+// fake has no throttling to simulate, so callers' retry-on-unprocessed loop
+// is exercised for real only against live DynamoDB.
+func (f *FakeDynamo) BatchWriteItem(ctx context.Context, params *dynamodb.BatchWriteItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.BatchWriteItemOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	for table, reqs := range params.RequestItems {
+		if len(reqs) > 25 {
+			panic(fmt.Sprintf("testutil: BatchWriteItem table %q got %d requests, over the 25 cap", table, len(reqs)))
+		}
+		for _, req := range reqs {
+			switch {
+			case req.DeleteRequest != nil:
+				delete(f.items, keyOfKey(req.DeleteRequest.Key))
+			case req.PutRequest != nil:
+				f.items[itemKey(req.PutRequest.Item)] = copyItem(req.PutRequest.Item)
+			default:
+				panic("testutil: BatchWriteItem request with neither Put nor Delete")
+			}
+		}
+	}
+	return &dynamodb.BatchWriteItemOutput{}, nil
 }
 
 // Query implements the single-partition Query patterns the store uses

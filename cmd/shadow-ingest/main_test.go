@@ -190,7 +190,7 @@ func TestDeviceInitiatedBumpCommitsAndFansOut(t *testing.T) {
 		t.Errorf("sensitivity = %v, want 0.9", doc["sensitivity"])
 	}
 	// Unrelated canonical fields survive the fold.
-	if doc["wakeWord"] != "hey-live-ninja" || doc["theme"] != "system" {
+	if doc["wakeWord"] != "hey-live-ninja" || doc["theme"] != "light" {
 		t.Errorf("canonical fields lost in device bump: %v", doc)
 	}
 

@@ -15,8 +15,14 @@
 //     contracts/wakeword-manifest.md manifest (presigned 15-min URL +
 //     sha256); 409 {"status":...} while not ready (the contract's
 //     "implementers pick one" choice, fixed here as 409).
-//   - DELETE /api/v1/wakeword/:id        — cancel training (best
-//     effort), purge S3 artifacts, remove the item.
+//   - DELETE /api/v1/wakeword/:id        — purge S3 artifacts + remove
+//     the item; refused with 409 training_in_progress while the item is
+//     actively training (a still-queued pending job is cancelled
+//     best-effort).
+//   - POST   /api/v1/wakeword/:id/retry  — re-submit training for a
+//     FAILED item through the normal create path (same ≤3/day quota — a
+//     retry consumes a slot like a fresh train); 409 not_retryable from
+//     any other status.
 //
 // contracts/api.md spells the create/status routes plural
 // (/v1/wakewords, /v1/wakewords/{id}) and the manifest route singular
@@ -62,6 +68,9 @@ func RegisterWakewordRoutes(app *fiber.App, deps *Deps) {
 		g.Get("/wakewords/:id", handleWakewordGet(deps, svc))
 		g.Delete("/wakeword/:id", handleWakewordDelete(deps, svc))
 		g.Delete("/wakewords/:id", handleWakewordDelete(deps, svc))
+		// Retry a failed training run (consumes a daily quota slot).
+		g.Post("/wakeword/:id/retry", handleWakewordRetry(deps, svc))
+		g.Post("/wakewords/:id/retry", handleWakewordRetry(deps, svc))
 		// Model manifest (contracts/wakeword-manifest.md — singular only).
 		g.Get("/wakeword/:id/model", handleWakewordModel(deps, svc))
 	}
@@ -223,6 +232,34 @@ func handleWakewordDelete(deps *Deps, svc *wakeword.Service) fiber.Handler {
 	}
 }
 
+// ---- POST /api/v1/wakeword/:id/retry ----
+
+func handleWakewordRetry(deps *Deps, svc *wakeword.Service) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if svc == nil {
+			return wakewordUnavailable(c)
+		}
+		item, err := svc.Retry(c.Context(), UserID(c), c.Params("id"))
+		if err != nil {
+			if errors.Is(err, wakeword.ErrBuiltinModel) {
+				return errorJSON(c, fiber.StatusBadRequest, "builtin_model", "built-in wake words are not trainable")
+			}
+			return wakewordError(c, deps, "retry wakeword", err)
+		}
+		// 202: retraining accepted, runs async (poll GET :id). Same shape
+		// as create, plus an explicit quota note — a retry spends a daily
+		// training slot exactly like a fresh train.
+		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
+			"id":        item.ID,
+			"phrase":    item.Phrase,
+			"engine":    item.Engine,
+			"status":    item.Status,
+			"createdAt": item.CreatedAt,
+			"message":   "retraining started — a retry uses one of your 3 daily training runs",
+		})
+	}
+}
+
 // wakewordError maps the service's typed errors onto the HTTP surface.
 func wakewordError(c *fiber.Ctx, deps *Deps, op string, err error) error {
 	var vErr *wakeword.ValidationError
@@ -245,6 +282,11 @@ func wakewordError(c *fiber.Ctx, deps *Deps, op string, err error) error {
 			"custom wake words are not available on esp32 yet — the device selects among built-in WakeNet models")
 	case errors.Is(err, wakeword.ErrEngineUnavailable):
 		return errorJSON(c, fiber.StatusBadRequest, "engine_unavailable", "only the openwakeword engine supports custom training on this server")
+	case errors.Is(err, wakeword.ErrTrainingInProgress):
+		return errorJSON(c, fiber.StatusConflict, "training_in_progress",
+			"this wake word is training right now — wait for it to finish (jobs cap at 20 minutes), then retry or delete")
+	case errors.Is(err, wakeword.ErrNotRetryable):
+		return errorJSON(c, fiber.StatusConflict, "not_retryable", "only failed wake words can be retried")
 	case errors.Is(err, wakeword.ErrCollision):
 		return errorJSON(c, fiber.StatusConflict, "phrase_conflict", "that phrase already exists in your catalog — pick a different one")
 	case errors.Is(err, wakeword.ErrDailyLimit):

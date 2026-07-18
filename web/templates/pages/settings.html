@@ -310,31 +310,67 @@
     </fieldset>
 
     <fieldset class="ln-fieldset">
-      <legend>Style</legend>
+      <legend>Live panel style</legend>
+      <p class="ln-hint">The voice panel on the conversation screen — orb, mic and hands-free controls.</p>
       <div class="ln-choices">
         <label class="ln-choice">
-          <input type="radio" name="themeStyle" value="hal9000" {{if eq .ThemeStyle "hal9000"}}checked{{end}}>
+          <input type="radio" name="liveStyle" value="hal9000" {{if eq .LiveStyle "hal9000"}}checked{{end}}>
           <span class="ln-choice__body">
             <span class="ln-choice__title">HAL 9000</span>
             <span class="ln-choice__desc">Deep black with a glowing red eye. "I'm sorry Dave" energy (default).</span>
           </span>
         </label>
         <label class="ln-choice">
-          <input type="radio" name="themeStyle" value="ninja" {{if eq .ThemeStyle "ninja"}}checked{{end}}>
+          <input type="radio" name="liveStyle" value="ninja" {{if eq .LiveStyle "ninja"}}checked{{end}}>
           <span class="ln-choice__body">
             <span class="ln-choice__title">Ninja</span>
             <span class="ln-choice__desc">The original navy-and-teal look.</span>
           </span>
         </label>
         <label class="ln-choice">
-          <input type="radio" name="themeStyle" value="minimal" {{if eq .ThemeStyle "minimal"}}checked{{end}}>
+          <input type="radio" name="liveStyle" value="minimal" {{if eq .LiveStyle "minimal"}}checked{{end}}>
           <span class="ln-choice__body">
             <span class="ln-choice__title">Minimal</span>
             <span class="ln-choice__desc">Flat and quiet — no glow, no gradients.</span>
           </span>
         </label>
         <label class="ln-choice">
-          <input type="radio" name="themeStyle" value="terminal" {{if eq .ThemeStyle "terminal"}}checked{{end}}>
+          <input type="radio" name="liveStyle" value="terminal" {{if eq .LiveStyle "terminal"}}checked{{end}}>
+          <span class="ln-choice__body">
+            <span class="ln-choice__title">Terminal</span>
+            <span class="ln-choice__desc">Pure black, phosphor green, CRT vibes.</span>
+          </span>
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset class="ln-fieldset">
+      <legend>App style</legend>
+      <p class="ln-hint">Everything else — navigation, transcript, settings, history and downloads.</p>
+      <div class="ln-choices">
+        <label class="ln-choice">
+          <input type="radio" name="appStyle" value="ninja" {{if eq .AppStyle "ninja"}}checked{{end}}>
+          <span class="ln-choice__body">
+            <span class="ln-choice__title">Ninja</span>
+            <span class="ln-choice__desc">The original navy-and-teal look (default).</span>
+          </span>
+        </label>
+        <label class="ln-choice">
+          <input type="radio" name="appStyle" value="hal9000" {{if eq .AppStyle "hal9000"}}checked{{end}}>
+          <span class="ln-choice__body">
+            <span class="ln-choice__title">HAL 9000</span>
+            <span class="ln-choice__desc">Deep black with a glowing red eye. "I'm sorry Dave" energy.</span>
+          </span>
+        </label>
+        <label class="ln-choice">
+          <input type="radio" name="appStyle" value="minimal" {{if eq .AppStyle "minimal"}}checked{{end}}>
+          <span class="ln-choice__body">
+            <span class="ln-choice__title">Minimal</span>
+            <span class="ln-choice__desc">Flat and quiet — no glow, no gradients.</span>
+          </span>
+        </label>
+        <label class="ln-choice">
+          <input type="radio" name="appStyle" value="terminal" {{if eq .AppStyle "terminal"}}checked{{end}}>
           <span class="ln-choice__body">
             <span class="ln-choice__title">Terminal</span>
             <span class="ln-choice__desc">Pure black, phosphor green, CRT vibes.</span>

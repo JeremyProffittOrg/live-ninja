@@ -39,6 +39,11 @@ var (
 	ErrDailyLimit = errors.New("wakeword: daily training limit reached")
 	// ErrQueueFull: too many training jobs already queued/running (→ 429).
 	ErrQueueFull = errors.New("wakeword: training queue is full")
+	// ErrTrainingInProgress: delete is refused while the item is actively
+	// training — wait for a terminal status first (→ 409).
+	ErrTrainingInProgress = errors.New("wakeword: training in progress")
+	// ErrNotRetryable: retry is only allowed from failed status (→ 409).
+	ErrNotRetryable = errors.New("wakeword: only failed wake words can be retried")
 	// ErrPlatformUnsupported: custom models have no esp32 variant yet
 	// (honest capability flag, → 404 on the model endpoint).
 	ErrPlatformUnsupported = errors.New("wakeword: no model for that platform")
@@ -768,11 +773,42 @@ func (s *Service) readManifest(ctx context.Context, wwID, platform string) (*sto
 	return &man, nil
 }
 
+// ---- retry ----
+
+// Retry re-submits training for a previously FAILED custom wake word.
+// It deliberately funnels through Create: same validation, the same
+// ≤3/day quota (a retry consumes a daily training slot exactly like a
+// fresh train — the route/UI copy says so), the same backlog gate, and
+// the replace-in-place path (a failed item with the same phrase keeps
+// its deterministic wwId, so the S3 prefix is reused). Items in any
+// non-failed status are not retryable (ErrNotRetryable → 409); a stale
+// pending item whose Batch job died is lazily finalized to failed
+// first, so it becomes retryable in the same call.
+func (s *Service) Retry(ctx context.Context, userID, id string) (*store.Wakeword, error) {
+	if BuiltinEntry(id) != nil {
+		return nil, ErrBuiltinModel
+	}
+	w, err := s.store.GetWakeword(ctx, userID, id)
+	if err != nil {
+		return nil, err
+	}
+	if w == nil {
+		return nil, ErrNotFound
+	}
+	w = s.finalize(ctx, w)
+	if w.Status != store.WakewordStatusFailed {
+		return nil, ErrNotRetryable
+	}
+	return s.Create(ctx, userID, w.Phrase, w.Engine)
+}
+
 // ---- delete ----
 
-// Delete removes a custom wake word: cancels an in-flight training job
-// (best-effort), deletes the S3 artifacts under its prefix, and removes
-// the item.
+// Delete removes a custom wake word: deletes the S3 artifacts under its
+// prefix and removes the item. Refused while the item is actively
+// training (ErrTrainingInProgress → 409 — the 20-min job hard timeout
+// bounds the wait); a still-queued pending item's job is cancelled
+// best-effort.
 func (s *Service) Delete(ctx context.Context, userID, id string) error {
 	if BuiltinEntry(id) != nil {
 		return ErrBuiltinModel
@@ -784,8 +820,11 @@ func (s *Service) Delete(ctx context.Context, userID, id string) error {
 	if w == nil {
 		return ErrNotFound
 	}
+	if w.Status == store.WakewordStatusTraining {
+		return ErrTrainingInProgress
+	}
 
-	if w.BatchJobID != "" && (w.Status == store.WakewordStatusPending || w.Status == store.WakewordStatusTraining) {
+	if w.BatchJobID != "" && w.Status == store.WakewordStatusPending {
 		if _, terr := s.batch.TerminateJob(ctx, &batch.TerminateJobInput{
 			JobId:  aws.String(w.BatchJobID),
 			Reason: aws.String("wake word deleted by user"),

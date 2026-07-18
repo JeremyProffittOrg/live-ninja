@@ -18,8 +18,8 @@
     <div class="conv-quickswitch">
       <div class="conv-quickswitch__group">
         <label for="personaSelect">Persona</label>
-        {{- /* Populated from GET /api/v1/realtime/personas; "default" is the
-               only catalog entry guaranteed to exist (internal/realtime). */}}
+        {{- /* Populated from GET /api/v1/personas (grouped Built-in / Mine /
+               Shared); "default" is the only entry guaranteed to exist. */}}
         <select class="ln-select" id="personaSelect">
           <option value="default" selected>Live Ninja (default)</option>
         </select>
@@ -38,8 +38,17 @@
 
   <div class="conv-body">
 
-    <!-- Left rail: orb, visualizer, primary mic control, wake-word mode -->
-    <section class="conv-rail" aria-label="Voice controls">
+    <!-- Left rail: orb, visualizer, primary mic control, wake-word mode.
+         This is the LIVE style zone (#livePanel): the default liveStyle is
+         stamped server-side so first paint has no flash; theme.js re-stamps
+         it from the cached/synced appearance (appearance.liveStyle). -->
+    <section class="conv-rail" id="livePanel" data-ln-style="hal9000" aria-label="Voice controls">
+      {{- /* Live session cost estimate (conversation.mjs); hidden until a
+             session starts, resets on New conversation. openai-direct
+             only — internal/realtime/rates.go supplies the per-model
+             pricing this badge multiplies token usage against. */}}
+      <span class="cost-badge" id="costBadge" hidden title="">~$0.000</span>
+
       {{template "audio_viz" .}}
 
       <p class="conv-status-text" id="statusText">Tap the mic to start</p>

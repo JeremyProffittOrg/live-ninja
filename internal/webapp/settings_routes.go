@@ -83,7 +83,8 @@ type settingsPageView struct {
 	Voice           string
 	TurnDetection   string
 	MicEagerness    string
-	ThemeStyle      string
+	AppStyle        string // style zone: everything outside the live panel
+	LiveStyle       string // style zone: the conversation page's live panel
 	AccentColor     string
 	Theme           string
 	MicDeviceID     string
@@ -190,7 +191,8 @@ func buildSettingsPageView(doc map[string]any) (*settingsPageView, error) {
 		Voice:           docString(doc, "voice", realtime.DefaultVoice),
 		TurnDetection:   docString(doc, "turnDetection", "semantic_vad"),
 		MicEagerness:    docString(doc, "micEagerness", "auto"),
-		ThemeStyle:      docNestedString(doc, "appearance", "themeStyle", "hal9000"),
+		AppStyle:        docNestedString(doc, "appearance", "appStyle", "ninja"),
+		LiveStyle:       docNestedString(doc, "appearance", "liveStyle", "hal9000"),
 		AccentColor:     docNestedString(doc, "appearance", "accentColor", ""),
 		Theme:           docString(doc, "theme", "system"),
 		MicDeviceID:     docString(doc, "micDeviceId", ""),
@@ -405,17 +407,32 @@ func validateAndNormalizeSettings(doc map[string]any) string {
 	default:
 		return "micEagerness must be a string"
 	}
-	// appearance: theme style preset + accent color ("" = style default).
-	// Optional for older clients — absent normalizes to the defaults.
+	// appearance: two style zones (appStyle = everything outside the live
+	// panel, liveStyle = the conversation page's orb/mic panel) + a global
+	// accent color ("" = each zone's style default). Optional for older
+	// clients — absent normalizes to the defaults; a legacy single
+	// themeStyle (pre-split clients / cached bundles) migrates to liveStyle.
 	switch ap := doc["appearance"].(type) {
 	case nil:
-		doc["appearance"] = map[string]any{"themeStyle": "hal9000", "accentColor": ""}
+		doc["appearance"] = map[string]any{"appStyle": "ninja", "liveStyle": "hal9000", "accentColor": ""}
 	case map[string]any:
-		st, _ := ap["themeStyle"].(string)
-		if st == "" {
-			ap["themeStyle"] = "hal9000"
-		} else if !oneOf(st, "hal9000", "ninja", "minimal", "terminal") {
-			return "appearance.themeStyle must be one of hal9000, ninja, minimal, terminal"
+		if ts, ok := ap["themeStyle"].(string); ok && ts != "" {
+			if _, has := ap["liveStyle"]; !has {
+				ap["liveStyle"] = ts
+			}
+		}
+		delete(ap, "themeStyle")
+		ls, _ := ap["liveStyle"].(string)
+		if ls == "" {
+			ap["liveStyle"] = "hal9000"
+		} else if !oneOf(ls, "hal9000", "ninja", "minimal", "terminal") {
+			return "appearance.liveStyle must be one of hal9000, ninja, minimal, terminal"
+		}
+		as, _ := ap["appStyle"].(string)
+		if as == "" {
+			ap["appStyle"] = "ninja"
+		} else if !oneOf(as, "hal9000", "ninja", "minimal", "terminal") {
+			return "appearance.appStyle must be one of hal9000, ninja, minimal, terminal"
 		}
 		switch ac := ap["accentColor"].(type) {
 		case nil:

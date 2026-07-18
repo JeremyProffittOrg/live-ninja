@@ -745,3 +745,136 @@ func TestDeleteCancelsJobAndPurgesArtifacts(t *testing.T) {
 	assert.ErrorIs(t, env.svc.Delete(ctx, "u1", "hey-jarvis"), ErrBuiltinModel)
 	assert.ErrorIs(t, env.svc.Delete(ctx, "u1", w.ID), ErrNotFound)
 }
+
+func TestDeleteGuards(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	w, err := env.svc.Create(ctx, "u1", "hey parrot", "")
+	require.NoError(t, err)
+
+	// Not-owner: items live in the caller's own partition — another user
+	// resolves nothing and gets ErrNotFound (→ 404), never u1's item.
+	assert.ErrorIs(t, env.svc.Delete(ctx, "u2", w.ID), ErrNotFound)
+	stillThere, err := env.store.GetWakeword(ctx, "u1", w.ID)
+	require.NoError(t, err)
+	require.NotNil(t, stillThere)
+
+	// Actively training: delete is refused (→ 409) and nothing is touched.
+	env.store.items["u1/"+w.ID].Status = store.WakewordStatusTraining
+	env.s3.objects[modelKey(w.ID, "web")] = []byte("partial")
+	assert.ErrorIs(t, env.svc.Delete(ctx, "u1", w.ID), ErrTrainingInProgress)
+	assert.Empty(t, env.batch.terminated)
+	assert.Contains(t, env.s3.objects, modelKey(w.ID, "web"))
+	stillThere, err = env.store.GetWakeword(ctx, "u1", w.ID)
+	require.NoError(t, err)
+	require.NotNil(t, stillThere)
+
+	// Terminal (failed) items delete fine — the stuck-item escape hatch.
+	env.store.items["u1/"+w.ID].Status = store.WakewordStatusFailed
+	env.svc.cache.invalidate("u1")
+	require.NoError(t, env.svc.Delete(ctx, "u1", w.ID))
+	assert.Empty(t, env.s3.objects)
+	gone, err := env.store.GetWakeword(ctx, "u1", w.ID)
+	require.NoError(t, err)
+	assert.Nil(t, gone)
+}
+
+// ---- retry ----
+
+func TestRetryOnlyFromFailed(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	w, err := env.svc.Create(ctx, "u1", "hey parrot", "")
+	require.NoError(t, err)
+
+	// Pending with a live queued job → finalize keeps it pending → refused.
+	env.batch.jobs["job-1"] = batchtypes.JobDetail{JobId: aws.String("job-1"), Status: batchtypes.JobStatusRunnable}
+	_, err = env.svc.Retry(ctx, "u1", w.ID)
+	assert.ErrorIs(t, err, ErrNotRetryable)
+
+	// Training → refused.
+	env.batch.jobs["job-1"] = batchtypes.JobDetail{JobId: aws.String("job-1"), Status: batchtypes.JobStatusRunning}
+	env.svc.cache.invalidate("u1")
+	_, err = env.svc.Retry(ctx, "u1", w.ID)
+	assert.ErrorIs(t, err, ErrNotRetryable)
+
+	// Ready → refused.
+	env.store.items["u1/"+w.ID].Status = store.WakewordStatusReady
+	_, err = env.svc.Retry(ctx, "u1", w.ID)
+	assert.ErrorIs(t, err, ErrNotRetryable)
+
+	// Builtin ids and unknown ids are not retryable at all.
+	_, err = env.svc.Retry(ctx, "u1", "hey-jarvis")
+	assert.ErrorIs(t, err, ErrBuiltinModel)
+	_, err = env.svc.Retry(ctx, "u1", "nope-nope-abc123")
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	// Not-owner: partition isolation → ErrNotFound.
+	env.store.items["u1/"+w.ID].Status = store.WakewordStatusFailed
+	_, err = env.svc.Retry(ctx, "u2", w.ID)
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestRetryFromFailedResubmitsAndConsumesQuota(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	w, err := env.svc.Create(ctx, "u1", "hey parrot", "")
+	require.NoError(t, err)
+	require.Equal(t, 1, env.store.slots["u1/2026-07-17"])
+
+	// The job fails (the exact prod shape: Batch reports FAILED).
+	env.batch.jobs["job-1"] = batchtypes.JobDetail{
+		JobId:        aws.String("job-1"),
+		Status:       batchtypes.JobStatusFailed,
+		StatusReason: aws.String("Essential container in task exited"),
+	}
+	env.svc.cache.invalidate("u1")
+	entry, err := env.svc.Get(ctx, "u1", w.ID)
+	require.NoError(t, err)
+	require.Equal(t, store.WakewordStatusFailed, entry.Status)
+
+	env.batch.nextJobID = "job-2"
+	re, err := env.svc.Retry(ctx, "u1", w.ID)
+	require.NoError(t, err)
+	assert.Equal(t, w.ID, re.ID) // same deterministic id → same S3 prefix
+	assert.Equal(t, store.WakewordStatusPending, re.Status)
+	assert.Equal(t, "job-2", re.BatchJobID)
+	require.Len(t, env.batch.submitted, 2)
+
+	// A retry consumes a daily slot exactly like a fresh train.
+	assert.Equal(t, 2, env.store.slots["u1/2026-07-17"])
+
+	// The stored item is a fresh pending record (stale failure cleared
+	// via replace-in-place).
+	stored, err := env.store.GetWakeword(ctx, "u1", w.ID)
+	require.NoError(t, err)
+	assert.Equal(t, store.WakewordStatusPending, stored.Status)
+	assert.Empty(t, stored.FailureReason)
+}
+
+func TestRetryBlockedByDailyLimit(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	w, err := env.svc.Create(ctx, "u1", "hey parrot", "")
+	require.NoError(t, err)
+	env.store.items["u1/"+w.ID].Status = store.WakewordStatusFailed
+	env.store.items["u1/"+w.ID].FailureReason = "training job failed"
+	env.store.slots["u1/2026-07-17"] = 3 // cap reached
+
+	_, err = env.svc.Retry(ctx, "u1", w.ID)
+	assert.ErrorIs(t, err, ErrDailyLimit)
+	require.Len(t, env.batch.submitted, 1) // no second submission
+
+	// Next UTC day the retry goes through.
+	env.now = env.now.Add(24 * time.Hour)
+	env.batch.nextJobID = "job-2"
+	env.svc.cache.invalidate("u1")
+	re, err := env.svc.Retry(ctx, "u1", w.ID)
+	require.NoError(t, err)
+	assert.Equal(t, store.WakewordStatusPending, re.Status)
+	assert.Equal(t, 1, env.store.slots["u1/2026-07-18"])
+}

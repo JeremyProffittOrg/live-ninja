@@ -28,7 +28,9 @@ import { createWakeWordEngine, isWakeWordSupported } from './wakeword.mjs';
 
 const SETTINGS_PATH = '/api/v1/settings';
 const VOICES_PATH = '/api/v1/realtime/voices';
-const PERSONAS_PATH = '/api/v1/realtime/personas';
+// Full grouped persona library (Built-in / Mine / Shared) — the quick-
+// switch select renders it as <optgroup>s (personas platform feature).
+const PERSONAS_PATH = '/api/v1/personas';
 const FALLBACK_TURN_PATH = '/api/v1/fallback/turn';
 const WAKE_CATALOG_PATH = '/static/wakewords/catalog.json';
 
@@ -298,6 +300,42 @@ function fillSelect(selectEl, rows, selectedId) {
   }
 }
 
+// fillPersonaSelect renders the grouped persona library into the quick-
+// switch select: Built-in / Mine / Shared <optgroup>s plus the trailing
+// client-side "custom" option (settings.schema.json persona rule). Same
+// forward-compat posture as fillSelect: an unknown stored value is kept,
+// never silently dropped.
+function fillPersonaSelect(selectEl, groups, selectedId) {
+  if (!selectEl) return;
+  selectEl.replaceChildren();
+  let found = false;
+  const addOption = (parent, id, name) => {
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = name || id;
+    if (id === selectedId) {
+      opt.selected = true;
+      found = true;
+    }
+    parent.appendChild(opt);
+  };
+  const addGroup = (label, rows) => {
+    if (!rows || rows.length === 0) return;
+    const og = document.createElement('optgroup');
+    og.label = label;
+    for (const row of rows) addOption(og, row.id, row.name);
+    selectEl.appendChild(og);
+  };
+  addGroup('Built-in', groups && groups.builtin);
+  addGroup('Mine', groups && groups.mine);
+  addGroup('Shared', groups && groups.shared);
+  addOption(selectEl, 'custom', 'Custom instructions');
+  if (!found && selectedId) {
+    addOption(selectEl, selectedId, `${selectedId} (kept as-is)`);
+    selectEl.value = selectedId;
+  }
+}
+
 function currentPersonaId() {
   const p = settingsDoc && settingsDoc.persona;
   return (p && typeof p.presetId === 'string' && p.presetId) || 'default';
@@ -562,6 +600,79 @@ function syncVisualToState(state) {
   }
 }
 
+// ---- session cost badge (upper-right of the live panel) -------------------
+//
+// OpenAI Realtime reports token usage on each completed response
+// (response.done -> realtime.mjs's 'usage' event, openai-direct only —
+// nova-bridge doesn't surface usage, internal/voiceengine drops it). Rates
+// come from the session bootstrap (internal/realtime/rates.go,
+// session.rates) so pricing never lives in this file, only the arithmetic.
+// Accumulates across reconnects within one displayed conversation; only
+// "New conversation" (below) zeroes it — a dropped/retried session mid-call
+// must not silently undercount the running total.
+
+const costBadgeEl = $('costBadge');
+let costTotalUSD = 0;
+let costTextTokens = 0; // input + output text tokens, running total
+let costAudioTokens = 0; // input + output audio tokens, running total
+
+function formatCostUSD(usd) {
+  return usd >= 1 ? `~$${usd.toFixed(2)}` : `~$${usd.toFixed(3)}`;
+}
+
+function renderCostBadge() {
+  if (!costBadgeEl) return;
+  costBadgeEl.textContent = formatCostUSD(costTotalUSD);
+  costBadgeEl.title =
+    `Session cost estimate (list price, not a bill)\n` +
+    `Text tokens: ${costTextTokens.toLocaleString()}\n` +
+    `Audio tokens: ${costAudioTokens.toLocaleString()}`;
+}
+
+function resetCostBadge() {
+  costTotalUSD = 0;
+  costTextTokens = 0;
+  costAudioTokens = 0;
+  if (costBadgeEl) costBadgeEl.hidden = true;
+}
+
+function attachCostBadge(session) {
+  if (!costBadgeEl) return;
+  session.addEventListener('sessionready', () => {
+    costBadgeEl.hidden = false;
+    renderCostBadge();
+  });
+  session.addEventListener('usage', (e) => {
+    const rates = session.rates;
+    if (!rates) return; // nova-bridge, or a bootstrap that omitted rates
+    const usage = (e.detail && e.detail.usage) || {};
+    const inDetails = usage.input_token_details || {};
+    const outDetails = usage.output_token_details || {};
+    const cachedDetails = inDetails.cached_tokens_details || {};
+
+    const inTextCached = cachedDetails.text_tokens || 0;
+    const inAudioCached = cachedDetails.audio_tokens || 0;
+    const inText = Math.max(0, (inDetails.text_tokens || 0) - inTextCached);
+    const inAudio = Math.max(0, (inDetails.audio_tokens || 0) - inAudioCached);
+    const outText = outDetails.text_tokens || 0;
+    const outAudio = outDetails.audio_tokens || 0;
+
+    costTotalUSD +=
+      (inText * rates.textInPer1M +
+        inTextCached * rates.cachedTextInPer1M +
+        inAudio * rates.audioInPer1M +
+        inAudioCached * rates.cachedAudioInPer1M +
+        outText * rates.textOutPer1M +
+        outAudio * rates.audioOutPer1M) /
+      1e6;
+    costTextTokens += inText + inTextCached + outText;
+    costAudioTokens += inAudio + inAudioCached + outAudio;
+
+    costBadgeEl.hidden = false;
+    renderCostBadge();
+  });
+}
+
 // ---- mic controller + transcript sink ------------------------------------
 
 // Declared before MicController: its constructor renders synchronously and
@@ -597,6 +708,7 @@ if (newConversationBtn) {
     mic.end();
     transcript.clear();
     toolActivityReset();
+    resetCostBadge();
     toast('New conversation — tap the mic when ready.');
   });
 }
@@ -605,6 +717,7 @@ mic.addEventListener('sessioncreated', (e) => {
   const session = e.detail.session;
   attachTranscriptRendering(session);
   attachVisualizer(session);
+  attachCostBadge(session);
 });
 mic.addEventListener('statechange', (e) => syncVisualToState(e.detail.state));
 mic.addEventListener('error', (e) =>
@@ -842,13 +955,21 @@ async function bootstrap() {
     toast("Couldn't load your settings — using defaults for now.", { error: true });
   }
 
-  if (personas.status === 'fulfilled' && Array.isArray(personas.value.personas)) {
-    personaCatalog = personas.value.personas.slice();
+  // Grouped persona library (Built-in / Mine / Shared). personaCatalog
+  // stays the flattened list so personaLabelFor keeps working; the
+  // "custom" persona remains a client-side concept (free-text
+  // instructions, spec §3.3) appended by fillPersonaSelect.
+  let personaGroups = null;
+  if (personas.status === 'fulfilled' && personas.value && typeof personas.value === 'object') {
+    const v = personas.value;
+    personaGroups = {
+      builtin: Array.isArray(v.builtin) ? v.builtin : [],
+      mine: Array.isArray(v.mine) ? v.mine : [],
+      shared: Array.isArray(v.shared) ? v.shared : [],
+    };
+    personaCatalog = personaGroups.builtin.concat(personaGroups.mine, personaGroups.shared);
   }
-  // The "custom" persona is a client-side concept (free-text instructions,
-  // spec §3.3) — always offered last, matching the settings page.
-  const personaRows = personaCatalog.concat([{ id: 'custom', name: 'Custom instructions' }]);
-  fillSelect(personaSelect, personaRows, currentPersonaId());
+  fillPersonaSelect(personaSelect, personaGroups, currentPersonaId());
 
   if (voices.status === 'fulfilled' && Array.isArray(voices.value.voices)) {
     fillSelect(voiceSelect, voices.value.voices, (settingsDoc && settingsDoc.voice) || 'cedar');

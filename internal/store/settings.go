@@ -51,10 +51,14 @@ func DefaultSettings() map[string]any {
 		"voice":         "cedar",
 		"turnDetection": "semantic_vad",
 		"micEagerness":  "auto",
-		// themeStyle hal9000 is the owner-locked default look (red glowing
-		// eye orb); accentColor "" means "use the style's own default accent".
-		"appearance": map[string]any{"themeStyle": "hal9000", "accentColor": ""},
-		"theme":         "system",
+		// Two style zones (owner-locked defaults): the conversation page's
+		// live panel (orb/mic rail) runs hal9000 (red glowing eye), while the
+		// rest of the app runs the original ninja navy-and-teal look.
+		// accentColor "" means "each zone uses its style's own default accent".
+		"appearance": map[string]any{"appStyle": "ninja", "liveStyle": "hal9000", "accentColor": ""},
+		// Light is the app-zone default look (ninja-light); the live panel's
+		// chrome comes from liveStyle, not from this axis.
+		"theme":         "light",
 		"micDeviceId":   nil,
 		"voiceEngine":   map[string]any{"default": "openai-realtime", "devices": map[string]any{}},
 		"privacy":       map[string]any{"storeAudio": false, "storeTranscripts": true, "retentionDays": 30},
@@ -161,6 +165,7 @@ func (s *Store) PutSettings(ctx context.Context, userID string, doc map[string]a
 // plus the required sub-keys of persona/voiceEngine/privacy) from
 // DefaultSettings without touching anything already present.
 func fillSettingsDefaults(doc map[string]any) {
+	migrateLegacyAppearance(doc)
 	defaults := DefaultSettings()
 	for k, dv := range defaults {
 		cur, ok := doc[k]
@@ -180,4 +185,24 @@ func fillSettingsDefaults(doc map[string]any) {
 			}
 		}
 	}
+}
+
+// migrateLegacyAppearance rewrites the pre-split appearance shape
+// ({themeStyle, accentColor}) to the two-zone shape on read: the legacy
+// single themeStyle becomes liveStyle (it styled the conversation
+// orb/mic panel), appStyle falls to the fill-pass default (ninja), and
+// the deprecated key is dropped so there is one source of truth. Runs
+// before fillSettingsDefaults' deep fill so the migrated value is never
+// clobbered by a default.
+func migrateLegacyAppearance(doc map[string]any) {
+	ap, ok := doc["appearance"].(map[string]any)
+	if !ok {
+		return
+	}
+	if ts, ok := ap["themeStyle"].(string); ok && ts != "" {
+		if _, has := ap["liveStyle"]; !has {
+			ap["liveStyle"] = ts
+		}
+	}
+	delete(ap, "themeStyle")
 }

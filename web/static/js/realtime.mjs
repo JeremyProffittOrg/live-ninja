@@ -202,6 +202,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  *   speaking       {}                        — assistant audio started
  *   speakingended  {}                        — assistant audio finished
  *   responsedone   {}                        — full response turn complete
+ *   usage          {usage, responseId}      — token usage for a completed
+ *                                              response (openai-direct only;
+ *                                              evt.response.usage verbatim —
+ *                                              input/output, text/audio,
+ *                                              cached breakdowns)
  *   bargein        {}                        — barge-in executed
  *   assistantdelta {itemId, delta, text}     — streaming assistant transcript
  *   assistantfinal {itemId, text}
@@ -230,6 +235,7 @@ export class RealtimeSession extends EventTarget {
   #sessionId = '';
   #model = '';
   #voice = '';
+  #rates = null; // per-1M-token rate table from the mint response (rates.go); null on nova-bridge
   #tools = null;
   #assistantText = new Map(); // itemId -> accumulated transcript
   #userText = new Map();
@@ -270,6 +276,11 @@ export class RealtimeSession extends EventTarget {
   }
   get voice() {
     return this.#voice;
+  }
+  /** Per-1M-token USD rate table for this session's model (session bootstrap,
+   * internal/realtime/rates.go) — null on nova-bridge sessions. */
+  get rates() {
+    return this.#rates;
   }
   get isConnected() {
     return this.#connected && !this.#closing;
@@ -380,6 +391,7 @@ export class RealtimeSession extends EventTarget {
     this.#sessionId = minted.sessionId || 'web-' + Date.now().toString(36);
     this.#model = minted.model || '';
     this.#voice = minted.voice || '';
+    this.#rates = minted.rates || null;
 
     this.#localStream = await streamPromise;
 
@@ -1146,6 +1158,9 @@ export class RealtimeSession extends EventTarget {
         break;
 
       case 'response.done':
+        if (evt.response && evt.response.usage) {
+          this.#emit('usage', { usage: evt.response.usage, responseId: evt.response.id || '' });
+        }
         this.#emit('responsedone');
         break;
 

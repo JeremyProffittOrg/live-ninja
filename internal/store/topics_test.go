@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -273,6 +274,72 @@ func TestMergeTopicsKeepsTagsStable(t *testing.T) {
 
 	require.ErrorIs(t, st.MergeTopics(ctx, uid, "src", "missing"), ErrNotFound)
 	require.Error(t, st.MergeTopics(ctx, uid, "dst", "dst"))
+}
+
+func TestDeleteTopic(t *testing.T) {
+	ctx := context.Background()
+	st, _ := newTestStore()
+	uid := "u1"
+
+	require.NoError(t, st.CreateTopic(ctx, uid, &Topic{TopicID: "gone", Name: "Doomed"}))
+	require.NoError(t, st.CreateTopic(ctx, uid, &Topic{TopicID: "keep", Name: "Kept"}))
+
+	// Enough TREF rows to exercise BatchWriteItem's 25-per-request cap
+	// across multiple batches (batchDeleteKeys), not just a single call.
+	const n = 57
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("s%02d", i)
+		ts := fmt.Sprintf("2026-07-01T%02d:%02d:00Z", i/60, i%60)
+		seedConversation(t, st, uid, &Conversation{
+			SessionID: id, TS: ts, DeviceID: "devA", TopicIDs: []string{"gone"},
+		})
+	}
+	// One conversation also tagged with the surviving topic — untouched by
+	// the delete of "gone".
+	seedConversation(t, st, uid, &Conversation{
+		SessionID: "kept-conv", TS: "2026-07-02T00:00:00Z", DeviceID: "devA", TopicIDs: []string{"keep"},
+	})
+
+	got, err := st.GetTopic(ctx, uid, "gone")
+	require.NoError(t, err)
+	require.Equal(t, n, got.ConvCount)
+
+	require.NoError(t, st.DeleteTopic(ctx, uid, "gone"))
+
+	// TOPIC row is gone.
+	deleted, err := st.GetTopic(ctx, uid, "gone")
+	require.NoError(t, err)
+	assert.Nil(t, deleted)
+
+	// Every TREF row under the deleted topic is gone — filtering by it
+	// returns empty, not an error and not stale hits.
+	byGone, next, err := st.ListConversations(ctx, uid, ListConversationsOpts{TopicID: "gone", Limit: 100})
+	require.NoError(t, err)
+	assert.Empty(t, byGone)
+	assert.Empty(t, next)
+
+	// The surviving topic and its ref are untouched.
+	keep, err := st.GetTopic(ctx, uid, "keep")
+	require.NoError(t, err)
+	require.NotNil(t, keep)
+	assert.Equal(t, 1, keep.ConvCount)
+	byKeep, _, err := st.ListConversations(ctx, uid, ListConversationsOpts{TopicID: "keep"})
+	require.NoError(t, err)
+	require.Len(t, byKeep, 1)
+	assert.Equal(t, "kept-conv", byKeep[0].SessionID)
+
+	// The tagged conversations themselves are untouched — they still exist
+	// and (per the "filter on read" design) still carry the stale topicId;
+	// no CONV row is rewritten by DeleteTopic.
+	conv, err := st.GetConversation(ctx, uid, "2026-07-01T00:00:00Z#s00")
+	require.NoError(t, err)
+	require.NotNil(t, conv)
+	assert.Equal(t, []string{"gone"}, conv.TopicIDs)
+
+	// Deleting an absent (or already-deleted) topic is ErrNotFound, and
+	// re-running it is safe (refs are already gone — no-op deletes).
+	require.ErrorIs(t, st.DeleteTopic(ctx, uid, "gone"), ErrNotFound)
+	require.ErrorIs(t, st.DeleteTopic(ctx, uid, "never-existed"), ErrNotFound)
 }
 
 func TestListSessionTurnsSkipsNothingButOrders(t *testing.T) {

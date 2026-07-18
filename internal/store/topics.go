@@ -22,6 +22,15 @@ package store
 // Rename/merge never re-tags: tags reference the stable topicId (FR-TOP-02);
 // merge repoints TREF rows + CONV topicIds to the destination id and marks
 // the source topic mergedInto=<dst>, archived=true.
+//
+// Delete (DeleteTopic) removes the TOPIC row and every TREF row under it
+// (paginated Query + chunked BatchWriteItem — see batchDeleteKeys in
+// store.go) but never touches CONV rows: a deleted topic's id can linger in
+// a conversation's topicIds array, filtered out on read rather than
+// scrubbed at delete time (see DeleteTopic's doc comment for why that's the
+// simpler-and-still-correct choice). A topic name that reappears in future
+// conversations gets a brand new topicId — extraction never resurrects a
+// deleted one.
 
 import (
 	"context"
@@ -297,6 +306,81 @@ func (s *Store) IncrementTopicConvCount(ctx context.Context, userID, topicID str
 			return ErrNotFound
 		}
 		return fmt.Errorf("store: increment topic convCount: %w", err)
+	}
+	return nil
+}
+
+// DeleteTopic removes a topic and every TREF ref that points at it: a
+// paginated Query for the TREF#<topicID># range (queryAllPages already
+// follows LastEvaluatedKey to exhaustion) followed by a chunked
+// BatchWriteItem delete (batchDeleteKeys, 25 keys per request with
+// UnprocessedItems retried) — the ref count is unbounded per topic, unlike
+// the small per-user counts the sequential deleteSessions loop handles
+// elsewhere in this package. Refs are deleted before the TOPIC# row itself
+// so a crash mid-delete never leaves a "deleted" topic whose refs still
+// resolve conversations (delete is safe to re-run: an already-gone key is
+// a BatchWriteItem/DeleteItem no-op).
+//
+// Conversations themselves are deliberately left untouched — their
+// topicIds arrays may still list the deleted id afterward. Rewriting every
+// tagged CONV row (like MergeTopics's repointConversationTopic) would cost
+// one UpdateItem per conversation the topic ever tagged, for a taxonomy
+// action that's supposed to be cheap and instant; the simpler and equally
+// correct alternative is "filtered on read", not "lazily cleaned": callers
+// resolve topicIds against the live taxonomy and simply skip any id with
+// no matching topic (see web/static/js/history.mjs's canonicalTopic/
+// topicBadge, which already drop a topic id no longer in the loaded
+// taxonomy rather than rendering a bare id).
+//
+// ErrNotFound when the topic is absent.
+func (s *Store) DeleteTopic(ctx context.Context, userID, topicID string) error {
+	if userID == "" || topicID == "" {
+		return errors.New("store: userID and topicID are required")
+	}
+
+	refsRaw, err := s.queryAllPages(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(s.table),
+		KeyConditionExpression: aws.String("pk = :pk AND begins_with(sk, :pfx)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk":  &types.AttributeValueMemberS{Value: userPK(userID)},
+			":pfx": &types.AttributeValueMemberS{Value: trefTopicPrefix(topicID)},
+		},
+		ProjectionExpression: aws.String("pk, sk"),
+	})
+	if err != nil {
+		return fmt.Errorf("store: query topic refs: %w", err)
+	}
+
+	keys := make([]map[string]types.AttributeValue, 0, len(refsRaw))
+	for _, r := range refsRaw {
+		pk, okPK := r["pk"].(*types.AttributeValueMemberS)
+		sk, okSK := r["sk"].(*types.AttributeValueMemberS)
+		if !okPK || !okSK {
+			return errors.New("store: topic ref row missing pk/sk")
+		}
+		keys = append(keys, map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: pk.Value},
+			"sk": &types.AttributeValueMemberS{Value: sk.Value},
+		})
+	}
+	if err := s.batchDeleteKeys(ctx, keys); err != nil {
+		return fmt.Errorf("store: delete topic refs: %w", err)
+	}
+
+	_, err = s.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: aws.String(s.table),
+		Key: map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: userPK(userID)},
+			"sk": &types.AttributeValueMemberS{Value: topicSK(topicID)},
+		},
+		ConditionExpression: aws.String("attribute_exists(pk)"),
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("store: delete topic: %w", err)
 	}
 	return nil
 }

@@ -65,6 +65,7 @@ var pageMetas = map[string]pageMeta{
 	"pages/settings":     {Title: "Settings — Live Ninja", Path: "/settings"},
 	"pages/downloads":    {Title: "Downloads — Live Ninja", Path: "/downloads"},
 	"pages/memory":       {Title: "Memory — Live Ninja", Path: "/memory"},
+	"pages/personas":     {Title: "Personas — Live Ninja", Path: "/personas"},
 	"pages/history":      {Title: "History — Live Ninja", Path: "/history"},
 	"pages/error":        {Title: "Live Ninja"},
 }
@@ -190,6 +191,7 @@ func RegisterPageRoutes(app *fiber.App, deps *Deps) {
 	app.Get("/downloads", handleDownloadsPage(deps))
 	app.Get("/memory", handleClientDataPage(deps, "pages/memory"))
 	app.Get("/history", handleClientDataPage(deps, "pages/history"))
+	app.Get("/personas", handleClientDataPage(deps, "pages/personas"))
 }
 
 // webPageUser resolves the signed-in user for a plain browser page

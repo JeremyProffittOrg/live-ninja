@@ -9,10 +9,14 @@
 //   - GET   /api/v1/topics              — the caller's topic taxonomy
 //     (populates the filter chips / pickers — never a blind text box).
 //   - POST  /api/v1/topics              — create a topic.
-//   - PATCH /api/v1/topics/:id          — rename / recolor / archive /
+//   - PATCH  /api/v1/topics/:id         — rename / recolor / archive /
 //     merge (mergedInto). topicId is stable, so rename/recolor/archive
 //     never re-tag a conversation (FR-TOP-02); merge rewrites the TREF
 //     refs + CONV topicIds via store.MergeTopics.
+//   - DELETE /api/v1/topics/:id         — remove a topic and every TREF
+//     ref under it (store.DeleteTopic). Conversations are left untouched;
+//     see DeleteTopic's doc comment for the "filtered on read, not
+//     rewritten" rationale.
 //
 // Thin HTTP layer over internal/store (topics.go): the CONV#/TREF#/TOPIC#
 // item shapes, the Query-only filter mapping (topic → TREF sort range,
@@ -118,6 +122,7 @@ func RegisterHistoryRoutes(app *fiber.App, deps *Deps) {
 	api.Get("/topics", handleListTopics(deps))
 	api.Post("/topics", handleCreateTopic(deps))
 	api.Patch("/topics/:id", handlePatchTopic(deps))
+	api.Delete("/topics/:id", handleDeleteTopic(deps))
 }
 
 // ---- GET /api/v1/conversations ----
@@ -451,5 +456,25 @@ func handlePatchTopic(deps *Deps) fiber.Handler {
 			return apiNotFound(c)
 		}
 		return c.JSON(topicJSON(t))
+	}
+}
+
+// ---- DELETE /api/v1/topics/:id ----
+
+func handleDeleteTopic(deps *Deps) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userID := UserID(c)
+		topicID := c.Params("id")
+		if !resourceIDPattern.MatchString(topicID) {
+			return apiBadRequest(c, "topic id is invalid")
+		}
+
+		if err := deps.Store.DeleteTopic(c.Context(), userID, topicID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return apiNotFound(c)
+			}
+			return apiInternalError(c, deps, "delete topic", err)
+		}
+		return c.JSON(fiber.Map{"ok": true})
 	}
 }

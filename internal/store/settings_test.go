@@ -18,9 +18,40 @@ func TestGetSettingsDefaultsWhenAbsent(t *testing.T) {
 	assert.Equal(t, "cedar", doc["voice"])
 	assert.Equal(t, "hey-live-ninja", doc["wakeWord"])
 	assert.Equal(t, "semantic_vad", doc["turnDetection"])
+	// Two-zone appearance defaults: ninja app chrome in light theme, HAL
+	// 9000 live panel.
+	assert.Equal(t, "light", doc["theme"])
+	ap, ok := doc["appearance"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "ninja", ap["appStyle"])
+	assert.Equal(t, "hal9000", ap["liveStyle"])
 	privacy, ok := doc["privacy"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, false, privacy["storeAudio"])
+}
+
+// TestGetSettingsMigratesLegacyThemeStyle: a stored pre-split appearance
+// ({themeStyle, accentColor}) reads back in the two-zone shape — the
+// legacy single style becomes liveStyle (it styled the conversation
+// panel), appStyle falls to the default, and the deprecated key is gone.
+func TestGetSettingsMigratesLegacyThemeStyle(t *testing.T) {
+	ctx := context.Background()
+	st, _ := newTestStore()
+
+	doc := DefaultSettings()
+	doc["appearance"] = map[string]any{"themeStyle": "terminal", "accentColor": "#33ff66"}
+	_, err := st.PutSettings(ctx, "uid-1", doc, 1)
+	require.NoError(t, err)
+
+	got, err := st.GetSettings(ctx, "uid-1")
+	require.NoError(t, err)
+	ap, ok := got["appearance"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "terminal", ap["liveStyle"], "legacy themeStyle must migrate to liveStyle")
+	assert.Equal(t, "ninja", ap["appStyle"], "appStyle falls to the schema default")
+	assert.Equal(t, "#33ff66", ap["accentColor"], "accent survives the migration")
+	_, hasLegacy := ap["themeStyle"]
+	assert.False(t, hasLegacy, "deprecated themeStyle key must be dropped on read")
 }
 
 func TestPutSettingsOptimisticConcurrency(t *testing.T) {

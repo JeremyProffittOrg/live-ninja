@@ -29,32 +29,71 @@
   --ln-cyan: #38d0ff;
   --ln-white: #f4f8fb;
 
-  /* ---------- Dark theme (default) ---------- */
-  --ln-bg: var(--ln-navy-900);
-  --ln-bg-grad: radial-gradient(1200px 700px at 70% -10%, #12294a 0%, var(--ln-navy-900) 55%);
-  --ln-surface: rgba(20, 38, 66, 0.72);
-  --ln-surface-2: rgba(28, 50, 84, 0.85);
-  --ln-surface-raised: #142544;
-  --ln-input-bg: var(--ln-navy-800);
-  --ln-track: var(--ln-navy-700);
-  --ln-border: rgba(122, 160, 205, 0.16);
-  --ln-border-strong: rgba(122, 160, 205, 0.30);
+  /* ---------- Dark theme (default) ----------
+     Two-zone theming: every zone-restylable chrome token exists as a
+     --ln-base-* mirror consumed through var(). The light/dark theme
+     axis overrides the --ln-base-* values here on :root; style presets
+     ([data-ln-style=...] blocks at the end of this file) override the
+     bare --ln-* names on their ZONE element — <html> for the app zone,
+     #livePanel (.conv-rail) for the conversation live panel — and the
+     ninja/minimal reset block points --ln-* back at --ln-base-* so a
+     nested zone returns to the theme-correct base look. */
+  --ln-base-bg: var(--ln-navy-900);
+  --ln-base-bg-grad: radial-gradient(1200px 700px at 70% -10%, #12294a 0%, var(--ln-navy-900) 55%);
+  --ln-base-surface: rgba(20, 38, 66, 0.72);
+  --ln-base-surface-2: rgba(28, 50, 84, 0.85);
+  --ln-base-surface-raised: #142544;
+  --ln-base-input-bg: var(--ln-navy-800);
+  --ln-base-track: var(--ln-navy-700);
+  --ln-base-border: rgba(122, 160, 205, 0.16);
+  --ln-base-border-strong: rgba(122, 160, 205, 0.30);
 
-  --ln-text: var(--ln-white);          /* 18.2:1 on bg */
-  --ln-text-muted: #9fb0c4;            /* 8.8:1 on bg, 6.9:1 on raised */
-  --ln-text-dim: #8296ae;              /* 6.4:1 on bg, 5.0:1 on raised */
-  --ln-text-on-teal: #052220;          /* 10.1:1 on teal */
+  --ln-base-text: var(--ln-white);     /* 18.2:1 on bg */
+  --ln-base-text-muted: #9fb0c4;       /* 8.8:1 on bg, 6.9:1 on raised */
+  --ln-base-text-dim: #8296ae;         /* 6.4:1 on bg, 5.0:1 on raised */
 
   /* Semantic ink (text) + fill tokens */
-  --ln-accent-ink: var(--ln-teal);     /* 11.7:1 on bg */
-  --ln-success-ink: #34e39b;           /* 11.7:1 on bg */
-  --ln-warn-ink: #ffca4a;              /* 12.8:1 on bg */
-  --ln-error-ink: #ff5c72;             /*  6.5:1 on bg, 5.1:1 on raised */
-  --ln-success-tint: rgba(52, 227, 155, 0.14);
-  --ln-warn-tint: rgba(255, 202, 74, 0.14);
-  --ln-error-tint: rgba(255, 92, 114, 0.14);
-  --ln-accent-tint: rgba(34, 224, 208, 0.14);
-  --ln-error-border: rgba(255, 92, 114, 0.5);
+  --ln-base-accent-ink: var(--ln-teal); /* 11.7:1 on bg */
+  --ln-base-success-ink: #34e39b;      /* 11.7:1 on bg */
+  --ln-base-warn-ink: #ffca4a;         /* 12.8:1 on bg */
+  --ln-base-error-ink: #ff5c72;        /*  6.5:1 on bg, 5.1:1 on raised */
+  --ln-base-success-tint: rgba(52, 227, 155, 0.14);
+  --ln-base-warn-tint: rgba(255, 202, 74, 0.14);
+  --ln-base-error-tint: rgba(255, 92, 114, 0.14);
+  --ln-base-accent-tint: rgba(34, 224, 208, 0.14);
+  --ln-base-error-border: rgba(255, 92, 114, 0.5);
+
+  /* Select chevron variants (light-grey stroke for dark inputs, navy for
+     light) — constants referenced by the theme + style blocks. */
+  --ln-select-arrow-dark: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239fb0c4' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --ln-select-arrow-light: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%233d4f66' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --ln-base-select-arrow: var(--ln-select-arrow-dark);
+
+  /* Live tokens — what components actually consume. Style-preset blocks
+     override these per zone; everything else resolves to the base/theme
+     value above. */
+  --ln-bg: var(--ln-base-bg);
+  --ln-bg-grad: var(--ln-base-bg-grad);
+  --ln-surface: var(--ln-base-surface);
+  --ln-surface-2: var(--ln-base-surface-2);
+  --ln-surface-raised: var(--ln-base-surface-raised);
+  --ln-input-bg: var(--ln-base-input-bg);
+  --ln-track: var(--ln-base-track);
+  --ln-border: var(--ln-base-border);
+  --ln-border-strong: var(--ln-base-border-strong);
+  --ln-text: var(--ln-base-text);
+  --ln-text-muted: var(--ln-base-text-muted);
+  --ln-text-dim: var(--ln-base-text-dim);
+  --ln-text-on-teal: #052220;          /* 10.1:1 on teal */
+  --ln-accent-ink: var(--ln-base-accent-ink);
+  --ln-success-ink: var(--ln-base-success-ink);
+  --ln-warn-ink: var(--ln-base-warn-ink);
+  --ln-error-ink: var(--ln-base-error-ink);
+  --ln-success-tint: var(--ln-base-success-tint);
+  --ln-warn-tint: var(--ln-base-warn-tint);
+  --ln-error-tint: var(--ln-base-error-tint);
+  --ln-accent-tint: var(--ln-base-accent-tint);
+  --ln-error-border: var(--ln-base-error-border);
 
   /* Type scale (1.25 modular) */
   --ln-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", Arial, sans-serif;
@@ -99,8 +138,8 @@
   /* Touch target minimum */
   --ln-touch: 44px;
 
-  /* Select chevron (light-grey stroke for dark inputs) */
-  --ln-select-arrow: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239fb0c4' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  /* Select chevron (themed via the base mirror; see the constants above) */
+  --ln-select-arrow: var(--ln-base-select-arrow);
 
   color-scheme: dark;
 }
@@ -112,29 +151,29 @@
    user choice always beats the OS preference. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
-    --ln-bg: #eef3f8;
-    --ln-bg-grad: radial-gradient(1200px 700px at 70% -10%, #dce9f5 0%, #eef3f8 55%);
-    --ln-surface: rgba(255, 255, 255, 0.85);
-    --ln-surface-2: #f5f9fd;
-    --ln-surface-raised: #ffffff;
-    --ln-input-bg: #ffffff;
-    --ln-track: #c9d6e4;
-    --ln-border: rgba(16, 42, 74, 0.14);
-    --ln-border-strong: rgba(16, 42, 74, 0.28);
+    --ln-base-bg: #eef3f8;
+    --ln-base-bg-grad: radial-gradient(1200px 700px at 70% -10%, #dce9f5 0%, #eef3f8 55%);
+    --ln-base-surface: rgba(255, 255, 255, 0.85);
+    --ln-base-surface-2: #f5f9fd;
+    --ln-base-surface-raised: #ffffff;
+    --ln-base-input-bg: #ffffff;
+    --ln-base-track: #c9d6e4;
+    --ln-base-border: rgba(16, 42, 74, 0.14);
+    --ln-base-border-strong: rgba(16, 42, 74, 0.28);
 
-    --ln-text: #0c1a2e;
-    --ln-text-muted: #3d4f66;
-    --ln-text-dim: #55677e;
+    --ln-base-text: #0c1a2e;
+    --ln-base-text-muted: #3d4f66;
+    --ln-base-text-dim: #55677e;
 
-    --ln-accent-ink: #0a706b;
-    --ln-success-ink: #0a7a4f;
-    --ln-warn-ink: #7a5b00;
-    --ln-error-ink: #c81e3e;
-    --ln-success-tint: rgba(10, 122, 79, 0.10);
-    --ln-warn-tint: rgba(122, 91, 0, 0.10);
-    --ln-error-tint: rgba(200, 30, 62, 0.08);
-    --ln-accent-tint: rgba(10, 112, 107, 0.10);
-    --ln-error-border: rgba(200, 30, 62, 0.45);
+    --ln-base-accent-ink: #0a706b;
+    --ln-base-success-ink: #0a7a4f;
+    --ln-base-warn-ink: #7a5b00;
+    --ln-base-error-ink: #c81e3e;
+    --ln-base-success-tint: rgba(10, 122, 79, 0.10);
+    --ln-base-warn-tint: rgba(122, 91, 0, 0.10);
+    --ln-base-error-tint: rgba(200, 30, 62, 0.08);
+    --ln-base-accent-tint: rgba(10, 112, 107, 0.10);
+    --ln-base-error-border: rgba(200, 30, 62, 0.45);
 
     --ln-shadow-sm: 0 1px 3px rgba(16, 42, 74, 0.14);
     --ln-shadow-md: 0 8px 24px rgba(16, 42, 74, 0.14);
@@ -143,35 +182,35 @@
 
     --ln-focus: 0 0 0 3px rgba(12, 111, 214, 0.6);
 
-    --ln-select-arrow: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%233d4f66' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+    --ln-base-select-arrow: var(--ln-select-arrow-light);
 
     color-scheme: light;
   }
 }
 :root[data-theme="light"] {
-  --ln-bg: #eef3f8;
-  --ln-bg-grad: radial-gradient(1200px 700px at 70% -10%, #dce9f5 0%, #eef3f8 55%);
-  --ln-surface: rgba(255, 255, 255, 0.85);
-  --ln-surface-2: #f5f9fd;
-  --ln-surface-raised: #ffffff;
-  --ln-input-bg: #ffffff;
-  --ln-track: #c9d6e4;
-  --ln-border: rgba(16, 42, 74, 0.14);
-  --ln-border-strong: rgba(16, 42, 74, 0.28);
+  --ln-base-bg: #eef3f8;
+  --ln-base-bg-grad: radial-gradient(1200px 700px at 70% -10%, #dce9f5 0%, #eef3f8 55%);
+  --ln-base-surface: rgba(255, 255, 255, 0.85);
+  --ln-base-surface-2: #f5f9fd;
+  --ln-base-surface-raised: #ffffff;
+  --ln-base-input-bg: #ffffff;
+  --ln-base-track: #c9d6e4;
+  --ln-base-border: rgba(16, 42, 74, 0.14);
+  --ln-base-border-strong: rgba(16, 42, 74, 0.28);
 
-  --ln-text: #0c1a2e;
-  --ln-text-muted: #3d4f66;
-  --ln-text-dim: #55677e;
+  --ln-base-text: #0c1a2e;
+  --ln-base-text-muted: #3d4f66;
+  --ln-base-text-dim: #55677e;
 
-  --ln-accent-ink: #0a706b;
-  --ln-success-ink: #0a7a4f;
-  --ln-warn-ink: #7a5b00;
-  --ln-error-ink: #c81e3e;
-  --ln-success-tint: rgba(10, 122, 79, 0.10);
-  --ln-warn-tint: rgba(122, 91, 0, 0.10);
-  --ln-error-tint: rgba(200, 30, 62, 0.08);
-  --ln-accent-tint: rgba(10, 112, 107, 0.10);
-  --ln-error-border: rgba(200, 30, 62, 0.45);
+  --ln-base-accent-ink: #0a706b;
+  --ln-base-success-ink: #0a7a4f;
+  --ln-base-warn-ink: #7a5b00;
+  --ln-base-error-ink: #c81e3e;
+  --ln-base-success-tint: rgba(10, 122, 79, 0.10);
+  --ln-base-warn-tint: rgba(122, 91, 0, 0.10);
+  --ln-base-error-tint: rgba(200, 30, 62, 0.08);
+  --ln-base-accent-tint: rgba(10, 112, 107, 0.10);
+  --ln-base-error-border: rgba(200, 30, 62, 0.45);
 
   --ln-shadow-sm: 0 1px 3px rgba(16, 42, 74, 0.14);
   --ln-shadow-md: 0 8px 24px rgba(16, 42, 74, 0.14);
@@ -180,7 +219,7 @@
 
   --ln-focus: 0 0 0 3px rgba(12, 111, 214, 0.6);
 
-  --ln-select-arrow: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%233d4f66' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --ln-base-select-arrow: var(--ln-select-arrow-light);
 
   color-scheme: light;
 }
@@ -633,24 +672,35 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
   display: grid; place-items: center;
   isolation: isolate;
 }
+/* Orb visuals resolve through the zone vars (--ln-orb-*, set by the
+   [data-ln-style] blocks at the end of this file); each var() fallback
+   is the base ninja look. */
 .ln-orb__core {
   position: absolute; inset: 0;
   border-radius: 50%;
-  background:
+  background: var(--ln-orb-core-bg,
     radial-gradient(circle at 50% 42%, rgba(234, 255, 251, 0.95) 0%, rgba(34, 224, 208, 0.85) 22%, rgba(18, 182, 176, 0.5) 48%, rgba(10, 20, 36, 0) 72%),
-    conic-gradient(from 0deg, var(--ln-teal), var(--ln-cyan), var(--ln-teal-700), var(--ln-teal));
+    conic-gradient(from 0deg, var(--ln-teal), var(--ln-cyan), var(--ln-teal-700), var(--ln-teal)));
+  box-shadow: var(--ln-orb-core-shadow, none);
   filter: blur(2px);
   animation: ln-orb-spin 8s linear infinite;
 }
 .ln-orb__ring {
   position: absolute; inset: -6%;
   border-radius: 50%;
-  border: 2px solid var(--ln-teal-glow);
+  border: 2px solid var(--ln-orb-ring-color, var(--ln-teal-glow));
+  display: var(--ln-orb-ring-display, block);
   animation: ln-orb-pulse 2.4s ease-out infinite;
 }
 .ln-orb__ring--2 { animation-delay: .8s; }
 .ln-orb__ring--3 { animation-delay: 1.6s; }
-.ln-orb__glow { position: absolute; inset: 8%; border-radius: 50%; box-shadow: 0 0 60px 12px var(--ln-teal-glow); z-index: -1; }
+.ln-orb__glow {
+  position: absolute; inset: 8%; border-radius: 50%;
+  background: var(--ln-orb-glow-bg, none);
+  box-shadow: 0 0 60px 12px var(--ln-teal-glow);
+  display: var(--ln-orb-glow-display, block);
+  z-index: -1;
+}
 .ln-orb--lg { width: 280px; height: 280px; }
 .ln-orb--sm { width: 96px; height: 96px; }
 .ln-orb--idle .ln-orb__core { animation-duration: 24s; opacity: .7; }
@@ -889,6 +939,10 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
   padding: var(--ln-sp-6) var(--ln-sp-5);
   display: flex; flex-direction: column; align-items: center; gap: var(--ln-sp-5);
   overflow-y: auto;
+  /* The rail is its own style zone (#livePanel carries data-ln-style):
+     it paints its zone's background instead of inheriting the app's. */
+  background-image: var(--ln-bg-grad);
+  background-color: var(--ln-bg);
 }
 .conv-rail__orbwrap { position: relative; margin-top: var(--ln-sp-3); }
 .conv-status-text { text-align: center; font-size: var(--ln-fs-sm); color: var(--ln-text-muted); min-height: 20px; margin: 0; }
@@ -904,10 +958,10 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
   /* 2x size (owner request 2026-07-18) — the primary control should dominate. */
   width: 168px; height: 168px; border-radius: 50%;
   display: grid; place-items: center;
-  background: linear-gradient(135deg, var(--ln-teal), var(--ln-teal-600));
+  background: var(--ln-ptt-bg, linear-gradient(135deg, var(--ln-teal), var(--ln-teal-600)));
   color: var(--ln-text-on-teal);
   border: none; cursor: pointer;
-  box-shadow: var(--ln-shadow-teal);
+  box-shadow: var(--ln-ptt-shadow, var(--ln-shadow-teal));
   font-size: 60px;
   transition: transform .1s ease, box-shadow .2s ease;
 }
@@ -1141,82 +1195,155 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
 }
 
 /* ==================== theme styles (data-ln-style) ====================== */
-/* Accent recoloring is done by theme.js (inline --ln-teal/--ln-cyan/
-   --ln-teal-600/--ln-shadow-teal overrides); these blocks change the
-   CHARACTER of each style — backgrounds, glow, and the orb. */
+/* TWO STYLE ZONES share these blocks. theme.js stamps the APP style
+   (appearance.appStyle, default ninja) on <html> and the LIVE style
+   (appearance.liveStyle, default hal9000) on #livePanel — the
+   conversation page's .conv-rail, whose template pre-stamps the default
+   attribute server-side so there's no flash. Selectors are bare
+   [data-ln-style=...] so the same block works on either element: custom
+   properties inherit down that zone's subtree, and a value set on the
+   live panel overrides the one inherited from <html>. Orb + PTT visuals
+   are routed through --ln-orb-*/--ln-ptt-* custom properties (consumed
+   by the base rules with fallbacks to the ninja look) so the NEAREST
+   enclosing zone always wins — a descendant combinator like
+   `[data-ln-style=x] .ln-orb__core` would let the <html> zone leak into
+   the live panel. Accent recoloring stays in theme.js (inline
+   --ln-teal/--ln-cyan/--ln-teal-600/--ln-accent/--ln-shadow-teal on
+   each zone's element; "auto" resolves to each zone's style default). */
 
-/* ---- HAL 9000 (default): deep black chrome, glowing red eye ---- */
-:root[data-ln-style="hal9000"] {
+/* ---- Ninja (app default) / Minimal: reset a zone to the base look ----
+   On <html> this is a no-op (the live tokens already point at the
+   --ln-base-* theme values); on the live panel it undoes a dark-chrome
+   app style inherited from <html>, keeping the panel light/dark-theme
+   correct. `initial` makes the orb/PTT vars guaranteed-invalid so every
+   var() consumer falls back to the base ninja visuals. */
+[data-ln-style="ninja"],
+[data-ln-style="minimal"] {
+  --ln-bg: var(--ln-base-bg);
+  --ln-bg-grad: var(--ln-base-bg-grad);
+  --ln-surface: var(--ln-base-surface);
+  --ln-surface-2: var(--ln-base-surface-2);
+  --ln-surface-raised: var(--ln-base-surface-raised);
+  --ln-input-bg: var(--ln-base-input-bg);
+  --ln-track: var(--ln-base-track);
+  --ln-border: var(--ln-base-border);
+  --ln-border-strong: var(--ln-base-border-strong);
+  --ln-text: var(--ln-base-text);
+  --ln-text-muted: var(--ln-base-text-muted);
+  --ln-text-dim: var(--ln-base-text-dim);
+  --ln-accent-ink: var(--ln-base-accent-ink);
+  --ln-success-ink: var(--ln-base-success-ink);
+  --ln-warn-ink: var(--ln-base-warn-ink);
+  --ln-error-ink: var(--ln-base-error-ink);
+  --ln-accent-tint: var(--ln-base-accent-tint);
+  --ln-success-tint: var(--ln-base-success-tint);
+  --ln-warn-tint: var(--ln-base-warn-tint);
+  --ln-error-tint: var(--ln-base-error-tint);
+  --ln-error-border: var(--ln-base-error-border);
+  --ln-select-arrow: var(--ln-base-select-arrow);
+  --ln-orb-core-bg: initial;
+  --ln-orb-core-shadow: initial;
+  --ln-orb-glow-bg: initial;
+  --ln-orb-glow-display: initial;
+  --ln-orb-ring-color: initial;
+  --ln-orb-ring-display: initial;
+  --ln-ptt-bg: initial;
+  --ln-ptt-shadow: initial;
+}
+
+/* ---- HAL 9000 (live-panel default): deep black chrome, glowing red eye.
+   The chrome is near-black regardless of the light/dark theme axis, so
+   every text/ink token is pinned to its dark-theme value — without this
+   the light theme's navy inks land on the dark surfaces (AA failures).
+   Muted grays brightened per owner: ~12:1 / ~9:1 on #050507. Inks on
+   #050507: accent (teal) 12.9:1, success 13.0:1, warn 14.2:1, error 7.2:1. */
+[data-ln-style="hal9000"] {
   --ln-bg: #050507;
   --ln-bg-grad: radial-gradient(1100px 650px at 70% -10%, #16080a 0%, #050507 55%);
   --ln-surface: rgba(24, 12, 14, 0.72);
   --ln-surface-2: rgba(36, 16, 18, 0.85);
   --ln-surface-raised: #180c0e;
+  --ln-input-bg: #1a0d10;
+  --ln-track: #2a1417;
   --ln-border: rgba(205, 122, 130, 0.16);
   --ln-border-strong: rgba(205, 122, 130, 0.30);
-  /* Muted grays brightened for the near-black chrome (owner: gray text was
-     unreadable). ~12:1 / ~9:1 on #050507, >7:1 on the brighter conv-main. */
+  --ln-text: var(--ln-white);
   --ln-text-muted: #c6cdd8;
   --ln-text-dim: #aeb7c6;
-  /* HAL chrome is dark regardless of data-theme; without this, the light
-     theme's navy ink lands on the dark surfaces (unreadable bubbles). */
-  --ln-text: var(--ln-white);
-}
-/* Owner 2026-07-18: only the left voice rail stays black; the content side
-   runs on a brighter panel so transcript + muted text stay readable. */
-:root[data-ln-style="hal9000"] .conv-rail { background: #050507; }
-:root[data-ln-style="hal9000"] .conv-main { background: #23232b; }
-:root[data-ln-style="hal9000"] .ln-orb__core {
+  --ln-accent-ink: var(--ln-teal);
+  --ln-success-ink: #34e39b;
+  --ln-warn-ink: #ffca4a;
+  --ln-error-ink: #ff5c72;
+  --ln-accent-tint: rgba(34, 224, 208, 0.14);
+  --ln-success-tint: rgba(52, 227, 155, 0.14);
+  --ln-warn-tint: rgba(255, 202, 74, 0.14);
+  --ln-error-tint: rgba(255, 92, 114, 0.14);
+  --ln-error-border: rgba(255, 92, 114, 0.5);
+  --ln-select-arrow: var(--ln-select-arrow-dark);
+  color-scheme: dark;
   /* The eye: bright specular point, incandescent core, deep red iris,
      near-black rim. */
-  background:
+  --ln-orb-core-bg:
     radial-gradient(circle at 50% 42%,
       #fff8f2 0%, #ffd9c4 3.5%, #ff5a4a 12%, var(--ln-accent, #e32636) 26%,
       #7a0f18 58%, #2a0507 82%, #0a0102 100%);
-  box-shadow:
+  --ln-orb-core-shadow:
     0 0 24px 4px color-mix(in srgb, var(--ln-accent, #e32636) 55%, transparent),
     0 0 90px 18px color-mix(in srgb, var(--ln-accent, #e32636) 22%, transparent),
     inset 0 0 30px 6px rgba(0, 0, 0, 0.55);
-}
-:root[data-ln-style="hal9000"] .ln-orb__glow {
-  background: radial-gradient(circle,
+  --ln-orb-glow-bg: radial-gradient(circle,
     color-mix(in srgb, var(--ln-accent, #e32636) 32%, transparent) 0%,
     transparent 65%);
+  --ln-orb-ring-color: color-mix(in srgb, var(--ln-accent, #e32636) 30%, transparent);
 }
-:root[data-ln-style="hal9000"] .ln-orb__ring {
-  border-color: color-mix(in srgb, var(--ln-accent, #e32636) 30%, transparent);
-}
+/* Owner 2026-07-18 (app zone only): when the WHOLE app runs HAL, the
+   transcript side sits on a brighter panel so muted text stays readable.
+   When HAL is only the live style, .conv-main belongs to the app zone
+   and keeps that zone's own background. */
+html[data-ln-style="hal9000"] .conv-main { background: #23232b; }
 
-/* ---- Minimal: flat, no glow, no gradients ---- */
-:root[data-ln-style="minimal"] .ln-orb__glow,
-:root[data-ln-style="minimal"] .ln-orb__ring { display: none; }
-:root[data-ln-style="minimal"] .ln-orb__core {
-  background: var(--ln-accent, #38d0ff);
-  box-shadow: none;
+/* ---- Minimal: flat, no glow, no gradients (chrome tokens reset above) ---- */
+[data-ln-style="minimal"] {
+  --ln-orb-core-bg: var(--ln-accent, #38d0ff);
+  --ln-orb-core-shadow: none;
+  --ln-orb-glow-display: none;
+  --ln-orb-ring-display: none;
+  --ln-ptt-bg: var(--ln-accent, #38d0ff);
+  --ln-ptt-shadow: none;
 }
-:root[data-ln-style="minimal"] .ptt { box-shadow: none; background: var(--ln-accent, #38d0ff); }
-:root[data-ln-style="minimal"] * { text-shadow: none !important; }
+[data-ln-style="minimal"] * { text-shadow: none !important; }
 
-/* ---- Terminal: pure black, CRT phosphor ---- */
-:root[data-ln-style="terminal"] {
+/* ---- Terminal: pure black, CRT phosphor (dark chrome pinned like HAL;
+   inks on #000: success 13.6:1, warn 14.9:1, error 7.5:1) ---- */
+[data-ln-style="terminal"] {
   --ln-bg: #000000;
   --ln-bg-grad: none;
   --ln-surface: rgba(8, 16, 8, 0.85);
   --ln-surface-2: rgba(12, 24, 12, 0.9);
   --ln-surface-raised: #071007;
+  --ln-input-bg: #061006;
+  --ln-track: #12331a;
   --ln-border: rgba(80, 200, 110, 0.22);
   --ln-border-strong: rgba(80, 200, 110, 0.40);
-  /* Dark chrome regardless of data-theme (same fix as hal9000). */
   --ln-text: #eaffea;
   --ln-text-muted: #9fd8ab;
   --ln-text-dim: #86bf93;
-}
-:root[data-ln-style="terminal"] body { background: #000; }
-:root[data-ln-style="terminal"] .ln-orb__core {
-  background: radial-gradient(circle at 50% 45%,
+  --ln-accent-ink: var(--ln-teal);
+  --ln-success-ink: #34e39b;
+  --ln-warn-ink: #ffca4a;
+  --ln-error-ink: #ff5c72;
+  --ln-accent-tint: rgba(34, 224, 208, 0.14);
+  --ln-success-tint: rgba(52, 227, 155, 0.14);
+  --ln-warn-tint: rgba(255, 202, 74, 0.14);
+  --ln-error-tint: rgba(255, 92, 114, 0.14);
+  --ln-error-border: rgba(255, 92, 114, 0.5);
+  --ln-select-arrow: var(--ln-select-arrow-dark);
+  color-scheme: dark;
+  --ln-orb-core-bg: radial-gradient(circle at 50% 45%,
     #eaffea 0%, var(--ln-accent, #33ff66) 18%, #0a3a16 70%, #010401 100%);
-  box-shadow: 0 0 30px 6px color-mix(in srgb, var(--ln-accent, #33ff66) 40%, transparent);
+  --ln-orb-core-shadow: 0 0 30px 6px color-mix(in srgb, var(--ln-accent, #33ff66) 40%, transparent);
 }
+[data-ln-style="terminal"] body { background: #000; }
 
 /* ---- accent swatch picker (settings Appearance) ---- */
 .ln-swatches { display: flex; flex-wrap: wrap; gap: 10px; }
@@ -1237,4 +1364,35 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
   border: 1px solid var(--ln-border-strong); border-radius: 8px;
   background: var(--ln-surface);
   cursor: pointer;
+}
+
+/* ==========================================================================
+   Cost badge — live session cost estimate, upper-right of the .conv-rail
+   live panel (conversation.mjs's attachCostBadge/renderCostBadge).
+   Appended-only section; do not fold into the .conv-rail rule above — that
+   block belongs to another workstream. Uses the shared --ln-* text/surface
+   tokens (already AA-checked per-theme, see the definitions' contrast
+   comments above) so this reads correctly in every style preset, including
+   the hal9000 dark rail and any future light preset, without hardcoding a
+   color of its own.
+   ========================================================================== */
+.cost-badge {
+  /* .conv-rail is a column flex container (align-items: center); flex-end
+     on the cross axis pins this to the right edge without needing the rail
+     itself to become a positioning context. Placed as the rail's first
+     child in the template so it sits at the top — i.e. upper-right. */
+  align-self: flex-end;
+  order: -1;
+  margin-bottom: calc(-1 * var(--ln-sp-3));
+
+  font-size: var(--ln-fs-xs);
+  line-height: 1.5;
+  color: var(--ln-text-muted);
+  background: var(--ln-surface-2);
+  border: 1px solid var(--ln-border);
+  border-radius: 999px;
+  padding: 2px 10px;
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
 }

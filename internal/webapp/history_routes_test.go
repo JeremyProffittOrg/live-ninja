@@ -294,6 +294,62 @@ func TestTopicsCRUD(t *testing.T) {
 	}
 }
 
+func TestDeleteTopicRoute(t *testing.T) {
+	app, st := newHistoryAPIApp(t)
+	seedTopic(t, st, "gone", "Doomed")
+	seedTopic(t, st, "keep", "Kept")
+	seedConversation(t, st, "2026-07-01T10:00:00Z", "s1", "devA", "gone")
+	seedConversation(t, st, "2026-07-02T10:00:00Z", "s2", "devA", "keep")
+
+	resp, body := doJSON(t, app, http.MethodDelete, "/api/v1/topics/gone", nil)
+	if resp.StatusCode != http.StatusOK || body["ok"] != true {
+		t.Fatalf("delete status = %d body = %v", resp.StatusCode, body)
+	}
+
+	// The topic no longer appears in the taxonomy.
+	_, list := doJSON(t, app, http.MethodGet, "/api/v1/topics", nil)
+	items, _ := list["items"].([]any)
+	for _, it := range items {
+		row, _ := it.(map[string]any)
+		if row["id"] == "gone" {
+			t.Errorf("deleted topic still listed: %v", row)
+		}
+	}
+
+	// Filtering by the deleted topic returns empty — its TREF refs are gone.
+	_, filtered := doJSON(t, app, http.MethodGet, "/api/v1/conversations?topic=gone", nil)
+	if got := convIDs(t, filtered); len(got) != 0 {
+		t.Errorf("conversations under deleted topic = %v, want empty", got)
+	}
+
+	// The other topic and its conversation are untouched.
+	_, keepList := doJSON(t, app, http.MethodGet, "/api/v1/conversations?topic=keep", nil)
+	if got := convIDs(t, keepList); len(got) != 1 || got[0] != "s2" {
+		t.Errorf("conversations under surviving topic = %v, want [s2]", got)
+	}
+
+	// The conversation record itself still exists (untouched, not deleted).
+	resp, conv := doJSON(t, app, http.MethodGet,
+		"/api/v1/conversations/"+url.PathEscape("2026-07-01T10:00:00Z#s1"), nil)
+	if resp.StatusCode != http.StatusOK || conv["sessionId"] != "s1" {
+		t.Errorf("conversation after topic delete = %d %v", resp.StatusCode, conv)
+	}
+
+	// Re-deleting (or deleting an unknown id) is 404; a malformed id is 400.
+	resp, _ = doJSON(t, app, http.MethodDelete, "/api/v1/topics/gone", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("re-delete status = %d, want 404", resp.StatusCode)
+	}
+	resp, _ = doJSON(t, app, http.MethodDelete, "/api/v1/topics/nope-never-existed", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("delete missing topic status = %d, want 404", resp.StatusCode)
+	}
+	resp, _ = doJSON(t, app, http.MethodDelete, "/api/v1/topics/"+url.PathEscape("bad#id"), nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("delete malformed id status = %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestTopicMergeRepointsHistory(t *testing.T) {
 	app, st := newHistoryAPIApp(t)
 	seedTopic(t, st, "src", "Coffee chats")

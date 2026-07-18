@@ -34,6 +34,7 @@ type ddbAPI interface {
 	UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
 	DeleteItem(ctx context.Context, params *dynamodb.DeleteItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error)
 	TransactWriteItems(ctx context.Context, params *dynamodb.TransactWriteItemsInput, optFns ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
+	BatchWriteItem(ctx context.Context, params *dynamodb.BatchWriteItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.BatchWriteItemOutput, error)
 }
 
 // Store is a thin, typed wrapper around the live-ninja DynamoDB table.
@@ -212,6 +213,44 @@ func (s *Store) queryAllPages(ctx context.Context, in *dynamodb.QueryInput) ([]m
 		}
 		in.ExclusiveStartKey = out.LastEvaluatedKey
 	}
+}
+
+// batchDeleteKeys deletes an arbitrary number of pk/sk pairs via
+// BatchWriteItem, chunked at 25 (DynamoDB's hard per-request cap) with
+// UnprocessedItems retried under truncated backoff — DynamoDB signals
+// throttling by returning a subset of the batch undone rather than an
+// error, so a single unchecked call can silently leave rows behind. Used by
+// callers with unbounded per-partition fan-out (e.g. DeleteTopic's TREF
+// rows) where the small-count sequential DeleteItem loop other stores in
+// this package use (see deleteSessions) would be too slow.
+func (s *Store) batchDeleteKeys(ctx context.Context, keys []map[string]types.AttributeValue) error {
+	const chunkSize = 25
+	for i := 0; i < len(keys); i += chunkSize {
+		end := i + chunkSize
+		if end > len(keys) {
+			end = len(keys)
+		}
+		reqs := make([]types.WriteRequest, 0, end-i)
+		for _, k := range keys[i:end] {
+			reqs = append(reqs, types.WriteRequest{DeleteRequest: &types.DeleteRequest{Key: k}})
+		}
+
+		pending := map[string][]types.WriteRequest{s.table: reqs}
+		for attempt := 0; len(pending) > 0; attempt++ {
+			if attempt > 8 {
+				return fmt.Errorf("store: batch delete: gave up after %d retries with unprocessed items", attempt)
+			}
+			if attempt > 0 {
+				time.Sleep(time.Duration(attempt) * 50 * time.Millisecond)
+			}
+			out, err := s.client.BatchWriteItem(ctx, &dynamodb.BatchWriteItemInput{RequestItems: pending})
+			if err != nil {
+				return fmt.Errorf("store: batch write item: %w", err)
+			}
+			pending = out.UnprocessedItems
+		}
+	}
+	return nil
 }
 
 // GetItem fetches a single item by its full key. Exposed for callers that

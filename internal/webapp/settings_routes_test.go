@@ -73,6 +73,8 @@ func TestSettingsPageRenders(t *testing.T) {
 	for _, want := range []string{
 		`name="voice" value="marin" checked`,
 		`name="theme" value="light" checked`,
+		`name="liveStyle" value="hal9000" checked`,
+		`name="appStyle" value="ninja" checked`,
 		`name="retentionDays" value="7" checked`,
 		`id="storeAudio" aria-describedby="storeAudioNote" checked`,
 		`value="custom" selected`,
@@ -148,6 +150,15 @@ func TestValidateAndNormalizeSettings(t *testing.T) {
 		}, false},
 		{"micDeviceId null ok", func(d map[string]any) { d["micDeviceId"] = nil }, true},
 		{"micDeviceId number bad", func(d map[string]any) { d["micDeviceId"] = 7.0 }, false},
+		{"bad liveStyle", func(d map[string]any) {
+			d["appearance"] = map[string]any{"liveStyle": "vaporwave"}
+		}, false},
+		{"bad appStyle", func(d map[string]any) {
+			d["appearance"] = map[string]any{"appStyle": "vaporwave"}
+		}, false},
+		{"bad accent", func(d map[string]any) {
+			d["appearance"] = map[string]any{"accentColor": "red"}
+		}, false},
 		{"bad voiceEngine pin", func(d map[string]any) {
 			d["voiceEngine"] = map[string]any{"default": "openai-realtime", "devices": map[string]any{"dev1": "cassette"}}
 		}, false},
@@ -172,6 +183,22 @@ func TestValidateAndNormalizeSettings(t *testing.T) {
 	}
 	if got := d["persona"].(map[string]any)["systemInstructions"]; got != nil {
 		t.Errorf("instructions should be nulled for non-custom preset, got %v", got)
+	}
+
+	// A legacy client's single themeStyle migrates to liveStyle (it styled
+	// the conversation live panel) and the deprecated key is dropped;
+	// appStyle normalizes to its default.
+	d = valid()
+	d["appearance"] = map[string]any{"themeStyle": "minimal", "accentColor": ""}
+	if msg := validateAndNormalizeSettings(d); msg != "" {
+		t.Fatalf("legacy appearance should validate, got %q", msg)
+	}
+	ap := d["appearance"].(map[string]any)
+	if ap["liveStyle"] != "minimal" || ap["appStyle"] != "ninja" {
+		t.Errorf("legacy themeStyle migration wrong: %v", ap)
+	}
+	if _, has := ap["themeStyle"]; has {
+		t.Errorf("deprecated themeStyle key must be dropped on write")
 	}
 
 	// version is server-owned and must be stripped from the client doc.
