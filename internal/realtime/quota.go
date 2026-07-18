@@ -49,8 +49,10 @@ import (
 // monthly; the rate check runs first and independently). A soft warning
 // fires at >=80% of either spend cap on successful mints.
 const (
-	bucketCapacity      = 3.0
-	bucketRefillSeconds = 5
+	// Single-owner instance: keep abuse protection but don't punish a person
+	// tapping the mic a few times (burst 6, refill 1 token / 3s).
+	bucketCapacity      = 6.0
+	bucketRefillSeconds = 3
 
 	// defaultDailySecondsCap is ~30 minutes of realtime audio per user
 	// per UTC day (metering.md default).

@@ -46,6 +46,19 @@ Parameters:
       pull an image that does not exist; the container-bootstrap job then pushes the
       image and scales the service to 1. Every subsequent deploy leaves this at the
       default 1.
+  NovaBridgeImageReady:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      M12 two-phase bootstrap. The nova-bridge ECR repo is created by this stack,
+      so on the first deploy no image exists yet — and AWS::EarlyValidation runs a
+      ResourceExistenceCheck on the ECS TaskDefinition's container image, failing
+      changeset creation. The workflow sets this to "true" only once the image is
+      present in ECR; until then the TaskDefinition + Service are skipped (the ALB,
+      target group, repo and CloudFront /nova/* origin still deploy). Batch job
+      defs (wakeword-train) are not image-existence-checked, which is why only ECS
+      needs this gate.
   CloudFrontPrefixListId:
     Type: String
     Default: pl-3b927c52
@@ -69,6 +82,14 @@ Globals:
       Variables:
         TABLE_NAME: !Ref Table
         LOG_LEVEL: info
+
+Conditions:
+  # M12: gate the nova-bridge ECS TaskDefinition + Service on the image being
+  # present in ECR (see NovaBridgeImageReady). First deploy creates the repo;
+  # the image is pushed; a subsequent deploy (NovaBridgeImageReady=true) brings
+  # up the service. The ALB, target group, repo and CloudFront /nova/* origin
+  # deploy in both phases.
+  NovaBridgeReady: !Equals [!Ref NovaBridgeImageReady, "true"]
 
 Resources:
   # ------------------------------------------------------------------
@@ -775,55 +796,55 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /live-ninja/lambda/web
-      RetentionInDays: 30
+      RetentionInDays: 5
 
   AuthorizerLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /live-ninja/lambda/authorizer
-      RetentionInDays: 30
+      RetentionInDays: 5
 
   RealtimeBrokerLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /live-ninja/lambda/realtime-broker
-      RetentionInDays: 30
+      RetentionInDays: 5
 
   IotIngestLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /live-ninja/lambda/iot-ingest
-      RetentionInDays: 30
+      RetentionInDays: 5
 
   ShadowIngestLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /live-ninja/lambda/shadow-ingest
-      RetentionInDays: 30
+      RetentionInDays: 5
 
   UsageRollupLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /live-ninja/lambda/usage-rollup
-      RetentionInDays: 30
+      RetentionInDays: 5
 
   EmailDispatchLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /live-ninja/lambda/email-dispatch
-      RetentionInDays: 30
+      RetentionInDays: 5
 
   DeliverablesZipperLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /live-ninja/lambda/deliverables-zipper
-      RetentionInDays: 30
+      RetentionInDays: 5
 
   TopicsExtractLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /live-ninja/lambda/topics-extract
-      RetentionInDays: 30
+      RetentionInDays: 5
 
   # M7 account-purge Lambda (cmd/account-purge, added in this milestone —
   # FunctionName must be live-ninja-account-purge). Default-name group is
@@ -834,7 +855,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /aws/lambda/live-ninja-account-purge
-      RetentionInDays: 30
+      RetentionInDays: 5
 
   # ------------------------------------------------------------------
   # DynamoDB single table
@@ -1066,7 +1087,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /aws/kinesisfirehose/live-ninja-telemetry
-      RetentionInDays: 30
+      RetentionInDays: 5
 
   TelemetryFirehoseLogStream:
     Type: AWS::Logs::LogStream
@@ -1517,7 +1538,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /live-ninja/ecs/nova-bridge
-      RetentionInDays: 30
+      RetentionInDays: 5
 
   NovaBridgeExecutionRole:
     Type: AWS::IAM::Role
@@ -1674,6 +1695,7 @@ Resources:
 
   NovaBridgeTaskDefinition:
     Type: AWS::ECS::TaskDefinition
+    Condition: NovaBridgeReady
     Properties:
       Family: live-ninja-nova-bridge
       RequiresCompatibilities:
@@ -1717,6 +1739,7 @@ Resources:
 
   NovaBridgeService:
     Type: AWS::ECS::Service
+    Condition: NovaBridgeReady
     # The listener must exist before the service registers with the target
     # group (ELB association ordering).
     DependsOn:
@@ -2583,6 +2606,7 @@ Outputs:
     Description: ECS cluster hosting the nova-bridge Fargate service (M12).
     Value: !Ref NovaBridgeCluster
   NovaBridgeServiceName:
+    Condition: NovaBridgeReady
     Description: nova-bridge ECS service name (used by the container-bootstrap scale-to-1 step) (M12).
     Value: !GetAtt NovaBridgeService.Name
   NovaBridgeAlbDnsName:

@@ -294,6 +294,15 @@ a.ln-btn:hover { text-decoration: none; }
   font-weight: 650;
   color: var(--ln-text-muted);
 }
+/* Toggle labels are a horizontal row (switch on the left, name to its right).
+   The generic `.ln-field > label { display:block }` above would otherwise
+   collapse the flex layout and stack the switch on top of the name. */
+.ln-field > label.ln-toggle {
+  display: inline-flex;
+  margin-bottom: 0;
+  color: var(--ln-text);
+  font-weight: 500;
+}
 .ln-hint { margin-top: var(--ln-sp-2); font-size: var(--ln-fs-xs); color: var(--ln-text-dim); }
 .ln-error-text { margin-top: var(--ln-sp-2); font-size: var(--ln-fs-xs); color: var(--ln-error-ink); font-weight: 600; }
 

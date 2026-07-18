@@ -101,13 +101,13 @@ func TestTokenBucketBurstThenRateLimit(t *testing.T) {
 	g, _, _ := newTestGate()
 	ctx := context.Background()
 
-	// Burst of 3 mints succeeds (capacity 3).
-	for i := 0; i < 3; i++ {
+	// A full burst (capacity) succeeds.
+	for i := 0; i < int(bucketCapacity); i++ {
 		_, err := g.CheckMint(ctx, "u1")
 		require.NoError(t, err, "mint %d within burst must pass", i+1)
 	}
 
-	// 4th immediate mint is rate limited — rejected before any spend.
+	// The next immediate mint is rate limited — rejected before any spend.
 	_, err := g.CheckMint(ctx, "u1")
 	var rl *RateLimitedError
 	require.ErrorAs(t, err, &rl)
@@ -118,20 +118,20 @@ func TestTokenBucketRefillAfterWait(t *testing.T) {
 	g, _, clock := newTestGate()
 	ctx := context.Background()
 
-	for i := 0; i < 3; i++ {
+	for i := 0; i < int(bucketCapacity); i++ {
 		_, err := g.CheckMint(ctx, "u1")
 		require.NoError(t, err)
 	}
 	_, err := g.CheckMint(ctx, "u1")
 	require.Error(t, err)
 
-	// 4s later: still no whole refill step.
-	clock.advance(4 * time.Second)
+	// One second short of a whole refill step: still rate limited.
+	clock.advance(time.Duration(bucketRefillSeconds-1) * time.Second)
 	_, err = g.CheckMint(ctx, "u1")
 	var rl *RateLimitedError
 	require.ErrorAs(t, err, &rl)
 
-	// 1 more second completes the 5s step -> exactly one token.
+	// One more second completes the refill step -> exactly one token.
 	clock.advance(1 * time.Second)
 	_, err = g.CheckMint(ctx, "u1")
 	require.NoError(t, err)
@@ -152,24 +152,25 @@ func TestTokenBucketRefillMath(t *testing.T) {
 	assert.Equal(t, bucketCapacity-1, tokens)
 	assert.Equal(t, clock.t.Unix(), lastRefill)
 
-	// Drain the remaining two tokens.
-	_, err = g.CheckMint(ctx, "u1")
-	require.NoError(t, err)
-	_, err = g.CheckMint(ctx, "u1")
-	require.NoError(t, err)
+	// Drain the remaining tokens.
+	for i := 0; i < int(bucketCapacity)-1; i++ {
+		_, err = g.CheckMint(ctx, "u1")
+		require.NoError(t, err)
+	}
 	tokens, _ = bucketState(t, fake, "u1")
 	assert.Equal(t, 0.0, tokens)
 
-	// Advance 12s = 2 whole steps (10s credited) + 2s fractional remainder.
-	// A mint consumes one of the two refilled tokens; lastRefill advances
-	// by exactly the credited 10s so the 2s remainder is preserved.
+	// Advance 2 whole steps + 1s fractional remainder. A mint consumes one of
+	// the two refilled tokens; lastRefill advances by exactly the credited two
+	// steps so the fractional remainder is preserved.
+	step := bucketRefillSeconds
 	start := clock.t.Unix()
-	clock.advance(12 * time.Second)
+	clock.advance(time.Duration(2*step+1) * time.Second)
 	_, err = g.CheckMint(ctx, "u1")
 	require.NoError(t, err)
 	tokens, lastRefill = bucketState(t, fake, "u1")
 	assert.Equal(t, 1.0, tokens) // 0 + 2 refilled - 1 spent
-	assert.Equal(t, start+10, lastRefill, "unconsumed fractional refill time must be preserved")
+	assert.Equal(t, start+int64(2*step), lastRefill, "unconsumed fractional refill time must be preserved")
 
 	// Long idle caps at capacity: advance 10 minutes, spend one, expect
 	// capacity-1 remaining and lastRefill snapped to now.
@@ -185,7 +186,7 @@ func TestTokenBucketIsPerUser(t *testing.T) {
 	g, _, _ := newTestGate()
 	ctx := context.Background()
 
-	for i := 0; i < 3; i++ {
+	for i := 0; i < int(bucketCapacity); i++ {
 		_, err := g.CheckMint(ctx, "u1")
 		require.NoError(t, err)
 	}
@@ -207,7 +208,7 @@ func TestCheckOrderBucketBeforeCaps(t *testing.T) {
 
 	// Exhaust the bucket: each attempt spends a token then hits the cap.
 	var lastErr error
-	for i := 0; i < 3; i++ {
+	for i := 0; i < int(bucketCapacity); i++ {
 		_, lastErr = g.CheckMint(ctx, "u1")
 		var qe *QuotaExceededError
 		require.ErrorAs(t, lastErr, &qe)

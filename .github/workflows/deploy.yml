@@ -325,10 +325,16 @@ jobs:
               --repository-name live-ninja-nova-bridge \
               --image-ids imageTag=latest >/dev/null 2>&1; then
             echo "desired=1" >> "$GITHUB_OUTPUT"
-            echo "nova-bridge :latest present -> desiredCount=1"
+            echo "imageReady=true" >> "$GITHUB_OUTPUT"
+            echo "nova-bridge :latest present -> TaskDefinition+Service on, desiredCount=1"
           else
             echo "desired=0" >> "$GITHUB_OUTPUT"
-            echo "nova-bridge :latest absent (first deploy) -> desiredCount=0"
+            echo "imageReady=false" >> "$GITHUB_OUTPUT"
+            # First deploy: repo/image absent. The ECS TaskDefinition is gated OFF
+            # (NovaBridgeImageReady=false) so AWS::EarlyValidation's image-existence
+            # check does not fail changeset creation. The container job then pushes
+            # the image; the next deploy sets imageReady=true and brings up the service.
+            echo "nova-bridge :latest absent (first deploy) -> TaskDefinition+Service gated off"
           fi
 
       # No `sam build`: binaries are prebuilt by `make build` into .build/<fn>/
@@ -349,7 +355,8 @@ jobs:
               CertificateArn=${{ vars.CERTIFICATE_ARN }} \
               HostedZoneId=${{ vars.HOSTED_ZONE_ID }} \
               OpenAIRealtimeModel=${{ vars.OPENAI_REALTIME_MODEL || 'gpt-realtime' }} \
-              NovaBridgeDesiredCount=${{ steps.nova.outputs.desired }}
+              NovaBridgeDesiredCount=${{ steps.nova.outputs.desired }} \
+              NovaBridgeImageReady=${{ steps.nova.outputs.imageReady }}
 
       # Oversized static binaries (ORT WASM ~11 MB, wake-word ONNX models) can't
       # be served through the Fiber Lambda (>6 MB response cap → 500). Publish
@@ -514,17 +521,24 @@ jobs:
             -t "$IMAGE:latest" -t "$IMAGE:${GITHUB_SHA}" \
             --push .
 
-      # The service was created at desiredCount 0 (image was absent at deploy
-      # time). Now that :latest is pushed, scale it to 1 so a task is placed and
-      # registers with the ALB target group. CloudFormation's stored parameter
-      # stays 0 until the next deploy, which passes 1 (image now present) and
-      # reconciles — no drift surprises because deploys only ever run here.
-      - name: Scale nova-bridge service to 1
+      # Two-phase bootstrap: on the first deploy the ECS TaskDefinition + Service
+      # are gated OFF (NovaBridgeImageReady=false) because the image didn't exist
+      # yet, so there is no service to scale here — the image we just pushed will
+      # let the NEXT deploy set NovaBridgeImageReady=true and create the service
+      # already at desiredCount=1. If a service somehow exists (re-run), scale it;
+      # otherwise this is a no-op.
+      - name: Scale nova-bridge service to 1 (if it exists)
         run: |
           set -eu
-          aws ecs update-service \
-            --cluster live-ninja-nova-bridge \
-            --service live-ninja-nova-bridge \
-            --desired-count 1 \
-            --force-new-deployment >/dev/null
-          echo "nova-bridge service scaled to desiredCount=1"
+          if aws ecs describe-services \
+              --cluster live-ninja-nova-bridge \
+              --services live-ninja-nova-bridge \
+              --query 'services[?status==`ACTIVE`].serviceName' --output text 2>/dev/null | grep -q live-ninja-nova-bridge; then
+            aws ecs update-service \
+              --cluster live-ninja-nova-bridge \
+              --service live-ninja-nova-bridge \
+              --desired-count 1 --force-new-deployment >/dev/null
+            echo "nova-bridge service scaled to desiredCount=1"
+          else
+            echo "nova-bridge service not created yet (image now pushed; next deploy brings it up)"
+          fi
