@@ -27,6 +27,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 #include "esp_event.h"
@@ -66,6 +67,9 @@ typedef enum {
      *  Data: int (current associated-client count). Lets the LCD onboarding
      *  screen advance its footer from "Waiting for a device to connect…". */
     LN_NET_EVENT_PORTAL_CLIENT,
+    /** The portal setup page was served to a connected client (GET /).
+     *  Data: int (1). Lets the LCD show "setup page open on your phone". */
+    LN_NET_EVENT_PORTAL_PAGE_OPENED,
 } ln_net_event_id_t;
 
 typedef struct {
@@ -161,6 +165,47 @@ esp_err_t ln_auth_get_device_id(char *buf, size_t len);
 
 /** Force an immediate refresh-token rotation (fire-and-forget). */
 void ln_auth_force_refresh(void);
+
+/* ---- On-device provisioning surface (LCD onboarding screen) ----
+ * The same capabilities the SoftAP portal page offers, exposed to ln_ui so
+ * setup can be completed entirely on the touchscreen. */
+
+/** One scanned access point (public shape of the cached SSID scan). */
+typedef struct {
+    char ssid[33];
+    int  rssi;
+    bool secure;   /**< false only for open networks */
+} ln_net_scan_ap_t;
+
+/**
+ * Copy the cached SSID scan into out (deduped upstream only by the caller).
+ * Never blocks on the radio. Returns the record count; *scanning true while
+ * a background scan runs; *age_ms is ms since the cache was filled (-1 if
+ * never). Either out-param may be NULL.
+ */
+int ln_net_scan_results(ln_net_scan_ap_t *out, int max,
+                        bool *scanning, int64_t *age_ms);
+
+/** Kick a background SSID rescan (no-op if one is already running).
+ *  NOTE: an all-channel scan takes the SoftAP radio off-channel for ~1-2s —
+ *  associated portal clients will stall/drop briefly. Only call on explicit
+ *  user action (Rescan button / opening the network list). */
+void ln_net_scan_request(void);
+
+/** Store credentials + start the STA join (async; progress arrives as
+ *  LN_NET_EVENT_WIFI_* events). Also records the join-a-network choice. */
+esp_err_t ln_net_join_wifi(const char *ssid, const char *pass);
+
+/** Record the stay-on-the-hotspot choice. subnet is "10.0.0" or
+ *  "192.168.4" (NULL keeps the current one); a change re-IPs the SoftAP
+ *  ~600ms later (clients must reconnect to the new gateway). */
+esp_err_t ln_net_choose_ap_mode(const char *subnet);
+
+/** Copy the live portal URL, e.g. "http://10.0.0.1/". */
+void ln_net_portal_url(char *buf, size_t len);
+
+/** Number of stations currently associated with the setup SoftAP. */
+int ln_net_ap_client_count(void);
 
 #ifdef __cplusplus
 }

@@ -199,7 +199,7 @@ button{font:inherit;cursor:pointer}
 "use strict";
 var $=function(id){return document.getElementById(id);};
 var selSsid=null, selSecure=true, hiddenMode=false, submitted=false, pollTimer=null;
-var scanTimer=null, mode="sta", subnet="192.168.4", curGateway="192.168.4.1";
+var scanTimer=null, mode="sta", subnet="10.0.0", curGateway="10.0.0.1";
 
 function show(el,on){el.classList.toggle("hidden",!on);}
 function setStep(n){$("step").textContent="Step "+n+" of 3";}
@@ -324,29 +324,35 @@ function pick(ssid,secure,hidden){
   markPressed();
   (hidden?$("hiddenSsid"):$("pw")).focus();
 }
-/* Non-blocking scan: poll the cached endpoint every ~2.5s until APs arrive. */
-function scan(){
+/* Non-blocking scan: read the cached endpoint, polling every ~2.5s while a
+ * scan is in flight. A forced rescan (?refresh=1 — the Rescan button) takes
+ * the device radio off this hotspot's channel for a second or two, so the
+ * page may briefly lose the connection; the poll's catch() path rides
+ * through the reconnect. The device no longer auto-rescans while anyone is
+ * connected (that dropped clients in a loop and made the page time out). */
+function scan(force){
   if(scanTimer){clearTimeout(scanTimer);scanTimer=null;}
   renderSkeleton();
-  pollScan();
+  if(force){$("netCount").textContent="Rescanning — hotspot may blip for a moment…";}
+  pollScan(force===true);
 }
-function pollScan(){
+function pollScan(force){
   scanTimer=null;
-  fetch("/api/scan").then(function(r){return r.json();}).then(function(j){
+  fetch(force?"/api/scan?refresh=1":"/api/scan").then(function(r){return r.json();}).then(function(j){
     var nets=j.networks||[];
-    if(nets.length){renderList(nets);return;}          /* results in — stop */
     if(j.scanning||j.ageMs<0){                          /* still working */
-      $("netCount").textContent="Scanning…";
-      scanTimer=setTimeout(pollScan,2500);
+      if(nets.length){renderList(nets);}                /* stale list beats a spinner */
+      else{$("netCount").textContent="Scanning…";}
+      scanTimer=setTimeout(function(){pollScan(false);},2500);
     }else{
-      renderList(nets);                                 /* done, none found */
+      renderList(nets);                                 /* done */
     }
   }).catch(function(){
-    $("netCount").textContent="Scan busy — trying again…";
-    scanTimer=setTimeout(pollScan,2500);
+    $("netCount").textContent="Hotspot reconnecting — retrying…";
+    scanTimer=setTimeout(function(){pollScan(false);},2500);
   });
 }
-$("rescan").addEventListener("click",scan);
+$("rescan").addEventListener("click",function(){scan(true);});
 
 /* ---------- passphrase + join ---------- */
 $("pwToggle").addEventListener("click",function(){

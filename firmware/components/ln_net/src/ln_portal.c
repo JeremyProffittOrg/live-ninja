@@ -99,6 +99,13 @@ static void json_escape(const char *in, char *out, size_t out_len)
 
 static esp_err_t root_get(httpd_req_t *req)
 {
+    /* Tell the LCD the setup page is actually open on a client (the
+     * AP-association event alone can't distinguish "joined the hotspot"
+     * from "found the page"). */
+    int one = 1;
+    esp_event_post(LN_NET_EVENT, LN_NET_EVENT_PORTAL_PAGE_OPENED,
+                   &one, sizeof(one), 0);
+
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, portal_html_start,
@@ -107,10 +114,16 @@ static esp_err_t root_get(httpd_req_t *req)
 
 /* Always returns immediately from the cache — never blocks on the radio.
  * Shape: {"networks":[{ssid,rssi,secure}...],"scanning":<bool>,"ageMs":<n>}
- * (ageMs = -1 before the first scan completes). Triggers a background refresh
- * when the cache is stale (>5s) or empty and no scan is already in flight. */
-#define SCAN_STALE_MS 5000
-
+ * (ageMs = -1 before the first scan completes).
+ *
+ * Rescan gating (HIL-diagnosed 2026-07-18): every all-channel scan takes the
+ * shared radio off the SoftAP channel, which DROPS/stalls the very client
+ * reading this page — the old "auto-refresh when stale" turned the page's
+ * 2.5s poll into a scan loop that made the portal permanently time out.
+ * Now a scan only starts (a) if one has never completed (first load; the
+ * cache is primed at portal start, before anyone can be connected), or
+ * (b) on the explicit ?refresh=1 from the page's Rescan button, which warns
+ * the user about the brief drop. */
 static esp_err_t scan_get(httpd_req_t *req)
 {
     static wifi_ap_record_t recs[SCAN_MAX_RECORDS]; /* ~2KB; keep off stack */
@@ -118,7 +131,13 @@ static esp_err_t scan_get(httpd_req_t *req)
     int64_t age_ms = -1;
     int n = ln_net_wifi_scan_cached(recs, SCAN_MAX_RECORDS, &scanning, &age_ms);
 
-    if (!scanning && (age_ms < 0 || age_ms > SCAN_STALE_MS)) {
+    bool force = false;
+    char query[48];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+        strstr(query, "refresh=1") != NULL) {
+        force = true;
+    }
+    if (!scanning && (force || age_ms < 0)) {
         ln_net_wifi_scan_trigger();
         scanning = true;
     }

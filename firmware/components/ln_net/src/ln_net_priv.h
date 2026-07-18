@@ -22,10 +22,13 @@ extern "C" {
 #define LN_NVS_NS_NET   "ln_net"
 #define LN_NVS_NS_AUTH  "ln_auth"
 
-/* Default SoftAP gateway (subnet 192.168.4.0/24). The *active* gateway can be
- * changed at runtime via /api/apconfig — use ln_net_ap_gateway() to read the
- * live value; this macro is only the boot default. */
-#define LN_PORTAL_IP_DEFAULT "192.168.4.1"
+/* Default SoftAP gateway (subnet 10.0.0.0/24 — owner decision 2026-07-18:
+ * AP mode defaults to a 10.x private range, with 192.168.4 selectable). The
+ * *active* gateway can be changed at runtime via /api/apconfig or the LCD —
+ * use ln_net_ap_gateway() for the live value; this macro is only the boot
+ * default, applied to the netif in ln_net_take_ap_netif(). */
+#define LN_PORTAL_IP_DEFAULT   "10.0.0.1"
+#define LN_PORTAL_SUBNET_DEFAULT "10.0.0"
 
 /* ---- WiFi / state machine (ln_net.c) ---- */
 

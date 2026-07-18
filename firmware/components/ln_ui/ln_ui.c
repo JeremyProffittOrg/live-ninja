@@ -194,10 +194,23 @@ static void on_net_event(void *arg, esp_event_base_t base, int32_t id,
          * stops saying "Waiting for a device to connect…" (task 4). */
         if (data != NULL) {
             int count = *(const int *)data;
-            ln_ui_onboarding_status(count > 0
-                ? "Phone connected — open the setup page to continue…"
-                : "Waiting for a device to connect…");
+            char line[96];
+            if (count > 1) {
+                snprintf(line, sizeof(line),
+                         "%d devices on the setup hotspot — open the setup page…",
+                         count);
+            } else {
+                strlcpy(line, count == 1
+                        ? "Device connected to the hotspot — open the setup page…"
+                        : "Waiting for a device to connect…", sizeof(line));
+            }
+            ln_ui_onboarding_status(line);
         }
+        break;
+    case LN_NET_EVENT_PORTAL_PAGE_OPENED:
+        /* The portal page was actually served — stronger signal than mere
+         * AP association. */
+        ln_ui_onboarding_status("Setup page open — follow the steps on your phone…");
         break;
     case LN_NET_EVENT_AUTH_INVALID:
         ln_ui_error_show("Sign-in no longer valid",

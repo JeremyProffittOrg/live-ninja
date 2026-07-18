@@ -140,6 +140,13 @@ void ln_net_ap_gateway(char *buf, size_t len)
     if (buf == NULL || len == 0) {
         return;
     }
+    /* Callable before ln_net_init() (the LCD onboarding screen is built
+     * first and seeds its QR from here) — fall back to the boot default
+     * rather than taking a not-yet-created lock. */
+    if (s_lock == NULL) {
+        strlcpy(buf, LN_PORTAL_IP_DEFAULT, len);
+        return;
+    }
     xSemaphoreTake(s_lock, portMAX_DELAY);
     strlcpy(buf, s_ap_gw, len);
     xSemaphoreGive(s_lock);
@@ -147,10 +154,12 @@ void ln_net_ap_gateway(char *buf, size_t len)
 
 void ln_net_ap_gateway_octets(uint8_t out[4])
 {
-    unsigned a = 192, b = 168, c = 4, d = 1;
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    sscanf(s_ap_gw, "%u.%u.%u.%u", &a, &b, &c, &d);
-    xSemaphoreGive(s_lock);
+    unsigned a = 10, b = 0, c = 0, d = 1;
+    if (s_lock != NULL) {
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        sscanf(s_ap_gw, "%u.%u.%u.%u", &a, &b, &c, &d);
+        xSemaphoreGive(s_lock);
+    }
     out[0] = (uint8_t)a; out[1] = (uint8_t)b;
     out[2] = (uint8_t)c; out[3] = (uint8_t)d;
 }
@@ -392,13 +401,31 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     } else if (base == WIFI_EVENT && (id == WIFI_EVENT_AP_STACONNECTED ||
                                       id == WIFI_EVENT_AP_STADISCONNECTED)) {
         /* Track associated SoftAP stations so the LCD onboarding footer can
-         * advance from "Waiting for a device to connect…". */
+         * advance from "Waiting for a device to connect…". NOTE: with the
+         * radio on the C6, esp-hosted does NOT forward these association
+         * events (HIL-verified 2026-07-18) — the DHCP-lease branch below is
+         * the signal that actually fires; this one is kept for a future
+         * esp-hosted that forwards them. */
         if (id == WIFI_EVENT_AP_STACONNECTED) {
             s_ap_clients++;
         } else if (s_ap_clients > 0) {
             s_ap_clients--;
         }
         int count = s_ap_clients;
+        ESP_LOGI(TAG, "SoftAP station %s (%d associated)",
+                 id == WIFI_EVENT_AP_STACONNECTED ? "joined" : "left", count);
+        esp_event_post(LN_NET_EVENT, LN_NET_EVENT_PORTAL_CLIENT,
+                       &count, sizeof(count), 0);
+    } else if (base == IP_EVENT && id == IP_EVENT_AP_STAIPASSIGNED) {
+        /* The DHCP server runs on the P4 (lwIP), so a lease is a reliable
+         * local "someone connected to the setup hotspot" signal even though
+         * the C6 swallows the association events. No leave counterpart —
+         * the count is a floor, which is fine for onboarding copy. */
+        if (s_ap_clients < 1) {
+            s_ap_clients = 1;
+        }
+        int count = s_ap_clients;
+        ESP_LOGI(TAG, "SoftAP DHCP lease handed out (client on the portal AP)");
         esp_event_post(LN_NET_EVENT, LN_NET_EVENT_PORTAL_CLIENT,
                        &count, sizeof(count), 0);
     }
@@ -493,10 +520,17 @@ static void scan_task(void *arg)
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);   /* wait for a trigger */
 
+        /* Short dwell: an all-channel active scan takes the shared radio off
+         * the SoftAP channel for its whole duration, stalling/dropping every
+         * associated portal client (HIL-reproduced: one scan while a laptop
+         * sat on the portal kicked it off the AP and the page "timed out").
+         * 60-120ms x 13 channels keeps the outage under ~1.5s; scans are
+         * additionally gated to explicit user action while clients are
+         * connected (see ln_portal.c scan_get / the LCD network list). */
         wifi_scan_config_t sc = {
             .show_hidden = false,
             .scan_type = WIFI_SCAN_TYPE_ACTIVE,
-            .scan_time.active = {.min = 80, .max = 200},
+            .scan_time.active = {.min = 60, .max = 120},
         };
         esp_err_t err = esp_wifi_scan_start(&sc, true /* block: on THIS task */);
         if (err == ESP_OK) {
@@ -558,6 +592,85 @@ int ln_net_wifi_scan_cached(void *out_records, int max_records,
     return n;
 }
 
+/* ---- public provisioning surface for the LCD onboarding UI (ln_ui) ---- */
+
+int ln_net_scan_results(ln_net_scan_ap_t *out, int max,
+                        bool *scanning, int64_t *age_ms)
+{
+    if (out == NULL || max <= 0 || s_scan_lock == NULL) {
+        if (scanning) *scanning = s_scanning;
+        if (age_ms)   *age_ms = -1;
+        return 0;
+    }
+    xSemaphoreTake(s_scan_lock, portMAX_DELAY);
+    int n = 0;
+    for (int i = 0; i < s_scan_count && n < max; i++) {
+        const char *ssid = (const char *)s_scan_recs[i].ssid;
+        if (ssid[0] == '\0') {
+            continue;                       /* hidden networks: skip */
+        }
+        bool dup = false;                   /* strongest-first dedupe */
+        for (int j = 0; j < n; j++) {
+            if (strcmp(out[j].ssid, ssid) == 0) {
+                dup = true;
+                break;
+            }
+        }
+        if (dup) {
+            continue;
+        }
+        strlcpy(out[n].ssid, ssid, sizeof(out[n].ssid));
+        out[n].rssi = s_scan_recs[i].rssi;
+        out[n].secure = (s_scan_recs[i].authmode != WIFI_AUTH_OPEN);
+        n++;
+    }
+    int64_t age = (s_scan_ts_us == 0)
+                      ? -1
+                      : (esp_timer_get_time() - s_scan_ts_us) / 1000;
+    xSemaphoreGive(s_scan_lock);
+    if (scanning) *scanning = s_scanning;
+    if (age_ms)   *age_ms = age;
+    return n;
+}
+
+void ln_net_scan_request(void)
+{
+    ln_net_wifi_scan_trigger();
+}
+
+esp_err_t ln_net_join_wifi(const char *ssid, const char *pass)
+{
+    esp_err_t err = ln_net_set_ap_only(false);
+    if (err != ESP_OK) {
+        return err;
+    }
+    return ln_net_apply_wifi_credentials(ssid, pass);
+}
+
+esp_err_t ln_net_choose_ap_mode(const char *subnet)
+{
+    esp_err_t err = ln_net_set_ap_only(true);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (subnet != NULL && subnet[0] != '\0') {
+        return ln_net_apply_ap_subnet(subnet);
+    }
+    return ESP_OK;
+}
+
+void ln_net_portal_url(char *buf, size_t len)
+{
+    char gw[16];
+    ln_net_ap_gateway(gw, sizeof(gw));
+    snprintf(buf, len, "http://%s/", gw);
+}
+
+int ln_net_ap_client_count(void)
+{
+    return s_ap_clients;
+}
+
 /* ------------------------------------------------------------ portal glue */
 
 static void portal_ensure_started(void)
@@ -594,7 +707,9 @@ esp_netif_t *ln_net_take_ap_netif(void)
     if (s_ap_netif == NULL) {
         s_ap_netif = esp_netif_create_default_wifi_ap();
         if (s_ap_netif != NULL) {
-            /* Apply a previously-selected non-default subnet, if any. */
+            /* Apply the NVS-selected subnet, else the 10.x default. Always
+             * set explicitly: esp-netif's own AP default is 192.168.4.1,
+             * which no longer matches LN_PORTAL_IP_DEFAULT. */
             char sub[16] = {0};
             nvs_handle_t h;
             if (nvs_open(LN_NVS_NS_NET, NVS_READONLY, &h) == ESP_OK) {
@@ -604,9 +719,10 @@ esp_netif_t *ln_net_take_ap_netif(void)
                 }
                 nvs_close(h);
             }
-            if (subnet_allowed(sub)) {
-                ap_subnet_set_netif(sub);
+            if (!subnet_allowed(sub)) {
+                strlcpy(sub, LN_PORTAL_SUBNET_DEFAULT, sizeof(sub));
             }
+            ap_subnet_set_netif(sub);
         }
     }
     return s_ap_netif;
@@ -759,6 +875,8 @@ esp_err_t ln_net_init(void)
         WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL, NULL));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        IP_EVENT, IP_EVENT_AP_STAIPASSIGNED, wifi_event_handler, NULL, NULL));
 
     /* Credentials live in our own NVS namespace, not the WiFi blob. */
     esp_wifi_set_storage(WIFI_STORAGE_RAM);
