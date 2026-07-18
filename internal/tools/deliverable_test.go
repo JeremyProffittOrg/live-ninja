@@ -21,6 +21,18 @@ type fakeDelivService struct {
 	zipName                string
 	deliverID, deliverTo   string
 
+	// file_list / file_read scripting (methods in file_test.go).
+	listItems     []store.Deliverable
+	listNext      string
+	listLimit     int32
+	listCursor    string
+	byName        map[string]*store.Deliverable
+	readDeliv     *store.Deliverable
+	readContent   []byte
+	readTruncated bool
+	readID        string
+	readErr       error
+
 	err error
 }
 
