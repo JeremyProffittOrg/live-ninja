@@ -176,6 +176,18 @@ type storedManifest struct {
 	SHA256    string `json:"sha256"`
 	SizeBytes int64  `json:"sizeBytes"`
 	CreatedAt string `json:"createdAt"`
+	// Files is the shape containers/wakeword-train actually writes: the
+	// per-artifact map {"onnx": {key,sha256,sizeBytes}, "onnxFp32": {...}}.
+	// readManifest promotes files.onnx (the int8 serving model) into the
+	// flat fields above when they're absent — the flat shape 500'd every
+	// manifest read of a really-trained model (prod 2026-07-18).
+	Files map[string]storedManifestFile `json:"files"`
+}
+
+type storedManifestFile struct {
+	Key       string `json:"key"`
+	SHA256    string `json:"sha256"`
+	SizeBytes int64  `json:"sizeBytes"`
 }
 
 // ModelManifest is the GET /v1/wakeword/{id}/model response body —
@@ -740,6 +752,15 @@ func (s *Service) readManifest(ctx context.Context, wwID, platform string) (*sto
 	var man storedManifest
 	if err := json.Unmarshal(raw, &man); err != nil {
 		return nil, fmt.Errorf("wakeword: parse manifest: %w", err)
+	}
+	// Trainer-shaped manifest: promote the int8 serving model out of the
+	// files map into the flat fields the rest of this service uses.
+	if man.SHA256 == "" {
+		if f, ok := man.Files["onnx"]; ok {
+			man.Key = f.Key
+			man.SHA256 = f.SHA256
+			man.SizeBytes = f.SizeBytes
+		}
 	}
 	if len(man.SHA256) != 64 {
 		return nil, fmt.Errorf("wakeword: manifest sha256 malformed")

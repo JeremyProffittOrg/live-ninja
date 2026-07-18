@@ -292,6 +292,43 @@ func (e *testEnv) putManifests(t *testing.T, wwID string) {
 	}
 }
 
+// putTrainerManifests writes manifests in the shape containers/wakeword-train
+// actually uploads: per-artifact files map, no flat key/sha256 fields.
+func (e *testEnv) putTrainerManifests(t *testing.T, wwID string) {
+	t.Helper()
+	for _, p := range trainedPlatforms {
+		raw, err := json.Marshal(map[string]any{
+			"phrase":   "hey live ninja",
+			"engine":   "openwakeword",
+			"platform": p,
+			"format":   formatForPlatform(p),
+			"files": map[string]any{
+				"onnx":     map[string]any{"key": modelKey(wwID, p), "sha256": testSHA, "sizeBytes": 123456},
+				"onnxFp32": map[string]any{"key": "wakewords/" + wwID + "/" + p + "/model_fp32.onnx", "sha256": testSHA, "sizeBytes": 999},
+			},
+		})
+		require.NoError(t, err)
+		e.s3.objects[manifestKey(wwID, p)] = raw
+		e.s3.objects[modelKey(wwID, p)] = []byte("onnx-bytes")
+	}
+}
+
+func TestModelManifestTrainerShape(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	w, err := env.svc.Create(ctx, "u1", "hey parrot", "")
+	require.NoError(t, err)
+	env.putTrainerManifests(t, w.ID)
+	env.svc.cache.invalidate("u1")
+
+	man, err := env.svc.Model(ctx, "u1", w.ID, "web")
+	require.NoError(t, err)
+	assert.Equal(t, testSHA, man.SHA256)
+	assert.EqualValues(t, 123456, man.SizeBytes)
+	assert.Contains(t, man.URL, modelKey(w.ID, "web"))
+}
+
 // ---- Create ----
 
 func TestCreateSubmitsTrainingJob(t *testing.T) {
