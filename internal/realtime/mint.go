@@ -85,34 +85,9 @@ func AccentDirective(accentID string) string {
 	return ""
 }
 
-// ResolveAccentDirective reads the caller's voiceAccent from the settings
-// document (same single-GetItem posture as ResolveEngine) and returns the
-// ready-to-append directive. Every failure path — nil getter, read error,
-// missing document, unknown value — returns "" so an accent lookup can
-// never take a mint down.
-func ResolveAccentDirective(ctx context.Context, g SettingsGetter, table, userID string) string {
-	if g == nil || userID == "" {
-		return ""
-	}
-	out, err := g.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: aws.String(table),
-		Key: map[string]ddbtypes.AttributeValue{
-			"pk": &ddbtypes.AttributeValueMemberS{Value: "USER#" + userID},
-			"sk": &ddbtypes.AttributeValueMemberS{Value: settingsSK},
-		},
-		ProjectionExpression: aws.String("voiceAccent"),
-	})
-	if err != nil || len(out.Item) == 0 {
-		return ""
-	}
-	var doc struct {
-		VoiceAccent string `dynamodbav:"voiceAccent"`
-	}
-	if err := attributevalue.UnmarshalMap(out.Item, &doc); err != nil {
-		return ""
-	}
-	return AccentDirective(doc.VoiceAccent)
-}
+// (Accent resolution at mint moved to voiceprefs.go's ResolveSessionVoice:
+// the accent now resolves per persona — personaPrefs[persona].accent ??
+// top-level voiceAccent — in the same read as the voice.)
 
 // toolManifest is the OpenAI Realtime function-tool declaration set bound
 // into every session at mint. Execution never happens client-side or in

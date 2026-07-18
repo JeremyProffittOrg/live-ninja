@@ -73,7 +73,7 @@
     },
     "voice": {
       "type": "string",
-      "description": "OpenAI Realtime voice, chosen from an enumerated picker with inline preview (UX-R01) — never free text. Default is `cedar` per PRD Q-14. New voice enum members may be appended in later milestones per contracts/README.md rule 3; an unrecognized value on read must fall back to `cedar` in the UI but be preserved verbatim on write-back.",
+      "description": "Account-wide FALLBACK OpenAI Realtime voice, chosen from an enumerated picker — never free text. Personas are the unit of voice identity: per-persona voice lives in `personaPrefs` and wins over this field at mint (voice = personaPrefs[persona].voice ?? persona's suggested voice ?? this field ?? cedar). Default is `cedar` per PRD Q-14. New voice enum members may be appended in later milestones per contracts/README.md rule 3; an unrecognized value on read must fall back to `cedar` in the UI but be preserved verbatim on write-back.",
       "enum": [
         "alloy",
         "ash",
@@ -90,7 +90,7 @@
     },
     "voiceAccent": {
       "type": "string",
-      "description": "Speech-accent directive id, chosen from the enumerated accent picker (GET /v1/realtime/voices `accents` catalog) — never free text. Accents are not separate voices: the realtime voice set is fixed, so the broker appends a short speech-style directive (e.g. \"Speak with a light, natural Irish accent.\") to the session instructions at mint. \"\" (also surfaced as catalog id \"none\") means no directive. Optional; absent normalizes to \"\". Unrecognized values must be preserved on write-back but mint without an accent (forward-compat, contracts/README.md rule 3).",
+      "description": "Account-wide FALLBACK speech-accent directive id, chosen from the enumerated accent picker (GET /v1/realtime/voices `accents` catalog) — never free text. Per-persona accent lives in `personaPrefs` and wins over this field at mint (accent = personaPrefs[persona].accent ?? this field). Accents are not separate voices: the realtime voice set is fixed, so the broker appends a short speech-style directive (e.g. \"Speak with a light, natural Irish accent.\") to the session instructions at mint. \"\" (also surfaced as catalog id \"none\") means no directive. Optional; absent normalizes to \"\". Unrecognized values must be preserved on write-back but mint without an accent (forward-compat, contracts/README.md rule 3).",
       "enum": [
         "",
         "irish",
@@ -104,6 +104,30 @@
         "new-york"
       ],
       "default": ""
+    },
+    "personaPrefs": {
+      "type": "object",
+      "description": "Per-persona voice identity (\"we need a persona, not a voice\"): map of personaId -> {voice, accent, updatedAt}. Keys are the same ids `persona.presetId` stores — built-in catalog ids, the user's own custom-persona ids, shared-catalog ids, or the literal \"custom\" — never server-composed mint refs. At mint the broker resolves voice = personaPrefs[persona].voice ?? the persona's suggested voice ?? top-level `voice` ?? cedar, and the accent directive from personaPrefs[persona].accent ?? top-level `voiceAccent` (an entry whose `accent` is present-but-\"\" means EXPLICITLY no accent). Top-level voice/voiceAccent remain only as the account-wide fallback default. MIGRATION: on read, a stored document that predates this field seeds personaPrefs[persona.presetId] once from the top-level voice/voiceAccent, preserving the user's current sound for their current persona. Capped at ~200 entries — the server prunes oldest-`updatedAt` entries beyond the cap on write. Optional; absent normalizes to {}. Unknown per-entry fields are preserved on write-back (contracts/README.md rule 2).",
+      "default": {},
+      "maxProperties": 200,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "voice": {
+            "type": "string",
+            "description": "Realtime voice id for this persona (same value space as top-level `voice`). Unrecognized values are preserved on write-back and fall through the mint precedence chain."
+          },
+          "accent": {
+            "type": "string",
+            "description": "Accent directive id for this persona (same value space as `voiceAccent`; \"\" = explicitly no accent, overriding the top-level fallback)."
+          },
+          "updatedAt": {
+            "type": "string",
+            "description": "RFC3339 UTC timestamp of the last edit — the prune-oldest ordering key for the ~200-entry cap."
+          }
+        }
+      }
     },
     "turnDetection": {
       "type": "string",

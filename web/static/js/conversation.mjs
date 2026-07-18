@@ -11,8 +11,15 @@
 //
 // This file only wires them to the page DOM (ids from
 // templates/pages/conversation.html) and to the settings document:
-//   - persona/voice quick-switch selects populated from
-//     GET /api/v1/realtime/personas|voices (never blind text/options);
+//   - persona quick-switch select populated from GET /api/v1/personas
+//     (never blind text/options); the voice quick-switch is GONE (owner
+//     shell redesign 2026-07-18 v2: voice is persona-embedded) — the
+//     voices catalog is still fetched for human-readable banner labels;
+//   - persona Edit button → openPersonaEditor(personaId) seam
+//     (personaeditor.mjs, lazily imported; Author B owns that module);
+//   - mic sensitivity chips (Low/Medium/High) ↔ settings micEagerness,
+//     live-applied via session.updateAudioInput;
+//   - docked settings drawer (native <dialog>: focus trap + Escape free);
 //   - optimistic PUT /api/v1/settings with the §3.6 409 retry-once rule;
 //   - composer → live session sendUserText, or POST /api/v1/fallback/turn
 //     when no session is connected (spec §2.5 "you can still type below");
@@ -272,35 +279,16 @@ async function putSettings(mutate) {
   }
 }
 
-// ---- quick-switch selects (populated from the real catalogs, spec §2.3) --
+// ---- persona quick-switch select (populated from the real catalog) -------
+//
+// The voice quick-switch select is gone (owner shell redesign 2026-07-18 v2:
+// voice is embedded in the persona, edited via the persona editor). The
+// voices catalog is still fetched so banner copy can show a human-readable
+// voice name — never a raw id.
 
 const personaSelect = $('personaSelect');
-const voiceSelect = $('voiceSelect');
 
-function fillSelect(selectEl, rows, selectedId) {
-  if (!selectEl) return;
-  selectEl.replaceChildren();
-  let found = false;
-  for (const row of rows) {
-    const opt = document.createElement('option');
-    opt.value = row.id;
-    opt.textContent = row.name || row.id;
-    if (row.id === selectedId) {
-      opt.selected = true;
-      found = true;
-    }
-    selectEl.appendChild(opt);
-  }
-  if (!found && selectedId) {
-    // Forward-compat: a stored value not in the catalog is kept, never
-    // silently dropped (settings.schema.json rule).
-    const opt = document.createElement('option');
-    opt.value = selectedId;
-    opt.textContent = `${selectedId} (kept as-is)`;
-    opt.selected = true;
-    selectEl.appendChild(opt);
-  }
-}
+let voiceCatalog = []; // [{id, name, ...}] from GET /api/v1/realtime/voices
 
 // fillPersonaSelect renders the grouped persona library into the quick-
 // switch select: Built-in / Mine / Shared <optgroup>s plus the trailing
@@ -352,19 +340,16 @@ function personaLabelFor(presetId) {
   return (row && row.name) || presetId;
 }
 
-/** Human-readable voice name from the (catalog-populated) quick-switch
- * select — never show a raw id in banner copy. */
+/** Human-readable voice name from the fetched voices catalog — never show
+ * a raw id in banner copy. */
 function voiceLabelFor(voiceId) {
-  if (voiceSelect) {
-    const opt = [...voiceSelect.options].find((o) => o.value === voiceId);
-    if (opt) return opt.textContent;
-  }
-  return voiceId;
+  const row = voiceCatalog.find((v) => v.id === voiceId);
+  return (row && row.name) || voiceId;
 }
 
 function syncQuickSwitchesFromDoc() {
   if (personaSelect) personaSelect.value = currentPersonaId();
-  if (voiceSelect && typeof settingsDoc.voice === 'string') voiceSelect.value = settingsDoc.voice;
+  syncMicChips();
   transcript.setPersonaLabel(personaLabelFor(currentPersonaId()));
 }
 
@@ -1056,24 +1041,92 @@ if (personaSelect) {
   });
 }
 
-if (voiceSelect) {
-  voiceSelect.addEventListener('change', () => {
-    const prev = (settingsDoc && settingsDoc.voice) || 'cedar';
-    const next = voiceSelect.value;
+// ---- persona editor seam (owner shell redesign 2026-07-18 v2) ------------
+//
+// The Edit button opens the persona editor dialog. The editor itself —
+// partials/persona_editor.html + personaeditor.mjs (exports
+// openPersonaEditor(personaId)) — is Author B's module; it is imported
+// lazily on first click so this page never pays its cost up front.
+
+const personaEditBtn = $('personaEditBtn');
+if (personaEditBtn) {
+  personaEditBtn.addEventListener('click', async () => {
+    try {
+      const mod = await import('./personaeditor.mjs');
+      mod.openPersonaEditor(currentPersonaId());
+    } catch (err) {
+      toast("Couldn't open the persona editor.", {
+        error: true,
+        detail: (err && (err.message || String(err))) || 'unknown error',
+      });
+    }
+  });
+}
+
+// ---- mic sensitivity chips (settings micEagerness; task #5) --------------
+//
+// Three real buttons (aria-pressed) under "Test my mic" bound to
+// settings.micEagerness: low | medium | high; the schema default 'auto'
+// shows none pressed until the user picks. Saved through the same
+// optimistic quick-switch path as the persona select, and live-applied to
+// a connected session via RealtimeSession.updateAudioInput (no-ops on
+// nova-bridge / closed datachannel — the change still lands at next mint).
+
+const micSensChips = [...document.querySelectorAll('#micSensGroup .ln-chip')];
+
+function currentEagerness() {
+  const v = settingsDoc && settingsDoc.micEagerness;
+  return v === 'low' || v === 'medium' || v === 'high' ? v : 'auto';
+}
+
+function syncMicChips() {
+  const cur = currentEagerness();
+  for (const chip of micSensChips) {
+    chip.setAttribute('aria-pressed', chip.dataset.eagerness === cur ? 'true' : 'false');
+  }
+}
+
+for (const chip of micSensChips) {
+  chip.addEventListener('click', () => {
+    const next = chip.dataset.eagerness;
+    const prev = currentEagerness();
     if (next === prev) return;
+    // Optimistic press; revert re-syncs from the (unchanged) doc.
+    for (const c of micSensChips) c.setAttribute('aria-pressed', c === chip ? 'true' : 'false');
     void saveQuickSwitch({
       mutate: (doc) => {
-        doc.voice = next;
+        doc.micEagerness = next;
       },
-      revert: () => {
-        voiceSelect.value = prev;
+      revert: () => syncMicChips(),
+      appliedToast: () => {
+        if (isLive() && mic.session.updateAudioInput({ eagerness: next })) {
+          return 'Mic sensitivity updated — applied to this conversation.';
+        }
+        return 'Mic sensitivity updated.';
       },
-      appliedToast: () => 'Voice updated.',
-      appliedBanner: () =>
-        isLive()
-          ? `The ${voiceLabelFor(next)} voice applies to your next conversation — tap New conversation to switch now.`
-          : '',
     });
+  });
+}
+
+// ---- docked settings drawer (site nav; replaces the removed header) ------
+//
+// Native <dialog>.showModal() supplies the focus trap, Escape-to-close,
+// and inerting of the page behind; the scrim (::backdrop) click closes via
+// the e.target === dialog check — the drawer's padding lives on an inner
+// wrapper, so a click that reaches the dialog element itself is always on
+// the backdrop.
+
+const settingsDrawer = $('settingsDrawer');
+const settingsDrawerBtn = $('settingsDrawerBtn');
+const settingsDrawerClose = $('settingsDrawerClose');
+
+if (settingsDrawer && settingsDrawerBtn && typeof settingsDrawer.showModal === 'function') {
+  settingsDrawerBtn.addEventListener('click', () => settingsDrawer.showModal());
+  if (settingsDrawerClose) {
+    settingsDrawerClose.addEventListener('click', () => settingsDrawer.close());
+  }
+  settingsDrawer.addEventListener('click', (e) => {
+    if (e.target === settingsDrawer) settingsDrawer.close();
   });
 }
 
@@ -1208,9 +1261,14 @@ async function bootstrap() {
   }
   fillPersonaSelect(personaSelect, personaGroups, currentPersonaId());
 
+  // Voices catalog kept for human-readable labels in banner copy only —
+  // the voice quick-switch select no longer exists (voice is
+  // persona-embedded; owner shell redesign 2026-07-18 v2).
   if (voices.status === 'fulfilled' && Array.isArray(voices.value.voices)) {
-    fillSelect(voiceSelect, voices.value.voices, (settingsDoc && settingsDoc.voice) || 'cedar');
+    voiceCatalog = voices.value.voices;
   }
+
+  syncMicChips();
 
   if (catalog.status === 'fulfilled' && catalog.value && Array.isArray(catalog.value.wakewords)) {
     wakeCatalog = catalog.value;
@@ -1234,3 +1292,44 @@ async function bootstrap() {
 }
 
 void bootstrap();
+
+/* ==== persona-editor:BEGIN ==== */
+// Persona editor glue (personas are the unit of voice identity — voice and
+// accent are embedded per persona, personaeditor.mjs). The page-shell code
+// owns the Edit button and lazy-imports personaeditor.mjs itself (so this
+// region deliberately adds NO static import — the editor's cost stays off
+// the first-paint path). This region owns the 'personachanged' refresh
+// contract: after the editor saves (text edit, duplicate, or a
+// personaPrefs voice/accent change) it dispatches 'personachanged' on
+// window, and this listener re-pulls the persona library so the select
+// labels/groups reflect renames and fresh copies immediately.
+
+async function refreshPersonaLibrary() {
+  try {
+    const v = await apiJSON(PERSONAS_PATH);
+    const groups = {
+      builtin: Array.isArray(v.builtin) ? v.builtin : [],
+      mine: Array.isArray(v.mine) ? v.mine : [],
+      shared: Array.isArray(v.shared) ? v.shared : [],
+    };
+    personaCatalog = groups.builtin.concat(groups.mine, groups.shared);
+    fillPersonaSelect(personaSelect, groups, currentPersonaId());
+    transcript.setPersonaLabel(personaLabelFor(currentPersonaId()));
+  } catch {
+    /* cosmetic refresh — the stale labels correct on the next bootstrap */
+  }
+}
+
+window.addEventListener('personachanged', (e) => {
+  void refreshPersonaLibrary();
+  // Editing the persona currently in use is mint-bound (like the old voice
+  // quick-switch): mid-session, surface the persistent banner so the user
+  // knows the new sound arrives with the NEXT conversation.
+  const detail = (e && e.detail) || {};
+  if (isLive() && detail.personaId && detail.personaId === currentPersonaId()) {
+    showPendingBanner(
+      `${personaLabelFor(detail.personaId) || 'Live Ninja'}'s updated voice applies to your next conversation — tap New conversation to switch now.`,
+    );
+  }
+});
+/* ==== persona-editor:END ==== */

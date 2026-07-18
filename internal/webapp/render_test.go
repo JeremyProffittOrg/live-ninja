@@ -36,15 +36,14 @@ func testSettingsView() *settingsPageView {
 		WakeEngine:      "openwakeword",
 		SensitivityPct:  50,
 		PersonaPreset:   "default",
-		Voice:           "cedar",
 		TurnDetection:   "semantic_vad",
 		Theme:           "dark",
 		StoreTranscript: true,
 		RetentionDays:   30,
 	}
-	for _, sv := range realtime.SupportedVoices {
-		v.Voices = append(v.Voices, settingsVoiceRow{VoiceInfo: sv, Selected: sv.ID == "cedar"})
-	}
+	// Voice rows are gone from this page: personas are the unit of voice
+	// identity (personaPrefs; edited in the conversation page's persona
+	// editor pop-up).
 	for _, p := range realtime.ListPersonas() {
 		v.Personas = append(v.Personas, settingsPersonaRow{PersonaInfo: p, Selected: p.ID == "default"})
 	}
@@ -87,8 +86,8 @@ func TestRenderAllPages(t *testing.T) {
 			contains: []string{
 				`id="settings-data"`,
 				`{"version":1,"voice":"cedar"}`,
-				`id="voiceList"`,
-				`value="cedar" checked`,
+				`id="personaPreset"`,
+				"Each persona carries its own voice and accent",
 				`aria-current="page"`,
 				"Sign out everywhere",
 			},

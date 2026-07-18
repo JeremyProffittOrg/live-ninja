@@ -3,6 +3,7 @@ package webapp
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -78,15 +79,17 @@ func TestSettingsPageRenders(t *testing.T) {
 		t.Errorf("catalog personas empty")
 	}
 
-	// SSR'd control states.
+	// SSR'd control states. The standalone Voice/Accent section is gone —
+	// personas are the unit of voice identity (personaPrefs; edited in the
+	// conversation page's persona editor) — so the page must NOT render
+	// voice controls but MUST point at the editor from the Persona section.
+	for _, notWant := range []string{`name="voice"`, `id="voiceGenderChips"`, `id="voiceAccent"`} {
+		if strings.Contains(html, notWant) {
+			t.Errorf("rendered page still contains removed voice control %q", notWant)
+		}
+	}
 	for _, want := range []string{
-		`name="voice" value="marin" checked`,
-		`id="voiceGenderChips"`,
-		`data-gender-filter="female"`,
-		`data-voice-gender="female"`,
-		`id="voiceAccent"`,
-		`<option value="none" selected>Default</option>`,
-		`<option value="irish"`,
+		`Each persona carries its own voice and accent`,
 		`name="theme" value="light" checked`,
 		`name="liveStyle" value="hal9000" checked`,
 		`name="appStyle" value="ninja" checked`,
@@ -104,31 +107,26 @@ func TestSettingsPageRenders(t *testing.T) {
 	}
 }
 
-// TestSettingsPageUnknownVoiceFallsBack: an unrecognized stored voice
-// renders with cedar selected in the UI but stays verbatim in the island
-// (settings.schema.json forward-compat rule).
-func TestSettingsPageUnknownVoiceFallsBack(t *testing.T) {
+// TestSettingsPageVoicePreservedInIsland: with no voice controls on the
+// page anymore, the stored top-level voice (the account fallback default)
+// and the personaPrefs map must still ride the SettingsJSON island so
+// write-backs preserve them verbatim (schema forward-compat rule).
+func TestSettingsPageVoicePreservedInIsland(t *testing.T) {
 	doc := store.DefaultSettings()
 	doc["voice"] = "future-voice-x"
+	doc["personaPrefs"] = map[string]any{
+		"noir-detective": map[string]any{"voice": "ash", "accent": "irish"},
+	}
 
 	view, err := buildSettingsPageView(doc)
 	if err != nil {
 		t.Fatalf("buildSettingsPageView: %v", err)
 	}
-	var cedarSelected bool
-	for _, v := range view.Voices {
-		if v.ID == "cedar" && v.Selected {
-			cedarSelected = true
+	island := string(view.SettingsJSON)
+	for _, want := range []string{"future-voice-x", "personaPrefs", "noir-detective"} {
+		if !strings.Contains(island, want) {
+			t.Errorf("data island missing %q", want)
 		}
-		if v.Selected && v.ID != "cedar" {
-			t.Errorf("unexpected selected voice row %q", v.ID)
-		}
-	}
-	if !cedarSelected {
-		t.Errorf("unknown voice should select cedar in the UI")
-	}
-	if !strings.Contains(string(view.SettingsJSON), "future-voice-x") {
-		t.Errorf("stored voice must be preserved verbatim in the data island")
 	}
 }
 
@@ -181,6 +179,29 @@ func TestValidateAndNormalizeSettings(t *testing.T) {
 		{"voiceAccent forward-compat ok", func(d map[string]any) { d["voiceAccent"] = "future-accent-x" }, true},
 		{"voiceAccent number bad", func(d map[string]any) { d["voiceAccent"] = 3.0 }, false},
 		{"voiceAccent too long", func(d map[string]any) { d["voiceAccent"] = strings.Repeat("a", 65) }, false},
+		{"personaPrefs valid entry", func(d map[string]any) {
+			d["personaPrefs"] = map[string]any{
+				"valley-girl": map[string]any{"voice": "coral", "accent": "irish", "updatedAt": "2026-07-18T00:00:00Z"},
+			}
+		}, true},
+		{"personaPrefs forward-compat voice/extra field ok", func(d map[string]any) {
+			d["personaPrefs"] = map[string]any{
+				"x": map[string]any{"voice": "future-voice-x", "futureField": true},
+			}
+		}, true},
+		{"personaPrefs not an object", func(d map[string]any) { d["personaPrefs"] = "cedar" }, false},
+		{"personaPrefs entry not an object", func(d map[string]any) {
+			d["personaPrefs"] = map[string]any{"x": "cedar"}
+		}, false},
+		{"personaPrefs voice not a string", func(d map[string]any) {
+			d["personaPrefs"] = map[string]any{"x": map[string]any{"voice": 7.0}}
+		}, false},
+		{"personaPrefs accent too long", func(d map[string]any) {
+			d["personaPrefs"] = map[string]any{"x": map[string]any{"accent": strings.Repeat("a", 65)}}
+		}, false},
+		{"personaPrefs empty key bad", func(d map[string]any) {
+			d["personaPrefs"] = map[string]any{" ": map[string]any{"voice": "cedar"}}
+		}, false},
 	}
 	for _, tc := range cases {
 		d := valid()
@@ -237,6 +258,47 @@ func TestValidateAndNormalizeSettings(t *testing.T) {
 	}
 	if got := d["voiceAccent"]; got != "" {
 		t.Errorf("voiceAccent \"none\" should normalize to \"\", got %v", got)
+	}
+
+	// personaPrefs normalization: absent -> {}, entry accent "none" -> "".
+	d = valid()
+	delete(d, "personaPrefs")
+	if msg := validateAndNormalizeSettings(d); msg != "" {
+		t.Fatalf("absent personaPrefs should validate, got %q", msg)
+	}
+	if pp, ok := d["personaPrefs"].(map[string]any); !ok || len(pp) != 0 {
+		t.Errorf("absent personaPrefs should normalize to {}, got %v", d["personaPrefs"])
+	}
+	d = valid()
+	d["personaPrefs"] = map[string]any{"zen-monk": map[string]any{"voice": "sage", "accent": "none"}}
+	if msg := validateAndNormalizeSettings(d); msg != "" {
+		t.Fatalf("personaPrefs accent none should validate, got %q", msg)
+	}
+	if got := d["personaPrefs"].(map[string]any)["zen-monk"].(map[string]any)["accent"]; got != "" {
+		t.Errorf("entry accent \"none\" should normalize to \"\", got %v", got)
+	}
+
+	// personaPrefs cap: beyond maxPersonaPrefs entries the oldest-updated
+	// are pruned first (missing updatedAt counts oldest), newest survive.
+	d = valid()
+	big := map[string]any{}
+	for i := 0; i < maxPersonaPrefs+10; i++ {
+		big[fmt.Sprintf("persona-%03d", i)] = map[string]any{
+			"voice":     "cedar",
+			"updatedAt": fmt.Sprintf("2026-07-%02dT00:00:00Z", 1+i%28),
+		}
+	}
+	big["no-timestamp"] = map[string]any{"voice": "cedar"} // counts oldest
+	d["personaPrefs"] = big
+	if msg := validateAndNormalizeSettings(d); msg != "" {
+		t.Fatalf("oversized personaPrefs should validate (prune, not reject), got %q", msg)
+	}
+	pp := d["personaPrefs"].(map[string]any)
+	if len(pp) != maxPersonaPrefs {
+		t.Errorf("personaPrefs pruned to %d entries, want %d", len(pp), maxPersonaPrefs)
+	}
+	if _, kept := pp["no-timestamp"]; kept {
+		t.Errorf("entry without updatedAt must be pruned first")
 	}
 
 	// version is server-owned and must be stripped from the client doc.

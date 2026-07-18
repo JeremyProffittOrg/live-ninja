@@ -28,6 +28,7 @@ import (
 	"html/template"
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -70,8 +71,6 @@ type settingsPageView struct {
 	// (system) leaves the attribute off → prefers-color-scheme rules.
 	ThemeAttr string
 
-	Voices   []settingsVoiceRow
-	Accents  []settingsAccentRow
 	Personas []settingsPersonaRow
 
 	WakeWord        string
@@ -81,7 +80,6 @@ type settingsPageView struct {
 	IsCustomPersona bool
 	Instructions    string
 	InstructionsLen int
-	Voice           string
 	TurnDetection   string
 	MicEagerness    string
 	AppStyle        string // style zone: everything outside the live panel
@@ -92,16 +90,6 @@ type settingsPageView struct {
 	StoreAudio      bool
 	StoreTranscript bool
 	RetentionDays   int
-}
-
-type settingsVoiceRow struct {
-	realtime.VoiceInfo
-	Selected bool
-}
-
-type settingsAccentRow struct {
-	realtime.AccentInfo
-	Selected bool
 }
 
 type settingsPersonaRow struct {
@@ -195,7 +183,6 @@ func buildSettingsPageView(doc map[string]any) (*settingsPageView, error) {
 		WakeWord:        docString(doc, "wakeWord", "hey-live-ninja"),
 		WakeEngine:      docString(doc, "wakeEngine", "openwakeword"),
 		SensitivityPct:  int(math.Round(docFloat(doc, "sensitivity", 0.5) * 100)),
-		Voice:           docString(doc, "voice", realtime.DefaultVoice),
 		TurnDetection:   docString(doc, "turnDetection", "semantic_vad"),
 		MicEagerness:    docString(doc, "micEagerness", "auto"),
 		AppStyle:        docNestedString(doc, "appearance", "appStyle", "ninja"),
@@ -220,40 +207,12 @@ func buildSettingsPageView(doc map[string]any) (*settingsPageView, error) {
 	v.IsCustomPersona = v.PersonaPreset == "custom"
 	v.InstructionsLen = len([]rune(v.Instructions))
 
-	// An unrecognized stored voice renders with the default selected in
-	// the UI (schema forward-compat rule) while the JSON island — and
-	// therefore every write-back — still carries the stored value.
-	voiceKnown := false
-	for _, sv := range realtime.SupportedVoices {
-		if sv.ID == v.Voice {
-			voiceKnown = true
-			break
-		}
-	}
-	displayVoice := v.Voice
-	if !voiceKnown {
-		displayVoice = realtime.DefaultVoice
-	}
-	for _, sv := range realtime.SupportedVoices {
-		v.Voices = append(v.Voices, settingsVoiceRow{VoiceInfo: sv, Selected: sv.ID == displayVoice})
-	}
-
-	// Accent select rows: stored "" (no accent) selects the catalog's
-	// "none" entry; an unrecognized stored accent also renders with
-	// Default selected (schema forward-compat rule) while the JSON island
-	// preserves the stored value on write-back.
-	storedAccent := docString(doc, "voiceAccent", "")
-	displayAccent := "none"
-	for _, a := range realtime.SupportedAccents {
-		if a.ID == storedAccent {
-			displayAccent = storedAccent
-			break
-		}
-	}
-	for _, a := range realtime.SupportedAccents {
-		v.Accents = append(v.Accents, settingsAccentRow{AccentInfo: a, Selected: a.ID == displayAccent})
-	}
-
+	// Voice + accent no longer render on this page: personas are the unit
+	// of voice identity (personaPrefs, edited in the conversation page's
+	// persona editor). The stored top-level voice/voiceAccent remain in the
+	// SettingsJSON island purely so write-backs preserve the fallback
+	// default; CatalogsJSON keeps shipping the voice/accent catalogs for
+	// client-side consumers.
 	for _, p := range realtime.ListPersonas() {
 		v.Personas = append(v.Personas, settingsPersonaRow{PersonaInfo: p, Selected: p.ID == v.PersonaPreset})
 	}
@@ -369,10 +328,11 @@ var publishSettingsShadow = func(ctx context.Context, deps *Deps, userID string,
 // Unknown fields pass through untouched (additionalProperties:true /
 // forward-compat preservation, contracts/README.md rule 2). Closed
 // platform-behavior enums (turnDetection, theme, wakeEngine,
-// retentionDays, voiceEngine values) are enforced; `voice` is
-// deliberately lenient beyond non-empty-string (new voices append to the
-// enum in later milestones and an unknown value must be preserved, per
-// the schema — the broker's ResolveVoice already falls back safely).
+// retentionDays, voiceEngine values) are enforced; `voice` (and every
+// personaPrefs voice/accent) is deliberately lenient beyond
+// non-empty-string (new voices append to the enum in later milestones and
+// an unknown value must be preserved, per the schema — the broker's
+// ResolveSessionVoice chain already falls through safely).
 func validateAndNormalizeSettings(doc map[string]any) string {
 	delete(doc, "version") // server-owned; PutSettings sets it
 
@@ -432,6 +392,51 @@ func validateAndNormalizeSettings(doc map[string]any) string {
 		}
 	default:
 		return "voiceAccent must be a string"
+	}
+	// personaPrefs: per-persona voice identity map {personaId: {voice,
+	// accent, updatedAt}} — personas are the unit of voice identity; the
+	// top-level voice/voiceAccent above are only the account-wide fallback.
+	// Validation mirrors the voice/voiceAccent posture (lenient — unknown
+	// ids preserved; the broker's chain falls through safely), entries keep
+	// their unknown fields (rule 2), and the map is capped at
+	// maxPersonaPrefs with the oldest-updated entries pruned first.
+	switch pp := doc["personaPrefs"].(type) {
+	case nil:
+		doc["personaPrefs"] = map[string]any{}
+	case map[string]any:
+		for id, raw := range pp {
+			if strings.TrimSpace(id) == "" || len(id) > 128 {
+				return "personaPrefs keys must be non-empty persona ids of at most 128 characters"
+			}
+			entry, ok := raw.(map[string]any)
+			if !ok {
+				return "personaPrefs[" + id + "] must be an object"
+			}
+			if v, present := entry["voice"]; present {
+				if s, ok := v.(string); !ok || len(s) > 64 {
+					return "personaPrefs[" + id + "].voice must be a voice id of at most 64 characters"
+				}
+			}
+			if a, present := entry["accent"]; present {
+				s, ok := a.(string)
+				if !ok || len(s) > 64 {
+					return "personaPrefs[" + id + "].accent must be an accent id of at most 64 characters"
+				}
+				if s == "none" {
+					// Same normalization as voiceAccent: the catalog's "none"
+					// id stores as "" (explicitly no accent).
+					entry["accent"] = ""
+				}
+			}
+			if u, present := entry["updatedAt"]; present {
+				if s, ok := u.(string); !ok || len(s) > 64 {
+					return "personaPrefs[" + id + "].updatedAt must be an RFC3339 timestamp string"
+				}
+			}
+		}
+		prunePersonaPrefs(pp, maxPersonaPrefs)
+	default:
+		return "personaPrefs must be an object"
 	}
 	if s, ok := doc["turnDetection"].(string); !ok || !oneOf(s, "semantic_vad", "server_vad") {
 		return "turnDetection must be semantic_vad or server_vad"
@@ -541,6 +546,42 @@ func validateAndNormalizeSettings(doc map[string]any) string {
 		}
 	}
 	return ""
+}
+
+// maxPersonaPrefs caps the personaPrefs map (contracts/settings.schema.json)
+// so the settings item can never grow unbounded — a user cycling through
+// hundreds of shared personas keeps only the ~200 most recently edited
+// voice identities.
+const maxPersonaPrefs = 200
+
+// prunePersonaPrefs drops the oldest-updated entries until at most max
+// remain. Entries without an updatedAt (or with a non-string one) count as
+// oldest; RFC3339 UTC timestamps order correctly under plain string
+// comparison, and ties break on the persona id for determinism.
+func prunePersonaPrefs(pp map[string]any, max int) {
+	if len(pp) <= max {
+		return
+	}
+	type rec struct{ id, updatedAt string }
+	recs := make([]rec, 0, len(pp))
+	for id, raw := range pp {
+		u := ""
+		if entry, ok := raw.(map[string]any); ok {
+			if s, ok := entry["updatedAt"].(string); ok {
+				u = s
+			}
+		}
+		recs = append(recs, rec{id: id, updatedAt: u})
+	}
+	sort.Slice(recs, func(i, j int) bool {
+		if recs[i].updatedAt != recs[j].updatedAt {
+			return recs[i].updatedAt < recs[j].updatedAt
+		}
+		return recs[i].id < recs[j].id
+	})
+	for _, r := range recs[:len(recs)-max] {
+		delete(pp, r.id)
+	}
 }
 
 // ---- GET /api/v1/realtime/{voices,personas} (static catalogs) ----

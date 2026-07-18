@@ -1,0 +1,106 @@
+{{define "persona_editor"}}
+{{- /* Persona editor pop-up ("we need a persona, not a voice"): a native
+       <dialog> opened by personaeditor.mjs (openPersonaEditor(personaId),
+       called from the conversation page's Edit button). Voice AND accent
+       are embedded per persona — the selects here save to
+       settings.personaPrefs[personaId] (settings.schema.json); custom
+       personas additionally edit their name/description/instructions
+       through the persona CRUD API, while built-ins/shared show read-only
+       text with a "Duplicate to edit text" affordance (POST /api/v1/
+       personas {copyOf}).
+
+       Static skeleton only: personaeditor.mjs populates the selects from
+       GET /api/v1/realtime/voices (voices + accents catalogs — populated
+       controls, never blind text), toggles the field groups per persona
+       kind, and owns save/cancel. showModal() supplies the focus trap and
+       Escape-to-close; aria-labelledby points at the title. All colors are
+       --ln-* tokens, so both themes and every style zone keep AA. */}}
+<style>
+  .pe {
+    width: min(560px, calc(100vw - 32px));
+    max-height: min(85vh, 720px);
+    overflow-y: auto;
+    border: 1px solid var(--ln-border-strong);
+    border-radius: 14px;
+    background: var(--ln-surface-raised);
+    color: var(--ln-text);
+    padding: 24px;
+  }
+  .pe::backdrop { background: rgba(2, 8, 18, 0.65); }
+  .pe__title { margin: 0 0 4px; font-size: 1.25rem; }
+  .pe__subtitle { margin: 0 0 16px; color: var(--ln-text-muted); font-size: var(--ln-fs-sm); }
+  .pe__loading { margin: 8px 0 16px; color: var(--ln-text-muted); }
+  .pe__fields { display: flex; flex-direction: column; gap: var(--ln-sp-4); }
+  .pe__readonly {
+    border: 1px solid var(--ln-border);
+    border-radius: 10px;
+    background: var(--ln-surface);
+    padding: var(--ln-sp-3) var(--ln-sp-4);
+  }
+  .pe__readonly .ln-hint { margin-top: var(--ln-sp-2); }
+  .pe__readonly .ln-btn { margin-top: var(--ln-sp-3); }
+  .pe__desc { margin: 0; color: var(--ln-text-muted); }
+  .pe__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--ln-sp-3);
+    margin-top: 20px;
+  }
+</style>
+<dialog class="pe" id="personaEditor" aria-labelledby="personaEditorTitle" aria-describedby="personaEditorSubtitle">
+  <h2 class="pe__title" id="personaEditorTitle">Edit persona</h2>
+  <p class="pe__subtitle" id="personaEditorSubtitle"></p>
+
+  <p class="pe__loading" id="personaEditorLoading" role="status">Loading persona…</p>
+
+  <div class="pe__fields" id="personaEditorFields" hidden>
+    {{- /* Custom-persona text (the caller's OWN personas only; hidden for
+           built-ins/shared — their instruction text never leaves the
+           server, per internal/realtime/personas.go). */}}
+    <div class="ln-field" id="peNameField" hidden>
+      <label for="peName">Name</label>
+      <input class="ln-input" id="peName" type="text" maxlength="80" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="ln-field" id="peDescField" hidden>
+      <label for="peDescription">Description <span class="ln-dim">(optional)</span></label>
+      <input class="ln-input" id="peDescription" type="text" maxlength="200" autocomplete="off">
+    </div>
+    <div class="ln-field" id="peInstrField" hidden>
+      <label for="peInstructions">Instructions</label>
+      <textarea class="ln-textarea" id="peInstructions" rows="6" maxlength="4000"
+                aria-describedby="peInstrCount"></textarea>
+      <div class="ln-charcount"><span id="peInstrCount">0 / 4000</span></div>
+    </div>
+
+    {{- /* Built-in / shared personas: read-only text + duplicate-to-edit
+           (the existing copy API; the copy lands in "Mine" fully
+           editable). */}}
+    <div class="pe__readonly" id="peReadonly" hidden>
+      <p class="pe__desc" id="peReadonlyDesc"></p>
+      <p class="ln-hint" id="peReadonlyHint">This persona's text is read-only — duplicate it to make an editable copy of your own.</p>
+      <button class="ln-btn ln-btn--ghost" type="button" id="peDuplicateBtn">Duplicate to edit text</button>
+    </div>
+
+    {{- /* Voice identity (ALL personas): both selects are populated from
+           the /api/v1/realtime/voices catalogs and save to
+           personaPrefs[personaId]. */}}
+    <div class="ln-field">
+      <label for="peVoice">Voice</label>
+      <select class="ln-select" id="peVoice" aria-describedby="peVoiceHint"></select>
+      <p class="ln-hint" id="peVoiceHint">This persona speaks with this voice, starting with your next conversation.</p>
+    </div>
+    <div class="ln-field">
+      <label for="peAccent">Accent</label>
+      <select class="ln-select" id="peAccent" aria-describedby="peAccentHint"></select>
+      <p class="ln-hint" id="peAccentHint">Applied as a speaking-style instruction — any voice can carry any accent.</p>
+    </div>
+  </div>
+
+  <p class="ln-error-text" id="personaEditorError" role="alert" hidden></p>
+
+  <div class="pe__actions">
+    <button class="ln-btn ln-btn--ghost" type="button" id="personaEditorCancel">Cancel</button>
+    <button class="ln-btn ln-btn--primary" type="button" id="personaEditorSave">Save</button>
+  </div>
+</dialog>
+{{end}}

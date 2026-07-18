@@ -43,16 +43,24 @@ var reservedItemAttrs = []string{"pk", "sk", "ttl", "gsi1pk", "gsi1sk", "gsi2pk"
 // PUT against a not-yet-persisted document stores version 2.
 func DefaultSettings() map[string]any {
 	return map[string]any{
-		"version":       1,
-		"wakeWord":      "hey-live-ninja",
-		"wakeEngine":    "openwakeword",
-		"sensitivity":   0.5,
-		"persona":       map[string]any{"presetId": "default", "systemInstructions": nil},
-		"voice":         "cedar",
+		"version":     1,
+		"wakeWord":    "hey-live-ninja",
+		"wakeEngine":  "openwakeword",
+		"sensitivity": 0.5,
+		"persona":     map[string]any{"presetId": "default", "systemInstructions": nil},
+		"voice":       "cedar",
 		// voiceAccent: speech-accent directive id ("" = none). Not a separate
 		// voice — the broker turns it into an instruction line at mint
 		// (internal/realtime AccentDirective; catalog in SupportedAccents).
 		"voiceAccent": "",
+		// personaPrefs: per-persona voice identity map {personaId: {voice,
+		// accent, updatedAt}} — personas are the unit of voice identity. The
+		// top-level voice/voiceAccent above are only the account-wide
+		// fallback default; the broker resolves personaPrefs[persona] first
+		// at mint (internal/realtime ResolveSessionVoice). Stored documents
+		// that predate this field are seeded on read by
+		// migratePersonaPrefs below.
+		"personaPrefs":  map[string]any{},
 		"turnDetection": "semantic_vad",
 		"micEagerness":  "auto",
 		// Two style zones (owner-locked defaults): the conversation page's
@@ -62,10 +70,10 @@ func DefaultSettings() map[string]any {
 		"appearance": map[string]any{"appStyle": "ninja", "liveStyle": "hal9000", "accentColor": ""},
 		// Light is the app-zone default look (ninja-light); the live panel's
 		// chrome comes from liveStyle, not from this axis.
-		"theme":         "light",
-		"micDeviceId":   nil,
-		"voiceEngine":   map[string]any{"default": "openai-realtime", "devices": map[string]any{}},
-		"privacy":       map[string]any{"storeAudio": false, "storeTranscripts": true, "retentionDays": 30},
+		"theme":       "light",
+		"micDeviceId": nil,
+		"voiceEngine": map[string]any{"default": "openai-realtime", "devices": map[string]any{}},
+		"privacy":     map[string]any{"storeAudio": false, "storeTranscripts": true, "retentionDays": 30},
 	}
 }
 
@@ -170,6 +178,7 @@ func (s *Store) PutSettings(ctx context.Context, userID string, doc map[string]a
 // DefaultSettings without touching anything already present.
 func fillSettingsDefaults(doc map[string]any) {
 	migrateLegacyAppearance(doc)
+	migratePersonaPrefs(doc)
 	defaults := DefaultSettings()
 	for k, dv := range defaults {
 		cur, ok := doc[k]
@@ -209,4 +218,38 @@ func migrateLegacyAppearance(doc map[string]any) {
 		}
 	}
 	delete(ap, "themeStyle")
+}
+
+// migratePersonaPrefs seeds the per-persona voice-identity map on read for
+// stored documents that predate it (contracts/settings.schema.json
+// personaPrefs): the existing top-level voice/voiceAccent become
+// personaPrefs[current persona.presetId] ONCE, so the user's current
+// persona keeps sounding exactly as it did, and the top-level fields
+// degrade to the account-wide fallback default. Runs before
+// fillSettingsDefaults' fill pass so a document that already carries
+// personaPrefs (even empty — key presence is the "already migrated"
+// signal) is never re-seeded.
+func migratePersonaPrefs(doc map[string]any) {
+	if _, has := doc["personaPrefs"]; has {
+		return
+	}
+	voice, _ := doc["voice"].(string)
+	if voice == "" {
+		// Nothing to seed from; the fill pass supplies the empty map.
+		return
+	}
+	accent, _ := doc["voiceAccent"].(string)
+	presetID := "default"
+	if p, ok := doc["persona"].(map[string]any); ok {
+		if id, ok := p["presetId"].(string); ok && id != "" {
+			presetID = id
+		}
+	}
+	doc["personaPrefs"] = map[string]any{
+		presetID: map[string]any{
+			"voice":     voice,
+			"accent":    accent,
+			"updatedAt": time.Now().UTC().Format(time.RFC3339),
+		},
+	}
 }

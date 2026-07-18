@@ -2,7 +2,6 @@ package realtime
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 
@@ -80,8 +79,8 @@ func TestAccentDirective(t *testing.T) {
 	}
 }
 
-// fakeAccentSettingsGetter is a scripted SettingsGetter for
-// ResolveAccentDirective tests.
+// fakeAccentSettingsGetter is a scripted SettingsGetter for settings-read
+// resolution tests (accent + voiceprefs_test.go's ResolveSessionVoice).
 type fakeAccentSettingsGetter struct {
 	item map[string]ddbtypes.AttributeValue
 	err  error
@@ -92,55 +91,4 @@ func (f *fakeAccentSettingsGetter) GetItem(_ context.Context, _ *dynamodb.GetIte
 		return nil, f.err
 	}
 	return &dynamodb.GetItemOutput{Item: f.item}, nil
-}
-
-func TestResolveAccentDirective(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("accent set", func(t *testing.T) {
-		g := &fakeAccentSettingsGetter{item: map[string]ddbtypes.AttributeValue{
-			"voiceAccent": &ddbtypes.AttributeValueMemberS{Value: "scottish"},
-		}}
-		if got := ResolveAccentDirective(ctx, g, "tbl", "u1"); !strings.Contains(got, "Scottish accent") {
-			t.Errorf("got %q, want the Scottish directive", got)
-		}
-	})
-
-	t.Run("no accent stored", func(t *testing.T) {
-		g := &fakeAccentSettingsGetter{item: map[string]ddbtypes.AttributeValue{
-			"voiceAccent": &ddbtypes.AttributeValueMemberS{Value: ""},
-		}}
-		if got := ResolveAccentDirective(ctx, g, "tbl", "u1"); got != "" {
-			t.Errorf("got %q, want \"\"", got)
-		}
-	})
-
-	t.Run("missing settings document", func(t *testing.T) {
-		g := &fakeAccentSettingsGetter{item: nil}
-		if got := ResolveAccentDirective(ctx, g, "tbl", "u1"); got != "" {
-			t.Errorf("got %q, want \"\"", got)
-		}
-	})
-
-	t.Run("read error fails open to none", func(t *testing.T) {
-		g := &fakeAccentSettingsGetter{err: errors.New("dynamo down")}
-		if got := ResolveAccentDirective(ctx, g, "tbl", "u1"); got != "" {
-			t.Errorf("got %q, want \"\"", got)
-		}
-	})
-
-	t.Run("nil getter", func(t *testing.T) {
-		if got := ResolveAccentDirective(ctx, nil, "tbl", "u1"); got != "" {
-			t.Errorf("got %q, want \"\"", got)
-		}
-	})
-
-	t.Run("unknown stored accent mints without directive", func(t *testing.T) {
-		g := &fakeAccentSettingsGetter{item: map[string]ddbtypes.AttributeValue{
-			"voiceAccent": &ddbtypes.AttributeValueMemberS{Value: "future-accent-x"},
-		}}
-		if got := ResolveAccentDirective(ctx, g, "tbl", "u1"); got != "" {
-			t.Errorf("got %q, want \"\"", got)
-		}
-	})
 }

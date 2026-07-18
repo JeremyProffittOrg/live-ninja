@@ -873,26 +873,10 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
 /* Viewport-fixed (owner 2026-07-18): the page itself never scrolls — the
    transcript (.conv-main__scroll) and the rail scroll independently. */
 .conv-app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden; }
-.conv-header {
-  flex: none;
-  display: flex; align-items: center; gap: var(--ln-sp-4);
-  flex-wrap: wrap;
-  padding: var(--ln-sp-3) var(--ln-sp-5);
-  border-bottom: 1px solid var(--ln-border);
-  background: var(--ln-surface);
-  backdrop-filter: blur(10px);
-}
-.conv-quickswitch { display: flex; align-items: center; gap: var(--ln-sp-4); margin-left: auto; }
-.conv-quickswitch__group { display: flex; flex-direction: column; gap: 3px; min-width: 168px; }
-.conv-quickswitch__group label {
-  font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
-  color: var(--ln-text-dim); padding-left: 2px;
-}
-.conv-quickswitch select.ln-select {
-  min-height: 38px; padding: var(--ln-sp-1) var(--ln-sp-6) var(--ln-sp-1) var(--ln-sp-3);
-  font-size: var(--ln-fs-sm);
-  background-position: right var(--ln-sp-3) center;
-}
+/* Header removed (owner shell redesign 2026-07-18 v2): the state pill lives
+   in .conv-rail__top's status stack, persona moved into the rail, and site
+   nav lives in the docked settings drawer (see the CONVERSATION SHELL v2
+   section near the end of this file). */
 
 .state-pill {
   display: inline-flex; align-items: center; gap: var(--ln-sp-2);
@@ -1470,3 +1454,199 @@ html[data-ln-style="hal9000"] .conv-main { background: #23232b; }
 }
 .conv-banner__close:hover { background: var(--ln-surface-2); color: var(--ln-text); }
 .conv-banner__close:focus-visible { outline: none; box-shadow: var(--ln-focus); }
+
+/* ==========================================================================
+   CONVERSATION SHELL v2 (owner redesign 2026-07-18) — appended-only section.
+   The conv-header is gone: state pill + cost badge stack in the rail's
+   top-right, the persona picker + History/Memory nav live in the rail's
+   bottom cluster (separated by rules), mic-sensitivity chips sit under
+   "Test my mic", and site nav moved to a docked settings slide-out on the
+   right edge. Everything uses the shared --ln-* tokens (AA-checked per
+   theme/style at their definitions) so the hal9000 dark rail and the
+   ninja-light app zone both stay compliant with no hardcoded colors.
+   ========================================================================== */
+
+/* ---- rail top-right status stack: STATE pill over COST badge ---- */
+.conv-rail__status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;      /* right-aligned column (owner spec) */
+  gap: var(--ln-sp-1);
+  flex: none;
+}
+
+/* ---- horizontal rules between the rail's bottom-cluster groups ---- */
+.conv-rail__rule {
+  width: 100%;
+  flex: none;
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--ln-border-strong);
+}
+
+/* ---- persona picker row: select (no visible label; aria-label) + Edit ---- */
+.conv-persona-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--ln-sp-2);
+}
+.conv-persona-row .ln-select {
+  flex: 1 1 auto;
+  min-width: 0;               /* long persona names ellipsize, never overflow */
+  font-size: var(--ln-fs-sm);
+}
+.conv-persona-row .ln-btn { flex: none; padding: 0 var(--ln-sp-4); }
+
+/* ---- History / Memory link-buttons (house ghost style, 44px targets) ---- */
+.conv-rail__nav {
+  width: 100%;
+  display: flex;
+  gap: var(--ln-sp-2);
+}
+.conv-rail__nav .ln-btn { flex: 1 1 0; min-width: 0; font-size: var(--ln-fs-sm); }
+
+/* ---- mic sensitivity chips (settings micEagerness; under "Test my mic").
+   Pressed state = tint + ink + border + weight (never color alone; the
+   aria-pressed attribute carries the semantic). Tokens keep AA on the HAL
+   rail (accent-ink teal 12.9:1 on #050507) and in the light app theme. ---- */
+.conv-chiprow {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ln-sp-1);
+}
+.conv-chiprow__label {
+  font-size: var(--ln-fs-sm);
+  font-weight: 600;
+  color: var(--ln-text-muted);
+}
+.conv-chiprow__chips {
+  display: flex;
+  gap: var(--ln-sp-2);
+  width: 100%;
+}
+.ln-chip {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: var(--ln-touch);
+  padding: 0 var(--ln-sp-2);
+  font: inherit;
+  font-size: var(--ln-fs-sm);
+  font-weight: 600;
+  color: var(--ln-text-muted);
+  background: transparent;
+  border: 1px solid var(--ln-border-strong);
+  border-radius: var(--ln-r-pill);
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease, border-color .12s ease;
+}
+.ln-chip:hover { background: var(--ln-surface-2); color: var(--ln-text); }
+.ln-chip:focus-visible { outline: none; box-shadow: var(--ln-focus); }
+.ln-chip[aria-pressed="true"] {
+  background: var(--ln-accent-tint);
+  color: var(--ln-accent-ink);
+  border-color: currentColor;
+  font-weight: 750;
+}
+
+/* ---- docked settings slide-out: slim tab, right edge, vertically centered.
+   The tab and drawer sit in the APP style zone (outside #livePanel), so
+   they follow the app theme tokens. ---- */
+.conv-settings-tab {
+  position: fixed;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--ln-touch);
+  height: 56px;
+  padding: 0;
+  font: inherit;
+  font-size: 22px;
+  color: var(--ln-text);
+  background: var(--ln-surface-raised);
+  border: 1px solid var(--ln-border-strong);
+  border-right: none;
+  border-radius: var(--ln-r-md) 0 0 var(--ln-r-md);
+  box-shadow: var(--ln-shadow-sm);
+  cursor: pointer;
+  transition: background .12s ease;
+}
+.conv-settings-tab:hover { background: var(--ln-surface-2); }
+.conv-settings-tab:focus-visible { outline: none; box-shadow: var(--ln-focus); }
+
+/* Native <dialog> drawer: showModal() supplies focus trap + Escape;
+   conversation.mjs closes on scrim click. Padding lives on the inner
+   wrapper so a click that reaches the dialog element itself is always the
+   ::backdrop scrim. */
+dialog.conv-drawer {
+  position: fixed;
+  inset: 0 0 0 auto;          /* docked to the right edge */
+  margin: 0;
+  height: 100vh;
+  height: 100dvh;
+  max-height: 100dvh;
+  width: min(320px, 88vw);
+  max-width: 88vw;
+  padding: 0;
+  background: var(--ln-surface-raised);
+  color: var(--ln-text);
+  border: none;
+  border-left: 1px solid var(--ln-border-strong);
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.35);
+}
+dialog.conv-drawer::backdrop { background: rgba(4, 8, 14, 0.5); }
+dialog.conv-drawer[open] {
+  animation: conv-drawer-in .18s ease-out;
+}
+@keyframes conv-drawer-in {
+  from { transform: translateX(100%); }
+  to   { transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  dialog.conv-drawer[open] { animation: none; }
+}
+.conv-drawer__inner {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ln-sp-3);
+  padding: var(--ln-sp-4) var(--ln-sp-4) var(--ln-sp-5);
+  overflow-y: auto;
+}
+.conv-drawer__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ln-sp-2);
+}
+.conv-drawer__title {
+  margin: 0;
+  font-size: var(--ln-fs-sm);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ln-text-muted);
+}
+.conv-drawer__nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ln-sp-1);
+}
+.conv-drawer__link {
+  display: flex;
+  align-items: center;
+  min-height: var(--ln-touch);
+  padding: 0 var(--ln-sp-3);
+  border-radius: var(--ln-r-md);
+  color: var(--ln-text);
+  font-weight: 600;
+  text-decoration: none;
+  transition: background .12s ease;
+}
+.conv-drawer__link:hover { background: var(--ln-surface-2); text-decoration: none; }
+.conv-drawer__link:focus-visible { outline: none; box-shadow: var(--ln-focus); }

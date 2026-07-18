@@ -141,6 +141,11 @@
         {{range .Personas}}<option value="{{.ID}}"{{if .Selected}} selected{{end}}>{{.Name}}{{if .Description}} — {{.Description}}{{end}}</option>
         {{end}}<option value="custom"{{if .IsCustomPersona}} selected{{end}}>Custom — write your own instructions</option>
       </select>
+      {{- /* Voice + accent moved out of Settings: personas are the unit of
+             voice identity (settings.schema.json personaPrefs) — each
+             persona carries its own voice and accent, edited in the
+             persona editor pop-up. */}}
+      <p class="ln-hint">Each persona carries its own voice and accent — use Edit next to the persona picker on the <a href="/conversation">Conversation</a> page to change how it sounds.</p>
     </div>
 
     <div class="ln-field" id="customInstructionsField" {{if not .IsCustomPersona}}hidden{{end}}>
@@ -152,94 +157,11 @@
     </div>
   </section>
 
-  <!-- ============ Voice ============ -->
-  <section class="ln-card set-section" aria-labelledby="sectionVoice">
-    <div class="set-section__intro">
-      <h2 class="ln-card__title" id="sectionVoice">Voice</h2>
-      <p class="ln-muted">Pick how Live Ninja sounds. Preview any voice before choosing.</p>
-    </div>
-
-    <!-- Voice-section-scoped styles (chips + gender tag + accent field);
-         tokens come from app.css so both light/dark themes keep AA. -->
-    <style>
-      .set-voice-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: var(--ln-sp-3); }
-      .set-voice-chip {
-        display: inline-flex; align-items: center; justify-content: center;
-        min-height: 36px; padding: 0 var(--ln-sp-4);
-        font: inherit; font-size: var(--ln-fs-sm); font-weight: 700;
-        color: var(--ln-text-muted);
-        background: var(--ln-input-bg);
-        border: 1px solid var(--ln-border-strong);
-        border-radius: var(--ln-r-pill);
-        cursor: pointer;
-        transition: background .12s ease, color .12s ease;
-      }
-      .set-voice-chip:hover { background: var(--ln-surface-2); }
-      .set-voice-chip:focus-visible { box-shadow: var(--ln-focus); outline: none; }
-      .set-voice-chip[aria-pressed="true"] {
-        background: linear-gradient(135deg, var(--ln-teal), var(--ln-teal-600));
-        color: var(--ln-text-on-teal);
-        border-color: transparent;
-        box-shadow: var(--ln-shadow-teal);
-      }
-      .set-voice-tag {
-        display: inline-block; margin-left: 6px; padding: 1px 8px;
-        font-size: var(--ln-fs-sm); font-weight: 600; text-transform: capitalize;
-        color: var(--ln-text-muted);
-        border: 1px solid var(--ln-border-strong);
-        border-radius: var(--ln-r-pill);
-        vertical-align: middle;
-      }
-      .set-voice-accent { margin-top: var(--ln-sp-4); }
-    </style>
-
-    <fieldset class="ln-fieldset">
-      <legend class="ln-sr-only">Voice</legend>
-      {{- /* Gender filter chips: single-select view filter over the rows
-             below (data-voice-gender), wired in settings.mjs. Real buttons
-             with aria-pressed; "All" also shows the neutral voices. The
-             tags are the commonly PERCEIVED voice presentation — OpenAI
-             publishes no official labels. */}}
-      <div class="set-voice-chips" id="voiceGenderChips" role="group" aria-label="Filter voices by perceived gender">
-        <button type="button" class="set-voice-chip" data-gender-filter="" aria-pressed="true">All</button>
-        <button type="button" class="set-voice-chip" data-gender-filter="female" aria-pressed="false">Female</button>
-        <button type="button" class="set-voice-chip" data-gender-filter="male" aria-pressed="false">Male</button>
-      </div>
-      {{- /* Rows in canonical enum order (settings.schema.json #/properties/
-             voice) from realtime.SupportedVoices, fully server-rendered;
-             settings.mjs enables the preview buttons (POST
-             /api/v1/fallback/tts). An unrecognized stored voice renders
-             with cedar selected but is preserved verbatim on write-back. */}}
-      <div class="set-voice-list" id="voiceList">
-        {{range .Voices}}
-        <label class="set-voice-row" data-voice-gender="{{.Gender}}">
-          <input type="radio" name="voice" value="{{.ID}}"{{if .Selected}} checked{{end}}>
-          <span class="set-voice-info">
-            <span class="set-voice-name">{{.Name}}{{if .Default}} <span class="ln-dim">(default)</span>{{end}}<span class="set-voice-tag">{{.Gender}}</span></span>
-            <span class="set-voice-desc">{{.Description}}</span>
-          </span>
-          <button class="set-voice-preview" type="button" disabled aria-pressed="false"
-                  aria-label="Preview the {{.Name}} voice" data-voice-preview="{{.ID}}">
-            <span aria-hidden="true">▶</span>
-          </button>
-        </label>
-        {{end}}
-      </div>
-    </fieldset>
-
-    {{- /* Accent picker: enumerated select over the accents catalog (never
-           free text). Accents are not separate voices — the broker appends
-           a short speech-style directive to the session instructions at
-           mint. Stored value "" maps to the "none"/Default option. */}}
-    <div class="ln-field set-voice-accent">
-      <label for="voiceAccent">Accent</label>
-      <select class="ln-select" id="voiceAccent">
-        {{range .Accents}}<option value="{{.ID}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
-        {{end}}
-      </select>
-      <p class="ln-hint">Any voice can speak with an accent — it's applied as a speaking-style instruction and takes effect at your next conversation.</p>
-    </div>
-  </section>
+  {{- /* The standalone Voice + Accent section is gone: personas are the
+         unit of voice identity. Voice and accent are embedded per persona
+         (settings.schema.json personaPrefs) and edited in the persona
+         editor pop-up on the Conversation page; the hint in the Persona
+         section above points there. */}}
 
   <!-- ============ Voice engine (M12 FR-VE-04) ============ -->
   <!-- ==================== voice-engine-section:BEGIN ====================

@@ -289,21 +289,15 @@ function renderField(key) {
       syncInstructionsCount();
       break;
     }
-    case 'voice': {
-      const r = document.querySelector(`input[name="voice"][value="${CSS.escape(doc.voice)}"]`);
-      if (r) r.checked = true;
+    case 'voice':
+    case 'voiceAccent':
+    case 'personaPrefs':
+      // Personas are the unit of voice identity: voice/accent are edited
+      // per persona in the conversation page's persona editor
+      // (personaeditor.mjs) and stored under personaPrefs; the top-level
+      // voice/voiceAccent remain in the doc purely as the fallback default.
+      // No controls on this page — the values ride the write-back untouched.
       break;
-    }
-    case 'voiceAccent': {
-      // Stored "" (no accent) selects the catalog's "none" option; an
-      // unknown stored id also shows Default while the doc value is
-      // preserved on write-back (schema forward-compat rule).
-      const sel = $('voiceAccent');
-      if (!sel) break;
-      const want = doc.voiceAccent || 'none';
-      sel.value = [...sel.options].some((o) => o.value === want) ? want : 'none';
-      break;
-    }
     case 'turnDetection': {
       const r = document.querySelector(`input[name="turnDetection"][value="${CSS.escape(doc.turnDetection)}"]`);
       if (r) r.checked = true;
@@ -977,108 +971,12 @@ instructionsArea.addEventListener('paste', (e) => {
   }
 });
 
-// ---- voice + preview ---------------------------------------------------
-
-for (const r of document.querySelectorAll('input[name="voice"]')) {
-  r.addEventListener('change', () => {
-    if (!r.checked) return;
-    doc.voice = r.value;
-    markChanged('voice');
-  });
-}
-
-// Gender filter chips (All / Female / Male): a single-select VIEW filter
-// over the server-rendered rows' data-voice-gender tags — it never changes
-// the selection, so a voice picked under one filter stays chosen (and
-// saved) even while its row is filtered out of view.
-const genderChipWrap = $('voiceGenderChips');
-if (genderChipWrap) {
-  genderChipWrap.addEventListener('click', (e) => {
-    const btn = e.target.closest('[data-gender-filter]');
-    if (!btn) return;
-    for (const b of genderChipWrap.querySelectorAll('[data-gender-filter]')) {
-      b.setAttribute('aria-pressed', String(b === btn));
-    }
-    const want = btn.dataset.genderFilter; // "" = All (neutral voices included)
-    for (const row of document.querySelectorAll('#voiceList .set-voice-row')) {
-      row.hidden = !!want && row.dataset.voiceGender !== want;
-    }
-  });
-}
-
-// Accent select: enumerated accents catalog (SSR-populated). The catalog's
-// "none" option is stored as "" per settings.schema.json's voiceAccent.
-const accentSel = $('voiceAccent');
-if (accentSel) {
-  accentSel.addEventListener('change', () => {
-    doc.voiceAccent = accentSel.value === 'none' ? '' : accentSel.value;
-    markChanged('voiceAccent');
-  });
-}
-
-const PREVIEW_SAMPLE = "Hi, I'm Live Ninja. This is how I sound.";
-let previewAudio = null;
-let previewBtn = null;
-let previewUrl = null;
-let previewSeq = 0;
-
-function stopPreview() {
-  previewSeq += 1;
-  if (previewAudio) {
-    previewAudio.pause();
-    previewAudio = null;
-  }
-  if (previewUrl) {
-    URL.revokeObjectURL(previewUrl);
-    previewUrl = null;
-  }
-  if (previewBtn) {
-    previewBtn.classList.remove('is-playing');
-    previewBtn.setAttribute('aria-pressed', 'false');
-    previewBtn = null;
-  }
-}
-
-async function togglePreview(btn, voiceId) {
-  if (previewBtn === btn) {
-    stopPreview();
-    return;
-  }
-  stopPreview(); // only one sample at a time (spec §3.3)
-  const seq = previewSeq;
-  previewBtn = btn;
-  btn.classList.add('is-playing');
-  btn.setAttribute('aria-pressed', 'true');
-  try {
-    const resp = await authFetch('/api/v1/fallback/tts', {
-      method: 'POST',
-      json: { text: PREVIEW_SAMPLE, voice: voiceId },
-    });
-    if (!resp.ok) throw new ApiError(resp.status, await resp.json().catch(() => null));
-    const blob = await resp.blob();
-    if (seq !== previewSeq) return; // superseded by another click
-    previewUrl = URL.createObjectURL(blob);
-    previewAudio = new Audio(previewUrl);
-    previewAudio.addEventListener('ended', stopPreview);
-    await previewAudio.play();
-  } catch {
-    if (seq === previewSeq) {
-      stopPreview();
-      showToast("Couldn't play the voice sample — try again.", { error: true });
-    }
-  }
-}
-
-for (const btn of document.querySelectorAll('[data-voice-preview]')) {
-  btn.disabled = false; // SSR ships them disabled; JS makes them live
-  btn.addEventListener('click', (e) => {
-    // The button sits inside the radio's <label>: stop the click from
-    // also activating the row's radio.
-    e.preventDefault();
-    e.stopPropagation();
-    togglePreview(btn, btn.dataset.voicePreview);
-  });
-}
+// ---- voice + accent: moved to the persona editor -----------------------
+// The standalone Voice/Accent section is gone from this page: personas are
+// the unit of voice identity (settings.schema.json personaPrefs), edited in
+// the conversation page's persona editor (personaeditor.mjs). The doc's
+// top-level voice/voiceAccent fields survive as the fallback default and
+// are preserved untouched by the whole-document autosave PUT.
 
 // ---- turn detection ----------------------------------------------------
 

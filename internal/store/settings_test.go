@@ -29,6 +29,59 @@ func TestGetSettingsDefaultsWhenAbsent(t *testing.T) {
 	privacy, ok := doc["privacy"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, false, privacy["storeAudio"])
+	pp, ok := doc["personaPrefs"].(map[string]any)
+	require.True(t, ok, "fresh defaults carry an empty personaPrefs map")
+	assert.Empty(t, pp)
+}
+
+// TestGetSettingsMigratesPersonaPrefs: a stored document that predates
+// personaPrefs seeds personaPrefs[current persona.presetId] once from the
+// top-level voice/voiceAccent (the persona keeps its current sound); the
+// top-level fields stay in place as the fallback default.
+func TestGetSettingsMigratesPersonaPrefs(t *testing.T) {
+	ctx := context.Background()
+	st, _ := newTestStore()
+
+	doc := DefaultSettings()
+	delete(doc, "personaPrefs") // simulate a pre-personaPrefs writer
+	doc["voice"] = "ballad"
+	doc["voiceAccent"] = "irish"
+	doc["persona"] = map[string]any{"presetId": "noir-detective", "systemInstructions": nil}
+	_, err := st.PutSettings(ctx, "uid-1", doc, 1)
+	require.NoError(t, err)
+
+	got, err := st.GetSettings(ctx, "uid-1")
+	require.NoError(t, err)
+	pp, ok := got["personaPrefs"].(map[string]any)
+	require.True(t, ok, "personaPrefs must be seeded on read")
+	entry, ok := pp["noir-detective"].(map[string]any)
+	require.True(t, ok, "the current persona's entry must be seeded, got %v", pp)
+	assert.Equal(t, "ballad", entry["voice"])
+	assert.Equal(t, "irish", entry["accent"])
+	assert.NotEmpty(t, entry["updatedAt"])
+	// Top-level fields survive as the fallback default.
+	assert.Equal(t, "ballad", got["voice"])
+	assert.Equal(t, "irish", got["voiceAccent"])
+}
+
+// TestGetSettingsDoesNotReseedPersonaPrefs: key presence — even an empty
+// map — means "already migrated"; the seed must never run twice (it would
+// resurrect a pref the user deliberately removed).
+func TestGetSettingsDoesNotReseedPersonaPrefs(t *testing.T) {
+	ctx := context.Background()
+	st, _ := newTestStore()
+
+	doc := DefaultSettings()
+	doc["voice"] = "ballad"
+	doc["personaPrefs"] = map[string]any{} // present and deliberately empty
+	_, err := st.PutSettings(ctx, "uid-1", doc, 1)
+	require.NoError(t, err)
+
+	got, err := st.GetSettings(ctx, "uid-1")
+	require.NoError(t, err)
+	pp, ok := got["personaPrefs"].(map[string]any)
+	require.True(t, ok)
+	assert.Empty(t, pp, "an existing (empty) personaPrefs map must not be re-seeded")
 }
 
 // TestGetSettingsMigratesLegacyThemeStyle: a stored pre-split appearance

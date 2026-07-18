@@ -280,17 +280,6 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 		engine = voiceengine.EngineOpenAIRealtime
 	}
 
-	// OpenAI-direct engines validate the requested voice up front; nova-sonic
-	// uses its own voice set (resolved by the bridge) so it skips this check.
-	var voice string
-	if engine.IsClientDirect() {
-		v, ok := realtime.ResolveVoice(req.VoiceOverride)
-		if !ok {
-			return badRequest("voiceOverride is not a supported realtime voice")
-		}
-		voice = v
-	}
-
 	// Pre-spend gate: bucket -> daily -> monthly. Runs and settles before
 	// any OpenAI/Bedrock (or even SSM key) touch, so a rejection costs
 	// nothing — and gates both engines identically at session start.
@@ -316,12 +305,22 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 		return b.handleNovaBridge(ctx, l, req, sessionID, warnings)
 	}
 
-	// Accent directive (voiceAccent setting): resolved broker-side from the
-	// settings document like the engine pin. Best-effort — ""/unknown/read
-	// failure simply mints without an accent. Composed after the memory
-	// directive and before the guide suffix (realtime.Mint appends the
-	// combined suffix after memoryUsageDirective).
-	accentDirective := realtime.ResolveAccentDirective(ctx, b.settings, b.table, req.UserID)
+	// Persona-embedded voice identity (personas are the unit of voice
+	// identity): one settings read resolves the locked precedence chain
+	//
+	//	voice  = personaPrefs[persona].voice ?? persona's suggested voice
+	//	         ?? top-level voice/voiceOverride ?? cedar
+	//	accent = personaPrefs[persona].accent ?? top-level voiceAccent
+	//
+	// Lenient end-to-end (internal/realtime/voiceprefs.go): unknown values
+	// and read failures fall through the chain — the old voiceOverride 400
+	// is gone; a stale/unknown stored voice now mints on the next candidate
+	// instead of failing the session. The accent directive composes after
+	// the memory directive and before the guide suffix (realtime.Mint
+	// appends the combined suffix after memoryUsageDirective).
+	sv := realtime.ResolveSessionVoice(ctx, b.settings, b.table, req.UserID, req.Persona, req.VoiceOverride)
+	voice := sv.Voice
+	accentDirective := realtime.AccentDirective(sv.AccentID)
 
 	// Guide Entity injection (FR-MEM-07): append the user's enabled guides
 	// to the persona instructions, priority order. Best-effort — a guide

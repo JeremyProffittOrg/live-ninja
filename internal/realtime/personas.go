@@ -23,12 +23,16 @@ const DefaultVoice = "cedar"
 // duplicate-then-edit copy seeds from), while Instructions is the full
 // composed text bound into a session (operational core + style).
 type Persona struct {
-	ID           string
-	Name         string
-	Description  string
-	Voice        string
-	Style        string
-	Instructions string
+	ID          string
+	Name        string
+	Description string
+	Voice       string
+	// SuggestedAccent is the built-in's baseline accents-catalog id ("" =
+	// none). It seeds the accent when the user hasn't set one for this
+	// persona (ResolveAccentChain); a personaPrefs accent always overrides.
+	SuggestedAccent string
+	Style           string
+	Instructions    string
 }
 
 // coreInstructions is the operational core every persona shares: language,
@@ -86,7 +90,7 @@ func ComposeCustomInstructions(style string) string {
 
 // builtinDef is one seed row for the built-in registry below.
 type builtinDef struct {
-	id, name, description, voice, style string
+	id, name, description, voice, accent, style string
 }
 
 // builtinDefs seeds the built-in persona registry. Style blocks are
@@ -129,7 +133,7 @@ var builtinDefs = []builtinDef{
 		id:          "deputy-chief",
 		name:        "Josh Lyman",
 		description: "West Wing deputy chief of staff — wonky, driven, walk-and-talk energy.",
-		voice:       "marin",
+		voice:       "ash",
 		style: "You are a brilliant, cocky-but-lovable deputy White House chief of staff " +
 			"perpetually mid walk-and-talk. Talk fast, in confident bursts, with policy-wonk " +
 			"detail and rapid-fire rhetorical questions you immediately answer yourself. " +
@@ -147,6 +151,7 @@ var builtinDefs = []builtinDef{
 		name:        "Noir Detective",
 		description: "World-weary gumshoe narration — rain, shadows, short sentences.",
 		voice:       "ash",
+		accent:      "new-york",
 		style: "You are a world-weary private detective narrating from a rain-streaked office " +
 			"at 2 a.m. Speak in short, hard-boiled sentences. Facts are \"leads\", problems are " +
 			"\"cases\", and answers \"crack them wide open\". Deal in similes like a card shark " +
@@ -158,6 +163,7 @@ var builtinDefs = []builtinDef{
 		name:        "The Bard",
 		description: "Elizabethan flourish — thee, thou, and iambic swagger.",
 		voice:       "ballad",
+		accent:      "british",
 		style: "You are a theatrical Elizabethan playwright-poet. Address the user as \"good " +
 			"my friend\" or \"gentle user\", favor \"thee\", \"thou\", \"'tis\", and \"anon\", " +
 			"and deliver answers with dramatic flourish — the weather report a soliloquy, a " +
@@ -202,6 +208,7 @@ var builtinDefs = []builtinDef{
 		name:        "The Butler",
 		description: "Impeccably proper British butler — discreet, dry, unflappable.",
 		voice:       "verse",
+		accent:      "british",
 		style: "You are an impeccably mannered English butler of long service. Address the " +
 			"user as \"sir or madam\" (or their name, once known), favor understatement — " +
 			"\"a trifling matter\", \"very good\" — and deliver even alarming news with " +
@@ -246,6 +253,7 @@ var builtinDefs = []builtinDef{
 		name:        "The Sommelier",
 		description: "Haute wine-and-cheese steward — tasting notes, pairings, and a gentle upsell.",
 		voice:       "verse",
+		accent:      "french",
 		style: "You are an impeccably refined sommelier and fromager at an exclusive cellar. " +
 			"Describe everything in lush tasting notes — structure, terroir, finish — and find " +
 			"any excuse to recommend a magnificent (and magnificently priced) bottle with its " +
@@ -272,7 +280,7 @@ var builtinDefs = []builtinDef{
 		id:          "swamp-master",
 		name:        "Yoda",
 		description: "Nine hundred years of wisdom — inverted the syntax is, hmm.",
-		voice:       "echo",
+		voice:       "sage",
 		style: "You are a tiny, ancient, immensely wise master who speaks with object-subject-" +
 			"verb inversion (\"Strong with you, the answer is\"). Be patient, cryptic-but-kind, " +
 			"and fond of short aphorisms about patience and fear. Hmm and chuckle softly " +
@@ -308,12 +316,13 @@ var personas = func() map[string]Persona {
 	m := make(map[string]Persona, len(builtinDefs))
 	for _, d := range builtinDefs {
 		m[d.id] = Persona{
-			ID:           d.id,
-			Name:         d.name,
-			Description:  d.description,
-			Voice:        d.voice,
-			Style:        d.style,
-			Instructions: composeStyle(d.style),
+			ID:              d.id,
+			Name:            d.name,
+			Description:     d.description,
+			Voice:           d.voice,
+			SuggestedAccent: d.accent,
+			Style:           d.style,
+			Instructions:    composeStyle(d.style),
 		}
 	}
 	return m
