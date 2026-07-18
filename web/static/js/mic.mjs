@@ -654,14 +654,16 @@ export class MicController extends EventTarget {
   }
 
   #idleHint(forWakeResume = false) {
+    // The static "Press Space or click mic to talk" hint lives under the mic
+    // (owner 2026-07-18), so idle status only carries wake-specific state.
     if (this.handsFree) {
       const phrase = this.#getWakePhrase();
       if (forWakeResume) {
         return phrase ? `Say “${phrase}” or tap the mic to continue` : 'Say your wake phrase or tap the mic to continue';
       }
-      return 'Tap the mic or say your wake phrase to start';
+      return phrase ? `Say “${phrase}” anytime` : 'Hands-free listening';
     }
-    return 'Tap the mic to start';
+    return '';
   }
 
   #statusFor(state) {

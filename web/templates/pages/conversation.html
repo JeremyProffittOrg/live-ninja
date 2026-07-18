@@ -43,60 +43,57 @@
          stamped server-side so first paint has no flash; theme.js re-stamps
          it from the cached/synced appearance (appearance.liveStyle). -->
     <section class="conv-rail" id="livePanel" data-ln-style="hal9000" aria-label="Voice controls">
-      {{- /* Live session cost estimate (conversation.mjs); hidden until a
-             session starts, resets on New conversation. openai-direct
-             only — internal/realtime/rates.go supplies the per-model
-             pricing this badge multiplies token usage against. */}}
-      <span class="cost-badge" id="costBadge" hidden title="">~$0.000</span>
+      {{- /* Rail top row (owner layout 2026-07-18): New conversation on the
+             left, live session cost estimate upper-right (conversation.mjs;
+             hidden until a session starts, resets on New conversation;
+             internal/realtime/rates.go supplies the pricing). */}}
+      <div class="conv-rail__top">
+        <button class="ln-btn ln-btn--ghost" type="button" id="newConversationBtn">New conversation</button>
+        <span class="cost-badge" id="costBadge" hidden title="">~$0.000</span>
+      </div>
 
       {{template "audio_viz" .}}
 
-      <p class="conv-status-text" id="statusText">Tap the mic to start</p>
+      <p class="conv-status-text" id="statusText"></p>
 
       <div class="ptt-wrap">
-        <button class="ptt" id="pttBtn" type="button" data-state="idle"
-                aria-pressed="false" aria-label="Push to talk, currently off — tap to start">
-          <span aria-hidden="true">🎙</span>
-          <span class="ln-sr-only" data-ln-label>Start talking</span>
-        </button>
-        <p class="ptt-hint">Press <kbd>Space</kbd> to talk</p>
+        {{- /* Wake word is a compact toggle-button at the lower-left of the
+               mic (owner spec). Same ids as before so wakeword.mjs/mic.mjs
+               bindings are unchanged; wakeword.mjs hides #wakeToggleWrap
+               when WASM/AudioWorklet is unavailable. */}}
+        <div class="ptt-zone">
+          <label class="wake-chip" id="wakeToggleWrap">
+            <input type="checkbox" id="wakeToggle" aria-labelledby="wakeToggleLabel" aria-describedby="wakeHint">
+            <span aria-hidden="true">👂</span>
+            <span class="wake-chip__text">
+              <span class="ln-label" id="wakeToggleLabel">Wake word</span>
+              <span class="wakeword-phrase" id="wakePhrase" hidden></span>
+            </span>
+          </label>
+          <button class="ptt" id="pttBtn" type="button" data-state="idle"
+                  aria-pressed="false" aria-label="Push to talk, currently off — tap to start">
+            <span aria-hidden="true">🎙</span>
+            <span class="ln-sr-only" data-ln-label>Start talking</span>
+          </button>
+        </div>
+        <p class="ptt-hint">Press <kbd>Space</kbd> or click mic to talk</p>
+        <p class="wakeword-hint ln-sr-only" id="wakeHint">Off — use the push-to-talk button to start a turn.</p>
       </div>
 
       <button class="ln-btn ln-btn--ghost" type="button" data-ln-end hidden>End conversation</button>
 
-      <div class="conv-divider" role="presentation"></div>
-
-      <div class="wakeword-block">
-        <div class="wakeword-row">
-          <div class="wakeword-copy">
-            <span class="ln-label" id="wakeToggleLabel">Hands-free wake word</span>
-            <span class="wakeword-phrase" id="wakePhrase" hidden></span>
-          </div>
-          {{- /* Off by default (M3 DoD). wakeword.mjs hides the toggle and
-                 shows the unsupported note when WASM/AudioWorklet is
-                 unavailable — click-to-talk always remains. */}}
-          <label class="ln-toggle" id="wakeToggleWrap">
-            <input type="checkbox" id="wakeToggle" aria-labelledby="wakeToggleLabel" aria-describedby="wakeHint">
-            <span class="ln-toggle-track" aria-hidden="true"><span class="ln-toggle-thumb"></span></span>
-          </label>
-        </div>
-        <p class="wakeword-hint" id="wakeHint">Off — use the push-to-talk button to start a turn.</p>
-      </div>
-
-      <div class="conv-divider" role="presentation"></div>
+      {{- /* Off by default (owner 2026-07-18); localStorage-persisted in
+             conversation.mjs. */}}
+      <label class="conv-topbar__toggle">
+        <input type="checkbox" id="showToolsToggle">
+        <span>Show tool calls</span>
+      </label>
 
       <button class="ln-btn ln-btn--ghost" type="button" id="micTestBtn">Test my mic</button>
     </section>
 
     <!-- Right column: transcript + composer -->
     <section class="conv-main" aria-label="Conversation">
-      <div class="conv-topbar">
-        <label class="conv-topbar__toggle">
-          <input type="checkbox" id="showToolsToggle" checked>
-          <span>Show tool calls</span>
-        </label>
-        <button class="ln-btn ln-btn--ghost" type="button" id="newConversationBtn">New conversation</button>
-      </div>
       <div class="conv-main__scroll" id="transcriptScroll">
         {{- /* Empty by design on load — no fabricated turns (spec §2.5).
                transcript.mjs appends bubbles/tool cards as text nodes. */}}

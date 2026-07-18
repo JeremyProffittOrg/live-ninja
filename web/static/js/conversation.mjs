@@ -499,9 +499,9 @@ function showToolCalls() {
 
 if (showToolsToggle) {
   try {
-    showToolsToggle.checked = localStorage.getItem(SHOW_TOOLS_KEY) !== '0';
+    showToolsToggle.checked = localStorage.getItem(SHOW_TOOLS_KEY) === '1';
   } catch {
-    /* storage unavailable — default on */
+    /* storage unavailable — default off (owner 2026-07-18) */
   }
   showToolsToggle.addEventListener('change', () => {
     try {
