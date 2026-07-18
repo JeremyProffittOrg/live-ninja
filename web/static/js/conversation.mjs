@@ -625,7 +625,12 @@ async function setWakeListening(on) {
       if (err && err.code === 'unsupported') {
         mic.setHandsFreeAvailable(false);
       } else {
-        toast("Couldn't start hands-free listening — use the mic button.", { error: true });
+        // Owner rule: never a bare "couldn't" — the underlying error goes in
+        // the banner's Details so it's report-able.
+        toast("Couldn't start hands-free listening — use the mic button.", {
+          error: true,
+          detail: (err && (err.message || String(err))) || 'unknown error',
+        });
         renderWakeUI();
       }
     } finally {

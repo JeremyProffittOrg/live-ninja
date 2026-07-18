@@ -161,15 +161,28 @@ function waitForIceGathering(pc, timeoutMs) {
   if (pc.iceGatheringState === 'complete') return Promise.resolve();
   return new Promise((resolve) => {
     const timer = setTimeout(done, timeoutMs); // trickle-less best effort
+    let settle = 0;
     function done() {
       clearTimeout(timer);
+      clearTimeout(settle);
       pc.removeEventListener('icegatheringstatechange', check);
+      pc.removeEventListener('icecandidate', onCandidate);
       resolve();
     }
     function check() {
       if (pc.iceGatheringState === 'complete') done();
     }
+    function onCandidate(e) {
+      // First candidate + a short settle beats waiting for "complete":
+      // OpenAI accepts host/srflx candidates, and full gathering can burn
+      // the whole timeout on a slow STUN/mDNS path (owner: connect "takes
+      // a few seconds to become ready").
+      if (e.candidate && !settle) {
+        settle = setTimeout(done, 150);
+      }
+    }
     pc.addEventListener('icegatheringstatechange', check);
+    pc.addEventListener('icecandidate', onCandidate);
   });
 }
 
