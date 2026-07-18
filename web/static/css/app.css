@@ -1094,3 +1094,47 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
 .mictest__tips li { margin-bottom: 10px; color: var(--ln-text-muted); line-height: 1.45; }
 .mictest__tips code { word-break: break-all; }
 .mictest__actions { display: flex; justify-content: flex-end; margin-top: 18px; }
+
+/* ---- conversation top bar (tool-call toggle + new conversation) ------- */
+.conv-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--ln-border);
+}
+.conv-topbar__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ln-text-muted);
+  font-size: 0.9rem;
+  cursor: pointer;
+  user-select: none;
+}
+.conv-topbar__toggle input { accent-color: var(--ln-cyan); width: 16px; height: 16px; }
+
+/* ---- tool-activity badge (upper-left of the orb) ---------------------- */
+.conv-rail__orbwrap { position: relative; }
+.tool-activity {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  z-index: 2;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  border-radius: 50%;
+  background: var(--ln-surface-raised);
+  border: 1px solid var(--ln-border-strong);
+  box-shadow: 0 0 12px rgba(56, 208, 255, 0.35);
+  animation: tool-activity-pulse 1.2s ease-in-out infinite;
+}
+@keyframes tool-activity-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.12); }
+}

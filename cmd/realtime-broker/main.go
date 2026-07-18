@@ -67,7 +67,10 @@ type Request struct {
 	DeviceID      string          `json:"deviceId,omitempty"`
 	Persona       string          `json:"persona,omitempty"`
 	VoiceOverride string          `json:"voiceOverride,omitempty"`
-	Payload       json.RawMessage `json:"payload,omitempty"`
+	// MicEagerness maps to semantic VAD's eagerness (low|medium|high|auto);
+	// empty means auto.
+	MicEagerness string          `json:"micEagerness,omitempty"`
+	Payload      json.RawMessage `json:"payload,omitempty"`
 }
 
 type turnPayload struct {
@@ -299,7 +302,7 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 	}
 
 	start := time.Now()
-	res, err := b.minter.Mint(ctx, req.Persona, voice, guideSuffix)
+	res, err := b.minter.Mint(ctx, req.Persona, voice, req.MicEagerness, guideSuffix)
 	observ.EmitMetric(metricsNamespace, "EphemeralTokenMintLatency",
 		float64(time.Since(start).Milliseconds()), "Milliseconds",
 		map[string]string{"Surface": req.Surface})

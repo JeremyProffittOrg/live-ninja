@@ -384,7 +384,10 @@ function attachTranscriptRendering(session) {
   session.addEventListener('connectionlost', () => transcript.hideTypingIndicator());
   session.addEventListener('closed', () => transcript.hideTypingIndicator());
 
+  session.addEventListener('toolcall', () => toolActivityStart());
   session.addEventListener('toolresult', (e) => {
+    toolActivityEnd();
+    if (!showToolCalls()) return;
     const { tool, result } = e.detail;
     transcript.appendToolResultCard({
       icon: '🛠',
@@ -395,6 +398,8 @@ function attachTranscriptRendering(session) {
     });
   });
   session.addEventListener('toolerror', (e) => {
+    toolActivityEnd();
+    if (!showToolCalls()) return;
     transcript.appendToolResultCard({
       icon: '🛠',
       title: toolTitle(e.detail.tool),
@@ -403,6 +408,59 @@ function attachTranscriptRendering(session) {
       fields: [['Status', 'The tool call failed — the assistant was told.']],
     });
   });
+  session.addEventListener('closed', () => toolActivityReset());
+  session.addEventListener('connectionlost', () => toolActivityReset());
+}
+
+// ---- tool-call visibility toggle + in-flight activity badge --------------
+
+const SHOW_TOOLS_KEY = 'ln.showToolCalls';
+const showToolsToggle = $('showToolsToggle');
+
+function showToolCalls() {
+  return !showToolsToggle || showToolsToggle.checked;
+}
+
+if (showToolsToggle) {
+  try {
+    showToolsToggle.checked = localStorage.getItem(SHOW_TOOLS_KEY) !== '0';
+  } catch {
+    /* storage unavailable — default on */
+  }
+  showToolsToggle.addEventListener('change', () => {
+    try {
+      localStorage.setItem(SHOW_TOOLS_KEY, showToolsToggle.checked ? '1' : '0');
+    } catch {
+      /* non-fatal */
+    }
+  });
+}
+
+const toolActivityEl = $('toolActivity');
+let toolsInFlight = 0;
+let toolActivityLinger = 0;
+
+function toolActivityStart() {
+  toolsInFlight++;
+  clearTimeout(toolActivityLinger);
+  if (toolActivityEl) toolActivityEl.hidden = false;
+}
+
+function toolActivityEnd() {
+  if (toolsInFlight > 0) toolsInFlight--;
+  if (toolsInFlight === 0 && toolActivityEl) {
+    // Brief linger so even instant tools visibly flash the badge.
+    clearTimeout(toolActivityLinger);
+    toolActivityLinger = setTimeout(() => {
+      toolActivityEl.hidden = true;
+    }, 800);
+  }
+}
+
+function toolActivityReset() {
+  toolsInFlight = 0;
+  clearTimeout(toolActivityLinger);
+  if (toolActivityEl) toolActivityEl.hidden = true;
 }
 
 function toolTitle(tool) {
@@ -489,6 +547,21 @@ const micTest = createMicTest({
 });
 const micTestBtn = $('micTestBtn');
 if (micTestBtn) micTestBtn.addEventListener('click', () => void micTest.open());
+
+// ---- new conversation ----------------------------------------------------
+
+const newConversationBtn = $('newConversationBtn');
+if (newConversationBtn) {
+  newConversationBtn.addEventListener('click', () => {
+    // End any live session (flushes the transcript sink with final:true so
+    // the finished conversation lands in History), then present a clean
+    // slate — the next mic tap mints a fresh session.
+    mic.end();
+    transcript.clear();
+    toolActivityReset();
+    toast('New conversation — tap the mic when ready.');
+  });
+}
 
 mic.addEventListener('sessioncreated', (e) => {
   const session = e.detail.session;

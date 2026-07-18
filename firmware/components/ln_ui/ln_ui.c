@@ -129,7 +129,7 @@ static void on_net_event(void *arg, esp_event_base_t base, int32_t id,
 {
     (void)arg;
     (void)base;
-    char buf[96];
+    char buf[160];
 
     switch (id) {
     case LN_NET_EVENT_WIFI_CONNECTING:
@@ -167,6 +167,24 @@ static void on_net_event(void *arg, esp_event_base_t base, int32_t id,
             why = "Wi-Fi network not found";
         }
         ln_ui_set_wifi_status("Offline");
+        /* The onboarding screen is what's visible during provisioning — its
+         * footer previously stayed on "Connecting to <ssid>…" forever on a
+         * failed join (HIL: repeated AUTH_FAIL showed nothing on screen). */
+        if (f != NULL && f->reason == LN_NET_WIFI_FAIL_AUTH) {
+            snprintf(buf, sizeof(buf),
+                     "\"%s\" rejected the password — tap \"Join a Wi-Fi network\" "
+                     "and try again (use the eye icon to check your typing).",
+                     f->ssid);
+        } else if (f != NULL && f->reason == LN_NET_WIFI_FAIL_AP_NOT_FOUND) {
+            snprintf(buf, sizeof(buf),
+                     "Couldn't find \"%s\" — check it's in range, then tap "
+                     "\"Join a Wi-Fi network\" to retry.", f->ssid);
+        } else {
+            snprintf(buf, sizeof(buf),
+                     "Wi-Fi connection failed — retrying; or tap \"Join a "
+                     "Wi-Fi network\" to pick again.");
+        }
+        ln_ui_onboarding_status(buf);
         if (ui_lock()) {
             ln_scr_config_set_net("", "", "");
             ln_scr_error_set_wifi(why);

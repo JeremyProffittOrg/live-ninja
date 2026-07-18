@@ -284,6 +284,11 @@ function renderField(key) {
       if (r) r.checked = true;
       break;
     }
+    case 'micEagerness': {
+      const r = document.querySelector(`input[name="micEagerness"][value="${CSS.escape(doc.micEagerness || 'auto')}"]`);
+      if (r) r.checked = true;
+      break;
+    }
     case 'voiceEngine': {
       // Reflect voiceEngine.default; an unknown value leaves all radios
       // unchecked (the stored value is still preserved on write-back).
@@ -919,6 +924,16 @@ for (const r of document.querySelectorAll('input[name="turnDetection"]')) {
     if (!r.checked) return;
     doc.turnDetection = r.value;
     markChanged('turnDetection');
+  });
+}
+
+// ---- mic pickup eagerness ----------------------------------------------
+
+for (const r of document.querySelectorAll('input[name="micEagerness"]')) {
+  r.addEventListener('change', () => {
+    if (!r.checked) return;
+    doc.micEagerness = r.value;
+    markChanged('micEagerness');
   });
 }
 

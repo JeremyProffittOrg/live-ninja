@@ -257,7 +257,8 @@ static void pw_toggle_cb(lv_event_t *e)
     lv_textarea_set_password_mode(s_pw_ta, !hidden);
     lv_obj_t *lbl = lv_obj_get_child(btn, 0);
     if (lbl != NULL) {
-        lv_label_set_text(lbl, hidden ? "Hide" : "Show");
+        /* Open eye while hidden ("tap to reveal"), closed eye while shown. */
+        lv_label_set_text(lbl, hidden ? LV_SYMBOL_EYE_CLOSE : LV_SYMBOL_EYE_OPEN);
     }
 }
 
@@ -478,12 +479,26 @@ lv_obj_t *ln_scr_onboarding_create(void)
     s_view_pw = ln_w_plain(scr);
     lv_obj_set_size(s_view_pw, lv_pct(100), lv_pct(100));
     lv_obj_set_flex_flow(s_view_pw, LV_FLEX_FLOW_COLUMN);
+    /* Cross-axis center: full-width rows are unaffected, content-sized
+     * items (the Connect button) center horizontally. */
+    lv_obj_set_flex_align(s_view_pw, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_all(s_view_pw, 32, 0);
     lv_obj_set_style_pad_row(s_view_pw, 16, 0);
     lv_obj_add_flag(s_view_pw, LV_OBJ_FLAG_HIDDEN);
 
-    lv_obj_t *ph = make_header(s_view_pw, "Connect", pw_back_cb);
-    s_pw_title = lv_obj_get_child(ph, 1); /* header title label */
+    /* Owner-specified layout: Back alone on top; "Password for <ssid>"
+     * centered on its own line; the password field with an eye
+     * show/hide icon; Connect below; keyboard at the bottom. */
+    lv_obj_t *ph = ln_w_row(s_view_pw, 18);
+    lv_obj_set_width(ph, lv_pct(100));
+    ln_w_button(ph, LV_SYMBOL_LEFT " Back", LN_COL_SURFACE2, LN_COL_TEXT,
+                pw_back_cb);
+
+    s_pw_title = ln_w_label(s_view_pw, "Password", LN_FONT_XL, LN_COL_TEXT);
+    lv_obj_set_width(s_pw_title, lv_pct(100));
+    lv_obj_set_style_text_align(s_pw_title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(s_pw_title, LV_LABEL_LONG_WRAP);
 
     lv_obj_t *prow = ln_w_row(s_view_pw, 14);
     lv_obj_set_width(prow, lv_pct(100));
@@ -497,18 +512,21 @@ lv_obj_t *ln_scr_onboarding_create(void)
     lv_obj_set_style_text_color(s_pw_ta, LN_COL_TEXT, 0);
     lv_obj_set_style_border_color(s_pw_ta, LN_COL_BORDER, 0);
     lv_obj_set_style_text_font(s_pw_ta, LN_FONT_MD, 0);
-    ln_w_button(prow, "Show", LN_COL_SURFACE2, LN_COL_TEXT, pw_toggle_cb);
-    ln_w_button(prow, "Connect", LN_COL_TEAL, LN_COL_INK, pw_connect_cb);
+    /* Eye icon toggles show/hide (replaces the old "Show" text button). */
+    ln_w_button(prow, LV_SYMBOL_EYE_OPEN, LN_COL_SURFACE2, LN_COL_TEXT,
+                pw_toggle_cb);
 
-    /* Spacer pushes the keyboard to the bottom; the keyboard itself owns
-     * the bottom HALF of the screen with double-size key labels (default
-     * theme font is Montserrat 14 — owner: "horrible", keys too small). */
+    /* Natural button size, centered by the column's cross-axis alignment. */
+    ln_w_button(s_view_pw, "Connect", LN_COL_TEAL, LN_COL_INK, pw_connect_cb);
+
+    /* Spacer pushes the keyboard to the bottom quarter — 50% made each key
+     * row ~160px, twice what a finger needs (owner feedback). */
     lv_obj_t *kb_spacer = ln_w_plain(s_view_pw);
     lv_obj_set_flex_grow(kb_spacer, 1);
 
     s_pw_kb = lv_keyboard_create(s_view_pw);
     lv_obj_set_width(s_pw_kb, lv_pct(100));
-    lv_obj_set_height(s_pw_kb, lv_pct(50));
+    lv_obj_set_height(s_pw_kb, lv_pct(25));
     lv_obj_set_style_text_font(s_pw_kb, &lv_font_montserrat_28, 0);
     lv_keyboard_set_textarea(s_pw_kb, s_pw_ta);
     lv_obj_add_event_cb(s_pw_kb, pw_kb_event_cb, LV_EVENT_READY, NULL);

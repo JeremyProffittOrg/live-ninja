@@ -81,6 +81,7 @@ type settingsPageView struct {
 	InstructionsLen int
 	Voice           string
 	TurnDetection   string
+	MicEagerness    string
 	Theme           string
 	MicDeviceID     string
 	StoreAudio      bool
@@ -185,6 +186,7 @@ func buildSettingsPageView(doc map[string]any) (*settingsPageView, error) {
 		SensitivityPct:  int(math.Round(docFloat(doc, "sensitivity", 0.5) * 100)),
 		Voice:           docString(doc, "voice", realtime.DefaultVoice),
 		TurnDetection:   docString(doc, "turnDetection", "semantic_vad"),
+		MicEagerness:    docString(doc, "micEagerness", "auto"),
 		Theme:           docString(doc, "theme", "system"),
 		MicDeviceID:     docString(doc, "micDeviceId", ""),
 		StoreAudio:      docBool(doc, "privacy", "storeAudio", false),
@@ -382,6 +384,18 @@ func validateAndNormalizeSettings(doc map[string]any) string {
 	}
 	if s, ok := doc["turnDetection"].(string); !ok || !oneOf(s, "semantic_vad", "server_vad") {
 		return "turnDetection must be semantic_vad or server_vad"
+	}
+	// micEagerness: how quickly semantic VAD decides the user finished a
+	// turn. Optional for older clients — absent normalizes to auto.
+	switch e := doc["micEagerness"].(type) {
+	case nil:
+		doc["micEagerness"] = "auto"
+	case string:
+		if !oneOf(e, "low", "medium", "high", "auto") {
+			return "micEagerness must be one of low, medium, high, auto"
+		}
+	default:
+		return "micEagerness must be a string"
 	}
 	if s, ok := doc["theme"].(string); !ok || !oneOf(s, "light", "dark", "system") {
 		return "theme must be light, dark, or system"

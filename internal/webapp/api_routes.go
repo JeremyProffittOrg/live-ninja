@@ -248,6 +248,7 @@ type brokerRequest struct {
 	DeviceID      string          `json:"deviceId,omitempty"`
 	Persona       string          `json:"persona,omitempty"`
 	VoiceOverride string          `json:"voiceOverride,omitempty"`
+	MicEagerness  string          `json:"micEagerness,omitempty"`
 	Payload       json.RawMessage `json:"payload,omitempty"`
 }
 
@@ -380,13 +381,40 @@ func handleRealtimeSession(deps *Deps) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID, surface, deviceID := UserID(c), Surface(c), DeviceID(c)
 
+		// Resolve session preferences from the settings document (query
+		// params win). Before this read, the user's saved voice was never
+		// applied — every mint fell back to the default (prod, 2026-07-18:
+		// user had Ballad selected, logs showed voice=cedar).
+		voice, persona, eagerness := c.Query("voice"), c.Query("persona"), ""
+		if doc, derr := deps.Store.GetSettings(c.Context(), userID); derr == nil {
+			if voice == "" {
+				if v, ok := doc["voice"].(string); ok {
+					voice = v
+				}
+			}
+			if persona == "" {
+				if p, ok := doc["persona"].(map[string]any); ok {
+					if id, ok := p["presetId"].(string); ok {
+						persona = id
+					}
+				}
+			}
+			if e, ok := doc["micEagerness"].(string); ok {
+				eagerness = e
+			}
+		} else {
+			deps.Log.Warn("api: settings read for mint failed; using defaults",
+				slog.String("error", derr.Error()), slog.String("userId", userID))
+		}
+
 		resp, err := invokeRealtimeBroker(c.Context(), deps, brokerRequest{
 			TxID:          TxID(c),
 			UserID:        userID,
 			Surface:       surface,
 			DeviceID:      deviceID,
-			Persona:       c.Query("persona"),
-			VoiceOverride: c.Query("voice"),
+			Persona:       persona,
+			VoiceOverride: voice,
+			MicEagerness:  eagerness,
 		})
 		if err != nil {
 			deps.Log.Error("api: realtime session mint failed", slog.String("error", err.Error()), slog.String("userId", userID))

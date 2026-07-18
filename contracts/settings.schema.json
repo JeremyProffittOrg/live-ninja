@@ -32,7 +32,11 @@
     "wakeEngine": {
       "type": "string",
       "description": "Wake-word inference engine backing the selected wakeWord (FR-K02, FR-M02). `openwakeword` is the free/default engine (Android FGS, web WASM). `porcupine` is the optional Picovoice engine (Android; requires an AccessKey — reveals that field via progressive disclosure, UX-R05). `wakenet` is the M5Stack ESP-SR primary on-device engine (FR-M02); M5Stack falls back to an oWW-ESP model when a custom phrase isn't available as a curated WakeNet model (FR-K05).",
-      "enum": ["openwakeword", "porcupine", "wakenet"],
+      "enum": [
+        "openwakeword",
+        "porcupine",
+        "wakenet"
+      ],
       "default": "openwakeword"
     },
     "sensitivity": {
@@ -46,7 +50,9 @@
       "type": "object",
       "description": "Persona selection (FR-S03). Sent/stored as a catalog ID; the server resolves the actual system instructions server-side (anti prompt-injection — clients never send raw instructions to the realtime broker). `presetId: \"custom\"` is the sole justified free-text case (UX rich-UI case 6): it reveals `systemInstructions` as a capped, labeled editor with reset-to-preset.",
       "additionalProperties": true,
-      "required": ["presetId"],
+      "required": [
+        "presetId"
+      ],
       "properties": {
         "presetId": {
           "type": "string",
@@ -55,7 +61,10 @@
           "minLength": 1
         },
         "systemInstructions": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "Free-text system-instruction override. Only meaningful/editable when presetId == \"custom\"; null/absent otherwise. Capped length enforced server-side (see api.md PUT /v1/settings validation).",
           "maxLength": 4000,
           "default": null
@@ -65,23 +74,44 @@
     "voice": {
       "type": "string",
       "description": "OpenAI Realtime voice, chosen from an enumerated picker with inline preview (UX-R01) — never free text. Default is `cedar` per PRD Q-14. New voice enum members may be appended in later milestones per contracts/README.md rule 3; an unrecognized value on read must fall back to `cedar` in the UI but be preserved verbatim on write-back.",
-      "enum": ["alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse"],
+      "enum": [
+        "alloy",
+        "ash",
+        "ballad",
+        "cedar",
+        "coral",
+        "echo",
+        "marin",
+        "sage",
+        "shimmer",
+        "verse"
+      ],
       "default": "cedar"
     },
     "turnDetection": {
       "type": "string",
       "description": "Turn-detection strategy bound into the realtime session config at mint (FR-V01, PRD §6.2). Exposed to the user as a radio control (UX-R01/R02). `semantic_vad` is the platform default and pairs with `interrupt_response:true`.",
-      "enum": ["semantic_vad", "server_vad"],
+      "enum": [
+        "semantic_vad",
+        "server_vad"
+      ],
       "default": "semantic_vad"
     },
     "theme": {
       "type": "string",
       "description": "UI theme, segmented control (UX-R02).",
-      "enum": ["light", "dark", "system"],
+      "enum": [
+        "light",
+        "dark",
+        "system"
+      ],
       "default": "system"
     },
     "micDeviceId": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "Selected input device id from the browser's enumerateDevices()/Android getAvailableCommunicationDevices() (UX-R01) — populated control, never typed. Null means \"system default device\".",
       "default": null
     },
@@ -89,11 +119,18 @@
       "type": "object",
       "description": "Voice-engine selection (FR-VE-01..04). `default` applies to any session/device without an explicit pin (e.g. a fresh web browser session); `devices` is a per-device pin map keyed by deviceId, letting an individual M5Stack/Android device be pinned to a cheaper or alternate engine (e.g. nova-sonic) while others stay on the platform default. The realtime-broker resolves engine-for-session as devices[deviceId] ?? default. `nova-sonic` reintroduces a backend media bridge for ONLY the pinned device (FR-VE-04) — all other engines stay client-direct.",
       "additionalProperties": true,
-      "required": ["default", "devices"],
+      "required": [
+        "default",
+        "devices"
+      ],
       "properties": {
         "default": {
           "type": "string",
-          "enum": ["openai-realtime", "openai-realtime-mini", "nova-sonic"],
+          "enum": [
+            "openai-realtime",
+            "openai-realtime-mini",
+            "nova-sonic"
+          ],
           "default": "openai-realtime"
         },
         "devices": {
@@ -101,7 +138,11 @@
           "description": "Map of deviceId -> pinned engine. Keys are the caller's own DEVICE#<deviceId> ids; absent keys fall back to `default`.",
           "additionalProperties": {
             "type": "string",
-            "enum": ["openai-realtime", "openai-realtime-mini", "nova-sonic"]
+            "enum": [
+              "openai-realtime",
+              "openai-realtime-mini",
+              "nova-sonic"
+            ]
           },
           "default": {}
         }
@@ -124,10 +165,26 @@
         "retentionDays": {
           "type": "integer",
           "description": "TTL window for transcripts/logs. Radio control, not free text (FR-S04).",
-          "enum": [0, 7, 30, 90],
+          "enum": [
+            0,
+            7,
+            30,
+            90
+          ],
           "default": 30
         }
       }
+    },
+    "micEagerness": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "auto"
+      ],
+      "default": "auto",
+      "description": "Mic pickup: how quickly semantic VAD treats a pause as end-of-turn (maps to the realtime API's turn_detection.eagerness). Optional; absent normalizes to auto."
     }
   }
 }

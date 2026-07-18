@@ -81,6 +81,13 @@
 
     <!-- Right column: transcript + composer -->
     <section class="conv-main" aria-label="Conversation">
+      <div class="conv-topbar">
+        <label class="conv-topbar__toggle">
+          <input type="checkbox" id="showToolsToggle" checked>
+          <span>Show tool calls</span>
+        </label>
+        <button class="ln-btn ln-btn--ghost" type="button" id="newConversationBtn">New conversation</button>
+      </div>
       <div class="conv-main__scroll" id="transcriptScroll">
         {{- /* Empty by design on load — no fabricated turns (spec §2.5).
                transcript.mjs appends bubbles/tool cards as text nodes. */}}

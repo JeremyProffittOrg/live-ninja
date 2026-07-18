@@ -142,6 +142,62 @@ var toolManifest = []map[string]any{
 			"required": []string{"query"},
 		},
 	},
+	// M9 deliverables — these were registered in the tool router but never
+	// declared here, so the model could not save files at all ("i asked it
+	// to save a file, but don't see it in my downloads", 2026-07-18).
+	{
+		"type": "function",
+		"name": "deliverable_create",
+		"description": "Create a downloadable file (a 'deliverable') from content you produce — a document, report, list, or table. " +
+			"It is stored in the user's Download Center; use deliverable_deliver to hand the user a download link or email it.",
+		"parameters": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string", "description": "Filename, e.g. 'trip-plan' or 'expenses.csv'. The right extension is appended automatically."},
+				"format": map[string]any{
+					"type":        "string",
+					"enum":        []string{"text", "markdown", "html", "csv"},
+					"description": "Content format.",
+				},
+				"content": map[string]any{"type": "string", "description": "The full file content."},
+			},
+			"required": []string{"name", "format", "content"},
+		},
+	},
+	{
+		"type":        "function",
+		"name":        "deliverable_zip",
+		"description": "Bundle several of the user's existing deliverables into one ZIP archive (itself a new deliverable, built in the background).",
+		"parameters": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"deliverableIds": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "IDs of the deliverables to bundle.",
+				},
+				"name": map[string]any{"type": "string", "description": "Optional archive name; '.zip' is appended automatically."},
+			},
+			"required": []string{"deliverableIds"},
+		},
+	},
+	{
+		"type":        "function",
+		"name":        "deliverable_deliver",
+		"description": "Deliver an existing deliverable to the user: mint a 15-minute download link, optionally emailing it to the user's own inbox.",
+		"parameters": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"deliverableId": map[string]any{"type": "string", "description": "The deliverable's ID."},
+				"method": map[string]any{
+					"type":        "string",
+					"enum":        []string{"link", "email"},
+					"description": "'link' (default) returns the URL; 'email' also sends it to the user's own address.",
+				},
+			},
+			"required": []string{"deliverableId"},
+		},
+	},
 	{
 		"type":        "function",
 		"name":        "remember_note",
@@ -352,8 +408,20 @@ func (m *Minter) Model() string { return m.model }
 // (guides.go, FR-MEM-07); it is always server-derived, never client input.
 // The caller (broker handler) runs the quota gate BEFORE calling this —
 // Mint itself performs no quota checks.
-func (m *Minter) Mint(ctx context.Context, personaID, voice, instructionsSuffix string) (*MintResult, error) {
+func (m *Minter) Mint(ctx context.Context, personaID, voice, eagerness, instructionsSuffix string) (*MintResult, error) {
 	persona := ResolvePersona(personaID)
+
+	turnDetection := map[string]any{
+		"type":               "semantic_vad",
+		"interrupt_response": true,
+	}
+	// Settings' micEagerness ("Mic pickup"): how quickly semantic VAD calls
+	// the turn done. Only forwarded for the explicit non-default choices —
+	// auto/empty/unknown keeps the API default.
+	switch eagerness {
+	case "low", "medium", "high":
+		turnDetection["eagerness"] = eagerness
+	}
 
 	sessionConfig := map[string]any{
 		"type":  "realtime",
@@ -364,10 +432,7 @@ func (m *Minter) Mint(ctx context.Context, personaID, voice, instructionsSuffix 
 			// a top-level session.turn_detection is rejected with 400
 			// "Unknown parameter" (broke every mint in prod 2026-07-18).
 			"input": map[string]any{
-				"turn_detection": map[string]any{
-					"type":               "semantic_vad",
-					"interrupt_response": true,
-				},
+				"turn_detection": turnDetection,
 				// Without this the API never emits
 				// conversation.item.input_audio_transcription.* events, so
 				// the user's own speech never appeared in any transcript.

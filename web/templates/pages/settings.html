@@ -256,6 +256,41 @@
         </label>
       </div>
     </fieldset>
+
+    <fieldset class="ln-fieldset">
+      <legend class="ln-sr-only">Mic pickup sensitivity</legend>
+      <p class="ln-muted" style="margin-top:16px">Mic pickup — how quickly Live Ninja treats a pause as the end of your turn.</p>
+      <div class="ln-choices">
+        <label class="ln-choice">
+          <input type="radio" name="micEagerness" value="auto" {{if eq .MicEagerness "auto"}}checked{{end}}>
+          <span class="ln-choice__body">
+            <span class="ln-choice__title">Auto</span>
+            <span class="ln-choice__desc">Adapts to how you speak (recommended).</span>
+          </span>
+        </label>
+        <label class="ln-choice">
+          <input type="radio" name="micEagerness" value="low" {{if eq .MicEagerness "low"}}checked{{end}}>
+          <span class="ln-choice__body">
+            <span class="ln-choice__title">Patient</span>
+            <span class="ln-choice__desc">Waits longer before responding — best if you pause mid-thought.</span>
+          </span>
+        </label>
+        <label class="ln-choice">
+          <input type="radio" name="micEagerness" value="medium" {{if eq .MicEagerness "medium"}}checked{{end}}>
+          <span class="ln-choice__body">
+            <span class="ln-choice__title">Balanced</span>
+            <span class="ln-choice__desc">A steady middle ground.</span>
+          </span>
+        </label>
+        <label class="ln-choice">
+          <input type="radio" name="micEagerness" value="high" {{if eq .MicEagerness "high"}}checked{{end}}>
+          <span class="ln-choice__body">
+            <span class="ln-choice__title">Fast</span>
+            <span class="ln-choice__desc">Jumps in quickly at the first pause.</span>
+          </span>
+        </label>
+      </div>
+    </fieldset>
   </section>
 
   <!-- ============ Appearance ============ -->

@@ -4,6 +4,12 @@
        Visualizer: real AnalyserNode-driven canvas (visualizer.mjs),
        always aria-hidden. */}}
 <div class="conv-rail__orbwrap">
+  {{- /* Tool-activity badge: shown (conversation.mjs) while a function
+         call is executing; upper-left of the orb. */}}
+  <div class="tool-activity" id="toolActivity" hidden aria-hidden="false"
+       role="status" aria-label="A tool is running">
+    <span aria-hidden="true">🛠</span>
+  </div>
   <div class="ln-orb ln-orb--idle" id="orb" aria-hidden="true">
     <div class="ln-orb__glow"></div>
     <div class="ln-orb__ring"></div>

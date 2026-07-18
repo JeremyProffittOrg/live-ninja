@@ -405,6 +405,10 @@ export class Transcript {
   /** Scrolls the transcript to the latest content. */
   scrollToBottom() {
     const behavior = prefersReducedMotion() ? "auto" : "smooth";
+    // Guard window: the smooth scroll fires scroll events from positions far
+    // above the bottom, which _onScroll used to read as the USER scrolling
+    // away — auto-follow silently unpinned itself on the very first turn.
+    this._programmaticUntil = Date.now() + 600;
     this._scrollEl.scrollTo({ top: this._scrollEl.scrollHeight, behavior });
   }
 
@@ -473,6 +477,12 @@ export class Transcript {
       const el = this._scrollEl;
       const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
       const shouldPin = distanceFromBottom <= this._threshold;
+      // Scroll events raised by our own scrollToBottom animation never
+      // unpin; the guard clears once the animation lands (or times out).
+      if (this._programmaticUntil && Date.now() < this._programmaticUntil) {
+        if (shouldPin) this._programmaticUntil = 0;
+        return;
+      }
       if (shouldPin !== this._pinned) {
         this.setPinned(shouldPin, { scroll: false });
       }

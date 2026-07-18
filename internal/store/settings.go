@@ -50,6 +50,7 @@ func DefaultSettings() map[string]any {
 		"persona":       map[string]any{"presetId": "default", "systemInstructions": nil},
 		"voice":         "cedar",
 		"turnDetection": "semantic_vad",
+		"micEagerness":  "auto",
 		"theme":         "system",
 		"micDeviceId":   nil,
 		"voiceEngine":   map[string]any{"default": "openai-realtime", "devices": map[string]any{}},
