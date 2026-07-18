@@ -500,9 +500,16 @@ lv_obj_t *ln_scr_onboarding_create(void)
     ln_w_button(prow, "Show", LN_COL_SURFACE2, LN_COL_TEXT, pw_toggle_cb);
     ln_w_button(prow, "Connect", LN_COL_TEAL, LN_COL_INK, pw_connect_cb);
 
+    /* Spacer pushes the keyboard to the bottom; the keyboard itself owns
+     * the bottom HALF of the screen with double-size key labels (default
+     * theme font is Montserrat 14 — owner: "horrible", keys too small). */
+    lv_obj_t *kb_spacer = ln_w_plain(s_view_pw);
+    lv_obj_set_flex_grow(kb_spacer, 1);
+
     s_pw_kb = lv_keyboard_create(s_view_pw);
     lv_obj_set_width(s_pw_kb, lv_pct(100));
-    lv_obj_set_flex_grow(s_pw_kb, 1);
+    lv_obj_set_height(s_pw_kb, lv_pct(50));
+    lv_obj_set_style_text_font(s_pw_kb, &lv_font_montserrat_28, 0);
     lv_keyboard_set_textarea(s_pw_kb, s_pw_ta);
     lv_obj_add_event_cb(s_pw_kb, pw_kb_event_cb, LV_EVENT_READY, NULL);
 
