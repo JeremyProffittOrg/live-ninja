@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.20.52
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.22.34
 	github.com/aws/aws-sdk-go-v2/service/batch v1.67.1
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.55.1
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.60.1
 	github.com/aws/aws-sdk-go-v2/service/iot v1.76.1
 	github.com/aws/aws-sdk-go-v2/service/iotdataplane v1.34.1

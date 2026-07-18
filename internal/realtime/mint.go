@@ -163,6 +163,122 @@ var toolManifest = []map[string]any{
 			"required": []string{"query"},
 		},
 	},
+	{
+		"type": "function",
+		"name": "memory_search",
+		"description": "Search the user's long-term memory (people, places, information, projects, tasks, plans) " +
+			"by meaning. Use before asking the user to repeat something they may have told you before.",
+		"parameters": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{"type": "string", "description": "What to look for, phrased naturally."},
+				"type": map[string]any{
+					"type":        "string",
+					"enum":        []string{"person", "place", "info", "project", "task", "plan"},
+					"description": "Optionally restrict results to one entity type.",
+				},
+				"limit": map[string]any{
+					"type": "integer", "minimum": 1, "maximum": 20,
+					"description": "Maximum results to return (default 5).",
+				},
+			},
+			"required": []string{"query"},
+		},
+	},
+	{
+		"type": "function",
+		"name": "memory_write",
+		"description": "Save or update a long-term memory entity about the user's life (person, place, information, " +
+			"project, task, or plan). Use for lasting facts worth remembering across conversations.",
+		"parameters": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"type": map[string]any{
+					"type":        "string",
+					"enum":        []string{"person", "place", "info", "project", "task", "plan"},
+					"description": "The kind of entity being remembered.",
+				},
+				"name": map[string]any{"type": "string", "description": "Short display name for the entity."},
+				"attrs": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "Facts as \"key=value\" entries, e.g. [\"birthday=March 3\"].",
+				},
+				"relations": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "Edges to other entities as \"relationType:targetEntityId\" entries.",
+				},
+				"entityId": map[string]any{"type": "string", "description": "Existing entity ID to update; omit to create."},
+			},
+			"required": []string{"type", "name"},
+		},
+	},
+	{
+		"type":        "function",
+		"name":        "entity_get",
+		"description": "Fetch one memory entity by ID, with all stored facts and relationships.",
+		"parameters": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"entityId": map[string]any{"type": "string", "description": "The entity's ID from a memory_search result."},
+			},
+			"required": []string{"entityId"},
+		},
+	},
+	{
+		"type": "function",
+		"name": "plan_upsert",
+		"description": "Create or update a multi-step plan in the user's long-term memory. The steps list replaces " +
+			"any previous steps.",
+		"parameters": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"planId": map[string]any{"type": "string", "description": "Existing plan's ID to update; omit to create."},
+				"title":  map[string]any{"type": "string", "description": "The plan's title."},
+				"steps": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "The full ordered list of steps.",
+				},
+			},
+			"required": []string{"title", "steps"},
+		},
+	},
+	{
+		"type": "function",
+		"name": "forget",
+		"description": "Permanently delete one memory entity at the user's explicit request. Only call when the " +
+			"user asks you to forget something.",
+		"parameters": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"entityId": map[string]any{"type": "string", "description": "The ID of the entity to forget."},
+			},
+			"required": []string{"entityId"},
+		},
+	},
+	{
+		"type": "function",
+		"name": "web_research",
+		"description": "Research a topic with a recency filter: recent items with publication dates plus " +
+			"encyclopedic background. Use for time-sensitive questions and always cite source dates.",
+		"parameters": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{"type": "string", "description": "The topic to research."},
+				"days": map[string]any{
+					"type": "integer", "minimum": 1, "maximum": 365,
+					"description": "Only include items newer than this many days (default 30).",
+				},
+				"url": map[string]any{
+					"type":        "string",
+					"description": "Optional exact https URL to fetch directly; only allow-listed authoritative domains (anthropic.com, openai.com).",
+				},
+			},
+			"required": []string{"query"},
+		},
+	},
 }
 
 // toolManifestJSON is the manifest marshaled once at init (it is static).
@@ -223,9 +339,12 @@ func (m *Minter) Model() string { return m.model }
 // Mint resolves the persona server-side and POSTs to OpenAI's
 // client_secrets endpoint for a ~60s ephemeral token whose session config
 // (model, voice, instructions, tools, semantic-VAD barge-in) is fixed at
-// mint time. The caller (broker handler) runs the quota gate BEFORE
-// calling this — Mint itself performs no quota checks.
-func (m *Minter) Mint(ctx context.Context, personaID, voice string) (*MintResult, error) {
+// mint time. instructionsSuffix is appended verbatim to the persona's
+// instructions — the broker passes the enabled-guide injection block
+// (guides.go, FR-MEM-07); it is always server-derived, never client input.
+// The caller (broker handler) runs the quota gate BEFORE calling this —
+// Mint itself performs no quota checks.
+func (m *Minter) Mint(ctx context.Context, personaID, voice, instructionsSuffix string) (*MintResult, error) {
 	persona := ResolvePersona(personaID)
 
 	sessionConfig := map[string]any{
@@ -234,7 +353,7 @@ func (m *Minter) Mint(ctx context.Context, personaID, voice string) (*MintResult
 		"audio": map[string]any{
 			"output": map[string]any{"voice": voice},
 		},
-		"instructions": persona.Instructions,
+		"instructions": persona.Instructions + instructionsSuffix,
 		"tools":        toolManifest,
 		"turn_detection": map[string]any{
 			"type":               "semantic_vad",

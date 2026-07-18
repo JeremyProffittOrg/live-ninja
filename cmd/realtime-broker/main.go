@@ -1,7 +1,7 @@
 // Command realtime-broker is the direct-invoke Lambda (called by the web
 // function via lambda:Invoke — never HTTP-exposed) that is the SOLE
 // holder of the OpenAI API key (SSM /live-ninja/prod/openai/api_key,
-// isolated IAM). It serves four modes on one event seam:
+// isolated IAM). It serves five modes on one event seam:
 //
 //	"session-mint" (default): pre-spend quota gate (token bucket 1/5s
 //	  burst 3, daily-minutes cap, monthly-token cap — contracts/
@@ -11,6 +11,10 @@
 //	"fallback-turn": text-only degraded turn via gpt-4o-mini.
 //	"fallback-stt":  audio -> gpt-4o-transcribe transcript.
 //	"fallback-tts":  text -> gpt-4o-mini-tts MP3 audio.
+//	"extract-topics": post-session topic extraction (M11, FR-TOP-01) —
+//	  gpt-4o-mini strict-JSON tagging of a finished transcript against the
+//	  user's topic taxonomy, invoked by cmd/topics-extract (never by an
+//	  end client).
 //
 // Quota/rate rejections come back as structured {error, code} payloads
 // (code 402/429) that the web function maps straight onto the HTTP
@@ -47,7 +51,7 @@ const metricsNamespace = "LiveNinja/RealtimeBroker"
 // — never from an end client — plus a mode selector and a mode-specific
 // payload.
 type Request struct {
-	Mode          string          `json:"mode,omitempty"` // "", "session-mint", "fallback-turn", "fallback-stt", "fallback-tts"
+	Mode          string          `json:"mode,omitempty"` // "", "session-mint", "fallback-turn", "fallback-stt", "fallback-tts", "extract-topics"
 	UserID        string          `json:"userId"`
 	Surface       string          `json:"surface"`
 	DeviceID      string          `json:"deviceId,omitempty"`
@@ -69,6 +73,13 @@ type sttPayload struct {
 type ttsPayload struct {
 	Text  string `json:"text"`
 	Voice string `json:"voice,omitempty"`
+}
+
+// extractTopicsPayload is the "extract-topics" mode payload: the flattened
+// transcript plus the caller's existing (active) topic taxonomy.
+type extractTopicsPayload struct {
+	Transcript     string                 `json:"transcript"`
+	ExistingTopics []realtime.TopicOption `json:"existingTopics"`
 }
 
 // Response is the broker's reply for every mode. Exactly one of the
@@ -100,6 +111,12 @@ type Response struct {
 	Text        string `json:"text,omitempty"`
 	AudioBase64 string `json:"audioBase64,omitempty"`
 	ContentType string `json:"contentType,omitempty"`
+
+	// Extract-topics success shape: ids of existing topics the
+	// conversation matched, plus proposed brand-new topic names (the
+	// caller creates those and assigns their stable ids).
+	TopicIDs  []string `json:"topicIds,omitempty"`
+	NewTopics []string `json:"newTopics,omitempty"`
 }
 
 var validSurfaces = map[string]bool{
@@ -113,6 +130,12 @@ type broker struct {
 	gate     *realtime.Gate
 	minter   *realtime.Minter
 	fallback *realtime.FallbackClient
+
+	// ddb/table back the per-mint Guide Entity injection (guides.go): the
+	// broker Queries the caller's GUIDE# prefix and appends enabled guides
+	// to the persona instructions (FR-MEM-07).
+	ddb   realtime.GuideQuerier
+	table string
 }
 
 func (b *broker) Handle(ctx context.Context, req Request) (Response, error) {
@@ -138,8 +161,10 @@ func (b *broker) Handle(ctx context.Context, req Request) (Response, error) {
 		return b.handleFallbackSTT(ctx, l, req), nil
 	case "fallback-tts":
 		return b.handleFallbackTTS(ctx, l, req), nil
+	case "extract-topics":
+		return b.handleExtractTopics(ctx, l, req), nil
 	default:
-		return badRequest("mode must be one of: session-mint, fallback-turn, fallback-stt, fallback-tts"), nil
+		return badRequest("mode must be one of: session-mint, fallback-turn, fallback-stt, fallback-tts, extract-topics"), nil
 	}
 }
 
@@ -166,8 +191,19 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 		return internalError("session id generation failed")
 	}
 
+	// Guide Entity injection (FR-MEM-07): append the user's enabled guides
+	// to the persona instructions, priority order. Best-effort — a guide
+	// read failure is logged but must not take voice down with it.
+	guideSuffix := ""
+	if guides, gerr := realtime.LoadEnabledGuides(ctx, b.ddb, b.table, req.UserID); gerr != nil {
+		l.Warn("realtime-broker: guide load failed; minting without guides",
+			slog.String("error", gerr.Error()))
+	} else {
+		guideSuffix = realtime.GuideInstructions(guides)
+	}
+
 	start := time.Now()
-	res, err := b.minter.Mint(ctx, req.Persona, voice)
+	res, err := b.minter.Mint(ctx, req.Persona, voice, guideSuffix)
 	observ.EmitMetric(metricsNamespace, "EphemeralTokenMintLatency",
 		float64(time.Since(start).Milliseconds()), "Milliseconds",
 		map[string]string{"Surface": req.Surface})
@@ -258,6 +294,35 @@ func (b *broker) handleFallbackTTS(ctx context.Context, l *slog.Logger, req Requ
 	}
 	b.countFallback(req, "tts")
 	return Response{AudioBase64: base64.StdEncoding.EncodeToString(audio), ContentType: "audio/mpeg"}
+}
+
+// handleExtractTopics runs the post-session topic extraction (M11).
+// Deliberately NOT behind the quota gate: it fires at most once per
+// finished session (each of which already passed the mint gate), it is
+// invoked only by the topics-extract Lambda (never a client-reachable
+// path), and a token-bucket rejection here would silently drop tagging
+// for a session the user already paid for.
+func (b *broker) handleExtractTopics(ctx context.Context, l *slog.Logger, req Request) Response {
+	var p extractTopicsPayload
+	if err := json.Unmarshal(orEmptyObject(req.Payload), &p); err != nil || strings.TrimSpace(p.Transcript) == "" {
+		return badRequest("payload.transcript is required")
+	}
+
+	res, err := b.fallback.ExtractTopics(ctx, p.Transcript, p.ExistingTopics)
+	if err != nil {
+		l.Error("realtime-broker: topic extraction failed", slog.String("error", err.Error()))
+		observ.EmitMetric(metricsNamespace, "TopicExtractionErrors", 1, "Count",
+			map[string]string{"Surface": req.Surface})
+		return Response{Error: "extract_failed", Code: http.StatusBadGateway,
+			Message: "The topic extraction request failed after retries."}
+	}
+
+	observ.EmitMetric(metricsNamespace, "TopicExtractions", 1, "Count",
+		map[string]string{"Surface": req.Surface})
+	l.Info("realtime-broker: topics extracted",
+		slog.Int("existingMatched", len(res.TopicIDs)),
+		slog.Int("newProposed", len(res.NewTopics)))
+	return Response{TopicIDs: res.TopicIDs, NewTopics: res.NewTopics}
 }
 
 // gateFallback runs the fallback-mode quota gate (token bucket + monthly
@@ -378,6 +443,8 @@ func main() {
 		gate:     realtime.NewGate(ddb, appCfg.TableName),
 		minter:   realtime.NewMinter(loader, model),
 		fallback: realtime.NewFallbackClient(loader),
+		ddb:      ddb,
+		table:    appCfg.TableName,
 	}
 	lambda.Start(b.Handle)
 }

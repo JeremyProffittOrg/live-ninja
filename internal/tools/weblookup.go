@@ -12,7 +12,9 @@ import (
 // summary endpoint for a concise extract of the best match. No API key,
 // no scraping — both are supported public endpoints.
 
-const (
+// Vars (not consts) so unit tests — including web_research's background
+// leg, which reuses this lookup — can point them at httptest fixtures.
+var (
 	wikiOpenSearchURL = "https://en.wikipedia.org/w/api.php"
 	wikiSummaryURL    = "https://en.wikipedia.org/api/rest_v1/page/summary/"
 )

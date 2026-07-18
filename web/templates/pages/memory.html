@@ -1,0 +1,285 @@
+{{define "head"}}
+<script type="module" src="{{asset "/static/js/memory.mjs"}}"></script>
+{{- /* Page-scoped styles (same rationale as downloads.html: app.css is a
+       shared file other workstreams touch concurrently; the page CSP
+       allows inline <style>). All data-driven markup is built by
+       memory.mjs with textContent — never innerHTML. */}}
+<style>
+  .mem-shell { padding: var(--ln-sp-6) var(--ln-sp-5) var(--ln-sp-8); max-width: 1040px; margin: 0 auto; width: 100%; }
+  .mem-page-head { margin-bottom: var(--ln-sp-5); }
+  .mem-page-head p { margin-bottom: 0; }
+  .mem-shell .ln-card + .ln-card { margin-top: var(--ln-sp-5); }
+
+  .mem-toolbar { display: flex; align-items: flex-end; gap: var(--ln-sp-3); margin-bottom: var(--ln-sp-3); flex-wrap: wrap; }
+  .mem-toolbar .ln-field { margin-bottom: 0; flex: 0 0 auto; }
+  .mem-toolbar .ln-select { width: auto; min-width: 180px; }
+  .mem-count { margin: 0 0 var(--ln-sp-3); font-size: var(--ln-fs-sm); flex: 1 1 auto; }
+  .mem-toolbar-actions { display: flex; gap: var(--ln-sp-2); margin-bottom: 2px; }
+
+  .mem-tablewrap { overflow-x: auto; border: 1px solid var(--ln-border); border-radius: var(--ln-r-md); }
+  .mem-table { width: 100%; min-width: 640px; border-collapse: collapse; font-size: var(--ln-fs-sm); }
+  .mem-table thead th {
+    position: sticky; top: 0; z-index: 1;
+    background: var(--ln-surface-raised);
+    text-align: left; font-size: var(--ln-fs-xs); font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.05em; color: var(--ln-text-muted);
+    padding: var(--ln-sp-3) var(--ln-sp-4);
+    border-bottom: 1px solid var(--ln-border-strong);
+    white-space: nowrap;
+  }
+  .mem-table tbody td { padding: var(--ln-sp-3) var(--ln-sp-4); border-top: 1px solid var(--ln-border); vertical-align: middle; }
+  .mem-table tbody tr:first-child td { border-top: none; }
+  .mem-table tbody tr:hover { background: var(--ln-surface-2); }
+  .mem-name { font-weight: 650; word-break: break-word; min-width: 160px; }
+  .mem-details { color: var(--ln-text-muted); max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mem-date { white-space: nowrap; color: var(--ln-text-muted); }
+  .mem-actions-cell, .mem-table th.mem-actions-cell { text-align: right; white-space: nowrap; }
+  .mem-actions-cell .ln-btn { min-height: 36px; padding: 0 var(--ln-sp-3); font-size: var(--ln-fs-xs); }
+  .mem-actions-cell .ln-btn + .ln-btn { margin-left: var(--ln-sp-2); }
+
+  /* States (shared by both sections) */
+  .mem-state { padding: var(--ln-sp-7) var(--ln-sp-5); text-align: center; }
+  .mem-state h3 { font-size: var(--ln-fs-md); margin-bottom: var(--ln-sp-2); }
+  .mem-state p { color: var(--ln-text-muted); font-size: var(--ln-fs-sm); margin-bottom: var(--ln-sp-4); }
+  .mem-state--error { border: 1px solid var(--ln-error-border); border-radius: var(--ln-r-md); background: var(--ln-error-tint); }
+  .mem-state--error h3 { color: var(--ln-error-ink); }
+
+  .mem-skeleton { padding: var(--ln-sp-4); }
+  .mem-skeleton .bar {
+    height: 18px; border-radius: 6px; margin: var(--ln-sp-4) 0;
+    background: linear-gradient(90deg, var(--ln-track) 25%, var(--ln-surface-2) 50%, var(--ln-track) 75%);
+    background-size: 200% 100%; animation: mem-shimmer 1.2s linear infinite;
+  }
+  @keyframes mem-shimmer { to { background-position: -200% 0; } }
+  @media (prefers-reduced-motion: reduce) { .mem-skeleton .bar { animation: none; } }
+
+  .mem-more { display: flex; justify-content: center; padding: var(--ln-sp-4) 0 0; }
+
+  /* Inline two-step forget confirmation (same pattern as downloads). */
+  .mem-confirm { display: inline-flex; align-items: center; gap: var(--ln-sp-2); flex-wrap: wrap; justify-content: flex-end; }
+  .mem-confirm span { font-size: var(--ln-fs-xs); color: var(--ln-error-ink); font-weight: 700; }
+
+  /* Entity / guide dialogs (native <dialog> = built-in focus trap + Esc). */
+  .mem-dialog {
+    border: 1px solid var(--ln-border-strong); border-radius: var(--ln-r-lg);
+    background: var(--ln-surface-raised); color: var(--ln-text);
+    padding: var(--ln-sp-6); width: min(560px, calc(100vw - 2 * var(--ln-sp-4)));
+    max-height: calc(100vh - 2 * var(--ln-sp-5)); box-shadow: var(--ln-shadow-lg);
+  }
+  .mem-dialog::backdrop { background: rgba(3, 8, 16, 0.62); }
+  .mem-dialog h2 { font-size: var(--ln-fs-lg); margin-bottom: var(--ln-sp-4); }
+  .mem-dialog-actions { display: flex; justify-content: flex-end; gap: var(--ln-sp-3); margin-top: var(--ln-sp-5); }
+
+  /* Attribute key/value editor rows */
+  .mem-attr-rows { display: flex; flex-direction: column; gap: var(--ln-sp-2); }
+  .mem-attr-row { display: flex; gap: var(--ln-sp-2); align-items: center; }
+  .mem-attr-row .ln-input { min-height: 40px; padding: var(--ln-sp-2) var(--ln-sp-3); }
+  .mem-attr-row .mem-attr-key { flex: 0 1 38%; }
+  .mem-attr-row .mem-attr-val { flex: 1 1 auto; }
+  .mem-attr-row .ln-btn { min-height: 36px; padding: 0 var(--ln-sp-3); font-size: var(--ln-fs-xs); flex: none; }
+  .mem-attr-add { margin-top: var(--ln-sp-2); }
+
+  .mem-rel-list { display: flex; flex-wrap: wrap; gap: var(--ln-sp-2); }
+
+  /* Guides list */
+  .mem-guide-row {
+    display: flex; align-items: flex-start; gap: var(--ln-sp-4);
+    padding: var(--ln-sp-4) 0; border-top: 1px solid var(--ln-border);
+    flex-wrap: wrap;
+  }
+  .mem-guide-row:first-child { border-top: none; }
+  .mem-guide-row .ln-toggle { flex: none; margin-top: 2px; }
+  .mem-guide-body { flex: 1 1 260px; min-width: 0; }
+  .mem-guide-title { font-weight: 700; margin-bottom: 2px; display: flex; align-items: center; gap: var(--ln-sp-2); flex-wrap: wrap; }
+  .mem-guide-text {
+    color: var(--ln-text-muted); font-size: var(--ln-fs-sm); margin: 0;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .mem-guide-side { display: flex; align-items: center; gap: var(--ln-sp-3); flex: none; }
+  .mem-guide-side .ln-field { margin-bottom: 0; display: flex; align-items: center; gap: var(--ln-sp-2); }
+  .mem-guide-side .ln-field > label { margin-bottom: 0; font-size: var(--ln-fs-xs); }
+  .mem-guide-priority { width: 76px; min-height: 40px; padding: var(--ln-sp-2) var(--ln-sp-3); }
+  .mem-guide-side .ln-btn { min-height: 36px; padding: 0 var(--ln-sp-3); font-size: var(--ln-fs-xs); }
+
+  .mem-section-head { display: flex; align-items: center; gap: var(--ln-sp-3); margin-bottom: var(--ln-sp-2); flex-wrap: wrap; }
+  .mem-section-head h2 { font-size: var(--ln-fs-lg); flex: 1 1 auto; margin: 0; }
+</style>
+{{end}}
+
+{{define "body"}}
+{{template "nav" .}}
+
+<main class="mem-shell" id="main">
+  <div class="mem-page-head">
+    <h1>Memory</h1>
+    <p class="ln-muted">Everything Live Ninja remembers about your world — people, places, facts, projects, tasks, and plans. Edit anything, or make it forget.</p>
+  </div>
+
+  <section class="ln-card" aria-labelledby="memHeading">
+    <div class="mem-section-head">
+      <h2 id="memHeading">Your memories</h2>
+      <button class="ln-btn ln-btn--ghost" id="memRefresh" type="button">Refresh</button>
+      <button class="ln-btn ln-btn--primary" id="memNew" type="button">New memory</button>
+    </div>
+
+    <div class="mem-toolbar">
+      {{- /* Entity type is a fixed six-value enum (person|place|info|
+             project|task|plan) + "All" = 7 options → a <select>, never
+             free text (machine UI rules, control-selection case 2). */}}
+      <div class="ln-field">
+        <label for="memTypeFilter">Type</label>
+        <select class="ln-select" id="memTypeFilter">
+          <option value="" selected>All types</option>
+          <option value="person">People</option>
+          <option value="place">Places</option>
+          <option value="info">Information</option>
+          <option value="project">Projects</option>
+          <option value="task">Tasks</option>
+          <option value="plan">Plans</option>
+        </select>
+      </div>
+      <p class="mem-count" id="memCount" role="status" aria-live="polite"></p>
+    </div>
+
+    <div class="mem-skeleton" id="memLoading" role="status" aria-label="Loading your memories">
+      <div class="bar" style="width: 90%;"></div>
+      <div class="bar" style="width: 72%;"></div>
+      <div class="bar" style="width: 84%;"></div>
+    </div>
+
+    <div class="mem-state" id="memEmpty" hidden>
+      <h3>No memories yet</h3>
+      <p>Tell Live Ninja about the people, places, and projects in your life — “remember that my sister Amy lives in Austin” — and they’ll show up here.</p>
+    </div>
+
+    <div class="mem-state mem-state--error" id="memError" hidden>
+      <h3>Couldn’t load your memories</h3>
+      <p id="memErrorMsg">Check your connection and try again.</p>
+      <button class="ln-btn ln-btn--ghost" id="memRetry" type="button">Retry</button>
+    </div>
+
+    <div class="mem-tablewrap" id="memTableWrap" hidden>
+      <table class="mem-table">
+        <thead>
+          <tr>
+            <th scope="col">Name</th>
+            <th scope="col">Type</th>
+            <th scope="col">Details</th>
+            <th scope="col">Updated</th>
+            <th scope="col" class="mem-actions-cell">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="memBody"></tbody>
+      </table>
+    </div>
+
+    <div class="mem-more" id="memMoreWrap" hidden>
+      <button class="ln-btn ln-btn--ghost" id="memMore" type="button">Load more</button>
+    </div>
+  </section>
+
+  <section class="ln-card" aria-labelledby="guideHeading">
+    <div class="mem-section-head">
+      <h2 id="guideHeading">Guides</h2>
+      <button class="ln-btn ln-btn--primary" id="guideNew" type="button">New guide</button>
+    </div>
+    <p class="ln-muted">Standing guidance included in every conversation, on every device. Lower priority numbers are applied first.</p>
+
+    <div class="mem-skeleton" id="guideLoading" role="status" aria-label="Loading your guides">
+      <div class="bar" style="width: 80%;"></div>
+      <div class="bar" style="width: 65%;"></div>
+    </div>
+
+    <div class="mem-state" id="guideEmpty" hidden>
+      <h3>No guides yet</h3>
+      <p>Create a guide to shape how Live Ninja behaves in every session — tone, sources to trust, standing instructions.</p>
+    </div>
+
+    <div class="mem-state mem-state--error" id="guideError" hidden>
+      <h3>Couldn’t load your guides</h3>
+      <p id="guideErrorMsg">Check your connection and try again.</p>
+      <button class="ln-btn ln-btn--ghost" id="guideRetry" type="button">Retry</button>
+    </div>
+
+    <div id="guideList" hidden></div>
+  </section>
+</main>
+
+{{- /* Entity view/edit dialog. Native <dialog> gives modal focus trap +
+       Escape-to-close for free; memory.mjs wires open/save. */}}
+<dialog class="mem-dialog" id="entityDialog" aria-labelledby="entityDialogTitle">
+  <h2 id="entityDialogTitle">Memory</h2>
+  <form id="entityForm" method="dialog" novalidate>
+    <div class="ln-field">
+      <label for="entityName">Name</label>
+      {{- /* Genuinely open-ended (a novel person/place/fact name) — the
+             one case free text is correct. */}}
+      <input class="ln-input" id="entityName" type="text" maxlength="200" required autocomplete="off">
+      <p class="ln-error-text" id="entityNameErr" hidden>Enter a name — e.g. “Amy” or “Project Falcon”.</p>
+    </div>
+    <div class="ln-field">
+      <label for="entityType">Type</label>
+      <select class="ln-select" id="entityType">
+        <option value="person">Person</option>
+        <option value="place">Place</option>
+        <option value="info">Information</option>
+        <option value="project">Project</option>
+        <option value="task">Task</option>
+        <option value="plan">Plan</option>
+      </select>
+      <p class="ln-hint" id="entityTypeHint" hidden>Type can’t change after a memory is created.</p>
+    </div>
+    <fieldset class="ln-fieldset">
+      <legend>Details</legend>
+      <div class="mem-attr-rows" id="entityAttrRows"></div>
+      <button class="ln-btn ln-btn--ghost mem-attr-add" id="entityAttrAdd" type="button">Add detail</button>
+    </fieldset>
+    <div class="ln-field" id="entityRelField" hidden>
+      <span class="ln-label" id="entityRelLabel">Connections</span>
+      <div class="mem-rel-list" id="entityRelList" aria-labelledby="entityRelLabel"></div>
+      <p class="ln-hint">Connections are created in conversation and shown here for reference.</p>
+    </div>
+    <div class="mem-dialog-actions">
+      <button class="ln-btn ln-btn--ghost" id="entityCancel" type="button">Cancel</button>
+      <button class="ln-btn ln-btn--primary" id="entitySave" type="submit">Save memory</button>
+    </div>
+  </form>
+</dialog>
+
+{{- /* Guide create/edit dialog. */}}
+<dialog class="mem-dialog" id="guideDialog" aria-labelledby="guideDialogTitle">
+  <h2 id="guideDialogTitle">Guide</h2>
+  <form id="guideForm" method="dialog" novalidate>
+    <div class="ln-field">
+      <label for="guideTitle">Title</label>
+      <input class="ln-input" id="guideTitle" type="text" maxlength="120" required autocomplete="off">
+      <p class="ln-error-text" id="guideTitleErr" hidden>Enter a short title — e.g. “Prefer metric units”.</p>
+    </div>
+    <div class="ln-field">
+      <label for="guideText">Guidance</label>
+      <textarea class="ln-textarea" id="guideText" maxlength="4000" required
+                placeholder="e.g. Always cite the publication date of any source you reference."></textarea>
+      <p class="ln-error-text" id="guideTextErr" hidden>Enter the guidance text to include in every session.</p>
+    </div>
+    <div class="ln-field">
+      <label for="guidePriority">Priority</label>
+      {{- /* Bounded number → native stepper with min/max, not free text. */}}
+      <input class="ln-input mem-guide-priority" id="guidePriority" type="number" min="1" max="99" step="1" value="10" inputmode="numeric">
+      <p class="ln-hint">1–99. Lower numbers are applied first.</p>
+    </div>
+    <label class="ln-toggle">
+      <input type="checkbox" id="guideEnabled" checked>
+      <span class="ln-toggle-track" aria-hidden="true"><span class="ln-toggle-thumb"></span></span>
+      <span>Enabled — include in every new session</span>
+    </label>
+    <div class="mem-dialog-actions">
+      <button class="ln-btn ln-btn--ghost" id="guideCancel" type="button">Cancel</button>
+      <button class="ln-btn ln-btn--primary" id="guideSave" type="submit">Save guide</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="ln-toast" id="toast" role="status" aria-live="polite" hidden>
+  <span id="toastMsg"></span>
+</div>
+{{end}}

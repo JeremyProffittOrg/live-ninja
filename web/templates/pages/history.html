@@ -1,0 +1,285 @@
+{{define "head"}}
+<script type="module" src="{{asset "/static/js/history.mjs"}}"></script>
+{{- /* Page-scoped styles (same rationale as downloads.html/memory.html).
+       All data-driven markup is built by history.mjs with textContent —
+       transcripts, topic names, and summaries are user/model-authored. */}}
+<style>
+  .hist-shell { padding: var(--ln-sp-6) var(--ln-sp-5) var(--ln-sp-8); max-width: 1040px; margin: 0 auto; width: 100%; }
+  .hist-page-head { margin-bottom: var(--ln-sp-5); }
+  .hist-page-head p { margin-bottom: 0; }
+  .hist-shell .ln-card + .ln-card, .hist-shell .ln-card + details { margin-top: var(--ln-sp-5); }
+
+  /* Filter bar */
+  .hist-filters { display: flex; gap: var(--ln-sp-5); flex-wrap: wrap; align-items: flex-start; }
+  .hist-filters .ln-field { margin-bottom: 0; }
+  .hist-filters fieldset.ln-fieldset { margin-bottom: 0; flex: 1 1 280px; min-width: 0; }
+  .hist-filter-side { display: flex; gap: var(--ln-sp-4); flex-wrap: wrap; align-items: flex-end; }
+  .hist-filter-side .ln-select { width: auto; min-width: 170px; }
+  .hist-dates { display: flex; gap: var(--ln-sp-3); align-items: flex-end; flex-wrap: wrap; }
+  .hist-dates .ln-input { width: auto; min-width: 150px; }
+  .hist-clear { min-height: var(--ln-touch); }
+
+  /* Topic filter chips — checkboxes under the hood (populated, multi). */
+  .hist-chiprow { display: flex; flex-wrap: wrap; gap: var(--ln-sp-2); }
+  .hist-chip { position: relative; display: inline-flex; }
+  .hist-chip input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .hist-chip span {
+    display: inline-flex; align-items: center; gap: var(--ln-sp-2);
+    min-height: 36px; padding: 0 var(--ln-sp-4);
+    font-size: var(--ln-fs-sm); font-weight: 650;
+    color: var(--ln-text-muted);
+    background: var(--ln-input-bg);
+    border: 1px solid var(--ln-border-strong);
+    border-radius: var(--ln-r-pill);
+    cursor: pointer;
+    transition: background .12s ease, color .12s ease, border-color .12s ease;
+  }
+  .hist-chip span::before {
+    content: ""; width: 9px; height: 9px; border-radius: 50%; flex: none;
+    background: var(--chip-color, var(--ln-text-dim));
+  }
+  .hist-chip input:checked + span {
+    background: var(--ln-accent-tint); color: var(--ln-accent-ink); border-color: var(--ln-accent-ink);
+  }
+  .hist-chip input:focus-visible + span { box-shadow: var(--ln-focus); }
+  .hist-chip-note { margin: 0; font-size: var(--ln-fs-xs); color: var(--ln-text-dim); }
+
+  /* Results table */
+  .hist-toolbar { display: flex; align-items: center; gap: var(--ln-sp-3); margin-bottom: var(--ln-sp-3); flex-wrap: wrap; }
+  .hist-count { margin: 0; font-size: var(--ln-fs-sm); flex: 1 1 auto; }
+  .hist-tablewrap { overflow-x: auto; border: 1px solid var(--ln-border); border-radius: var(--ln-r-md); }
+  .hist-table { width: 100%; min-width: 720px; border-collapse: collapse; font-size: var(--ln-fs-sm); }
+  .hist-table thead th {
+    position: sticky; top: 0; z-index: 1;
+    background: var(--ln-surface-raised);
+    text-align: left; font-size: var(--ln-fs-xs); font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.05em; color: var(--ln-text-muted);
+    padding: var(--ln-sp-3) var(--ln-sp-4);
+    border-bottom: 1px solid var(--ln-border-strong);
+    white-space: nowrap;
+  }
+  .hist-table tbody td { padding: var(--ln-sp-3) var(--ln-sp-4); border-top: 1px solid var(--ln-border); vertical-align: middle; }
+  .hist-table tbody tr:first-child td { border-top: none; }
+  .hist-table tbody tr:hover { background: var(--ln-surface-2); }
+  .hist-when { white-space: nowrap; }
+  .hist-summary { color: var(--ln-text-muted); max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hist-topics-cell { max-width: 260px; }
+  .hist-topic-badges { display: flex; flex-wrap: wrap; gap: var(--ln-sp-1); }
+  .hist-device { white-space: nowrap; }
+  .hist-num, .hist-table th.hist-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .hist-actions-cell, .hist-table th.hist-actions-cell { text-align: right; white-space: nowrap; }
+  .hist-actions-cell .ln-btn { min-height: 36px; padding: 0 var(--ln-sp-3); font-size: var(--ln-fs-xs); }
+
+  .hist-topic-dot {
+    display: inline-flex; align-items: center; gap: var(--ln-sp-1);
+    padding: 2px var(--ln-sp-3); font-size: var(--ln-fs-xs); font-weight: 700;
+    border-radius: var(--ln-r-pill);
+    background: var(--ln-surface-2); color: var(--ln-text-muted);
+    border: 1px solid var(--ln-border-strong); white-space: nowrap;
+  }
+  .hist-topic-dot::before {
+    content: ""; width: 8px; height: 8px; border-radius: 50%; flex: none;
+    background: var(--chip-color, var(--ln-text-dim));
+  }
+
+  /* States */
+  .hist-state { padding: var(--ln-sp-7) var(--ln-sp-5); text-align: center; }
+  .hist-state h3 { font-size: var(--ln-fs-md); margin-bottom: var(--ln-sp-2); }
+  .hist-state p { color: var(--ln-text-muted); font-size: var(--ln-fs-sm); margin-bottom: var(--ln-sp-4); }
+  .hist-state--error { border: 1px solid var(--ln-error-border); border-radius: var(--ln-r-md); background: var(--ln-error-tint); }
+  .hist-state--error h3 { color: var(--ln-error-ink); }
+  .hist-skeleton { padding: var(--ln-sp-4); }
+  .hist-skeleton .bar {
+    height: 18px; border-radius: 6px; margin: var(--ln-sp-4) 0;
+    background: linear-gradient(90deg, var(--ln-track) 25%, var(--ln-surface-2) 50%, var(--ln-track) 75%);
+    background-size: 200% 100%; animation: hist-shimmer 1.2s linear infinite;
+  }
+  @keyframes hist-shimmer { to { background-position: -200% 0; } }
+  @media (prefers-reduced-motion: reduce) { .hist-skeleton .bar { animation: none; } }
+  .hist-more { display: flex; justify-content: center; padding: var(--ln-sp-4) 0 0; }
+
+  /* Conversation detail view (master list → detail) */
+  .hist-detail-head { display: flex; align-items: center; gap: var(--ln-sp-3); flex-wrap: wrap; margin-bottom: var(--ln-sp-4); }
+  .hist-detail-head h2 { font-size: var(--ln-fs-lg); margin: 0; flex: 1 1 auto; }
+  .hist-detail-meta { display: flex; flex-wrap: wrap; gap: var(--ln-sp-2); margin-bottom: var(--ln-sp-4); align-items: center; }
+  .hist-transcript { display: flex; flex-direction: column; gap: var(--ln-sp-3); max-width: 720px; }
+
+  /* Topic manager */
+  .hist-manage summary {
+    cursor: pointer; font-weight: 700; font-size: var(--ln-fs-md);
+    padding: var(--ln-sp-4) var(--ln-sp-5);
+    border: 1px solid var(--ln-border); border-radius: var(--ln-r-md);
+    background: var(--ln-surface);
+    list-style-position: inside;
+  }
+  .hist-manage summary:focus-visible { box-shadow: var(--ln-focus); outline: none; }
+  .hist-manage[open] summary { border-radius: var(--ln-r-md) var(--ln-r-md) 0 0; }
+  .hist-manage-body {
+    border: 1px solid var(--ln-border); border-top: none;
+    border-radius: 0 0 var(--ln-r-md) var(--ln-r-md);
+    background: var(--ln-surface); padding: var(--ln-sp-4) var(--ln-sp-5);
+  }
+  .hist-topicrow {
+    display: flex; align-items: center; gap: var(--ln-sp-3);
+    padding: var(--ln-sp-3) 0; border-top: 1px solid var(--ln-border);
+    flex-wrap: wrap;
+  }
+  .hist-topicrow:first-child { border-top: none; }
+  .hist-topicrow input[type="color"] {
+    width: 36px; height: 36px; padding: 2px; border: 1px solid var(--ln-border-strong);
+    border-radius: var(--ln-r-sm); background: var(--ln-input-bg); cursor: pointer; flex: none;
+  }
+  .hist-topicrow input[type="color"]:focus-visible { box-shadow: var(--ln-focus); outline: none; }
+  .hist-topicname { font-weight: 650; flex: 1 1 160px; min-width: 0; word-break: break-word; }
+  .hist-topicname .ln-input { min-height: 40px; padding: var(--ln-sp-2) var(--ln-sp-3); }
+  .hist-topiccount { color: var(--ln-text-muted); font-size: var(--ln-fs-xs); white-space: nowrap; }
+  .hist-topicrow .ln-btn { min-height: 36px; padding: 0 var(--ln-sp-3); font-size: var(--ln-fs-xs); }
+  .hist-topicrow .ln-select { width: auto; min-width: 150px; min-height: 40px; padding-top: var(--ln-sp-2); padding-bottom: var(--ln-sp-2); }
+  .hist-mergeform { display: inline-flex; gap: var(--ln-sp-2); align-items: center; flex-wrap: wrap; }
+</style>
+{{end}}
+
+{{define "body"}}
+{{template "nav" .}}
+
+<main class="hist-shell" id="main">
+  <div class="hist-page-head">
+    <h1>History</h1>
+    <p class="ln-muted">Every conversation you’ve had with Live Ninja, tagged by topic. Filter by topic, device, or date.</p>
+  </div>
+
+  <div id="histListView">
+    <section class="ln-card" aria-labelledby="filterHeading">
+      <h2 class="ln-sr-only" id="filterHeading">Filters</h2>
+      <div class="hist-filters">
+        {{- /* Topic multi-select: checkbox chips populated from the
+               user's taxonomy (GET /api/v1/topics) — never a blind text
+               box (FR-TOP-05, machine UI rules). */}}
+        <fieldset class="ln-fieldset">
+          <legend>Topics</legend>
+          <div class="hist-chiprow" id="topicChips">
+            <p class="hist-chip-note" id="topicChipsNote">Loading topics…</p>
+          </div>
+        </fieldset>
+
+        <div class="hist-filter-side">
+          {{- /* Device picker: populated from GET /api/v1/devices +
+                 fixed surface entries — a select, never typed IDs. */}}
+          <div class="ln-field">
+            <label for="deviceFilter">Device</label>
+            <select class="ln-select" id="deviceFilter">
+              <option value="" selected>All devices</option>
+            </select>
+          </div>
+
+          {{- /* Date range: native date pickers (typed masked entry OK
+                 inside them), never raw text fields. */}}
+          <div class="hist-dates">
+            <div class="ln-field">
+              <label for="fromDate">From</label>
+              <input class="ln-input" id="fromDate" type="date">
+            </div>
+            <div class="ln-field">
+              <label for="toDate">To</label>
+              <input class="ln-input" id="toDate" type="date">
+            </div>
+          </div>
+
+          <button class="ln-btn ln-btn--ghost hist-clear" id="clearFilters" type="button" hidden>Clear filters</button>
+        </div>
+      </div>
+      <p class="ln-error-text" id="dateRangeErr" hidden>The “From” date must be on or before the “To” date.</p>
+    </section>
+
+    <section class="ln-card" aria-labelledby="histHeading">
+      <h2 class="ln-sr-only" id="histHeading">Conversations</h2>
+
+      <div class="hist-toolbar">
+        <p class="hist-count" id="histCount" role="status" aria-live="polite"></p>
+        <button class="ln-btn ln-btn--ghost" id="histRefresh" type="button">Refresh</button>
+      </div>
+
+      <div class="hist-skeleton" id="histLoading" role="status" aria-label="Loading your conversations">
+        <div class="bar" style="width: 92%;"></div>
+        <div class="bar" style="width: 78%;"></div>
+        <div class="bar" style="width: 85%;"></div>
+      </div>
+
+      <div class="hist-state" id="histEmpty" hidden>
+        <h3 id="histEmptyTitle">No conversations yet</h3>
+        <p id="histEmptyMsg">Once you talk with Live Ninja, your conversations will appear here, tagged by topic.</p>
+        <button class="ln-btn ln-btn--ghost" id="histEmptyClear" type="button" hidden>Clear filters</button>
+      </div>
+
+      <div class="hist-state hist-state--error" id="histError" hidden>
+        <h3>Couldn’t load your history</h3>
+        <p id="histErrorMsg">Check your connection and try again.</p>
+        <button class="ln-btn ln-btn--ghost" id="histRetry" type="button">Retry</button>
+      </div>
+
+      <div class="hist-tablewrap" id="histTableWrap" hidden>
+        <table class="hist-table">
+          <thead>
+            <tr>
+              <th scope="col">When</th>
+              <th scope="col">Summary</th>
+              <th scope="col">Topics</th>
+              <th scope="col">Device</th>
+              <th scope="col" class="hist-num">Turns</th>
+              <th scope="col" class="hist-actions-cell"><span class="ln-sr-only">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="histBody"></tbody>
+        </table>
+      </div>
+
+      <div class="hist-more" id="histMoreWrap" hidden>
+        <button class="ln-btn ln-btn--ghost" id="histMore" type="button">Load more</button>
+      </div>
+    </section>
+
+    {{- /* Topic Manager (FR-TOP-02/05): rename / recolor / archive /
+           merge — collapsed by default so the filter flow stays primary. */}}
+    <details class="hist-manage" id="topicManager">
+      <summary>Manage topics</summary>
+      <div class="hist-manage-body">
+        <p class="ln-muted">Rename, recolor, archive, or merge topics. Conversations keep their tags through any rename or merge.</p>
+        <div id="topicMgrList"></div>
+        <p class="ln-muted" id="topicMgrEmpty" hidden>No topics yet — they’re created automatically as you have conversations.</p>
+      </div>
+    </details>
+  </div>
+
+  {{- /* Detail view: replaces the list (master → detail). */}}
+  <section class="ln-card" id="histDetailView" hidden aria-labelledby="detailHeading">
+    <div class="hist-detail-head">
+      <button class="ln-btn ln-btn--ghost" id="detailBack" type="button">← Back to history</button>
+      <h2 id="detailHeading">Conversation</h2>
+    </div>
+    <div class="hist-detail-meta" id="detailMeta"></div>
+
+    <div class="hist-skeleton" id="detailLoading" role="status" aria-label="Loading the conversation">
+      <div class="bar" style="width: 85%;"></div>
+      <div class="bar" style="width: 70%;"></div>
+      <div class="bar" style="width: 78%;"></div>
+    </div>
+
+    <div class="hist-state hist-state--error" id="detailError" hidden>
+      <h3>Couldn’t load this conversation</h3>
+      <p id="detailErrorMsg">Check your connection and try again.</p>
+      <button class="ln-btn ln-btn--ghost" id="detailRetry" type="button">Retry</button>
+    </div>
+
+    <div class="hist-state" id="detailEmpty" hidden>
+      <h3>No transcript stored</h3>
+      <p>This conversation has no stored transcript — transcript storage may have been off in Settings.</p>
+    </div>
+
+    <div class="hist-transcript ln-transcript" id="detailTranscript" hidden></div>
+  </section>
+</main>
+
+<div class="ln-toast" id="toast" role="status" aria-live="polite" hidden>
+  <span id="toastMsg"></span>
+</div>
+{{end}}

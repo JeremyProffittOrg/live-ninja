@@ -37,6 +37,7 @@ import (
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
 	"github.com/JeremyProffittOrg/live-ninja/internal/deliv"
+	"github.com/JeremyProffittOrg/live-ninja/internal/memory"
 	"github.com/JeremyProffittOrg/live-ninja/internal/observ"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	"github.com/JeremyProffittOrg/live-ninja/internal/webapp"
@@ -101,6 +102,8 @@ func main() {
 	webapp.RegisterSettingsRoutes(app, deps)
 	webapp.RegisterDeliverablesRoutes(app, deps)
 	webapp.RegisterWakewordRoutes(app, deps)
+	webapp.RegisterMemoryRoutes(app, deps, buildMemoryService(ctx, deps, logger))
+	webapp.RegisterHistoryRoutes(app, deps)
 	webapp.RegisterPageRoutes(app, deps)
 
 	// Catch-all: HTML error page for browser navigations, JSON 404 for
@@ -208,6 +211,29 @@ func buildDeps(ctx context.Context, cfg config.App, logger *slog.Logger) (*webap
 	}
 
 	return deps, nil
+}
+
+// buildMemoryService wires the M10 memory core (internal/memory): the
+// Titan v2 Bedrock embedder over the shared store. The embedder client
+// builds from the ambient AWS config (bedrock:InvokeModel on the one
+// Titan model ARN is granted in template.yaml); a construction failure
+// degrades gracefully — RegisterMemoryRoutes answers 503 not_configured
+// on the embedding-dependent routes while the store-only memory routes
+// (list/get/forget/guides) and all history routes stay live.
+func buildMemoryService(ctx context.Context, deps *webapp.Deps, logger *slog.Logger) *memory.Service {
+	embedder, err := memory.NewBedrockEmbedder(ctx)
+	if err != nil {
+		logger.Warn("memory embedder unavailable; semantic memory routes degraded",
+			slog.String("error", err.Error()))
+		return nil
+	}
+	svc, err := memory.NewService(deps.Store, embedder)
+	if err != nil {
+		logger.Warn("memory service unavailable; semantic memory routes degraded",
+			slog.String("error", err.Error()))
+		return nil
+	}
+	return svc
 }
 
 func healthzHandler(c *fiber.Ctx) error {

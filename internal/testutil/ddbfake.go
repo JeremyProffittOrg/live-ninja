@@ -10,7 +10,8 @@
 //	                OR of those clauses (used by settings optimistic
 //	                concurrency: attribute_not_exists(pk) OR version = :v)
 //	Update:         SET a = :v, b = :w [ADD c :n]
-//	Key condition:  pk = :pk [AND sk = :sk | AND begins_with(sk, :pfx)]
+//	Key condition:  pk = :pk [AND sk = :sk | AND begins_with(sk, :pfx) |
+//	                AND sk BETWEEN :lo AND :hi]
 //	Filter:         a = :v (AND-joined)
 //	Pagination:     ExclusiveStartKey / LastEvaluatedKey on the sort attr
 //
@@ -406,11 +407,37 @@ func (f *FakeDynamo) Query(ctx context.Context, params *dynamodb.QueryInput, opt
 		attr      string
 		val       types.AttributeValue
 		beginWith bool
+		between   bool
+		lo, hi    string
+	}
+	// Split on " AND ", then re-join the "x BETWEEN :lo AND :hi" triple the
+	// split tore apart (BETWEEN's operand separator is also AND).
+	rawClauses := strings.Split(*params.KeyConditionExpression, " AND ")
+	var clauses []string
+	for i := 0; i < len(rawClauses); i++ {
+		clause := strings.TrimSpace(rawClauses[i])
+		if strings.Contains(clause, " BETWEEN ") && i+1 < len(rawClauses) {
+			clause = clause + " AND " + strings.TrimSpace(rawClauses[i+1])
+			i++
+		}
+		clauses = append(clauses, clause)
 	}
 	var conds []cond
-	for _, clause := range strings.Split(*params.KeyConditionExpression, " AND ") {
-		clause = strings.TrimSpace(clause)
+	for _, clause := range clauses {
 		switch {
+		case strings.Contains(clause, " BETWEEN "):
+			parts := strings.SplitN(clause, " BETWEEN ", 2)
+			attr := resolveName(parts[0], params.ExpressionAttributeNames)
+			bounds := strings.SplitN(parts[1], " AND ", 2)
+			if len(bounds) != 2 {
+				panic(fmt.Sprintf("testutil: unsupported BETWEEN clause %q", clause))
+			}
+			loAV, okLo := params.ExpressionAttributeValues[strings.TrimSpace(bounds[0])]
+			hiAV, okHi := params.ExpressionAttributeValues[strings.TrimSpace(bounds[1])]
+			if !okLo || !okHi {
+				panic(fmt.Sprintf("testutil: unresolved value in %q", clause))
+			}
+			conds = append(conds, cond{attr: attr, between: true, lo: sVal(loAV), hi: sVal(hiAV)})
 		case strings.HasPrefix(clause, "begins_with(") && strings.HasSuffix(clause, ")"):
 			inner := clause[len("begins_with(") : len(clause)-1]
 			parts := strings.SplitN(inner, ",", 2)
@@ -442,15 +469,24 @@ func (f *FakeDynamo) Query(ctx context.Context, params *dynamodb.QueryInput, opt
 				ok = false
 				break
 			}
-			if c.beginWith {
+			switch {
+			case c.between:
+				v := sVal(have)
+				if v < c.lo || v > c.hi {
+					ok = false
+				}
+			case c.beginWith:
 				hs, isS := have.(*types.AttributeValueMemberS)
 				ps, isPS := c.val.(*types.AttributeValueMemberS)
 				if !isS || !isPS || !strings.HasPrefix(hs.Value, ps.Value) {
 					ok = false
-					break
 				}
-			} else if !avEqual(have, c.val) {
-				ok = false
+			default:
+				if !avEqual(have, c.val) {
+					ok = false
+				}
+			}
+			if !ok {
 				break
 			}
 		}

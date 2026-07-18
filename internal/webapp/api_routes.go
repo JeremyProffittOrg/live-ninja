@@ -39,6 +39,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/iotdataplane"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	lambdatypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
 	"github.com/aws/aws-sdk-go-v2/service/scheduler"
 	"github.com/gofiber/fiber/v2"
 
@@ -511,7 +512,12 @@ func handleTranscript(deps *Deps) fiber.Handler {
 
 		var body struct {
 			SessionID string `json:"sessionId"`
-			Turns     []struct {
+			// Final marks this as the session's last transcript flush —
+			// the M11 session-end seam: it triggers an async invoke of the
+			// topics-extract Lambda (FR-TOP-01). A final-only flush with
+			// zero turns is valid (client already flushed everything).
+			Final bool `json:"final"`
+			Turns []struct {
 				Seq    int    `json:"seq"`
 				Role   string `json:"role"`
 				Text   string `json:"text"`
@@ -524,8 +530,8 @@ func handleTranscript(deps *Deps) fiber.Handler {
 		if strings.TrimSpace(body.SessionID) == "" {
 			return apiBadRequest(c, "sessionId is required")
 		}
-		if len(body.Turns) == 0 {
-			return apiBadRequest(c, "turns must be a non-empty array")
+		if len(body.Turns) == 0 && !body.Final {
+			return apiBadRequest(c, "turns must be a non-empty array (unless final is true)")
 		}
 
 		now := time.Now().UTC()
@@ -561,7 +567,50 @@ func handleTranscript(deps *Deps) fiber.Handler {
 			deps.Log.Warn("api: activeuser marker write failed", slog.String("error", err.Error()), slog.String("userId", userID))
 		}
 
+		// Session-end seam (M11, FR-TOP-01): fire-and-forget the topic
+		// extractor. Best-effort — history tagging must never fail a
+		// transcript flush.
+		if body.Final {
+			enqueueTopicExtraction(c.Context(), deps, userID, body.SessionID, DeviceID(c), surface, now)
+		}
+
 		return c.JSON(fiber.Map{"ok": true, "written": written})
+	}
+}
+
+// enqueueTopicExtraction async-invokes the topics-extract Lambda
+// (TOPICS_EXTRACT_FUNCTION_NAME, wired in template.yaml alongside the
+// web function's lambda:InvokeFunction grant on it). InvocationType=Event
+// so the sink never waits on the extraction; identity fields come from the
+// verified auth context, mirroring cmd/topics-extract's Event shape.
+func enqueueTopicExtraction(ctx context.Context, deps *Deps, userID, sessionID, deviceID, surface string, now time.Time) {
+	fn := os.Getenv("TOPICS_EXTRACT_FUNCTION_NAME")
+	if fn == "" || deps.Lambda == nil {
+		deps.Log.Warn("api: topics-extract not configured; skipping topic extraction",
+			slog.String("sessionId", sessionID))
+		return
+	}
+
+	payload, err := json.Marshal(map[string]string{
+		"userId":    userID,
+		"sessionId": sessionID,
+		"ts":        now.Format(time.RFC3339),
+		"deviceId":  deviceID,
+		"surface":   surface,
+	})
+	if err != nil {
+		deps.Log.Error("api: marshal topics-extract event failed", slog.String("error", err.Error()))
+		return
+	}
+
+	if _, err := deps.Lambda.Invoke(ctx, &lambda.InvokeInput{
+		FunctionName:   aws.String(fn),
+		InvocationType: lambdatypes.InvocationTypeEvent,
+		Payload:        payload,
+	}); err != nil {
+		deps.Log.Warn("api: topics-extract async invoke failed",
+			slog.String("error", err.Error()), slog.String("sessionId", sessionID),
+			slog.String("userId", userID))
 	}
 }
 

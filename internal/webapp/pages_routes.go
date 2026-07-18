@@ -61,6 +61,8 @@ var pageMetas = map[string]pageMeta{
 	"pages/conversation": {Title: "Conversation — Live Ninja", Path: "/conversation"},
 	"pages/settings":     {Title: "Settings — Live Ninja", Path: "/settings"},
 	"pages/downloads":    {Title: "Downloads — Live Ninja", Path: "/downloads"},
+	"pages/memory":       {Title: "Memory — Live Ninja", Path: "/memory"},
+	"pages/history":      {Title: "History — Live Ninja", Path: "/history"},
 	"pages/error":        {Title: "Live Ninja"},
 }
 
@@ -183,6 +185,8 @@ func RegisterPageRoutes(app *fiber.App, deps *Deps) {
 	app.Get("/", handleLandingPage(deps))
 	app.Get("/conversation", handleConversationPage(deps))
 	app.Get("/downloads", handleDownloadsPage(deps))
+	app.Get("/memory", handleClientDataPage(deps, "pages/memory"))
+	app.Get("/history", handleClientDataPage(deps, "pages/history"))
 }
 
 // webPageUser resolves the signed-in user for a plain browser page
@@ -229,6 +233,21 @@ func handleDownloadsPage(deps *Deps) fiber.Handler {
 		}
 		c.Set(fiber.HeaderCacheControl, "no-cache")
 		return c.Render("pages/downloads", nil)
+	}
+}
+
+// handleClientDataPage serves the M10/M11 client-rendered shells (/memory
+// and /history). Like /downloads, the data is fetched client-side
+// (memory.mjs / history.mjs) against the Query-backed /api/v1 surface and
+// each page renders a real loading state on first paint, so no SSR data
+// island is needed.
+func handleClientDataPage(deps *Deps, page string) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if webPageUser(c, deps) == "" {
+			return c.Redirect("/", fiber.StatusFound)
+		}
+		c.Set(fiber.HeaderCacheControl, "no-cache")
+		return c.Render(page, nil)
 	}
 }
 

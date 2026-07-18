@@ -437,7 +437,7 @@ Ordered tasks:
 - `[ ]` **S** — SES delivery channel + presigned-URL authz by `userId` prefix. _(FR-DLV-03/06)_
 - `[ ]` **H** — Tests: unit + e2e (create→zip→deliver→download on web + app).
 
-### M10 — Memory Layer + Guide Entities  `[ ]`  (WS-C + WS-G lead, all surfaces support)
+### M10 — Memory Layer + Guide Entities  `[~]`  (WS-C + WS-G lead, all surfaces support)
 
 **Definition of Done:** DynamoDB entity/relationship graph stores people/places/information/projects/tasks/plans; S3 Vectors provides semantic recall; `memory.*`/`plan.upsert` tools + session bootstrap integrate with GPT-Realtime; Guide Entities inject into every session on every surface; a memory/guide browser allows view/edit/forget with propagation to both stores; optional local-RAG sidecar can be enabled with graceful fallback. _(FR-MEM-01..09)_
 
@@ -455,7 +455,7 @@ Ordered tasks:
 - `[ ]` **S** — Guide Manager UI (web/app): list, edit, enable/disable, priority; seed default "AI is an emerging technology" guide. _(FR-MEM-09)_
 - `[ ]` **H** — Tests: recall-quality eval, forget propagation, guide always-injection, sidecar on/off.
 
-### M11 — Conversation Topics & Filterable History  `[ ]`  (WS-C + WS-G lead, WS-D/E support)
+### M11 — Conversation Topics & Filterable History  `[~]`  (WS-C + WS-G lead, WS-D/E support)
 
 **Definition of Done:** every finished conversation is auto-tagged with topics by a cheap engine-agnostic post-session model; a per-user evolving/redefinable topic taxonomy (create/rename/merge/split/color/archive, stable IDs) exists; history is filterable by topic/device/date via Query/GSIs (no Scan); Topic Manager + history filter UIs shipped on web/app. _(FR-TOP-01..07)_
 
@@ -641,7 +641,20 @@ _(no notes yet)_
 _(combined with M6 in workflow `wf_4bf35707` — see M6 notes: partial, resume at 9:15pm session)_
 
 ### M10 — Memory Layer + Guide Entities
-_(no notes yet)_
+
+**2026-07-17 21:45–22:10 EDT — 7 authors + integrator (workflow `wf_d8cfe5cd`); integrator needed ZERO fixes.**
+- Vectors: S3 Vectors not in the pinned aws-sdk-go-v2 → **DynamoDB-native embedding store** (locked fallback): `EMB#<entityId>` items (Titan `amazon.titan-embed-text-v2:0` via `bedrock:InvokeModel`, scoped IAM), cosine ranking over the user's single partition (Query, cap 2000, never Scan). `internal/memory` + `internal/store/entities.go` (ENT/EMB/GUIDE shapes).
+- Tools registered: `memory_search`/`memory_write`/`entity_get`/`plan_upsert`/`forget` + `web_research` (30-day recency default, HN Algolia date-search + Wikipedia + allow-listed anthropic/openai fetch, cited dates).
+- Guide injection: broker session-mint appends enabled guides (priority asc) to persona instructions; default "AI is an emerging technology" guide seeded on first list.
+- Web `/memory` page (entities table w/ type filter, edit/forget, guides manager) + Android Memory screen; memory routes degrade gracefully (503 `not_configured`) if Bedrock unavailable while CRUD/guides stay live.
+
+### M11 — Conversation Topics & Filterable History
+
+**Same workflow/window as M10.**
+- Query-only design with **no new GSIs** (locked): canonical `CONV#<ts>#<sessionId>` + one `TREF#<topicId>#<ts>#<sessionId>` per assigned topic + `TOPIC#<topicId>` taxonomy items; topic filter = begins_with TREF, date filter = CONV range, device = FilterExpression in-partition.
+- `cmd/topics-extract` Lambda (async-invoked when transcript sink gets `{final:true}`): Queries session LOG# turns → broker mode `extract-topics` (gpt-4o-mini strict-JSON) → CONV/TREF/TOPIC writes w/ convCount; rename/merge keeps tags stable (TREF rewrite batched, `mergedInto`).
+- `/api/v1/conversations` (topic/device/from/to/cursor) + `/api/v1/topics` CRUD; web `/history` page (topic chips, populated multi-select, device picker, date range, transcript detail) + Android History screen.
+- Both pages public-at-gateway/cookie-gated server-side (authorizer publics updated). Tests incl. no-Scan proof + merge stability. All green: go build/vet/test, sam validate, gradle compile+tests, node --check.
 
 ### M11 — Conversation Topics & Filterable History
 _(no notes yet)_

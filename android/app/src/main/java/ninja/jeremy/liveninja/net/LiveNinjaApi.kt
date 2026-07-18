@@ -4,6 +4,7 @@ import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.POST
+import retrofit2.http.PUT
 import retrofit2.http.Path
 import retrofit2.http.Query
 
@@ -81,4 +82,71 @@ interface LiveNinjaApi {
     /** Poll a training job: status pending|training|ready|failed. */
     @GET("api/v1/wakewords/{id}")
     suspend fun getWakeWord(@Path("id") id: String): WakeWordJobDto
+
+    // ---- Memory Layer + Guide Entities (M10, FR-MEM-05/07/09) ----
+
+    /**
+     * List memory entities for the memory browser — backend Query on
+     * PK=USER#{uid}, SK begins_with ENT# (or ENT#<type># when [type] is set;
+     * type ∈ person|place|info|project|task|plan), never Scan. [type] omitted
+     * = all types.
+     */
+    @GET("api/v1/entities")
+    suspend fun listEntities(
+        @Query("type") type: String? = null,
+        @Query("cursor") cursor: String? = null,
+        @Query("limit") limit: Int? = null,
+    ): EntityListResponse
+
+    /**
+     * "Forget" one memory entity — deletes the ENT# item AND its EMB#
+     * embedding so it can never be recalled again (FR-MEM-05, both stores).
+     */
+    @DELETE("api/v1/memory/{id}")
+    suspend fun forgetMemory(@Path("id") id: String): MemoryAck
+
+    /**
+     * List the caller's Guide Entities (FR-MEM-09). The backend seeds the
+     * default "AI is an emerging technology" guide on first list, so this is
+     * never empty for a fresh user.
+     */
+    @GET("api/v1/guides")
+    suspend fun listGuides(): GuideListResponse
+
+    /**
+     * Create/edit a guide — Android uses it for the enable toggle and
+     * priority stepper (full replace semantics, so the whole guide is sent).
+     */
+    @PUT("api/v1/guides/{id}")
+    suspend fun putGuide(@Path("id") id: String, @Body body: GuidePutRequest): GuideDto
+
+    // ---- Conversation history + topics (M11, FR-TOP-04/05) ----
+
+    /**
+     * List/filter conversation history (FR-TOP-04) — Query-only server side
+     * (CONV# range for date, TREF# per-topic refs for topic, FilterExpression
+     * for device; never Scan). [topic] carries comma-joined stable topicIds
+     * for the multi-select filter; [from]/[to] are ISO-8601 instants.
+     */
+    @GET("api/v1/conversations")
+    suspend fun listConversations(
+        @Query("topic") topic: String? = null,
+        @Query("device") device: String? = null,
+        @Query("from") from: String? = null,
+        @Query("to") to: String? = null,
+        @Query("cursor") cursor: String? = null,
+        @Query("limit") limit: Int? = null,
+    ): ConversationListResponse
+
+    /** Fetch one conversation with its transcript turns. */
+    @GET("api/v1/conversations/{id}")
+    suspend fun getConversation(@Path("id") id: String): ConversationDetailDto
+
+    /** List the caller's topic taxonomy (populates the topic filter chips). */
+    @GET("api/v1/topics")
+    suspend fun listTopics(): TopicListResponse
+
+    /** List the caller's registered devices (populates the device filter). */
+    @GET("api/v1/devices")
+    suspend fun listDevices(): DeviceListResponse
 }

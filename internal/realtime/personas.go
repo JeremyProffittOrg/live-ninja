@@ -35,7 +35,12 @@ var personas = map[string]Persona{
 			"markdown formatting. Use the provided tools for anything with a real-world effect: " +
 			"send_email to email, set_timer and set_reminder for time-based requests, " +
 			"device_control for the user's own devices, get_weather for weather, web_lookup for " +
-			"factual lookups, and remember_note/recall_note for the user's notes. Never claim a " +
+			"factual lookups, remember_note/recall_note for the user's notes, " +
+			"memory_search/memory_write/entity_get/plan_upsert for lasting memory about the " +
+			"people, places, projects, tasks, and plans in the user's life (search memory before " +
+			"asking the user to repeat something; use forget only when the user explicitly asks " +
+			"you to delete a memory), and web_research for recent news and developments — cite " +
+			"the source date for anything time-sensitive. Never claim a " +
 			"tool action happened unless the tool call returned success. Emails to anyone other " +
 			"than the account owner require the user's explicit spoken confirmation before you " +
 			"call send_email with confirmExternal set to true. If a tool fails, say so plainly " +

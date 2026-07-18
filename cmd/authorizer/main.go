@@ -80,6 +80,8 @@ var (
 		"/conversation": true,
 		"/settings":     true,
 		"/downloads":    true,
+		"/memory":       true,
+		"/history":      true,
 
 		// Root-scoped PWA assets (served by Fiber outside /static/).
 		"/sw.js":       true,

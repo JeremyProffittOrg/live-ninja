@@ -4,10 +4,14 @@ import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -41,6 +45,8 @@ import ninja.jeremy.liveninja.ui.onboarding.LoginScreen
 import ninja.jeremy.liveninja.ui.onboarding.OnboardingScreen
 import ninja.jeremy.liveninja.ui.screens.ConversationScreen
 import ninja.jeremy.liveninja.ui.screens.FilesScreen
+import ninja.jeremy.liveninja.ui.screens.HistoryScreen
+import ninja.jeremy.liveninja.ui.screens.MemoryScreen
 import ninja.jeremy.liveninja.ui.screens.SettingsScreen
 
 /** Top-level bottom-nav destinations. */
@@ -55,6 +61,18 @@ enum class TopLevelDestination(
         labelRes = R.string.destination_conversation,
         selectedIcon = Icons.Filled.Mic,
         unselectedIcon = Icons.Outlined.Mic,
+    ),
+    HISTORY(
+        route = "history",
+        labelRes = R.string.destination_history,
+        selectedIcon = Icons.Filled.History,
+        unselectedIcon = Icons.Outlined.History,
+    ),
+    MEMORY(
+        route = "memory",
+        labelRes = R.string.destination_memory,
+        selectedIcon = Icons.Filled.Psychology,
+        unselectedIcon = Icons.Outlined.Psychology,
     ),
     FILES(
         route = "files",
@@ -153,6 +171,8 @@ fun LiveNinjaRoot(assistTriggers: SharedFlow<AssistTrigger> = MutableSharedFlow(
             modifier = Modifier.padding(innerPadding),
         ) {
             composable(TopLevelDestination.CONVERSATION.route) { ConversationScreen() }
+            composable(TopLevelDestination.HISTORY.route) { HistoryScreen() }
+            composable(TopLevelDestination.MEMORY.route) { MemoryScreen() }
             composable(TopLevelDestination.FILES.route) { FilesScreen() }
             composable(TopLevelDestination.SETTINGS.route) { SettingsScreen() }
         }

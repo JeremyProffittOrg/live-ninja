@@ -219,6 +219,11 @@ type Deps struct {
 	// nil → those tools report not_configured (interface in deliverable.go).
 	Deliverables DeliverableService
 
+	// Memory backs the M10 memory_search/memory_write/entity_get/
+	// plan_upsert/forget tools (interface in memory.go, implemented by
+	// internal/memory); nil → those tools report not_configured.
+	Memory MemoryService
+
 	HTTPClient *http.Client // get_weather / web_lookup; defaulted by NewRegistry
 
 	Reauthorize ReauthorizeFunc
@@ -272,6 +277,12 @@ func NewRegistry(deps *Deps) (*Registry, error) {
 		deliverableCreateDefinition(),
 		deliverableZipDefinition(),
 		deliverableDeliverDefinition(),
+		memorySearchDefinition(),
+		memoryWriteDefinition(),
+		entityGetDefinition(),
+		planUpsertDefinition(),
+		forgetDefinition(),
+		webResearchDefinition(),
 	} {
 		if err := r.register(def); err != nil {
 			return nil, err
