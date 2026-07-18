@@ -1535,6 +1535,7 @@ Resources:
   # ------------------------------------------------------------------
   NovaBridgeRepo:
     Type: AWS::ECR::Repository
+    Condition: NovaBridgeReady
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
@@ -2625,6 +2626,7 @@ Outputs:
     Description: CloudWatch ops dashboard (M7).
     Value: !Ref OpsDashboard
   NovaBridgeRepositoryUri:
+    Condition: NovaBridgeReady
     Description: ECR repository URI the deploy workflow pushes the nova-bridge image to (M12).
     Value: !GetAtt NovaBridgeRepo.RepositoryUri
   NovaBridgeClusterName:
