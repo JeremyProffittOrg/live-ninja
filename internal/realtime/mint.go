@@ -352,13 +352,18 @@ func (m *Minter) Mint(ctx context.Context, personaID, voice, instructionsSuffix 
 		"model": m.model,
 		"audio": map[string]any{
 			"output": map[string]any{"voice": voice},
+			// GA realtime API nests turn detection under audio.input —
+			// a top-level session.turn_detection is rejected with 400
+			// "Unknown parameter" (broke every mint in prod 2026-07-18).
+			"input": map[string]any{
+				"turn_detection": map[string]any{
+					"type":               "semantic_vad",
+					"interrupt_response": true,
+				},
+			},
 		},
 		"instructions": persona.Instructions + instructionsSuffix,
 		"tools":        toolManifest,
-		"turn_detection": map[string]any{
-			"type":               "semantic_vad",
-			"interrupt_response": true,
-		},
 	}
 	body, err := json.Marshal(map[string]any{
 		"expires_after": map[string]any{

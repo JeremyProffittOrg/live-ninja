@@ -1,0 +1,22 @@
+Vendored runtime: onnxruntime-web 1.20.1 (WASM-only ESM bundle)
+Source: https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/
+Fetched: 2026-07-17 (author time; no CDN access at runtime — CSP 'self')
+
+SHA-256:
+f53ed4792e758e7232f779d479eb8931b97ff3ab2e3b9a33ee00d1251ffdaad6  ort.wasm.min.mjs
+745eb7c0ce6f18a6aa521971b2877babc7ffb27eecb58ab3bc6e5ef4692672e8  ort-wasm-simd-threaded.mjs
+207d02be4591c156b0a98f024f3d58005b5b04c92274d759fb390338c63559ea  ort-wasm-simd-threaded.wasm
+
+Notes:
+- ort.wasm.min.mjs dynamically imports ort-wasm-simd-threaded.mjs, which
+  fetches ort-wasm-simd-threaded.wasm; wakeword.mjs points
+  ort.env.wasm.wasmPaths at this directory so all three resolve same-origin.
+- Single file serves both threaded and single-thread modes; wakeword.mjs
+  sets numThreads=1 unless crossOriginIsolated (no COOP/COEP => no
+  SharedArrayBuffer in production).
+- WebAssembly compilation under CSP requires 'wasm-unsafe-eval' in
+  script-src (see wakeword.mjs header + deployment notes).
+
+To bump: change the version in the URLs above, re-download the three files,
+recompute SHA-256 (sha256sum), and update this file plus the pinned hashes
+in web/static/js/wakeword.mjs.
