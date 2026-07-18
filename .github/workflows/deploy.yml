@@ -212,6 +212,26 @@ jobs:
             echo "pushed=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # A pushed :latest does not restart the running service by itself (the
+      # task definition pins the tag, not the digest) — bounce it so nova code
+      # changes actually roll out. No-op when the service doesn't exist yet.
+      - name: Roll the nova-bridge service onto the new image
+        if: steps.build.outputs.pushed == 'true'
+        run: |
+          set -eu
+          if aws ecs describe-services \
+              --cluster live-ninja-nova-bridge \
+              --services live-ninja-nova-bridge \
+              --query 'services[?status==`ACTIVE`].serviceName' --output text 2>/dev/null | grep -q live-ninja-nova-bridge; then
+            aws ecs update-service \
+              --cluster live-ninja-nova-bridge \
+              --service live-ninja-nova-bridge \
+              --force-new-deployment >/dev/null
+            echo "nova-bridge service rolling onto the freshly pushed image"
+          else
+            echo "nova-bridge service not created yet — nothing to roll"
+          fi
+
   deploy:
     # build-wakeword-container / build-nova-container are usually skipped (no
     # matching container change); deploy must still run then - but never after a

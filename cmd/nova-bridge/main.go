@@ -98,6 +98,11 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", srv.handleHealth)
 	mux.HandleFunc("/session", srv.handleSession)
+	// CloudFront's /nova/* behavior forwards the full request path (no prefix
+	// strip is possible without an edge function), so the public routes arrive
+	// prefixed; the bare paths above stay for the ALB target-group health check.
+	mux.HandleFunc("/nova/healthz", srv.handleHealth)
+	mux.HandleFunc("/nova/session", srv.handleSession)
 
 	addr := ":" + getenv("PORT", "8080")
 	httpSrv := &http.Server{
