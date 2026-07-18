@@ -1154,7 +1154,15 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
   --ln-surface-raised: #180c0e;
   --ln-border: rgba(205, 122, 130, 0.16);
   --ln-border-strong: rgba(205, 122, 130, 0.30);
+  /* Muted grays brightened for the near-black chrome (owner: gray text was
+     unreadable). ~12:1 / ~9:1 on #050507, >7:1 on the brighter conv-main. */
+  --ln-text-muted: #c6cdd8;
+  --ln-text-dim: #aeb7c6;
 }
+/* Owner 2026-07-18: only the left voice rail stays black; the content side
+   runs on a brighter panel so transcript + muted text stay readable. */
+:root[data-ln-style="hal9000"] .conv-rail { background: #050507; }
+:root[data-ln-style="hal9000"] .conv-main { background: #23232b; }
 :root[data-ln-style="hal9000"] .ln-orb__core {
   /* The eye: bright specular point, incandescent core, deep red iris,
      near-black rim. */
