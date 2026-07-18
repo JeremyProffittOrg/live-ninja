@@ -394,7 +394,7 @@ Ordered tasks:
 - `[ ]` **S** — Wake-word management UIs on Web + Android wired to catalog + custom-phrase request flow. _(Web §5.3, Android §7.4)_
 - `[ ]` **F** — Contract tests: settings schema round-trip, conflict 409 reconcile, shadow loop, wake manifest + SHA verify across client fixtures. _(Crosscut §7/§8)_
 
-### M7 — Hardening / observability / cost / privacy  `[ ]`  (WS-G lead, all WS)
+### M7 — Hardening / observability / cost / privacy  `[~]`  (WS-G lead, all WS)
 
 **Definition of Done:** Full observability (structured logs, EMF, X-Ray, `live-ninja-ops` dashboard, Athena telemetry lake); all cost/quota controls enforced pre-spend with anomaly auto-suspend; privacy posture complete (on-device-wake invariant + disclosures, retention TTLs, `DELETE /account`, ZDR requested); WAF rate rules; capability negotiation + `/compat`; load tests confirm `Query`-only under load; security review passed. _(FR `[OBS]`, `[COST]`, `[PRIV]`, `[SEC]`)_
 
@@ -469,7 +469,7 @@ Ordered tasks:
 - `[ ]` **S** — Background re-clustering job: suggest merges of near-duplicate topics. _(FR-TOP-07)_
 - `[ ]` **H** — Tests: extraction→tag→filter (topic/device/date, combos) prove no Scan; rename/merge keep tags stable.
 
-### M12 — Secondary Voice Engine (Nova Sonic)  `[ ]`  (WS-C lead, WS-D/E/F support)
+### M12 — Secondary Voice Engine (Nova Sonic)  `[~]`  (WS-C lead, WS-D/E/F support)
 
 > **In scope this build.** Requires Bedrock Nova Sonic model access in `us-east-1`. Reintroduces a backend media bridge **only for Nova-pinned devices**; OpenAI-pinned devices stay client-direct.
 
@@ -540,14 +540,41 @@ Cross-cutting gates (all milestones): `golangci-lint` + `go vet` clean; unit tes
 
 ## 8. Implementation Notes
 
-> **RESUME STATE — end of day 1 (2026-07-17 ~18:45 EDT; next session: cron at 21:15 EDT).**
-> - **Deployed & prod-verified:** M0 complete `[x]`; M1 web-leg + M3 verified in a real browser (owner bound, sign-in → authed `/conversation` renders, pickers populated). Stack green at run 29614463844 (commit `8987e98`).
-> - **Committed, pending device/e2e verification:** M4 Android (`e49b188`, assembleDebug + 46 tests green), M5 firmware (`b550265`, flashed COM58, boot-verified).
-> - **Working tree is DIRTY (uncommitted, does NOT compile):** partial M6+M9 from workflow `wf_4bf35707` — 6 of 8 agents were killed by the Claude session usage limit (resets 9pm ET). Do NOT commit or push until the resumed workflow's integrator makes it green. Resume command in the M6 notes below.
-> - **Next session order:** (1) resume `wf_4bf35707` (M6+M9) → integrate → push → watch deploy; (2) M7 hardening workflow; (3) M10+M11 workflow; (4) M12 Nova Sonic (needs Bedrock model access — check `aws bedrock list-foundation-models`/console first, it is the only external blocker); (5) M8 launch pass incl. 3-surface smoke (M5 bench pairing needs WiFi onboarding via the Tab5 SoftAP portal — user-interactive or netsh-profile approach TBD); resume hourly SES reports.
-> - Ops notes: deploys serialize on `deploy-main` concurrency group; SNS ops-topic email subscription still needs the user's confirmation click; SES still sandboxed (fine for owner-only email until M8).
-> - **Playwright validation (user 2026-07-17):** validate live.jeremy.ninja functionality with Playwright after significant deploys (public-surface pass done 21:30 EDT — clean except the manifest icon `/static/icons/ninja.svg` failing to parse as an image; fix queued). ALSO validate the **Tab5's device-hosted portal website** with Playwright: mocked pass (serve `firmware/components/ln_net/portal/portal.html` + stub device API, drive SSID-select/passphrase/pairing states) anytime, and the real portal at `http://192.168.4.1` over the device SoftAP during the HIL window (joining the AP drops PC internet — HIL window only).
-> - **HIL audio smoke (user 2026-07-17 21:20 EDT):** when the build is complete, run a bidirectional PC↔Tab5 audio test. This machine has two output devices — **Realtek audio** (normal speaker, leave alone) and a **"USB Audio" speaker for testing**. (1) PC→Tab5: play the wake phrase + a spoken query through the USB Audio speaker; assert wake + realtime turn on the Tab5 (serial COM58 / IoT telemetry). (2) Tab5→PC: have the Tab5 speak a response; record via the PC mic and verify (energy/transcribe). Fold into the M5 HIL gate + M8 3-surface smoke.
+> **RESUME STATE — checkpoint 2026-07-18 ~04:30 EDT. Working tree CLEAN. HEAD `fe2dc8b`. Prod healthz 200. Pipeline green. Read this whole block before acting.**
+>
+> **All 13 milestones (M0–M12) are code-complete, committed, and deployed** (M12 Nova Sonic is deployed but *gated off* — see below). The bulk build ran M0–M12 autonomously overnight via parallel `Workflow` runs; the last several hours were interactive prod bug-fixing from the owner's live testing. `git log --oneline` is the source of truth for what landed.
+>
+> **Prod-VERIFIED in a real browser / on real hardware (owner is bound as OWNER, `amzn1.account.AEGRRHCM6JMXBTAYH5HY5GW6LK5Q`):**
+> - Web: LWA sign-in, `/conversation` (voice mint returns a valid ephemeral token — the `turn_detection`→`session.audio.input` fix), `/settings` (toggle layout fixed), wake-word engine init (ORT WASM served from S3/CloudFront — see wasm note), persona/voice pickers, the voice-activity visualizer (animated wave while listening/speaking; verified by manual draw-step since the automation tab backgrounds rAF).
+> - Backend: 79+ Go tests green; `X-LN-Txn` transaction-id header + verbose request/response logging live; canonical error envelope `{error:{code,message,txId}}`; hover-for-details error banner.
+> - **Tab5 firmware (COM58, MAC `30:ED:A0:E3:01:1E`)**: SoftAP setup-portal rework HIL-verified over this PC's WiFi — `/api/scan` async-cached (fixed the "can't access the AP site" hang), AP/STA main-page choice, subnet select (192.168.4↔10.0.0, live re-IP confirmed end-to-end), status polling. QR-on-LCD = data path verified, **owner still needs to eyeball the actual screen**.
+>
+> **Committed, NOT yet e2e/device-verified:** M4 Android (`e49b188` + later; assembleDebug + 46 unit tests green, never run on a device/emulator); M5 device pairing + realtime voice turn + IoT provisioning + OTA (firmware builds/boots/serves portal, but backend `IOT_DATA_ENDPOINT`/claim-cert path and a real wake→voice turn are unproven); M6 wake-word *training* (batch:ListJobs 403 fixed, but a full train→model→hot-swap run was never completed); M9/M10/M11 tools exist and deploy but weren't exercised with real data.
+>
+> **DISABLED — M12 Nova Sonic (`NovaBridgeEnable=false`, default):** the whole Fargate/ALB/CloudFront-`/nova/*` subsystem is gated off in `template.yaml`; the code is all committed and builds (bridge cross-compiles arm64). It was disabled to unblock the stack after a wedged deploy (an orphaned `live-ninja-nova-bridge` ECR repo from a rolled-back deploy failed AWS EarlyValidation on every changeset). **To re-enable:** delete no orphans (already clean), set `NovaBridgeEnable=true` + `NovaBridgeImageReady` handling in `deploy.yml`, ensure the nova ECR repo + image bootstrap works (two-phase: repo/ALB first, image push, then `NovaBridgeReady=true` creates the ECS service). Do this in an ISOLATED deploy and watch closely. Bedrock `amazon.nova-sonic-v1:0` is confirmed available in us-east-1.
+>
+> **REMAINING WORK (priority order):**
+> 1. **[SECURITY, blocks device launch] Task: device-pairing user_code binding (RFC 8628).** Pairing has no anti-phishing user-code — an allowlisted attacker can phish a victim into binding a 10-yr device credential to the victim's account. Not exploitable today (no device onboarded). Full exploit + fix design in the §M7 security notes. Must land before any Tab5 ships. Needs firmware (show code on LCD/portal) + backend (require code match in the claim leg).
+> 2. **Re-enable M12 Nova Sonic** in an isolated deploy (see DISABLED above).
+> 3. **M8 launch pass:** request SES production access (still sandboxed — fine for owner-only mail now); confirm the SNS ops-topic email subscription (owner must click the confirm link — still pending); Android Play listing + `assetlinks.json` + signed release APK (release keystore is at `C:\dev\live-ninja-keys\release.keystore`, held by owner); M5 firmware release channel; runbook; go/no-go.
+> 4. **Full 3-surface prod smoke** incl. the two HIL tests below.
+> 5. Minor: PWA manifest icon `/static/icons/ninja.svg` doesn't parse as an image (cosmetic warning); wire it or swap to PNG.
+>
+> **HIL tests still owed (need the physical Tab5 on COM58 + this PC):**
+> - **Bidirectional audio (owner 2026-07-17):** PC has **Realtek** (normal speaker — leave alone) and a **"USB Audio" speaker for testing**. (a) PC→Tab5: play the wake phrase + a query out the USB Audio speaker; assert wake + realtime turn on the Tab5 (serial COM58 / IoT telemetry). (b) Tab5→PC: have the Tab5 speak; record on the PC mic and verify. Fold into M5 DoD + M8 smoke.
+> - **Real portal onboarding:** over the Tab5 SoftAP, drive the real portal end-to-end (join a real WiFi, complete backend pairing). Joining the AP from the PC WiFi is fine (PC has ethernet for internet); disconnect + `netsh wlan delete profile name=LiveNinja-Setup` after.
+>
+> **Ops / gotchas a fresh agent MUST know:**
+> - **Deploy = push to `main`** (OIDC, no local deploys). Deploys serialize on the `deploy-main` concurrency group. Org OIDC trust already fixed for ID-qualified subs (in the `credential-rotation` repo).
+> - **`gha-deploy` uses no static keys.** The org OIDC role trusts `repo:JeremyProffittOrg@299835367/*`.
+> - **Flashing the Tab5 (Git-Bash):** `export.bat` aborts if `MSYSTEM` is defined. Use a `.bat` that does `set "MSYSTEM="` **then** `set IDF_PYTHON_ENV_PATH=%USERPROFILE%\.espressif\python_env\idf5.4_py3.13_env` **then** `call C:\esp\esp-idf-v5.4.4\export.bat` **then** `idf.py -p COM58 flash`. (Recorded in `c:\dev\fleet\esp32.md`.) Serial console: native USB CDC on COM58, 115200.
+> - **Oversized static (ORT WASM ~11 MB + wake ONNX models) are served from S3, NOT Lambda** — Lambda's ~6 MB response cap 500'd them. `deploy.yml` `aws s3 sync`s `web/static/vendor` + `web/static/models` to `live-ninja-assets-759775734231`; CloudFront `/static/vendor/*` + `/static/models/*` behaviors point at an S3 origin (OAC). The files are ALSO go:embed'd (local-dev fallback).
+> - **Log groups are custom-named** `/live-ninja/lambda/<fn>` (LoggingConfig set on each fn), 5-day retention. NOT `/aws/lambda/...`.
+> - **SES from `Jeremy Proffitt <jeremy@jeremy.ninja>` Reply-To `proffitt.jeremy@gmail.com`** (jeremy.ninja has DKIM; never send *from* the gmail). Hourly build-status emails were an autonomous-run thing; not running now.
+> - Quota mint token bucket loosened to capacity 6 / refill 1 per 3s for the single owner.
+> - Security fixes already landed (with tests): SSRF-via-redirect in `web_research` (per-hop allow-list), `send_email` external-recipient allow-list gate, OAuth login-CSRF state cookie.
+>
+> **Task list (harness TaskList) mirrors this**; open items: #13 (Nova re-enable), #15 (HIL audio), #16/#17 (Playwright web + Tab5 portal), #18 (device user_code security), #19 (already done — wasm S3, can close), M8 launch. Milestones M1–M12 are `[~]` (code-complete, verification-gated) except M0 `[x]`.
 
 > Per house style, append **verbose** notes here (and inline under each task/milestone) as work proceeds — decisions made, files touched, commands run, gotchas hit, blockers and how they were resolved. Keep it detailed enough that a fresh agent can resume from this plan alone. Update the status markers in §4 in place.
 
