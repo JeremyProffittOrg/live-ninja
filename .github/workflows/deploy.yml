@@ -400,15 +400,6 @@ jobs:
       # service pulls it. Skipped on first deploy (pushed=='false' -> the
       # container-bootstrap job handles the initial 0->1 rollout instead) and on
       # runs that didn't touch the container (job skipped -> output is empty).
-      - name: Roll nova-bridge service on new image
-        if: needs.build-nova-container.outputs.pushed == 'true'
-        run: |
-          set -eu
-          aws ecs update-service \
-            --cluster live-ninja-nova-bridge \
-            --service live-ninja-nova-bridge \
-            --force-new-deployment >/dev/null
-          echo "nova-bridge service rolled to the freshly pushed :latest image"
 
       # M7 log-retention hygiene: functions now log to stack-managed
       # /live-ninja/lambda/<fn> groups (30d retention) via LoggingConfig,
