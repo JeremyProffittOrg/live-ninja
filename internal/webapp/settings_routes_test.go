@@ -57,6 +57,7 @@ func TestSettingsPageRenders(t *testing.T) {
 	catalogIsland := extractBetween(t, html, `<script type="application/json" id="catalogs-data">`, `</script>`)
 	var cat struct {
 		Voices   []map[string]any `json:"voices"`
+		Accents  []map[string]any `json:"accents"`
 		Personas []map[string]any `json:"personas"`
 	}
 	if err := json.Unmarshal([]byte(catalogIsland), &cat); err != nil {
@@ -65,6 +66,14 @@ func TestSettingsPageRenders(t *testing.T) {
 	if len(cat.Voices) != 10 {
 		t.Errorf("catalog voices = %d, want 10", len(cat.Voices))
 	}
+	for _, vc := range cat.Voices {
+		if g, _ := vc["gender"].(string); g != "female" && g != "male" && g != "neutral" {
+			t.Errorf("catalog voice %v gender = %q, want female|male|neutral", vc["id"], g)
+		}
+	}
+	if len(cat.Accents) != 10 {
+		t.Errorf("catalog accents = %d, want 10", len(cat.Accents))
+	}
 	if len(cat.Personas) == 0 {
 		t.Errorf("catalog personas empty")
 	}
@@ -72,6 +81,12 @@ func TestSettingsPageRenders(t *testing.T) {
 	// SSR'd control states.
 	for _, want := range []string{
 		`name="voice" value="marin" checked`,
+		`id="voiceGenderChips"`,
+		`data-gender-filter="female"`,
+		`data-voice-gender="female"`,
+		`id="voiceAccent"`,
+		`<option value="none" selected>Default</option>`,
+		`<option value="irish"`,
 		`name="theme" value="light" checked`,
 		`name="liveStyle" value="hal9000" checked`,
 		`name="appStyle" value="ninja" checked`,
@@ -162,6 +177,10 @@ func TestValidateAndNormalizeSettings(t *testing.T) {
 		{"bad voiceEngine pin", func(d map[string]any) {
 			d["voiceEngine"] = map[string]any{"default": "openai-realtime", "devices": map[string]any{"dev1": "cassette"}}
 		}, false},
+		{"voiceAccent irish ok", func(d map[string]any) { d["voiceAccent"] = "irish" }, true},
+		{"voiceAccent forward-compat ok", func(d map[string]any) { d["voiceAccent"] = "future-accent-x" }, true},
+		{"voiceAccent number bad", func(d map[string]any) { d["voiceAccent"] = 3.0 }, false},
+		{"voiceAccent too long", func(d map[string]any) { d["voiceAccent"] = strings.Repeat("a", 65) }, false},
 	}
 	for _, tc := range cases {
 		d := valid()
@@ -199,6 +218,25 @@ func TestValidateAndNormalizeSettings(t *testing.T) {
 	}
 	if _, has := ap["themeStyle"]; has {
 		t.Errorf("deprecated themeStyle key must be dropped on write")
+	}
+
+	// voiceAccent normalization: absent -> "", the catalog's "none" id ->
+	// its stored form "".
+	d = valid()
+	delete(d, "voiceAccent")
+	if msg := validateAndNormalizeSettings(d); msg != "" {
+		t.Fatalf("absent voiceAccent should validate, got %q", msg)
+	}
+	if got := d["voiceAccent"]; got != "" {
+		t.Errorf("absent voiceAccent should normalize to \"\", got %v", got)
+	}
+	d = valid()
+	d["voiceAccent"] = "none"
+	if msg := validateAndNormalizeSettings(d); msg != "" {
+		t.Fatalf("voiceAccent none should validate, got %q", msg)
+	}
+	if got := d["voiceAccent"]; got != "" {
+		t.Errorf("voiceAccent \"none\" should normalize to \"\", got %v", got)
 	}
 
 	// version is server-owned and must be stripped from the client doc.

@@ -49,6 +49,10 @@ func DefaultSettings() map[string]any {
 		"sensitivity":   0.5,
 		"persona":       map[string]any{"presetId": "default", "systemInstructions": nil},
 		"voice":         "cedar",
+		// voiceAccent: speech-accent directive id ("" = none). Not a separate
+		// voice — the broker turns it into an instruction line at mint
+		// (internal/realtime AccentDirective; catalog in SupportedAccents).
+		"voiceAccent": "",
 		"turnDetection": "semantic_vad",
 		"micEagerness":  "auto",
 		// Two style zones (owner-locked defaults): the conversation page's

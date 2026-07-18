@@ -49,6 +49,71 @@ const memoryUsageDirective = "\n\nYou have persistent long-term memory from prev
 	"a personal fact without having searched. Use memory_write to save new lasting facts the user " +
 	"shares."
 
+// ─── Accent directive (voiceAccent setting) ──────────────────────────────────
+//
+// The realtime voice set is fixed — "nationality" voices cannot be created —
+// so an accent is delivered as a short speech-style directive appended to the
+// session instructions (gpt-realtime follows accent directives well). The
+// directive sits after memoryUsageDirective and before the guide suffix: the
+// broker resolves the caller's voiceAccent from the settings document (like
+// the voiceEngine pin) and prepends AccentDirective to the instructions
+// suffix it passes to Mint.
+
+// accentDirectives maps every non-none SupportedAccents ID (catalog.go) to
+// its natural-phrasing speech-style directive. Keep the two lists paired —
+// TestAccentCatalogAndDirectivesInSync enforces it.
+var accentDirectives = map[string]string{
+	"irish":       "Speak with a light, natural Irish accent.",
+	"british":     "Speak with a natural British accent.",
+	"scottish":    "Speak with a light, natural Scottish accent.",
+	"australian":  "Speak with a natural Australian accent.",
+	"southern-us": "Speak with a warm, natural Southern US drawl.",
+	"french":      "Speak with a light, natural French accent.",
+	"german":      "Speak with a light, natural German accent.",
+	"indian":      "Speak with a natural Indian English accent.",
+	"new-york":    "Speak with a classic New York City accent.",
+}
+
+// AccentDirective returns the instructions snippet for one accent ID,
+// including its leading paragraph separator, or "" for none/""/unknown
+// (forward-compat: an unrecognized stored value mints without an accent
+// rather than failing).
+func AccentDirective(accentID string) string {
+	if d, ok := accentDirectives[accentID]; ok {
+		return "\n\n" + d
+	}
+	return ""
+}
+
+// ResolveAccentDirective reads the caller's voiceAccent from the settings
+// document (same single-GetItem posture as ResolveEngine) and returns the
+// ready-to-append directive. Every failure path — nil getter, read error,
+// missing document, unknown value — returns "" so an accent lookup can
+// never take a mint down.
+func ResolveAccentDirective(ctx context.Context, g SettingsGetter, table, userID string) string {
+	if g == nil || userID == "" {
+		return ""
+	}
+	out, err := g.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(table),
+		Key: map[string]ddbtypes.AttributeValue{
+			"pk": &ddbtypes.AttributeValueMemberS{Value: "USER#" + userID},
+			"sk": &ddbtypes.AttributeValueMemberS{Value: settingsSK},
+		},
+		ProjectionExpression: aws.String("voiceAccent"),
+	})
+	if err != nil || len(out.Item) == 0 {
+		return ""
+	}
+	var doc struct {
+		VoiceAccent string `dynamodbav:"voiceAccent"`
+	}
+	if err := attributevalue.UnmarshalMap(out.Item, &doc); err != nil {
+		return ""
+	}
+	return AccentDirective(doc.VoiceAccent)
+}
+
 // toolManifest is the OpenAI Realtime function-tool declaration set bound
 // into every session at mint. Execution never happens client-side or in
 // OpenAI: every function_call is routed to POST /api/v1/tools/invoke where

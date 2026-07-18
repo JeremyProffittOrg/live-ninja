@@ -16,6 +16,7 @@ func TestGetSettingsDefaultsWhenAbsent(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, doc["version"])
 	assert.Equal(t, "cedar", doc["voice"])
+	assert.Equal(t, "", doc["voiceAccent"], "voiceAccent defaults to \"\" (no accent directive)")
 	assert.Equal(t, "hey-live-ninja", doc["wakeWord"])
 	assert.Equal(t, "semantic_vad", doc["turnDetection"])
 	// Two-zone appearance defaults: ninja app chrome in light theme, HAL

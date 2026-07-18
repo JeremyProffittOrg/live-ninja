@@ -101,6 +101,18 @@
 
     <!-- Right column: transcript + composer -->
     <section class="conv-main" aria-label="Conversation">
+      {{- /* Persistent pending-change banner (owner 2026-07-18): persona/
+             voice changed while a session is live — the change only applies
+             to the NEXT conversation, so this stays up (unlike the toast)
+             until the session ends, a new conversation starts, or it is
+             dismissed. conversation.mjs owns show/hide + the message. */}}
+      <div class="conv-banner" id="pendingBanner" role="status" hidden>
+        <span class="conv-banner__msg" id="pendingBannerMsg"></span>
+        <div class="conv-banner__actions">
+          <button class="ln-btn conv-banner__action" type="button" id="pendingBannerNew">New conversation</button>
+          <button class="conv-banner__close" type="button" id="pendingBannerClose" aria-label="Dismiss this notice">×</button>
+        </div>
+      </div>
       <div class="conv-main__scroll" id="transcriptScroll">
         {{- /* Empty by design on load — no fabricated turns (spec §2.5).
                transcript.mjs appends bubbles/tool cards as text nodes. */}}

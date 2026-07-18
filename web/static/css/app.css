@@ -870,7 +870,9 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
 /* ====================================================================
    CONVERSATION PAGE
    ==================================================================== */
-.conv-app { display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; }
+/* Viewport-fixed (owner 2026-07-18): the page itself never scrolls — the
+   transcript (.conv-main__scroll) and the rail scroll independently. */
+.conv-app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden; }
 .conv-header {
   flex: none;
   display: flex; align-items: center; gap: var(--ln-sp-4);
@@ -1400,3 +1402,63 @@ html[data-ln-style="hal9000"] .conv-main { background: #23232b; }
   cursor: default;
   user-select: none;
 }
+
+/* ==========================================================================
+   Pending-change banner — persistent inline notice in .conv-main
+   (templates/pages/conversation.html #pendingBanner; conversation.mjs).
+   Shown when persona/voice is changed while a session is live: those only
+   apply at the next mint, so this stays up (role=status) until the session
+   ends, a new conversation starts, or it is dismissed. Appended-only
+   section. Colors are the shared --ln-* semantic tokens, AA-checked per
+   theme at their definitions (ninja-light app zone: text #0c1a2e 15.6:1 and
+   accent-ink #0a706b 5.3:1 on the #eef3f8/white surfaces; dark app zone:
+   text 18.2:1, accent-ink 11.7:1) — no hardcoded colors, so the hal9000
+   .conv-main override keeps AA too via the same tokens.
+   ========================================================================== */
+.conv-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;                      /* actions drop below on narrow view */
+  gap: var(--ln-sp-2) var(--ln-sp-3);
+  margin: var(--ln-sp-3) var(--ln-sp-4) 0;
+  padding: var(--ln-sp-2) var(--ln-sp-3);
+  background: var(--ln-surface-raised);
+  border: 1px solid var(--ln-border-strong);
+  border-left: 4px solid var(--ln-accent-ink);
+  border-radius: var(--ln-r-md);
+  box-shadow: var(--ln-shadow-sm);
+  color: var(--ln-text);
+  font-size: var(--ln-fs-sm);
+  line-height: var(--ln-lh);
+}
+.conv-banner[hidden] { display: none; }
+.conv-banner__msg { flex: 1 1 240px; min-width: 0; }
+.conv-banner__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--ln-sp-2);
+  margin-left: auto;
+  flex: none;
+}
+/* The action inherits .ln-btn (44px target, focus ring); just keep it
+   compact inside the banner row. */
+.conv-banner__action { font-size: var(--ln-fs-sm); padding: 0 var(--ln-sp-4); }
+.conv-banner__close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--ln-touch);
+  height: var(--ln-touch);
+  padding: 0;
+  font: inherit;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--ln-text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ln-r-sm);
+  cursor: pointer;
+}
+.conv-banner__close:hover { background: var(--ln-surface-2); color: var(--ln-text); }
+.conv-banner__close:focus-visible { outline: none; box-shadow: var(--ln-focus); }

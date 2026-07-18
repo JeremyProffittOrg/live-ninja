@@ -316,6 +316,13 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 		return b.handleNovaBridge(ctx, l, req, sessionID, warnings)
 	}
 
+	// Accent directive (voiceAccent setting): resolved broker-side from the
+	// settings document like the engine pin. Best-effort — ""/unknown/read
+	// failure simply mints without an accent. Composed after the memory
+	// directive and before the guide suffix (realtime.Mint appends the
+	// combined suffix after memoryUsageDirective).
+	accentDirective := realtime.ResolveAccentDirective(ctx, b.settings, b.table, req.UserID)
+
 	// Guide Entity injection (FR-MEM-07): append the user's enabled guides
 	// to the persona instructions, priority order. Best-effort — a guide
 	// read failure is logged but must not take voice down with it.
@@ -328,7 +335,7 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 	}
 
 	start := time.Now()
-	res, err := b.minter.Mint(ctx, req.Persona, voice, req.MicEagerness, guideSuffix)
+	res, err := b.minter.Mint(ctx, req.Persona, voice, req.MicEagerness, accentDirective+guideSuffix)
 	observ.EmitMetric(metricsNamespace, "EphemeralTokenMintLatency",
 		float64(time.Since(start).Milliseconds()), "Milliseconds",
 		map[string]string{"Surface": req.Surface})

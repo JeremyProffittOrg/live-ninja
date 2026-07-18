@@ -71,6 +71,7 @@ type settingsPageView struct {
 	ThemeAttr string
 
 	Voices   []settingsVoiceRow
+	Accents  []settingsAccentRow
 	Personas []settingsPersonaRow
 
 	WakeWord        string
@@ -95,6 +96,11 @@ type settingsPageView struct {
 
 type settingsVoiceRow struct {
 	realtime.VoiceInfo
+	Selected bool
+}
+
+type settingsAccentRow struct {
+	realtime.AccentInfo
 	Selected bool
 }
 
@@ -176,6 +182,7 @@ func buildSettingsPageView(doc map[string]any) (*settingsPageView, error) {
 	}
 	catalogs, err := json.Marshal(fiber.Map{
 		"voices":   realtime.SupportedVoices,
+		"accents":  realtime.SupportedAccents,
 		"personas": realtime.ListPersonas(),
 	})
 	if err != nil {
@@ -229,6 +236,22 @@ func buildSettingsPageView(doc map[string]any) (*settingsPageView, error) {
 	}
 	for _, sv := range realtime.SupportedVoices {
 		v.Voices = append(v.Voices, settingsVoiceRow{VoiceInfo: sv, Selected: sv.ID == displayVoice})
+	}
+
+	// Accent select rows: stored "" (no accent) selects the catalog's
+	// "none" entry; an unrecognized stored accent also renders with
+	// Default selected (schema forward-compat rule) while the JSON island
+	// preserves the stored value on write-back.
+	storedAccent := docString(doc, "voiceAccent", "")
+	displayAccent := "none"
+	for _, a := range realtime.SupportedAccents {
+		if a.ID == storedAccent {
+			displayAccent = storedAccent
+			break
+		}
+	}
+	for _, a := range realtime.SupportedAccents {
+		v.Accents = append(v.Accents, settingsAccentRow{AccentInfo: a, Selected: a.ID == displayAccent})
 	}
 
 	for _, p := range realtime.ListPersonas() {
@@ -392,6 +415,24 @@ func validateAndNormalizeSettings(doc map[string]any) string {
 	if s, ok := doc["voice"].(string); !ok || strings.TrimSpace(s) == "" || len(s) > 64 {
 		return "voice must be a non-empty voice id"
 	}
+	// voiceAccent: speech-accent directive id from the accents catalog.
+	// Optional for older clients — absent/null normalizes to "" (none), and
+	// the catalog's "none" id normalizes to its stored form "". Like
+	// `voice`, unknown ids are preserved rather than rejected (additive
+	// accent-catalog growth; the broker's AccentDirective already mints
+	// unknown values without an accent).
+	switch a := doc["voiceAccent"].(type) {
+	case nil:
+		doc["voiceAccent"] = ""
+	case string:
+		if a == "none" {
+			doc["voiceAccent"] = ""
+		} else if len(a) > 64 {
+			return "voiceAccent must be an accent id of at most 64 characters"
+		}
+	default:
+		return "voiceAccent must be a string"
+	}
 	if s, ok := doc["turnDetection"].(string); !ok || !oneOf(s, "semantic_vad", "server_vad") {
 		return "turnDetection must be semantic_vad or server_vad"
 	}
@@ -506,7 +547,13 @@ func validateAndNormalizeSettings(doc map[string]any) string {
 
 func handleListVoices() fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"voices": realtime.SupportedVoices})
+		// `accents` rides along in the same response (additive — existing
+		// clients reading only `voices` are unaffected): the enumerated
+		// accent-directive catalog backing the settings Accent picker.
+		return c.JSON(fiber.Map{
+			"voices":  realtime.SupportedVoices,
+			"accents": realtime.SupportedAccents,
+		})
 	}
 }
 

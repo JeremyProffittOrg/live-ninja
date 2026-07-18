@@ -1106,6 +1106,71 @@ export class RealtimeSession extends EventTarget {
     for (const t of this.#localStream.getAudioTracks()) t.enabled = !!enabled;
   }
 
+  /**
+   * Mid-session settings application (owner request 2026-07-18): push a
+   * changed "Mic pickup" (settings micEagerness) / turn-detection config to
+   * the LIVE session via the GA `session.update` event on the oai-events
+   * datachannel, instead of it only taking effect at the next mint.
+   *
+   * The audio.input object sent here MIRRORS internal/realtime/mint.go
+   * buildAudioInput/buildTurnDetection — KEEP THE TWO IN SYNC:
+   *   - type is always semantic_vad (mint.go does not forward the schema's
+   *     turnDetection value either, so a turnDetection-only change yields
+   *     this same object);
+   *   - eagerness is forwarded only for the explicit low|medium|high
+   *     choices; auto/empty/unknown keeps the API default;
+   *   - low ("Patient") also sets interrupt_response:false — the server
+   *     stops truncating on VAD blips and THIS client owns the barge-in
+   *     decision (see #serverInterrupts / #armBargeConfirm);
+   *   - noise_reduction + transcription are re-sent exactly as minted:
+   *     session.update replaces the whole audio.input object, so omitting
+   *     them would silently reset server-side noise reduction and kill the
+   *     user-transcription events.
+   *
+   * Nova bridge: no-op (returns false) — the Bedrock session is held
+   * server-side and has no client session.update surface.
+   * @returns {boolean} true if the update was sent to a live session.
+   */
+  updateAudioInput({ eagerness = 'auto' } = {}) {
+    if (this.#mode === 'nova-bridge') return false;
+    if (!this.#dc || !this.#dcOpen) return false;
+    const turnDetection = { type: 'semantic_vad', interrupt_response: true };
+    if (eagerness === 'low') {
+      turnDetection.eagerness = 'low';
+      turnDetection.interrupt_response = false;
+    } else if (eagerness === 'medium' || eagerness === 'high') {
+      turnDetection.eagerness = eagerness;
+    }
+    try {
+      this.sendEvent({
+        type: 'session.update',
+        session: {
+          type: 'realtime',
+          audio: {
+            input: {
+              turn_detection: turnDetection,
+              noise_reduction: { type: 'near_field' },
+              transcription: { model: 'gpt-4o-mini-transcribe' },
+            },
+          },
+        },
+      });
+    } catch {
+      return false; // datachannel raced closed — drop handler owns recovery
+    }
+    // Flip the client-side barge-in policy with the server config (same
+    // derivation as connect(): Patient mode = client-gated interruption).
+    const serverInterrupts = turnDetection.interrupt_response !== false;
+    if (serverInterrupts !== this.#serverInterrupts) {
+      this.#serverInterrupts = serverInterrupts;
+      // Leaving Patient mode with a confirm window armed: the server owns
+      // interruption again, so resolve the pending gate and restore audio
+      // (a real interjection will be truncated server-side).
+      if (serverInterrupts) this.#disarmBargeConfirm(true);
+    }
+    return true;
+  }
+
   /** Typed user message over the live session (composer while connected). */
   sendUserText(text) {
     const trimmed = (text || '').trim();

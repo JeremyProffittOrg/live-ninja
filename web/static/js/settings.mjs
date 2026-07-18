@@ -41,7 +41,7 @@ const deepEq = (a, b) => JSON.stringify(stable(a)) === JSON.stringify(stable(b))
 // ---- state ------------------------------------------------------------
 
 const doc = readIsland('settings-data'); // canonical settings document
-const catalogs = readIsland('catalogs-data'); // {voices, personas}
+const catalogs = readIsland('catalogs-data'); // {voices, accents, personas}
 let version = Number(doc.version) || 1;
 let baseline = clone(doc); // last server-confirmed document
 const pendingKeys = new Set(); // top-level keys edited since last confirm
@@ -153,6 +153,14 @@ async function flush() {
       }
     }
     doc.version = version;
+    // Cross-tab ping: an open /conversation tab listens for 'storage' on
+    // this key and re-GETs the doc so Mic pickup / turn detection changes
+    // apply to its LIVE session (conversation.mjs, SETTINGS_PING_KEY).
+    try {
+      localStorage.setItem('ln.settings.version', String(version));
+    } catch {
+      /* storage blocked — cross-tab sync degrades gracefully */
+    }
     if (pendingKeys.size > 0) queuedFlush = true;
     else setStatus('saved');
   } catch (err) {
@@ -199,6 +207,13 @@ async function reconcile409() {
   version = Number(fresh.version);
   doc.version = version;
   baseline = clone(fresh);
+  // The adopted version may have come from another DEVICE (no shared
+  // localStorage) — ping local tabs so they re-sync too (see flush()).
+  try {
+    localStorage.setItem('ln.settings.version', String(version));
+  } catch {
+    /* storage blocked — cross-tab sync degrades gracefully */
+  }
   if (remoteWon) {
     showToast('Someone updated your settings from another device — refreshed.');
   }
@@ -277,6 +292,16 @@ function renderField(key) {
     case 'voice': {
       const r = document.querySelector(`input[name="voice"][value="${CSS.escape(doc.voice)}"]`);
       if (r) r.checked = true;
+      break;
+    }
+    case 'voiceAccent': {
+      // Stored "" (no accent) selects the catalog's "none" option; an
+      // unknown stored id also shows Default while the doc value is
+      // preserved on write-back (schema forward-compat rule).
+      const sel = $('voiceAccent');
+      if (!sel) break;
+      const want = doc.voiceAccent || 'none';
+      sel.value = [...sel.options].some((o) => o.value === want) ? want : 'none';
       break;
     }
     case 'turnDetection': {
@@ -959,6 +984,35 @@ for (const r of document.querySelectorAll('input[name="voice"]')) {
     if (!r.checked) return;
     doc.voice = r.value;
     markChanged('voice');
+  });
+}
+
+// Gender filter chips (All / Female / Male): a single-select VIEW filter
+// over the server-rendered rows' data-voice-gender tags — it never changes
+// the selection, so a voice picked under one filter stays chosen (and
+// saved) even while its row is filtered out of view.
+const genderChipWrap = $('voiceGenderChips');
+if (genderChipWrap) {
+  genderChipWrap.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-gender-filter]');
+    if (!btn) return;
+    for (const b of genderChipWrap.querySelectorAll('[data-gender-filter]')) {
+      b.setAttribute('aria-pressed', String(b === btn));
+    }
+    const want = btn.dataset.genderFilter; // "" = All (neutral voices included)
+    for (const row of document.querySelectorAll('#voiceList .set-voice-row')) {
+      row.hidden = !!want && row.dataset.voiceGender !== want;
+    }
+  });
+}
+
+// Accent select: enumerated accents catalog (SSR-populated). The catalog's
+// "none" option is stored as "" per settings.schema.json's voiceAccent.
+const accentSel = $('voiceAccent');
+if (accentSel) {
+  accentSel.addEventListener('change', () => {
+    doc.voiceAccent = accentSel.value === 'none' ? '' : accentSel.value;
+    markChanged('voiceAccent');
   });
 }
 

@@ -248,6 +248,7 @@ async function putSettings(mutate) {
     });
     settingsDoc = resp.settings;
     settingsDoc.version = resp.version;
+    pingSettingsChanged(); // cross-tab channel (see the storage section below)
   };
 
   try {
@@ -350,6 +351,16 @@ function personaLabelFor(presetId) {
   return (row && row.name) || presetId;
 }
 
+/** Human-readable voice name from the (catalog-populated) quick-switch
+ * select — never show a raw id in banner copy. */
+function voiceLabelFor(voiceId) {
+  if (voiceSelect) {
+    const opt = [...voiceSelect.options].find((o) => o.value === voiceId);
+    if (opt) return opt.textContent;
+  }
+  return voiceId;
+}
+
 function syncQuickSwitchesFromDoc() {
   if (personaSelect) personaSelect.value = currentPersonaId();
   if (voiceSelect && typeof settingsDoc.voice === 'string') voiceSelect.value = settingsDoc.voice;
@@ -360,7 +371,7 @@ function isLive() {
   return !!(mic.session && mic.session.isConnected);
 }
 
-async function saveQuickSwitch({ mutate, revert, appliedToast }) {
+async function saveQuickSwitch({ mutate, revert, appliedToast, appliedBanner }) {
   try {
     const res = await putSettings(mutate);
     if (res.conflict) {
@@ -368,7 +379,11 @@ async function saveQuickSwitch({ mutate, revert, appliedToast }) {
       syncQuickSwitchesFromDoc();
       return;
     }
-    toast(appliedToast());
+    // Mid-session persona/voice changes get the PERSISTENT banner (owner
+    // 2026-07-18) instead of a transient toast; everything else toasts.
+    const bannerMsg = appliedBanner ? appliedBanner() : '';
+    if (bannerMsg) showPendingBanner(bannerMsg);
+    else toast(appliedToast());
     syncQuickSwitchesFromDoc();
   } catch (err) {
     revert();
@@ -697,20 +712,55 @@ const micTest = createMicTest({
 const micTestBtn = $('micTestBtn');
 if (micTestBtn) micTestBtn.addEventListener('click', () => void micTest.open());
 
+// ---- pending-change banner (persona/voice changed mid-session) -----------
+//
+// Owner 2026-07-18: a persona/voice quick-switch during a live session only
+// takes effect at the NEXT mint, and the old transient toast was easy to
+// miss. This persistent inline banner (templates/pages/conversation.html
+// #pendingBanner, role=status) stays up until the session ends, a new
+// conversation starts, or the user dismisses it — and carries its own
+// "New conversation" action so the switch is one tap away.
+
+const pendingBannerEl = $('pendingBanner');
+const pendingBannerMsg = $('pendingBannerMsg');
+const pendingBannerNew = $('pendingBannerNew');
+const pendingBannerClose = $('pendingBannerClose');
+
+function showPendingBanner(message) {
+  if (!pendingBannerEl || !pendingBannerMsg) return;
+  pendingBannerMsg.textContent = message;
+  pendingBannerEl.hidden = false;
+}
+
+function hidePendingBanner() {
+  if (!pendingBannerEl) return;
+  pendingBannerEl.hidden = true;
+  if (pendingBannerMsg) pendingBannerMsg.textContent = '';
+}
+
+if (pendingBannerClose) pendingBannerClose.addEventListener('click', hidePendingBanner);
+if (pendingBannerNew) {
+  pendingBannerNew.addEventListener('click', () => startNewConversation());
+}
+
 // ---- new conversation ----------------------------------------------------
+
+function startNewConversation() {
+  // End any live session (flushes the transcript sink with final:true so
+  // the finished conversation lands in History), then present a clean
+  // slate — the next mic tap mints a fresh session (which picks up any
+  // pending persona/voice change, so the banner comes down too).
+  mic.end();
+  transcript.clear();
+  toolActivityReset();
+  resetCostBadge();
+  hidePendingBanner();
+  toast('New conversation — tap the mic when ready.');
+}
 
 const newConversationBtn = $('newConversationBtn');
 if (newConversationBtn) {
-  newConversationBtn.addEventListener('click', () => {
-    // End any live session (flushes the transcript sink with final:true so
-    // the finished conversation lands in History), then present a clean
-    // slate — the next mic tap mints a fresh session.
-    mic.end();
-    transcript.clear();
-    toolActivityReset();
-    resetCostBadge();
-    toast('New conversation — tap the mic when ready.');
-  });
+  newConversationBtn.addEventListener('click', startNewConversation);
 }
 
 mic.addEventListener('sessioncreated', (e) => {
@@ -718,6 +768,10 @@ mic.addEventListener('sessioncreated', (e) => {
   attachTranscriptRendering(session);
   attachVisualizer(session);
   attachCostBadge(session);
+  // The pending persona/voice change applies once this session is over —
+  // whether it ended deliberately or dropped, the banner's job is done.
+  session.addEventListener('closed', hidePendingBanner);
+  session.addEventListener('connectionlost', hidePendingBanner);
 });
 mic.addEventListener('statechange', (e) => syncVisualToState(e.detail.state));
 mic.addEventListener('error', (e) =>
@@ -891,7 +945,6 @@ if (personaSelect) {
     const prev = currentPersonaId();
     const next = personaSelect.value;
     if (next === prev) return;
-    const prevLabel = personaLabelFor(prev) || 'Live Ninja';
     void saveQuickSwitch({
       mutate: (doc) => {
         if (!doc.persona || typeof doc.persona !== 'object') doc.persona = {};
@@ -902,10 +955,11 @@ if (personaSelect) {
       revert: () => {
         personaSelect.value = prev;
       },
-      appliedToast: () =>
+      appliedToast: () => 'Persona updated.',
+      appliedBanner: () =>
         isLive()
-          ? `Applies to your next conversation — this one keeps ${prevLabel}.`
-          : 'Persona updated.',
+          ? `${personaLabelFor(next) || 'Live Ninja'} applies to your next conversation — tap New conversation to switch now.`
+          : '',
     });
   });
 }
@@ -922,11 +976,102 @@ if (voiceSelect) {
       revert: () => {
         voiceSelect.value = prev;
       },
-      appliedToast: () =>
-        isLive() ? 'Applies to your next conversation — this one keeps the current voice.' : 'Voice updated.',
+      appliedToast: () => 'Voice updated.',
+      appliedBanner: () =>
+        isLive()
+          ? `The ${voiceLabelFor(next)} voice applies to your next conversation — tap New conversation to switch now.`
+          : '',
     });
   });
 }
+
+// ---- cross-tab settings delivery + mid-session application ---------------
+//
+// There is NO server-side settings fan-out to the web client (the web
+// WebSocket/settings.updated frame does not exist — only the device shadow
+// path has push), so this is the documented minimal channel: every
+// successful settings PUT — here (quick-switches) and in settings.mjs
+// (the /settings page autosave) — writes the new document version to
+// localStorage under 'ln.settings.version'. The browser fires 'storage'
+// in every OTHER same-origin tab (never the writer, so no self-loop);
+// those tabs re-GET the canonical document and apply the delta:
+//   - Mic pickup (micEagerness) / turn detection → applied to the LIVE
+//     session via RealtimeSession.updateAudioInput (session.update,
+//     mirroring internal/realtime/mint.go) — owner request 2026-07-18;
+//   - persona/voice → mint-bound, so a live session gets the persistent
+//     "applies to your next conversation" banner instead;
+//   - appearance/privacy/quick-switch selects re-sync as on bootstrap.
+
+const SETTINGS_PING_KEY = 'ln.settings.version';
+
+function pingSettingsChanged() {
+  try {
+    localStorage.setItem(SETTINGS_PING_KEY, String(settingsVersion()));
+  } catch {
+    /* storage blocked (private mode) — cross-tab sync degrades gracefully */
+  }
+}
+
+function personaIdOf(doc) {
+  const p = doc && doc.persona;
+  return (p && typeof p.presetId === 'string' && p.presetId) || 'default';
+}
+
+/** Apply what changed between the previous and freshly-fetched settings
+ * docs to the current page/session (see the section comment above). */
+function applySettingsDelta(prev, fresh) {
+  const eagerness = (fresh && fresh.micEagerness) || 'auto';
+  const audioChanged =
+    ((prev && prev.micEagerness) || 'auto') !== eagerness ||
+    ((prev && prev.turnDetection) || 'semantic_vad') !== ((fresh && fresh.turnDetection) || 'semantic_vad');
+  if (audioChanged && isLive()) {
+    // No-ops on nova-bridge / a closed datachannel (returns false) — the
+    // change still lands at the next mint via the settings doc.
+    if (mic.session.updateAudioInput({ eagerness })) {
+      toast('Listening settings updated — applied to this conversation.');
+    }
+  }
+
+  const personaChanged = personaIdOf(prev) !== personaIdOf(fresh);
+  const voiceChanged = ((prev && prev.voice) || '') !== ((fresh && fresh.voice) || '');
+  if ((personaChanged || voiceChanged) && isLive()) {
+    showPendingBanner(
+      personaChanged
+        ? `${personaLabelFor(personaIdOf(fresh)) || 'Live Ninja'} applies to your next conversation — tap New conversation to switch now.`
+        : `The ${voiceLabelFor(fresh.voice)} voice applies to your next conversation — tap New conversation to switch now.`,
+    );
+  }
+}
+
+let adoptInFlight = false;
+
+async function adoptRemoteSettings() {
+  if (adoptInFlight || !settingsDoc) return; // bootstrap still owns the doc
+  adoptInFlight = true;
+  try {
+    const fresh = await apiJSON(SETTINGS_PATH);
+    const prev = settingsDoc;
+    settingsDoc = fresh;
+    syncQuickSwitchesFromDoc();
+    if (window.__lnApplyAppearance && settingsDoc.appearance) {
+      window.__lnApplyAppearance(settingsDoc.appearance);
+    }
+    const privacy = settingsDoc.privacy;
+    sink.setEnabled(!(privacy && privacy.storeTranscripts === false));
+    applySettingsDelta(prev, fresh);
+  } catch {
+    /* offline or auth redirect — the next ping (or a reload) re-syncs */
+  } finally {
+    adoptInFlight = false;
+  }
+}
+
+window.addEventListener('storage', (e) => {
+  // Fires only in tabs that did NOT write the key. Ignore unrelated keys
+  // and the removal that a localStorage.clear() produces.
+  if (e.key !== SETTINGS_PING_KEY || e.newValue === null || e.newValue === e.oldValue) return;
+  void adoptRemoteSettings();
+});
 
 // ---- bootstrap -----------------------------------------------------------
 

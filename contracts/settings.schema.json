@@ -88,6 +88,23 @@
       ],
       "default": "cedar"
     },
+    "voiceAccent": {
+      "type": "string",
+      "description": "Speech-accent directive id, chosen from the enumerated accent picker (GET /v1/realtime/voices `accents` catalog) — never free text. Accents are not separate voices: the realtime voice set is fixed, so the broker appends a short speech-style directive (e.g. \"Speak with a light, natural Irish accent.\") to the session instructions at mint. \"\" (also surfaced as catalog id \"none\") means no directive. Optional; absent normalizes to \"\". Unrecognized values must be preserved on write-back but mint without an accent (forward-compat, contracts/README.md rule 3).",
+      "enum": [
+        "",
+        "irish",
+        "british",
+        "scottish",
+        "australian",
+        "southern-us",
+        "french",
+        "german",
+        "indian",
+        "new-york"
+      ],
+      "default": ""
+    },
     "turnDetection": {
       "type": "string",
       "description": "Turn-detection strategy bound into the realtime session config at mint (FR-V01, PRD §6.2). Exposed to the user as a radio control (UX-R01/R02). `semantic_vad` is the platform default and pairs with `interrupt_response:true`.",

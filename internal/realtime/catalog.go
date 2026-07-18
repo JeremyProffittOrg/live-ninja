@@ -13,12 +13,16 @@ import "sort"
 
 // VoiceInfo describes one selectable OpenAI Realtime voice for UI
 // pickers: stable ID (the wire value in settings.schema.json's `voice`
-// enum), human display name, and a short spoken-style description shown
-// in the settings radio rows.
+// enum), human display name, a short spoken-style description shown in
+// the settings radio rows, and the voice's commonly *perceived* gender
+// presentation ("female" | "male" | "neutral") used purely as a UI
+// filter tag — OpenAI does not publish official gender labels, so these
+// are best-judgment perception tags, not facts about the voices.
 type VoiceInfo struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	Gender      string `json:"gender"` // perceived: "female" | "male" | "neutral"
 	Default     bool   `json:"default"`
 }
 
@@ -29,16 +33,58 @@ type VoiceInfo struct {
 // (DefaultVoice). Keep all three lists in sync when OpenAI ships new
 // realtime voices (additive-only, per contracts/README.md rule 3).
 var SupportedVoices = []VoiceInfo{
-	{ID: "alloy", Name: "Alloy", Description: "Neutral and balanced, even pace"},
-	{ID: "ash", Name: "Ash", Description: "Warm, low-pitched, and steady"},
-	{ID: "ballad", Name: "Ballad", Description: "Calm, expressive storyteller tone"},
-	{ID: "cedar", Name: "Cedar", Description: "Warm and natural, tuned for realtime — default", Default: true},
-	{ID: "coral", Name: "Coral", Description: "Bright, friendly, and upbeat"},
-	{ID: "echo", Name: "Echo", Description: "Clear, confident, and direct"},
-	{ID: "marin", Name: "Marin", Description: "Crisp and lively, tuned for realtime"},
-	{ID: "sage", Name: "Sage", Description: "Soft-spoken and gentle"},
-	{ID: "shimmer", Name: "Shimmer", Description: "Light, quick, and energetic"},
-	{ID: "verse", Name: "Verse", Description: "Versatile and articulate"},
+	{ID: "alloy", Name: "Alloy", Description: "Neutral and balanced, even pace", Gender: "neutral"},
+	{ID: "ash", Name: "Ash", Description: "Warm, low-pitched, and steady", Gender: "male"},
+	{ID: "ballad", Name: "Ballad", Description: "Calm, expressive storyteller tone", Gender: "male"},
+	{ID: "cedar", Name: "Cedar", Description: "Warm and natural, tuned for realtime — default", Gender: "male", Default: true},
+	{ID: "coral", Name: "Coral", Description: "Bright, friendly, and upbeat", Gender: "female"},
+	{ID: "echo", Name: "Echo", Description: "Clear, confident, and direct", Gender: "male"},
+	{ID: "marin", Name: "Marin", Description: "Crisp and lively, tuned for realtime", Gender: "female"},
+	{ID: "sage", Name: "Sage", Description: "Soft-spoken and gentle", Gender: "female"},
+	{ID: "shimmer", Name: "Shimmer", Description: "Light, quick, and energetic", Gender: "female"},
+	{ID: "verse", Name: "Verse", Description: "Versatile and articulate", Gender: "male"},
+}
+
+// AccentInfo is one selectable speech accent for the settings "Accent"
+// picker. Accents are NOT separate voices: the realtime voice set is
+// fixed, so an accent is delivered as a short speech-style directive
+// appended to the session instructions at mint (gpt-realtime follows
+// accent directives well). ID "none" is the no-directive default and
+// maps to the stored settings value "" (voiceAccent).
+type AccentInfo struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+// SupportedAccents is the ordered accent catalog for UI pickers.
+// "none"/"" means no accent directive. Every non-none ID here must have
+// a matching directive in accentDirectives (mint.go) — a unit test
+// enforces the pairing.
+var SupportedAccents = []AccentInfo{
+	{ID: "none", Label: "Default"},
+	{ID: "irish", Label: "Irish"},
+	{ID: "british", Label: "British"},
+	{ID: "scottish", Label: "Scottish"},
+	{ID: "australian", Label: "Australian"},
+	{ID: "southern-us", Label: "Southern US"},
+	{ID: "french", Label: "French"},
+	{ID: "german", Label: "German"},
+	{ID: "indian", Label: "Indian"},
+	{ID: "new-york", Label: "New York"},
+}
+
+// IsSupportedAccent reports whether id is a selectable accent value.
+// "" (stored form of "none") and "none" are both accepted.
+func IsSupportedAccent(id string) bool {
+	if id == "" {
+		return true
+	}
+	for _, a := range SupportedAccents {
+		if a.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // PersonaInfo is the client-visible slice of a Persona: ID, display
