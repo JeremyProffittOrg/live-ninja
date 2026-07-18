@@ -1158,6 +1158,9 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
      unreadable). ~12:1 / ~9:1 on #050507, >7:1 on the brighter conv-main. */
   --ln-text-muted: #c6cdd8;
   --ln-text-dim: #aeb7c6;
+  /* HAL chrome is dark regardless of data-theme; without this, the light
+     theme's navy ink lands on the dark surfaces (unreadable bubbles). */
+  --ln-text: var(--ln-white);
 }
 /* Owner 2026-07-18: only the left voice rail stays black; the content side
    runs on a brighter panel so transcript + muted text stay readable. */
@@ -1203,6 +1206,10 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
   --ln-surface-raised: #071007;
   --ln-border: rgba(80, 200, 110, 0.22);
   --ln-border-strong: rgba(80, 200, 110, 0.40);
+  /* Dark chrome regardless of data-theme (same fix as hal9000). */
+  --ln-text: #eaffea;
+  --ln-text-muted: #9fd8ab;
+  --ln-text-dim: #86bf93;
 }
 :root[data-ln-style="terminal"] body { background: #000; }
 :root[data-ln-style="terminal"] .ln-orb__core {
