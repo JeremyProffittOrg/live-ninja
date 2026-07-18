@@ -217,13 +217,11 @@
             <span class="ln-choice__desc">Cheaper and faster, with slightly less nuance. Also runs directly from your device.</span>
           </span>
         </label>
-        <label class="ln-choice">
-          <input type="radio" name="voiceEngine" value="nova-sonic">
-          <span class="ln-choice__body">
-            <span class="ln-choice__title">Amazon Nova Sonic</span>
-            <span class="ln-choice__desc">Lowest cost. Audio is relayed through Live Ninja's servers (not device-direct), which can add a little latency.</span>
-          </span>
-        </label>
+        {{- /* Amazon Nova Sonic (nova-sonic) removed from the picker
+               2026-07-18: the bridge subsystem is disabled
+               (NovaBridgeEnable=false — owner declined the ALB + Fargate
+               standing cost). The M12 code stays gated in the repo; restore
+               this option when re-enabling. */}}
       </div>
       <p class="ln-hint">All engines share the same tools, memory, and transcripts — only cost, latency, and voice quality differ.</p>
     </fieldset>
