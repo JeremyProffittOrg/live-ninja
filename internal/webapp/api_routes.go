@@ -78,12 +78,12 @@ func RegisterAPIRoutes(app *fiber.App, deps *Deps) {
 // RequireOwner) ----
 
 func apiBadRequest(c *fiber.Ctx, msg string) error {
-	return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_request", "message": msg})
+	return errorJSON(c, fiber.StatusBadRequest, "invalid_request", msg)
 }
 
 func apiInternalError(c *fiber.Ctx, deps *Deps, op string, err error) error {
 	deps.Log.Error("api: "+op, slog.String("error", err.Error()))
-	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal_error"})
+	return errorJSON(c, fiber.StatusInternalServerError, "internal_error", "Something went wrong. Please try again.")
 }
 
 // ---- GET /api/v1/me ----
@@ -97,7 +97,7 @@ func handleGetMe(deps *Deps) fiber.Handler {
 			return apiInternalError(c, deps, "get user", err)
 		}
 		if u == nil {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not_found"})
+			return errorJSON(c, fiber.StatusNotFound, "not_found", "User not found.")
 		}
 
 		return c.JSON(fiber.Map{
@@ -151,7 +151,7 @@ func handleRevokeDevice(deps *Deps) fiber.Handler {
 		if d == nil || d.UserID != userID {
 			// Same shape whether absent or owned by someone else — never
 			// let a caller enumerate other users' device ids.
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not_found"})
+			return errorJSON(c, fiber.StatusNotFound, "not_found", "Device not found.")
 		}
 
 		if d.FamilyID != "" {
@@ -165,7 +165,7 @@ func handleRevokeDevice(deps *Deps) fiber.Handler {
 
 		if err := deps.Store.RevokeDevice(c.Context(), deviceID); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
-				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not_found"})
+				return errorJSON(c, fiber.StatusNotFound, "not_found", "Device not found.")
 			}
 			return apiInternalError(c, deps, "revoke device", err)
 		}
@@ -237,7 +237,12 @@ func handleRemoveAllowlist(deps *Deps) fiber.Handler {
 // `main`, so it can't be imported — this is the wire-contract mirror, per
 // the shared spec's M2 broker section).
 type brokerRequest struct {
-	Mode          string          `json:"mode,omitempty"`
+	Mode string `json:"mode,omitempty"`
+	// TxID forwards the ingress transaction id (Locals, set by
+	// TxnMiddleware) so a single user action correlates across the web
+	// function and the broker in CloudWatch. The broker generates one
+	// itself when this is empty (e.g. a direct system invoke).
+	TxID          string          `json:"txId,omitempty"`
 	UserID        string          `json:"userId"`
 	Surface       string          `json:"surface"`
 	DeviceID      string          `json:"deviceId,omitempty"`
@@ -248,6 +253,10 @@ type brokerRequest struct {
 
 // brokerResponse mirrors cmd/realtime-broker's Response.
 type brokerResponse struct {
+	// TxID echoes the transaction correlation id the broker resolved
+	// (reused from Request.TxID, or minted fresh when that was empty).
+	TxID string `json:"txId,omitempty"`
+
 	// Error shape (contracts/metering.md 402/429 bodies + generic errors).
 	Error             string  `json:"error,omitempty"`
 	Code              int     `json:"code,omitempty"`
@@ -325,15 +334,32 @@ func truncateForLog(b []byte) string {
 // contract in contracts/metering.md (402 quota_exceeded / 429
 // rate_limited) plus a generic fallback for the broker's other error
 // codes (mint_failed, fallback_failed, invalid_request, internal_error).
+// The canonical {error:{code,message,txId}} envelope carries resp.Error/
+// resp.Message/the caller's own ingress txId (from Locals — always
+// present even if the broker's echoed TxID was lost in transit); the
+// quota/rate-limit-specific fields ride alongside it at the top level so
+// the existing wire contract (kind/used/limit/resetAt/retryAfterSeconds)
+// is unchanged for clients already parsing them.
 func apiRespondBrokerError(c *fiber.Ctx, resp *brokerResponse) error {
 	status := resp.Code
 	if status == 0 {
 		status = fiber.StatusBadGateway
 	}
+	message := resp.Message
+	if message == "" {
+		message = "The realtime broker reported an error."
+	}
 
-	body := fiber.Map{"error": resp.Error}
-	if resp.Message != "" {
-		body["message"] = resp.Message
+	requestLogger(c).Error("request failed",
+		slog.Int("status", status),
+		slog.String("code", resp.Error),
+		slog.String("message", message),
+		slog.String("method", c.Method()),
+		slog.String("path", c.Path()),
+	)
+
+	body := fiber.Map{
+		"error": ErrorBody{Code: resp.Error, Message: message, TxID: TxID(c)},
 	}
 	switch resp.Error {
 	case "quota_exceeded":
@@ -355,6 +381,7 @@ func handleRealtimeSession(deps *Deps) fiber.Handler {
 		userID, surface, deviceID := UserID(c), Surface(c), DeviceID(c)
 
 		resp, err := invokeRealtimeBroker(c.Context(), deps, brokerRequest{
+			TxID:          TxID(c),
 			UserID:        userID,
 			Surface:       surface,
 			DeviceID:      deviceID,
@@ -363,10 +390,8 @@ func handleRealtimeSession(deps *Deps) fiber.Handler {
 		})
 		if err != nil {
 			deps.Log.Error("api: realtime session mint failed", slog.String("error", err.Error()), slog.String("userId", userID))
-			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
-				"error":   "broker_unavailable",
-				"message": "Could not reach the realtime broker; use the fallback cascade.",
-			})
+			return errorJSON(c, fiber.StatusBadGateway, "broker_unavailable",
+				"Could not reach the realtime broker; use the fallback cascade.")
 		}
 		if resp.Error != "" {
 			return apiRespondBrokerError(c, resp)
@@ -494,9 +519,7 @@ func handleToolsInvoke(deps *Deps, registry *tools.Registry) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID, sessionID, surface := UserID(c), SessionID(c), Surface(c)
 		if registry == nil {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-				"error": "not_configured", "message": "the tool router is not configured",
-			})
+			return errorJSON(c, fiber.StatusServiceUnavailable, "not_configured", "the tool router is not configured")
 		}
 
 		var body struct {
@@ -517,6 +540,7 @@ func handleToolsInvoke(deps *Deps, registry *tools.Registry) fiber.Handler {
 			Args:           body.Args,
 			IdempotencyKey: body.IdempotencyKey,
 			CallID:         body.CallID,
+			TxID:           TxID(c),
 			UserID:         userID,
 			SessionID:      sessionID,
 			Surface:        surface,
@@ -670,12 +694,12 @@ func handleFallbackTurn(deps *Deps) fiber.Handler {
 			return apiInternalError(c, deps, "marshal fallback turn payload", err)
 		}
 		resp, err := invokeRealtimeBroker(c.Context(), deps, brokerRequest{
-			Mode: "fallback-turn", UserID: userID, Surface: surface, DeviceID: deviceID,
+			Mode: "fallback-turn", TxID: TxID(c), UserID: userID, Surface: surface, DeviceID: deviceID,
 			Persona: body.Persona, Payload: payload,
 		})
 		if err != nil {
 			deps.Log.Error("api: fallback turn failed", slog.String("error", err.Error()), slog.String("userId", userID))
-			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "broker_unavailable", "message": "The fallback turn request failed."})
+			return errorJSON(c, fiber.StatusBadGateway, "broker_unavailable", "The fallback turn request failed.")
 		}
 		if resp.Error != "" {
 			return apiRespondBrokerError(c, resp)
@@ -714,11 +738,11 @@ func handleFallbackSTT(deps *Deps) fiber.Handler {
 			return apiInternalError(c, deps, "marshal fallback stt payload", err)
 		}
 		resp, err := invokeRealtimeBroker(c.Context(), deps, brokerRequest{
-			Mode: "fallback-stt", UserID: userID, Surface: surface, DeviceID: deviceID, Payload: payload,
+			Mode: "fallback-stt", TxID: TxID(c), UserID: userID, Surface: surface, DeviceID: deviceID, Payload: payload,
 		})
 		if err != nil {
 			deps.Log.Error("api: fallback stt failed", slog.String("error", err.Error()), slog.String("userId", userID))
-			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "broker_unavailable", "message": "The fallback transcription request failed."})
+			return errorJSON(c, fiber.StatusBadGateway, "broker_unavailable", "The fallback transcription request failed.")
 		}
 		if resp.Error != "" {
 			return apiRespondBrokerError(c, resp)
@@ -744,11 +768,11 @@ func handleFallbackTTS(deps *Deps) fiber.Handler {
 			return apiInternalError(c, deps, "marshal fallback tts payload", err)
 		}
 		resp, err := invokeRealtimeBroker(c.Context(), deps, brokerRequest{
-			Mode: "fallback-tts", UserID: userID, Surface: surface, DeviceID: deviceID, Payload: payload,
+			Mode: "fallback-tts", TxID: TxID(c), UserID: userID, Surface: surface, DeviceID: deviceID, Payload: payload,
 		})
 		if err != nil {
 			deps.Log.Error("api: fallback tts failed", slog.String("error", err.Error()), slog.String("userId", userID))
-			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "broker_unavailable", "message": "The fallback speech request failed."})
+			return errorJSON(c, fiber.StatusBadGateway, "broker_unavailable", "The fallback speech request failed.")
 		}
 		if resp.Error != "" {
 			return apiRespondBrokerError(c, resp)

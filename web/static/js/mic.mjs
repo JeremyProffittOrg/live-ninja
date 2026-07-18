@@ -144,7 +144,11 @@ function formatResetAt(resetAt) {
  *   sessioncreated {session}   — a new RealtimeSession exists; the page and
  *                                transcriptsink attach their listeners here
  *   ending         {session}   — flush point before teardown
- *   error          {message, code, retryable}
+ *   error          {message, code, retryable, txId, detail}
+ *                              txId/detail are the backend transaction ref and
+ *                              full backend message when the failure came from
+ *                              the server (empty for client-side mic errors) —
+ *                              the page surfaces them in the reportable banner.
  *   toast          {message}
  */
 export class MicController extends EventTarget {
@@ -563,6 +567,10 @@ export class MicController extends EventTarget {
 
   #handleConnectError(err) {
     if (err instanceof RealtimeError) {
+      // Backend-originated failures carry a txId + the raw backend message;
+      // the friendly line goes to `message`, the detail/ref to the banner.
+      const txId = err.txId || '';
+      const detail = err.message || '';
       switch (err.code) {
         case 'quota_exceeded': {
           const scope = err.kind === 'monthly_tokens' ? "this month's" : "today's";
@@ -571,6 +579,8 @@ export class MicController extends EventTarget {
             message: `You've reached ${scope} voice limit. It resets ${formatResetAt(err.resetAt)}. You can still type below.`,
             retryable: false,
             permanent: true,
+            txId,
+            detail,
           });
           return;
         }
@@ -579,6 +589,8 @@ export class MicController extends EventTarget {
             code: err.code,
             message: 'Too many requests — try again in a few seconds.',
             retryable: true,
+            txId,
+            detail,
           });
           return;
         case 'broker_unavailable':
@@ -586,6 +598,8 @@ export class MicController extends EventTarget {
             code: err.code,
             message: "Couldn't reach the voice service. You can still type below.",
             retryable: true,
+            txId,
+            detail,
           });
           return;
         default:
@@ -593,6 +607,8 @@ export class MicController extends EventTarget {
             code: err.code,
             message: 'Connection to the voice service dropped.',
             retryable: true,
+            txId,
+            detail,
           });
           return;
       }
@@ -605,11 +621,11 @@ export class MicController extends EventTarget {
     });
   }
 
-  #fail({ code, message, retryable, permanent = false }) {
+  #fail({ code, message, retryable, permanent = false, txId = '', detail = '' }) {
     this.#clearGrace();
     this.#errorInfo = { message, retryable, permanent };
     this.#setState(MicState.ERROR);
-    this.#emit('error', { message, code, retryable });
+    this.#emit('error', { message, code, retryable, txId, detail });
   }
 
   // ---- rendering (state pill / status text / button, spec §2.8 ARIA) ----

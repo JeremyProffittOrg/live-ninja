@@ -1,15 +1,19 @@
 package webapp
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
+	"github.com/JeremyProffittOrg/live-ninja/internal/observ"
 )
 
 // Cookie / header names fixed by the shared spec. __Host- prefixed cookies
@@ -24,6 +28,11 @@ const (
 	CSRFCookieName = "__Host-ln_csrf"
 	// CSRFHeaderName is the request header that must match CSRFCookieName.
 	CSRFHeaderName = "X-LN-CSRF"
+	// TxnHeaderName carries the per-request transaction id back to the
+	// client on every response (success or error). The web client reads it
+	// alongside the error envelope's txId so a user can quote a single
+	// "Ref:" value when reporting a problem.
+	TxnHeaderName = "X-LN-Txn"
 	// OAuthStateCookieName binds an in-flight LWA transaction to the browser
 	// that started it: login sets it to the state value, callback requires an
 	// exact match. Without it, callback only checks that the state exists
@@ -40,6 +49,13 @@ const (
 	localSurface   = "surface"
 	localDeviceID  = "deviceId"
 	localRole      = "role"
+	// localTxID holds the transaction id set by TxnMiddleware. Read via
+	// TxID(c); errorJSON stamps it into the error envelope.
+	localTxID = "txId"
+	// localLogger holds the request-scoped slog.Logger (already enriched
+	// with txId) that TxnMiddleware stashes so errorJSON can log an error
+	// without the route having to thread a logger into the helper.
+	localLogger = "logger"
 )
 
 // UserID returns the authenticated user id for this request, or "" when
@@ -63,6 +79,158 @@ func localString(c *fiber.Ctx, key string) string {
 		return v
 	}
 	return ""
+}
+
+// TxID returns the transaction id assigned to this request by
+// TxnMiddleware, or "" if the middleware did not run (it always runs on the
+// real app; the empty case only happens in isolated handler tests).
+func TxID(c *fiber.Ctx) string { return localString(c, localTxID) }
+
+// txnContextKey is the private key under which TxnMiddleware also stashes
+// the txId in the request-scoped context.Context (c.UserContext()), so code
+// paths that only hold a context.Context (store calls, downstream AWS SDK
+// calls) can still recover the id via TxnFromContext.
+type txnContextKey struct{}
+
+// ContextWithTxn returns a child context carrying txID. TxnMiddleware uses
+// it to enrich the Fiber user-context; callers spawning their own contexts
+// can reuse it to keep the id flowing.
+func ContextWithTxn(ctx context.Context, txID string) context.Context {
+	return context.WithValue(ctx, txnContextKey{}, txID)
+}
+
+// TxnFromContext recovers the txId placed by ContextWithTxn, or "" if none.
+func TxnFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(txnContextKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// amznRequestID is the minimal shape needed to pull the API Gateway request
+// id out of the forwarded request context. The Lambda Web Adapter forwards
+// the originating event's whole requestContext as the
+// `x-amzn-request-context` header; API Gateway HTTP API v2 puts a unique
+// per-request id at `.requestId`. Preferring it over a freshly minted UUID
+// means the txId in our logs is the same id AWS records in its own access
+// logs, so a support reference cross-references both.
+type amznRequestID struct {
+	RequestID string `json:"requestId"`
+}
+
+// deriveTxID resolves the transaction id for a request: the API Gateway
+// requestId when the forwarded request context carries one, otherwise a
+// fresh UUID v4. (The client cannot inject its own txId — allowing that
+// would let a caller collide or spoof references; ingress always owns it.)
+func deriveTxID(c *fiber.Ctx) string {
+	if raw := c.Get("x-amzn-request-context"); raw != "" {
+		var rc amznRequestID
+		if err := json.Unmarshal([]byte(raw), &rc); err == nil && rc.RequestID != "" {
+			return rc.RequestID
+		}
+	}
+	return observ.NewTxnID()
+}
+
+// TxnMiddleware is the first middleware in the chain (ahead of auth): it
+// assigns every request a transaction id, exposes it three ways —
+// Fiber Locals (TxID), the request-scoped context.Context (TxnFromContext),
+// and the X-LN-Txn response header — and emits the verbose request/response
+// log pair required for full observability.
+//
+// It logs an INFO "request" line at ingress (method, path, txId, and the
+// *keys* of the query string — never the values, which may hold PII) and an
+// INFO "response" line at completion (status, latency, response bytes, and
+// the userId/surface now resolved by the downstream auth middleware). The
+// Authorization/Cookie/CSRF headers are recorded only through observ.Redact
+// so their presence is logged but their secret values never are.
+func TxnMiddleware(logger *slog.Logger) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		start := time.Now()
+
+		txID := deriveTxID(c)
+		c.Locals(localTxID, txID)
+		c.SetUserContext(ContextWithTxn(c.UserContext(), txID))
+		c.Set(TxnHeaderName, txID)
+
+		l := observ.WithTxn(logger, txID)
+		c.Locals(localLogger, l)
+		l.Info("request",
+			slog.String("method", c.Method()),
+			slog.String("path", c.Path()),
+			slog.String("query_keys", queryKeys(c)),
+			slog.Any("headers", observ.Redact(requestHeaders(c))),
+		)
+
+		err := c.Next()
+
+		surface := Surface(c)
+		if surface == "" {
+			surface = surfaceForPath(c.Path())
+		}
+		l.Info("response",
+			slog.String("method", c.Method()),
+			slog.String("path", c.Path()),
+			slog.Int("status", c.Response().StatusCode()),
+			slog.String("userId", UserID(c)),
+			slog.String("surface", surface),
+			slog.Int("bytes", len(c.Response().Body())),
+			slog.Duration("latency", time.Since(start)),
+		)
+		return err
+	}
+}
+
+// queryKeys returns the sorted, comma-joined set of query-string parameter
+// names present on the request — keys only, never values (a query value may
+// carry an email, code, or other PII). Empty string when there is no query.
+func queryKeys(c *fiber.Ctx) string {
+	m := c.Queries()
+	if len(m) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ",")
+}
+
+// requestHeaders collects the incoming request headers into a plain map so
+// observ.Redact can strip the credential-bearing ones before they are
+// logged. Multi-value headers are joined with ", " (the standard HTTP
+// list separator); order within a header is preserved.
+func requestHeaders(c *fiber.Ctx) map[string]string {
+	out := make(map[string]string)
+	c.Request().Header.VisitAll(func(key, value []byte) {
+		k := string(key)
+		if existing, ok := out[k]; ok {
+			out[k] = existing + ", " + string(value)
+		} else {
+			out[k] = string(value)
+		}
+	})
+	return out
+}
+
+// surfaceForPath is the pre-auth fallback surface label, derived from the
+// URL path when the auth context has not (yet) resolved a real surface. It
+// mirrors the labels the auth middleware would set.
+func surfaceForPath(path string) string {
+	switch {
+	case strings.HasPrefix(path, "/static/"):
+		return "static"
+	case strings.HasPrefix(path, "/auth/"):
+		return "auth"
+	case strings.HasPrefix(path, "/.well-known/"):
+		return "well-known"
+	default:
+		return "web"
+	}
 }
 
 // amznRequestContext is the fragment of the API Gateway HTTP API v2

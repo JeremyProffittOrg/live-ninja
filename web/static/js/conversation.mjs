@@ -34,21 +34,184 @@ const WAKE_CATALOG_PATH = '/static/wakewords/catalog.json';
 const $ = (id) => document.getElementById(id);
 
 // ---- toast (single #toast element on this page) --------------------------
+//
+// Plain toasts (settings applied, etc.) are a transient polite status line.
+// Error toasts that carry a transaction ref (txId) and/or a backend message
+// become a reportable error banner: role=alert, keyboard-focusable, with a
+// "Details" affordance that reveals — on hover, on keyboard focus, or on tap
+// — the full backend message plus "Ref: <txId>" and a Copy button that copies
+// the txId (so the user can report it). Reportable errors persist (no
+// auto-dismiss) and carry a close control; everything else auto-dismisses.
 
 const toastEl = $('toast');
+const DETAIL_PANEL_ID = 'toastDetailPanel';
 let toastTimer = 0;
+let copyResetTimer = 0;
 
-function toast(message, { error = false } = {}) {
+function hideToast() {
   if (!toastEl) return;
   clearTimeout(toastTimer);
-  toastEl.textContent = message;
+  toastEl.classList.remove('is-visible', 'is-open');
+  toastEl.hidden = true;
+}
+
+async function copyText(text) {
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      /* fall through to the legacy path (permissions/focus edge cases) */
+    }
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * @param {string} message short, human-facing line
+ * @param {{error?: boolean, txId?: string, detail?: string}} [opts]
+ *   error  — style + assertive alert semantics
+ *   txId   — transaction ref; drives the Copy button
+ *   detail — full backend message shown under "Details"
+ */
+function toast(message, { error = false, txId = '', detail = '' } = {}) {
+  if (!toastEl) return;
+  clearTimeout(toastTimer);
+  clearTimeout(copyResetTimer);
+
+  const ref = (txId || '').trim();
+  const backendMsg = (detail || '').trim();
+  const reportable = !!error && (ref !== '' || backendMsg !== '');
+
+  toastEl.replaceChildren();
   toastEl.classList.toggle('is-error', !!error);
+  toastEl.classList.toggle('has-details', reportable);
+  toastEl.classList.remove('is-open');
+  // Errors announce assertively (role=alert); plain toasts stay polite.
+  toastEl.setAttribute('role', error ? 'alert' : 'status');
+  toastEl.setAttribute('aria-live', error ? 'assertive' : 'polite');
+  // Reportable banners are keyboard-focusable so a screen-reader user can
+  // land on them and reach the Details/Copy controls.
+  if (reportable) toastEl.setAttribute('tabindex', '-1');
+  else toastEl.removeAttribute('tabindex');
+
+  const bodyRow = document.createElement('div');
+  bodyRow.className = 'ln-toast__body';
+
+  const msgEl = document.createElement('span');
+  msgEl.className = 'ln-toast__msg';
+  msgEl.textContent = message;
+  bodyRow.appendChild(msgEl);
+
+  if (reportable) {
+    // Native tooltip mirrors the accessible expandable (title AND panel).
+    const tooltipParts = [];
+    if (backendMsg) tooltipParts.push(backendMsg);
+    if (ref) tooltipParts.push(`Ref: ${ref}`);
+    const tooltip = tooltipParts.join('\n');
+
+    const detailsBtn = document.createElement('button');
+    detailsBtn.type = 'button';
+    detailsBtn.className = 'ln-toast__details';
+    detailsBtn.textContent = 'Details';
+    detailsBtn.title = tooltip;
+    detailsBtn.setAttribute('aria-controls', DETAIL_PANEL_ID);
+    detailsBtn.setAttribute('aria-expanded', 'false');
+    detailsBtn.addEventListener('click', () => {
+      const open = toastEl.classList.toggle('is-open');
+      detailsBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    bodyRow.appendChild(detailsBtn);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'ln-toast__close';
+    closeBtn.setAttribute('aria-label', 'Dismiss');
+    closeBtn.textContent = '×'; // ×
+    closeBtn.addEventListener('click', hideToast);
+    bodyRow.appendChild(closeBtn);
+  }
+
+  toastEl.appendChild(bodyRow);
+
+  if (reportable) {
+    const panel = document.createElement('div');
+    panel.className = 'ln-toast__panel';
+    panel.id = DETAIL_PANEL_ID;
+
+    if (backendMsg) {
+      const detailMsg = document.createElement('p');
+      detailMsg.className = 'ln-toast__detail-msg';
+      detailMsg.textContent = backendMsg;
+      panel.appendChild(detailMsg);
+    }
+
+    if (ref) {
+      const refRow = document.createElement('div');
+      refRow.className = 'ln-toast__ref';
+
+      const refLabel = document.createElement('span');
+      refLabel.className = 'ln-toast__ref-label';
+      refLabel.append('Ref: ');
+      const refVal = document.createElement('span');
+      refVal.className = 'ln-toast__txid';
+      refVal.textContent = ref;
+      refLabel.appendChild(refVal);
+      refRow.appendChild(refLabel);
+
+      const copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.className = 'ln-toast__copy';
+      copyBtn.textContent = 'Copy';
+      copyBtn.setAttribute('aria-label', 'Copy reference ID');
+      copyBtn.addEventListener('click', async () => {
+        const ok = await copyText(ref);
+        copyBtn.textContent = ok ? 'Copied' : 'Press ⌘/Ctrl+C';
+        copyBtn.classList.toggle('is-copied', ok);
+        clearTimeout(copyResetTimer);
+        copyResetTimer = setTimeout(() => {
+          copyBtn.textContent = 'Copy';
+          copyBtn.classList.remove('is-copied');
+        }, 1600);
+      });
+      refRow.appendChild(copyBtn);
+      panel.appendChild(refRow);
+    }
+
+    toastEl.appendChild(panel);
+  }
+
   toastEl.hidden = false;
   requestAnimationFrame(() => toastEl.classList.add('is-visible'));
-  toastTimer = setTimeout(() => {
-    toastEl.classList.remove('is-visible');
-    toastEl.hidden = true;
-  }, 6000);
+
+  // Reportable banners persist so the ref can be read/copied; everything
+  // else auto-dismisses.
+  if (!reportable) {
+    toastTimer = setTimeout(hideToast, 6000);
+  }
+}
+
+// Escape dismisses a focused/hovered banner (focus is inside it).
+if (toastEl) {
+  toastEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !toastEl.hidden) {
+      e.stopPropagation();
+      hideToast();
+    }
+  });
 }
 
 // ---- settings document (single source of truth for both quick-switches) --
@@ -171,7 +334,11 @@ async function saveQuickSwitch({ mutate, revert, appliedToast }) {
   } catch (err) {
     revert();
     if (err && err.name === 'AuthLostError') return; // toolclient redirects
-    toast("Couldn't save your changes — check your connection and try again.", { error: true });
+    toast("Couldn't save your changes — check your connection and try again.", {
+      error: true,
+      txId: err instanceof ApiError ? err.txId : '',
+      detail: err instanceof ApiError ? err.message : '',
+    });
   }
 }
 
@@ -320,7 +487,9 @@ mic.addEventListener('sessioncreated', (e) => {
   attachVisualizer(session);
 });
 mic.addEventListener('statechange', (e) => syncVisualToState(e.detail.state));
-mic.addEventListener('error', (e) => toast(e.detail.message, { error: true }));
+mic.addEventListener('error', (e) =>
+  toast(e.detail.message, { error: true, txId: e.detail.txId, detail: e.detail.detail }),
+);
 mic.addEventListener('toast', (e) => toast(e.detail.message));
 
 // ---- wake word (hands-free mode) -----------------------------------------
@@ -432,11 +601,12 @@ async function sendTyped(text) {
   } catch (err) {
     transcript.hideTypingIndicator();
     if (err && err.name === 'AuthLostError') return;
-    const msg =
-      err instanceof ApiError && err.message
-        ? err.message
-        : "Couldn't send your message — check your connection and try again.";
-    toast(msg, { error: true });
+    // Short line stays friendly; the backend message + ref go under Details.
+    toast("Couldn't send your message — check your connection and try again.", {
+      error: true,
+      txId: err instanceof ApiError ? err.txId : '',
+      detail: err instanceof ApiError ? err.message : '',
+    });
   } finally {
     fallbackInFlight = false;
     if (composerSend && composerInput) composerSend.disabled = composerInput.value.trim() === '';

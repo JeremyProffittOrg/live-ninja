@@ -291,10 +291,8 @@ func handlePutSettings(deps *Deps) fiber.Handler {
 		newVersion, err := deps.Store.PutSettings(c.Context(), userID, body.Settings, body.Version)
 		if err != nil {
 			if errors.Is(err, store.ErrVersionConflict) {
-				return c.Status(fiber.StatusConflict).JSON(fiber.Map{
-					"error":   "version_conflict",
-					"message": "Your settings were changed from another device. Re-read and re-apply.",
-				})
+				return errorJSON(c, fiber.StatusConflict, "version_conflict",
+					"Your settings were changed from another device. Re-read and re-apply.")
 			}
 			return apiInternalError(c, deps, "put settings", err)
 		}

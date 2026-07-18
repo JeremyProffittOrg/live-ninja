@@ -73,7 +73,7 @@ func (r *authRoutes) jwks(c *fiber.Ctx) error {
 	doc, err := r.deps.Signer.JWKS(c.Context())
 	if err != nil {
 		r.deps.Log.Error("jwks: fetch failed", "error", err.Error())
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "jwks_unavailable"})
+		return errorJSON(c, fiber.StatusInternalServerError, "jwks_unavailable", "Could not load the signing keys.")
 	}
 	c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 	c.Set(fiber.HeaderCacheControl, "public, max-age=3600")
@@ -230,27 +230,27 @@ func (r *authRoutes) exchange(c *fiber.Ctx) error {
 	tokens, err := r.deps.LWA.ExchangeCode(ctx, body.Code, body.CodeVerifier, body.RedirectURI)
 	if err != nil {
 		r.deps.Log.Warn("exchange: lwa code exchange failed", "error", err.Error())
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "code_exchange_failed"})
+		return errorJSON(c, fiber.StatusUnauthorized, "code_exchange_failed", "Amazon did not accept the sign-in code. Please try again.")
 	}
 	profile, err := r.deps.LWA.Validate(ctx, tokens.AccessToken)
 	if err != nil {
 		r.deps.Log.Warn("exchange: lwa validate failed", "error", err.Error())
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "token_validation_failed"})
+		return errorJSON(c, fiber.StatusUnauthorized, "token_validation_failed", "Your Amazon sign-in could not be verified. Please try again.")
 	}
 
 	user, err := auth.Authorize(ctx, r.deps.Store, profile)
 	if err != nil {
 		if errors.Is(err, auth.ErrNotAllowed) {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not_allowed"})
+			return errorJSON(c, fiber.StatusForbidden, "not_allowed", "This Live Ninja instance is private. Your Amazon account is not on the access list.")
 		}
 		r.deps.Log.Error("exchange: authorize failed", "error", err.Error())
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal"})
+		return errorJSON(c, fiber.StatusInternalServerError, "internal", "Something went wrong. Please try again.")
 	}
 
 	sess, wireRefresh, accessToken, accessExp, err := r.issueSession(c, user, store.SurfaceAndroid, "")
 	if err != nil {
 		r.deps.Log.Error("exchange: issue session failed", "error", err.Error())
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal"})
+		return errorJSON(c, fiber.StatusInternalServerError, "internal", "Something went wrong. Please try again.")
 	}
 
 	r.notifySignIn(c, user.Email, user.Name, store.SurfaceAndroid, sess.SessionID)
@@ -283,34 +283,34 @@ func (r *authRoutes) refresh(c *fiber.Ctx) error {
 		wire = body.RefreshToken
 	}
 	if wire == "" {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing_refresh_token"})
+		return errorJSON(c, fiber.StatusUnauthorized, "missing_refresh_token", "A refresh token is required.")
 	}
 
 	sessionID, secret, ok := splitWireRefresh(wire)
 	if !ok {
 		r.failRefresh(c, fromCookie)
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid_refresh_token"})
+		return errorJSON(c, fiber.StatusUnauthorized, "invalid_refresh_token", "The refresh token is invalid.")
 	}
 
 	sess, err := r.deps.Store.GetSessionByID(ctx, sessionID)
 	if err != nil {
 		r.deps.Log.Error("refresh: session lookup failed", "error", err.Error())
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal"})
+		return errorJSON(c, fiber.StatusInternalServerError, "internal", "Something went wrong. Please try again.")
 	}
 	now := time.Now().UTC()
 	if sess == nil || (sess.ExpiresAt > 0 && sess.ExpiresAt < now.Unix()) {
 		r.failRefresh(c, fromCookie)
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid_refresh_token"})
+		return errorJSON(c, fiber.StatusUnauthorized, "invalid_refresh_token", "The refresh token is invalid.")
 	}
 
 	user, err := r.deps.Store.GetUser(ctx, sess.UserID)
 	if err != nil {
 		r.deps.Log.Error("refresh: user lookup failed", "error", err.Error())
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal"})
+		return errorJSON(c, fiber.StatusInternalServerError, "internal", "Something went wrong. Please try again.")
 	}
 	if user == nil || user.Status != store.UserStatusActive {
 		r.failRefresh(c, fromCookie)
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "account_unavailable"})
+		return errorJSON(c, fiber.StatusUnauthorized, "account_unavailable", "Your account is not available. Please sign in again.")
 	}
 	// tokensValidAfter kill-switch also invalidates refresh lineages
 	// created before the cutoff (logout-all deletes the rows too — this is
@@ -318,7 +318,7 @@ func (r *authRoutes) refresh(c *fiber.Ctx) error {
 	if user.TokensValidAfter > 0 && sess.CreatedAt > 0 && sess.CreatedAt < user.TokensValidAfter {
 		_ = r.deps.Store.RevokeSession(ctx, sess.UserID, sess.SessionID)
 		r.failRefresh(c, fromCookie)
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "session_revoked"})
+		return errorJSON(c, fiber.StatusUnauthorized, "session_revoked", "This session was revoked. Please sign in again.")
 	}
 
 	newSecret, newHash, err := auth.GenerateRefreshToken()
@@ -341,20 +341,21 @@ func (r *authRoutes) refresh(c *fiber.Ctx) error {
 				"userId", sess.UserID, "sessionId", sess.SessionID, "familyId", sess.FamilyID)
 			r.notifySecurityAlert(c, user.Email, sess.Surface)
 			r.failRefresh(c, fromCookie)
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "refresh_reused"})
+			return errorJSON(c, fiber.StatusUnauthorized, "refresh_reused",
+				"This refresh token was already used and every session in its lineage has been signed out. Please sign in again.")
 		case errors.Is(err, store.ErrInvalidRefresh):
 			r.failRefresh(c, fromCookie)
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid_refresh_token"})
+			return errorJSON(c, fiber.StatusUnauthorized, "invalid_refresh_token", "The refresh token is invalid.")
 		default:
 			r.deps.Log.Error("refresh: rotate failed", "error", err.Error())
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal"})
+			return errorJSON(c, fiber.StatusInternalServerError, "internal", "Something went wrong. Please try again.")
 		}
 	}
 
 	accessToken, accessExp, err := r.mintAccess(c, user.UserID, rotated.SessionID, rotated.DeviceID, rotated.Surface, user.Role)
 	if err != nil {
 		r.deps.Log.Error("refresh: mint access token failed", "error", err.Error())
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal"})
+		return errorJSON(c, fiber.StatusInternalServerError, "internal", "Something went wrong. Please try again.")
 	}
 
 	newWire := rotated.SessionID + "." + newSecret
@@ -416,11 +417,11 @@ func (r *authRoutes) logoutAll(c *fiber.Ctx) error {
 
 	if err := r.deps.Store.SetTokensValidAfter(ctx, userID, time.Now().Unix()); err != nil {
 		r.deps.Log.Error("logout-all: set tokensValidAfter failed", "error", err.Error(), "userId", userID)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal"})
+		return errorJSON(c, fiber.StatusInternalServerError, "internal", "Something went wrong. Please try again.")
 	}
 	if err := r.deps.Store.RevokeAllForUser(ctx, userID); err != nil {
 		r.deps.Log.Error("logout-all: revoke sessions failed", "error", err.Error(), "userId", userID)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal"})
+		return errorJSON(c, fiber.StatusInternalServerError, "internal", "Something went wrong. Please try again.")
 	}
 
 	r.clearAuthCookies(c)
@@ -446,7 +447,7 @@ func (r *authRoutes) deviceRegister(c *fiber.Ctx) error {
 	nonce, expiresAt, err := auth.RegisterPairing(c.Context(), r.deps.Store, body.CodeChallenge)
 	if err != nil {
 		r.deps.Log.Error("device register: create pairing failed", "error", err.Error())
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal"})
+		return errorJSON(c, fiber.StatusInternalServerError, "internal", "Something went wrong. Please try again.")
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
@@ -538,19 +539,19 @@ func (r *authRoutes) devicePoll(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"status": "expired"})
 		}
 		r.deps.Log.Error("device poll: poll pairing failed", "error", err.Error())
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal"})
+		return errorJSON(c, fiber.StatusInternalServerError, "internal", "Something went wrong. Please try again.")
 	}
 
 	switch pair.Status {
 	case store.PairStatusPending:
 		return c.JSON(fiber.Map{"status": "pending", "pollIntervalSeconds": pollIntervalSeconds})
 	case store.PairStatusClaimed:
-		return c.Status(fiber.StatusGone).JSON(fiber.Map{"error": "already_claimed"})
+		return errorJSON(c, fiber.StatusGone, "already_claimed", "This pairing code was already used.")
 	case store.PairStatusBound:
 		// proceed to claim below
 	default:
 		r.deps.Log.Error("device poll: unexpected pair status", "status", pair.Status)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal"})
+		return errorJSON(c, fiber.StatusInternalServerError, "internal", "Something went wrong. Please try again.")
 	}
 
 	if body.CodeVerifier == "" {
@@ -561,21 +562,21 @@ func (r *authRoutes) devicePoll(c *fiber.Ctx) error {
 	if err != nil {
 		switch {
 		case errors.Is(err, auth.ErrPKCEMismatch):
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "verifier_mismatch"})
+			return errorJSON(c, fiber.StatusForbidden, "verifier_mismatch", "The pairing code_verifier did not match.")
 		case errors.Is(err, auth.ErrPairAlreadyClaimed):
-			return c.Status(fiber.StatusGone).JSON(fiber.Map{"error": "already_claimed"})
+			return errorJSON(c, fiber.StatusGone, "already_claimed", "This pairing code was already used.")
 		case errors.Is(err, auth.ErrPairNotBound):
 			return c.JSON(fiber.Map{"status": "pending", "pollIntervalSeconds": pollIntervalSeconds})
 		default:
 			r.deps.Log.Error("device poll: claim failed", "error", err.Error())
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal"})
+			return errorJSON(c, fiber.StatusInternalServerError, "internal", "Something went wrong. Please try again.")
 		}
 	}
 
 	accessToken, accessExp, err := r.mintAccess(c, claim.UserID, claim.SessionID, claim.DeviceID, store.SurfaceDevice, "")
 	if err != nil {
 		r.deps.Log.Error("device poll: mint access token failed", "error", err.Error())
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal"})
+		return errorJSON(c, fiber.StatusInternalServerError, "internal", "Something went wrong. Please try again.")
 	}
 
 	r.deps.Log.Info("device pairing claimed",
@@ -738,7 +739,7 @@ func (r *authRoutes) baseURL(c *fiber.Ctx) string {
 }
 
 func badRequest(c *fiber.Ctx, msg string) error {
-	return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "bad_request", "message": msg})
+	return errorJSON(c, fiber.StatusBadRequest, "bad_request", msg)
 }
 
 // htmlMessage renders the minimal browser-facing message page used by the

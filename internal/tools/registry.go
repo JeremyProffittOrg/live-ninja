@@ -73,10 +73,14 @@ const (
 	maxAuditText = 512
 )
 
-// ToolError is a structured, client-safe tool failure.
+// ToolError is a structured, client-safe tool failure. TxID carries the
+// transaction correlation id so the failure the model (and the human) sees
+// matches the canonical error envelope {code, message, txId}; it is stamped
+// by the invocation pipeline (Invoke/finish), not by individual handlers.
 type ToolError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	TxID    string `json:"txId,omitempty"`
 }
 
 func (e *ToolError) Error() string { return e.Code + ": " + e.Message }
@@ -95,6 +99,11 @@ type Invocation struct {
 	IdempotencyKey string         `json:"idempotencyKey"`
 	CallID         string         `json:"callId"`
 
+	// TxID is the transaction correlation id forwarded by the HTTP layer
+	// (the ingress txId). Generated in Invoke when absent so every tool call
+	// is traceable and every ToolError carries a Ref the user can report.
+	TxID string `json:"txId,omitempty"`
+
 	// Authorizer-derived context (set server-side by the caller).
 	UserID    string `json:"-"`
 	SessionID string `json:"-"`
@@ -108,6 +117,7 @@ type Invocation struct {
 type Result struct {
 	Tool      string         `json:"tool"`
 	CallID    string         `json:"callId,omitempty"`
+	TxID      string         `json:"txId,omitempty"`
 	OK        bool           `json:"ok"`
 	Duplicate bool           `json:"duplicate,omitempty"`
 	Output    map[string]any `json:"output,omitempty"`
@@ -363,33 +373,48 @@ func (p ParamSpec) jsonSchema() map[string]any {
 }
 
 // Invoke runs the full pipeline for one tool call and always returns a
-// non-nil Result.
-func (r *Registry) Invoke(ctx context.Context, inv Invocation) *Result {
-	res := &Result{Tool: inv.Tool, CallID: inv.CallID}
-	l := r.deps.Log.With(
+// non-nil Result whose TxID (and, on failure, Error.TxID) carries the
+// transaction correlation id.
+func (r *Registry) Invoke(ctx context.Context, inv Invocation) (res *Result) {
+	start := r.deps.Now()
+
+	// Resolve the transaction id: reuse the HTTP-layer forwarded txId when
+	// present, else mint a fresh UUID v4 so every tool call is traceable.
+	txID := inv.TxID
+	if txID == "" {
+		txID = observ.NewTxnID()
+	}
+	res = &Result{Tool: inv.Tool, CallID: inv.CallID, TxID: txID}
+
+	l := observ.WithTxn(r.deps.Log.With(
 		slog.String("tool", inv.Tool),
 		slog.String("userId", inv.UserID),
 		slog.String("sessionId", inv.SessionID),
 		slog.String("surface", inv.Surface),
 		slog.String("callId", inv.CallID),
-	)
+	), txID)
+	l.Info("tools: invoke start")
 
-	def, ok := r.tools[inv.Tool]
+	// Single egress point: stamps Error.TxID, writes the audit line, emits
+	// the EMF metric, and logs "invoke done" with outcome + latency — for
+	// every return path below.
+	var def *Definition
+	defer func() { r.finish(ctx, l, def, inv, res, start) }()
+
+	d, ok := r.tools[inv.Tool]
 	if !ok {
 		res.Error = toolErrf(CodeUnknownTool, "unknown tool %q", inv.Tool)
-		r.finish(ctx, l, def, inv, res)
 		return res
 	}
+	def = d
 	if inv.UserID == "" {
 		res.Error = toolErrf(CodeForbidden, "missing authenticated user context")
-		r.finish(ctx, l, def, inv, res)
 		return res
 	}
 
 	args, verr := validateArgs(def, inv.Args)
 	if verr != nil {
 		res.Error = verr
-		r.finish(ctx, l, def, inv, res)
 		return res
 	}
 
@@ -398,7 +423,6 @@ func (r *Registry) Invoke(ctx context.Context, inv Invocation) *Result {
 	if err := r.deps.Reauthorize(ctx, inv.UserID); err != nil {
 		l.Warn("tools: re-authorization denied", slog.String("error", err.Error()))
 		res.Error = toolErrf(CodeForbidden, "user is not authorized to invoke tools")
-		r.finish(ctx, l, def, inv, res)
 		return res
 	}
 
@@ -407,7 +431,6 @@ func (r *Registry) Invoke(ctx context.Context, inv Invocation) *Result {
 	if def.SideEffecting {
 		if inv.IdempotencyKey == "" {
 			res.Error = toolErrf(CodeInvalidArgs, "idempotencyKey is required for %s", def.Name)
-			r.finish(ctx, l, def, inv, res)
 			return res
 		}
 		err := r.deps.Store.ConditionalPut(ctx,
@@ -418,13 +441,11 @@ func (r *Registry) Invoke(ctx context.Context, inv Invocation) *Result {
 			res.OK = true
 			res.Duplicate = true
 			res.Output = map[string]any{"status": "duplicate", "message": "this call was already processed"}
-			r.finish(ctx, l, def, inv, res)
 			return res
 		}
 		if err != nil {
 			l.Error("tools: idempotency put failed", slog.String("error", err.Error()))
 			res.Error = toolErrf(CodeUpstreamError, "idempotency check failed")
-			r.finish(ctx, l, def, inv, res)
 			return res
 		}
 	}
@@ -436,19 +457,26 @@ func (r *Registry) Invoke(ctx context.Context, inv Invocation) *Result {
 		res.OK = true
 		res.Output = output
 	}
-	r.finish(ctx, l, def, inv, res)
 	return res
 }
 
-// finish emits the audit LOG# line (best effort) and the EMF metric for
-// every invocation, success or failure.
-func (r *Registry) finish(ctx context.Context, l *slog.Logger, def *Definition, inv Invocation, res *Result) {
+// finish stamps the transaction id onto any error, emits the audit LOG#
+// line (best effort) and the EMF metric, and logs the verbose "invoke done"
+// line with outcome + latency for every invocation, success or failure.
+func (r *Registry) finish(ctx context.Context, l *slog.Logger, def *Definition, inv Invocation, res *Result, start time.Time) {
 	outcome := "ok"
 	switch {
 	case res.Duplicate:
 		outcome = "duplicate"
 	case !res.OK:
 		outcome = "error"
+	}
+
+	// Every error the tool router returns carries the txId so the client's
+	// canonical envelope {code, message, txId} — and the model's
+	// function_call_output — pin the exact invocation.
+	if res.Error != nil && res.Error.TxID == "" {
+		res.Error.TxID = res.TxID
 	}
 
 	if inv.UserID != "" {
@@ -465,12 +493,17 @@ func (r *Registry) finish(ctx context.Context, l *slog.Logger, def *Definition, 
 		"Surface": surface,
 	})
 
+	latencyMs := time.Since(start).Milliseconds()
 	if res.OK {
-		l.Info("tools: invoked", slog.String("outcome", outcome))
+		l.Info("tools: invoke done",
+			slog.String("outcome", outcome),
+			slog.Int64("latencyMs", latencyMs))
 	} else {
-		l.Warn("tools: invocation failed",
+		l.Warn("tools: invoke done",
+			slog.String("outcome", outcome),
 			slog.String("code", res.Error.Code),
-			slog.String("message", res.Error.Message))
+			slog.String("message", res.Error.Message),
+			slog.Int64("latencyMs", latencyMs))
 	}
 	_ = def
 }

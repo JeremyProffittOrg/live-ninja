@@ -524,7 +524,9 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
 .ln-brand:hover { text-decoration: none; }
 .ln-brand__dot { width: 12px; height: 12px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #eafffb, var(--ln-teal) 55%, var(--ln-teal-700)); box-shadow: 0 0 12px var(--ln-teal-glow); }
 
-/* Toast — one shared live region per page */
+/* Toast — one shared live region per page. Plain toasts are a single line;
+   a reportable error banner (.has-details) stacks a body row over a details
+   panel revealed on hover / focus-within / tap. */
 .ln-toast {
   position: fixed; right: 28px; bottom: 28px; z-index: 50;
   max-width: min(420px, calc(100vw - 56px));
@@ -540,6 +542,86 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
 }
 .ln-toast.is-visible { transform: translateY(0); opacity: 1; pointer-events: auto; }
 .ln-toast.is-error { border-color: var(--ln-error-border); }
+.ln-toast:focus-visible { outline: none; box-shadow: var(--ln-shadow-lg), var(--ln-focus); }
+
+/* Reportable error banner layout */
+.ln-toast.has-details {
+  flex-direction: column; align-items: stretch; gap: var(--ln-sp-2);
+  padding: var(--ln-sp-3) var(--ln-sp-4);
+}
+.ln-toast__body { display: flex; align-items: center; gap: var(--ln-sp-3); }
+.ln-toast__msg { flex: 1 1 auto; min-width: 0; }
+
+/* "Details" affordance — a subtle button that both toggles and, via
+   :focus-within / :hover on the banner, reveals the panel. */
+.ln-toast__details {
+  flex: none;
+  display: inline-flex; align-items: center;
+  min-height: 28px; padding: 2px var(--ln-sp-3);
+  font: inherit; font-size: var(--ln-fs-xs); font-weight: 700;
+  color: var(--ln-error-ink);
+  background: var(--ln-error-tint);
+  border: 1px solid var(--ln-error-border);
+  border-radius: var(--ln-r-pill);
+  cursor: pointer;
+}
+.ln-toast__details:hover { filter: brightness(1.05); }
+.ln-toast__details:focus-visible { outline: none; box-shadow: var(--ln-focus); }
+
+.ln-toast__close {
+  flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0;
+  font: inherit; font-size: 18px; line-height: 1;
+  color: var(--ln-text-muted);
+  background: transparent; border: 1px solid transparent;
+  border-radius: var(--ln-r-sm); cursor: pointer;
+}
+.ln-toast__close:hover { background: var(--ln-surface-2); color: var(--ln-text); }
+.ln-toast__close:focus-visible { outline: none; box-shadow: var(--ln-focus); }
+
+/* Details panel — hidden until the banner is hovered, focused within, or the
+   Details toggle is on (.is-open, for touch where hover doesn't exist). */
+.ln-toast__panel {
+  display: none;
+  padding-top: var(--ln-sp-2);
+  border-top: 1px solid var(--ln-border);
+}
+.ln-toast.has-details:hover .ln-toast__panel,
+.ln-toast.has-details:focus-within .ln-toast__panel,
+.ln-toast.has-details.is-open .ln-toast__panel { display: block; }
+
+.ln-toast__detail-msg {
+  margin: 0 0 var(--ln-sp-2);
+  font-size: var(--ln-fs-sm); color: var(--ln-text-muted);
+  overflow-wrap: anywhere;
+}
+.ln-toast__ref {
+  display: flex; align-items: center; gap: var(--ln-sp-3);
+  flex-wrap: wrap;
+}
+.ln-toast__ref-label {
+  flex: 1 1 auto; min-width: 0;
+  font-size: var(--ln-fs-xs); color: var(--ln-text-dim); font-weight: 650;
+}
+.ln-toast__txid {
+  font-family: var(--ln-mono); font-size: var(--ln-fs-xs);
+  color: var(--ln-text); overflow-wrap: anywhere; user-select: all;
+}
+.ln-toast__copy {
+  flex: none;
+  display: inline-flex; align-items: center;
+  min-height: 28px; padding: 2px var(--ln-sp-3);
+  font: inherit; font-size: var(--ln-fs-xs); font-weight: 700;
+  color: var(--ln-accent-ink);
+  background: var(--ln-accent-tint);
+  border: 1px solid currentColor;
+  border-radius: var(--ln-r-pill);
+  cursor: pointer;
+}
+.ln-toast__copy:hover { filter: brightness(1.05); }
+.ln-toast__copy:focus-visible { outline: none; box-shadow: var(--ln-focus); }
+.ln-toast__copy.is-copied { color: var(--ln-success-ink); background: var(--ln-success-tint); }
 
 /* ====================================================================
    LISTENING ORB

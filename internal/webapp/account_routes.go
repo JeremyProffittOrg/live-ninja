@@ -143,9 +143,7 @@ func handleAccountExport(deps *Deps) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID := UserID(c)
 		if deps.Deliv == nil {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-				"error": "not_configured", "message": "the deliverables store is not configured",
-			})
+			return deliverablesUnavailable(c)
 		}
 
 		items, err := deps.Store.QueryUserPartition(c.Context(), userID)
@@ -256,10 +254,8 @@ func handleDeleteAccount(deps *Deps) fiber.Handler {
 		}
 		// Body is required; a bare DELETE with no confirmation is rejected.
 		if err := c.BodyParser(&body); err != nil || body.Confirm != "DELETE" {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error":   "confirmation_required",
-				"message": `Account deletion is irreversible. Send {"confirm":"DELETE"} to proceed.`,
-			})
+			return errorJSON(c, fiber.StatusBadRequest, "confirmation_required",
+				`Account deletion is irreversible. Send {"confirm":"DELETE"} to proceed.`)
 		}
 
 		// Re-auth check: never act on the (up to 15-minute-old) JWT alone —
@@ -276,23 +272,19 @@ func handleDeleteAccount(deps *Deps) fiber.Handler {
 			// The owner account anchors the deployment (CONFIG/OWNER
 			// binding, allowlist administration). Purging it would brick
 			// the stack — decommission the whole stack instead.
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
-				"error":   "owner_undeletable",
-				"message": "The owner account cannot be deleted; decommission the deployment instead.",
-			})
+			return errorJSON(c, fiber.StatusConflict, "owner_undeletable",
+				"The owner account cannot be deleted; decommission the deployment instead.")
 		}
 		if u.Status == store.UserStatusDeleting {
 			return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"status": "deleting"})
 		}
 		if u.Status != store.UserStatusActive {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "forbidden"})
+			return errorJSON(c, fiber.StatusForbidden, "forbidden", "Your account is not in a state that allows deletion.")
 		}
 
 		fn := os.Getenv("ACCOUNT_PURGE_FUNCTION_NAME")
 		if fn == "" || deps.Lambda == nil {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-				"error": "not_configured", "message": "account deletion is not configured",
-			})
+			return errorJSON(c, fiber.StatusServiceUnavailable, "not_configured", "account deletion is not configured")
 		}
 
 		// 1) Flip the profile to deleting (blocks new session mints/tool
@@ -329,10 +321,8 @@ func handleDeleteAccount(deps *Deps) fiber.Handler {
 			// caller can retry the DELETE, which re-invokes idempotently.
 			deps.Log.Error("account: purge invoke failed",
 				slog.String("error", err.Error()), slog.String("userId", userID))
-			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
-				"error":   "purge_unavailable",
-				"message": "Deletion was recorded but the purge worker could not be reached; retry to re-trigger it.",
-			})
+			return errorJSON(c, fiber.StatusBadGateway, "purge_unavailable",
+				"Deletion was recorded but the purge worker could not be reached; retry to re-trigger it.")
 		}
 
 		deps.Log.Info("account: deletion requested", slog.String("userId", userID))

@@ -200,7 +200,8 @@ func TestPutSettingsConflictDoesNotPublish(t *testing.T) {
 	// A stale writer still expecting v1 must 409 and must NOT fan out.
 	resp, out := doJSON(t, app, "PUT", "/api/v1/settings",
 		map[string]any{"settings": store.DefaultSettings(), "version": 1})
-	if resp.StatusCode != 409 || out["error"] != "version_conflict" {
+	errObj, _ := out["error"].(map[string]any)
+	if resp.StatusCode != 409 || errObj["code"] != "version_conflict" {
 		t.Fatalf("stale PUT = %d %v, want 409 version_conflict", resp.StatusCode, out)
 	}
 	if len(*calls) != 1 {

@@ -31,6 +31,7 @@ import (
 	"context"
 	"errors"
 	"hash/fnv"
+	"log/slog"
 	"net/url"
 	"regexp"
 	"sort"
@@ -336,8 +337,21 @@ func handleCreateTopic(deps *Deps) fiber.Handler {
 		}
 		for i := range existing {
 			if strings.EqualFold(existing[i].Name, name) && !existing[i].Archived {
+				// Extends the canonical envelope with a sibling `topicId` so
+				// the client can offer "use the existing topic" without a
+				// second round trip; errorJSON's fixed signature has no room
+				// for that extra field, so the envelope + logging are built
+				// the same way it does, by hand, here.
+				const code, message = "duplicate_topic", "A topic with that name already exists."
+				requestLogger(c).Error("request failed",
+					slog.Int("status", fiber.StatusConflict),
+					slog.String("code", code),
+					slog.String("message", message),
+					slog.String("method", c.Method()),
+					slog.String("path", c.Path()),
+				)
 				return c.Status(fiber.StatusConflict).JSON(fiber.Map{
-					"error": "duplicate_topic", "message": "A topic with that name already exists.",
+					"error":   ErrorBody{Code: code, Message: message, TxID: TxID(c)},
 					"topicId": existing[i].TopicID,
 				})
 			}

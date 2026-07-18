@@ -24,7 +24,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -81,7 +80,11 @@ func main() {
 		Views:                 renderer,
 	})
 
-	app.Use(requestLoggerMiddleware(logger))
+	// TxnMiddleware runs first: it assigns each request its transaction id,
+	// sets the X-LN-Txn response header + Locals/context, and emits the
+	// verbose request/response log pair (with txId, redacted auth headers).
+	// It supersedes the old single-line request logger.
+	app.Use(webapp.TxnMiddleware(logger))
 	app.Use(webapp.SecurityHeaders())
 	// X-LN-Server on every response + X-LN-Client parsing/EMF/below-min
 	// 426 gate (contracts/headers.md, plan.md M7 "Versioning/compat") —
@@ -259,50 +262,6 @@ func healthzHandler(c *fiber.Ctx) error {
 		"service": "live-ninja",
 		"time":    time.Now().UTC().Format(time.RFC3339),
 	})
-}
-
-// requestLoggerMiddleware logs one structured JSON line per request with
-// the standard requestId/userId/surface fields. userId/surface come from
-// the auth context when ExtractAuthContext resolved one (it runs later in
-// the chain, so read Locals after Next), falling back to a path-derived
-// surface label pre-auth.
-func requestLoggerMiddleware(logger *slog.Logger) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		start := time.Now()
-
-		requestID := c.Get("X-Request-Id")
-		if requestID == "" {
-			requestID = c.Get("X-Amzn-Trace-Id")
-		}
-
-		err := c.Next()
-
-		surface := webapp.Surface(c)
-		if surface == "" {
-			surface = surfaceForPath(c.Path())
-		}
-		l := observ.WithRequest(logger, requestID, webapp.UserID(c), surface)
-		l.Info("request",
-			slog.String("method", c.Method()),
-			slog.String("path", c.Path()),
-			slog.Int("status", c.Response().StatusCode()),
-			slog.Duration("latency", time.Since(start)),
-		)
-		return err
-	}
-}
-
-func surfaceForPath(path string) string {
-	switch {
-	case strings.HasPrefix(path, "/static/"):
-		return "static"
-	case strings.HasPrefix(path, "/auth/"):
-		return "auth"
-	case strings.HasPrefix(path, "/.well-known/"):
-		return "well-known"
-	default:
-		return "web"
-	}
 }
 
 func envOr(key, def string) string {

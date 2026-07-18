@@ -121,10 +121,7 @@ func envFirst(names ...string) string {
 // wakewordUnavailable is the degraded response when cold-start service
 // construction failed (no stub behavior — an explicit, truthful 503).
 func wakewordUnavailable(c *fiber.Ctx) error {
-	return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-		"error":   "service_unavailable",
-		"message": "wake-word service is not available right now",
-	})
+	return errorJSON(c, fiber.StatusServiceUnavailable, "service_unavailable", "wake-word service is not available right now")
 }
 
 // ---- POST /api/v1/wakeword ----
@@ -218,10 +215,7 @@ func handleWakewordDelete(deps *Deps, svc *wakeword.Service) fiber.Handler {
 		}
 		if err := svc.Delete(c.Context(), UserID(c), c.Params("id")); err != nil {
 			if errors.Is(err, wakeword.ErrBuiltinModel) {
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-					"error":   "builtin_model",
-					"message": "built-in wake words cannot be deleted",
-				})
+				return errorJSON(c, fiber.StatusBadRequest, "builtin_model", "built-in wake words cannot be deleted")
 			}
 			return wakewordError(c, deps, "delete wakeword", err)
 		}
@@ -243,39 +237,22 @@ func wakewordError(c *fiber.Ctx, deps *Deps, op string, err error) error {
 	}
 	switch {
 	case errors.Is(err, wakeword.ErrNotFound):
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not_found"})
+		return errorJSON(c, fiber.StatusNotFound, "not_found", "Wake word not found.")
 	case errors.Is(err, wakeword.ErrBuiltinModel):
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-			"error":   "builtin_model",
-			"message": "built-in models ship with the client and are not downloadable",
-		})
+		return errorJSON(c, fiber.StatusNotFound, "builtin_model", "built-in models ship with the client and are not downloadable")
 	case errors.Is(err, wakeword.ErrPlatformUnsupported):
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-			"error":   "unsupported_platform",
-			"message": "custom wake words are not available on esp32 yet — the device selects among built-in WakeNet models",
-		})
+		return errorJSON(c, fiber.StatusNotFound, "unsupported_platform",
+			"custom wake words are not available on esp32 yet — the device selects among built-in WakeNet models")
 	case errors.Is(err, wakeword.ErrEngineUnavailable):
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error":   "engine_unavailable",
-			"message": "only the openwakeword engine supports custom training on this server",
-		})
+		return errorJSON(c, fiber.StatusBadRequest, "engine_unavailable", "only the openwakeword engine supports custom training on this server")
 	case errors.Is(err, wakeword.ErrCollision):
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
-			"error":   "phrase_conflict",
-			"message": "that phrase already exists in your catalog — pick a different one",
-		})
+		return errorJSON(c, fiber.StatusConflict, "phrase_conflict", "that phrase already exists in your catalog — pick a different one")
 	case errors.Is(err, wakeword.ErrDailyLimit):
 		c.Set(fiber.HeaderRetryAfter, "86400")
-		return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
-			"error":   "daily_limit",
-			"message": "custom wake-word training is limited to 3 per day — try again tomorrow",
-		})
+		return errorJSON(c, fiber.StatusTooManyRequests, "daily_limit", "custom wake-word training is limited to 3 per day — try again tomorrow")
 	case errors.Is(err, wakeword.ErrQueueFull):
 		c.Set(fiber.HeaderRetryAfter, "600")
-		return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
-			"error":   "queue_full",
-			"message": "the training queue is busy — try again in a few minutes",
-		})
+		return errorJSON(c, fiber.StatusTooManyRequests, "queue_full", "the training queue is busy — try again in a few minutes")
 	}
 	return apiInternalError(c, deps, op, err)
 }

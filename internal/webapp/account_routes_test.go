@@ -185,7 +185,8 @@ func TestDeleteAccountOwnerRefused(t *testing.T) {
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("status = %d, want 409 (%v)", resp.StatusCode, body)
 	}
-	if body["error"] != "owner_undeletable" {
+	errObj, _ := body["error"].(map[string]any)
+	if errObj["code"] != "owner_undeletable" {
 		t.Errorf("error = %v", body["error"])
 	}
 	if len(fakeLambda.calls) != 0 {

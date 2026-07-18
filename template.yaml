@@ -281,7 +281,11 @@ Resources:
               Effect: Allow
               Action:
                 - batch:DescribeJobs
-              # batch:DescribeJobs does not support resource-level permissions.
+                # ListJobs is used to count a user's active training jobs for
+                # the concurrency (<=2) / daily (<=3) caps before submitting;
+                # its absence 403'd every "start training" (user-reported).
+                - batch:ListJobs
+              # These Batch actions do not support resource-level permissions.
               Resource: "*"
             - Sid: WakewordModelsRw
               Effect: Allow

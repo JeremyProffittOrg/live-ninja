@@ -56,7 +56,12 @@ const metricsNamespace = "LiveNinja/RealtimeBroker"
 // — never from an end client — plus a mode selector and a mode-specific
 // payload.
 type Request struct {
-	Mode          string          `json:"mode,omitempty"` // "", "session-mint", "fallback-turn", "fallback-stt", "fallback-tts", "extract-topics"
+	Mode string `json:"mode,omitempty"` // "", "session-mint", "fallback-turn", "fallback-stt", "fallback-tts", "extract-topics"
+	// TxID is the caller-supplied transaction correlation id (the web
+	// function forwards the ingress txId so a single user action correlates
+	// across the web fn and this broker in CloudWatch). Generated here when
+	// absent so a direct/system invoke is still traceable.
+	TxID          string          `json:"txId,omitempty"`
 	UserID        string          `json:"userId"`
 	Surface       string          `json:"surface"`
 	DeviceID      string          `json:"deviceId,omitempty"`
@@ -91,6 +96,12 @@ type extractTopicsPayload struct {
 // success shapes or the error shape is populated; Code carries the HTTP
 // status the web function should surface (402/429/400/502).
 type Response struct {
+	// TxID echoes the transaction correlation id on every reply (success
+	// and error). The web function reads it to stamp the X-LN-Txn response
+	// header and to fill the canonical error envelope's txId so a
+	// user-reported "Ref: <txId>" pins this exact invocation in CloudWatch.
+	TxID string `json:"txId,omitempty"`
+
 	// Error shape (contracts/metering.md 402/429 bodies + generic errors).
 	Error             string  `json:"error,omitempty"`
 	Code              int     `json:"code,omitempty"`
@@ -165,34 +176,67 @@ type broker struct {
 	bridgeBaseURL string
 }
 
-func (b *broker) Handle(ctx context.Context, req Request) (Response, error) {
+func (b *broker) Handle(ctx context.Context, req Request) (resp Response, _ error) {
 	mode := req.Mode
 	if mode == "" {
 		mode = "session-mint"
 	}
-	l := observ.WithRequest(b.log, "", req.UserID, req.Surface).With(slog.String("mode", mode))
+
+	// Resolve the transaction id: reuse the caller-forwarded txId (the web
+	// function's ingress id) when present, else mint a fresh UUID v4 so a
+	// direct/system invoke is still correlatable. Threaded into every slog
+	// line via WithTxn and echoed on the response.
+	txID := req.TxID
+	if txID == "" {
+		txID = observ.NewTxnID()
+	}
+	l := observ.WithTxn(
+		observ.WithRequest(b.log, "", req.UserID, req.Surface).With(slog.String("mode", mode)),
+		txID,
+	)
+
+	// Verbose request/response logging: one line at ingress, one at egress
+	// with outcome + latency. No payload values, tokens, or transcript
+	// content are logged — only mode/identity/outcome.
+	start := time.Now()
+	l.Info("realtime-broker: invoke start")
+	defer func() {
+		resp.TxID = txID
+		outcome := "ok"
+		if resp.Error != "" {
+			outcome = "error"
+		}
+		l.Info("realtime-broker: invoke done",
+			slog.String("outcome", outcome),
+			slog.String("errorCode", resp.Error),
+			slog.Int("status", resp.Code),
+			slog.Int64("latencyMs", time.Since(start).Milliseconds()))
+	}()
 
 	if req.UserID == "" {
-		return badRequest("userId is required"), nil
+		resp = badRequest("userId is required")
+		return
 	}
 	if !validSurfaces[req.Surface] {
-		return badRequest("surface must be one of: web, android, device"), nil
+		resp = badRequest("surface must be one of: web, android, device")
+		return
 	}
 
 	switch mode {
 	case "session-mint":
-		return b.handleMint(ctx, l, req), nil
+		resp = b.handleMint(ctx, l, req)
 	case "fallback-turn":
-		return b.handleFallbackTurn(ctx, l, req), nil
+		resp = b.handleFallbackTurn(ctx, l, req)
 	case "fallback-stt":
-		return b.handleFallbackSTT(ctx, l, req), nil
+		resp = b.handleFallbackSTT(ctx, l, req)
 	case "fallback-tts":
-		return b.handleFallbackTTS(ctx, l, req), nil
+		resp = b.handleFallbackTTS(ctx, l, req)
 	case "extract-topics":
-		return b.handleExtractTopics(ctx, l, req), nil
+		resp = b.handleExtractTopics(ctx, l, req)
 	default:
-		return badRequest("mode must be one of: session-mint, fallback-turn, fallback-stt, fallback-tts, extract-topics"), nil
+		resp = badRequest("mode must be one of: session-mint, fallback-turn, fallback-stt, fallback-tts, extract-topics")
 	}
+	return
 }
 
 func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Response {

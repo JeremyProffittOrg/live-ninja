@@ -94,7 +94,8 @@ export class RealtimeError extends Error {
     this.name = 'RealtimeError';
     this.code = code;
     // quota_exceeded: kind ("daily_minutes"|"monthly_tokens"), used, limit,
-    // resetAt. rate_limited: retryAfterSeconds.
+    // resetAt. rate_limited: retryAfterSeconds. Any backend-originated error
+    // also carries `txId` (the transaction ref) for the reportable banner.
     Object.assign(this, extras);
   }
 
@@ -103,6 +104,7 @@ export class RealtimeError extends Error {
       return new RealtimeError('mint_failed', 'Could not start a voice session.');
     }
     const b = err.body || {};
+    const txId = err.txId || '';
     switch (err.code) {
       case 'quota_exceeded':
         return new RealtimeError('quota_exceeded', err.message, {
@@ -110,15 +112,17 @@ export class RealtimeError extends Error {
           used: b.used,
           limit: b.limit,
           resetAt: b.resetAt || '',
+          txId,
         });
       case 'rate_limited':
         return new RealtimeError('rate_limited', err.message, {
           retryAfterSeconds: Number(b.retryAfterSeconds) || 0,
+          txId,
         });
       case 'broker_unavailable':
-        return new RealtimeError('broker_unavailable', err.message);
+        return new RealtimeError('broker_unavailable', err.message, { txId });
       default:
-        return new RealtimeError(err.code || 'mint_failed', err.message);
+        return new RealtimeError(err.code || 'mint_failed', err.message, { txId });
     }
   }
 }
@@ -293,7 +297,7 @@ export class RealtimeSession extends EventTarget {
       }
 
       if (!resp.ok) {
-        const apiErr = new ApiError(resp.status, body);
+        const apiErr = new ApiError(resp.status, body, undefined, resp.headers.get('X-LN-Txn') || '');
         const rtErr = RealtimeError.fromApiError(apiErr);
         // 429: auto-retry once after retryAfterSeconds (spec §2.5), then
         // surface for a manual Retry.

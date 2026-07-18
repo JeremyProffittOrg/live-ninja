@@ -99,9 +99,7 @@ func RegisterTelemetryRoutes(app *fiber.App, deps *Deps) {
 func handleTelemetryIngest(deps *Deps) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if deps.Firehose == nil || strings.TrimSpace(deps.TelemetryStreamName) == "" {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-				"error": "not_configured", "message": "the telemetry lake is not configured",
-			})
+			return errorJSON(c, fiber.StatusServiceUnavailable, "not_configured", "the telemetry lake is not configured")
 		}
 
 		userID := UserID(c)

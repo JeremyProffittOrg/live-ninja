@@ -60,13 +60,11 @@ import (
 var resourceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$`)
 
 func apiNotFound(c *fiber.Ctx) error {
-	return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not_found"})
+	return errorJSON(c, fiber.StatusNotFound, "not_found", "The requested item was not found.")
 }
 
 func memNotConfigured(c *fiber.Ctx) error {
-	return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-		"error": "not_configured", "message": "the memory layer is not configured",
-	})
+	return errorJSON(c, fiber.StatusServiceUnavailable, "not_configured", "the memory layer is not configured")
 }
 
 func queryLimit(c *fiber.Ctx, def, max int) int {
@@ -382,9 +380,7 @@ func handleMemorySearch(deps *Deps, svc *memory.Service) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID := UserID(c)
 		if svc == nil {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-				"error": "not_configured", "message": "semantic search is not configured (no embedder)",
-			})
+			return errorJSON(c, fiber.StatusServiceUnavailable, "not_configured", "semantic search is not configured (no embedder)")
 		}
 
 		var body struct {
@@ -410,9 +406,7 @@ func handleMemorySearch(deps *Deps, svc *memory.Service) fiber.Handler {
 		results, err := svc.Search(c.Context(), userID, body.Query, memory.MaxTopK)
 		if err != nil {
 			deps.Log.Error("memory: search failed", slog.String("error", err.Error()), slog.String("userId", userID))
-			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
-				"error": "search_failed", "message": "Semantic search failed; try again.",
-			})
+			return errorJSON(c, fiber.StatusBadGateway, "search_failed", "Semantic search failed; try again.")
 		}
 
 		limit := body.Limit

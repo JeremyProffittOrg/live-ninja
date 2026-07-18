@@ -46,10 +46,7 @@ func RegisterDeliverablesRoutes(app *fiber.App, deps *Deps) {
 }
 
 func deliverablesUnavailable(c *fiber.Ctx) error {
-	return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-		"error":   "not_configured",
-		"message": "The deliverables store is not configured.",
-	})
+	return errorJSON(c, fiber.StatusServiceUnavailable, "not_configured", "The deliverables store is not configured.")
 }
 
 // ---- GET /api/v1/deliverables ----
@@ -116,12 +113,9 @@ func handleDownloadDeliverable(deps *Deps) fiber.Handler {
 			switch {
 			case errors.Is(err, deliv.ErrNotFound):
 				// Absent and other-user ids answer identically.
-				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not_found"})
+				return errorJSON(c, fiber.StatusNotFound, "not_found", "Deliverable not found.")
 			case errors.Is(err, deliv.ErrNotReady):
-				return c.Status(fiber.StatusConflict).JSON(fiber.Map{
-					"error":   "not_ready",
-					"message": "This deliverable is still being built (or failed to build).",
-				})
+				return errorJSON(c, fiber.StatusConflict, "not_ready", "This deliverable is still being built (or failed to build).")
 			}
 			return apiInternalError(c, deps, "presign deliverable download", err)
 		}
@@ -148,7 +142,7 @@ func handleDeleteDeliverable(deps *Deps) fiber.Handler {
 
 		if err := deps.Deliv.Delete(c.Context(), userID, id); err != nil {
 			if errors.Is(err, deliv.ErrNotFound) {
-				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not_found"})
+				return errorJSON(c, fiber.StatusNotFound, "not_found", "Deliverable not found.")
 			}
 			return apiInternalError(c, deps, "delete deliverable", err)
 		}

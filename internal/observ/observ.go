@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -41,6 +42,51 @@ func WithRequest(logger *slog.Logger, requestID, userID, surface string) *slog.L
 		slog.String("userId", userID),
 		slog.String("surface", surface),
 	)
+}
+
+// WithTxn and NewTxnID (the txId logger-enrichment and minting helpers)
+// live in txn.go alongside the TxnKey constant; the Redact helper below is
+// the remaining piece of the observability contract — stripping credential
+// values out of header maps before they are logged.
+
+// redactedHeaders is the fixed set of request/response header names whose
+// *values* must never reach the logs — they carry credentials or CSRF
+// secrets. Matched case-insensitively. Redact replaces their value with a
+// marker so the log still records that the header was present without
+// leaking the secret itself.
+var redactedHeaders = map[string]struct{}{
+	"authorization":        {},
+	"proxy-authorization":  {},
+	"cookie":               {},
+	"set-cookie":           {},
+	"x-ln-csrf":            {},
+	"x-amz-security-token": {},
+}
+
+// redactedValue is the placeholder substituted for a sensitive header's
+// value: it preserves "the header was present" without exposing the secret.
+const redactedValue = "[redacted]"
+
+// Redact returns a copy of a header map safe to log: any header in the
+// sensitive set (Authorization, Cookie, Set-Cookie, X-LN-CSRF, ...) has its
+// value replaced with "[redacted]" while its presence is preserved; every
+// other header is copied through unchanged. The input map is never
+// mutated. Header-name matching is case-insensitive. This is how the
+// verbose request/response logging records credential-bearing headers —
+// key presence, never the value.
+func Redact(headers map[string]string) map[string]string {
+	if headers == nil {
+		return nil
+	}
+	out := make(map[string]string, len(headers))
+	for k, v := range headers {
+		if _, sensitive := redactedHeaders[strings.ToLower(k)]; sensitive {
+			out[k] = redactedValue
+		} else {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // ---- CloudWatch EMF metrics ----

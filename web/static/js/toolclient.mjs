@@ -34,19 +34,34 @@ let accessExpiresAtMs = 0;
 let refreshInFlight = null;
 const authLostHandlers = new Set();
 
-/** Typed error for any non-2xx /api/v1 response, carrying the parsed
- * error envelope ({error, message, ...extras}) from api_routes.go. */
+/** Typed error for any non-2xx /api/v1 response, carrying the parsed error
+ * envelope from api_routes.go. Two envelope shapes are accepted: the canonical
+ * observability shape `{error: {code, message, txId}}` and the legacy flat
+ * shape `{error: "<code>", message}`. `txId` is the backend transaction ref —
+ * taken from the envelope, or from the `X-LN-Txn` response header when the
+ * caller passes it (headerTxId). */
 export class ApiError extends Error {
-  constructor(status, body, fallbackMessage) {
+  constructor(status, body, fallbackMessage, headerTxId) {
+    // Nested envelope `{error: {code, message, txId}}` vs legacy `{error, message}`.
+    const env = body && typeof body.error === 'object' && body.error ? body.error : null;
     super(
-      (body && typeof body.message === 'string' && body.message) ||
+      (env && typeof env.message === 'string' && env.message) ||
+        (body && typeof body.message === 'string' && body.message) ||
         fallbackMessage ||
         `Request failed (HTTP ${status})`,
     );
     this.name = 'ApiError';
     this.status = status;
-    this.code = (body && body.error) || '';
+    this.code =
+      (env && typeof env.code === 'string' && env.code) ||
+      (body && typeof body.error === 'string' && body.error) ||
+      '';
     this.body = body || {};
+    this.txId =
+      (env && typeof env.txId === 'string' && env.txId) ||
+      (body && typeof body.txId === 'string' && body.txId) ||
+      (typeof headerTxId === 'string' && headerTxId) ||
+      '';
   }
 }
 
@@ -211,7 +226,7 @@ export async function authFetch(path, options = {}) {
 export async function apiJSON(path, options = {}) {
   const resp = await authFetch(path, options);
   const parsed = await parseJsonSafe(resp);
-  if (!resp.ok) throw new ApiError(resp.status, parsed);
+  if (!resp.ok) throw new ApiError(resp.status, parsed, undefined, resp.headers.get('X-LN-Txn') || '');
   return parsed;
 }
 
@@ -278,7 +293,7 @@ export function createToolDispatcher({
       } catch (err) {
         output =
           err instanceof ApiError
-            ? { error: err.code || 'tool_failed', message: err.message }
+            ? { error: err.code || 'tool_failed', message: err.message, txId: err.txId || undefined }
             : { error: 'tool_failed', message: 'The tool call failed.' };
         if (onToolError) onToolError({ tool: name, callId, error: err });
       }

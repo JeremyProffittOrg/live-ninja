@@ -68,7 +68,8 @@ func TestTelemetryRouteNotConfigured(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", resp.StatusCode)
 	}
-	if body["error"] != "not_configured" {
+	errObj, _ := body["error"].(map[string]any)
+	if errObj["code"] != "not_configured" {
 		t.Errorf("error = %v, want not_configured", body["error"])
 	}
 }
