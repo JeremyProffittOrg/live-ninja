@@ -1,12 +1,17 @@
 /*
  * ln_ui_scr_onboarding.c — Provisioning screen.
  *
- * Layout (owner decisions 2026-07-18): welcome message at the TOP, the QR
- * code heroed at the BOTTOM, and setup is completable entirely on the
- * touchscreen via two options in the middle. The Wi-Fi options open as
- * SLIDE-OUT panels (animated bottom sheets) OVER the main screen — the
- * welcome/QR/footer stay visible, dimmed, underneath (owner request
- * 2026-07-18; previously these were separate full-screen views):
+ * Layout (owner decisions 2026-07-18): welcome message at the TOP, the two
+ * option buttons in the middle, the QR hero card ending at ~3/4 of the
+ * screen height, and the LAST QUARTER is the UPDATES AREA — status /
+ * failure / progress copy, word-wrapped to the screen width in a large
+ * font. If the text is longer than the quarter-height box, tapping the box
+ * expands it (grows upward over the QR card, scrollable) and tapping again
+ * collapses it back.
+ *
+ * The Wi-Fi options open as SLIDE-OUT sheets (animated bottom sheets) OVER
+ * the main screen — the welcome/QR/updates stay visible, dimmed,
+ * underneath (owner request 2026-07-18):
  *   - "Join a Wi-Fi network"  -> sheet with the scanned-SSID list (64px
  *     rows, Rescan, live count + "N of M" position cue). Tapping a secured
  *     row swaps the SAME sheet to password entry: network name, password
@@ -15,14 +20,19 @@
  *   - "Use the setup hotspot" -> sheet with the AP subnet choice, 10.0.0.x
  *     (default/recommended) or 192.168.4.x, and a confirm button.
  * Every sheet has a Close (X) button and tapping the dimmed main screen
- * outside the sheet also closes it. Join-failure copy still lands on the
- * main footer status line (LN_NET_EVENT_WIFI_DISCONNECTED -> footer).
+ * outside the sheet also closes it. Join-failure copy still lands in the
+ * updates area (LN_NET_EVENT_WIFI_DISCONNECTED -> ln_ui_onboarding_status).
+ *
+ * Sheets rest fully HIDDEN with zero translate; panel_open() re-asserts
+ * z-order (move_foreground), un-hides, then animates translate_y
+ * height -> 0. The screen itself is never scrollable, so a sheet's
+ * mid-animation off-bottom coords can never turn the screen pannable.
  *
  * Scans run ONLY on portal start, explicit Rescan, or list-open — never on
  * a timer (auto-scan blips the SoftAP; owner ruled it out).
  *
- * Phase 2 (pairing) keeps the same top/bottom frame: instructions replace
- * the option buttons, the claim-URL QR takes the bottom hero.
+ * Phase 2 (pairing) keeps the same frame: instructions replace the option
+ * buttons, the claim-URL QR takes the hero (user code in montserrat_48).
  *
  * Every setter here assumes the LVGL lock is held (ln_ui_internal.h rule).
  * lv_timer callbacks run on the LVGL task, so they may touch widgets freely;
@@ -31,8 +41,12 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_log.h"
+
 #include "ln_net.h"
 #include "ln_ui_internal.h"
+
+static const char *TAG = "ln_onb";
 
 #define ONB_MAX_APS 24
 
@@ -46,6 +60,10 @@
 #define ONB_ROW_H         64
 #define ONB_ROW_GAP       10
 
+/* Updates area: fixed collapsed height so the hero card above it ends at
+ * ~3/4 screen height (32px view pad + flex gaps put its top at ~y=968). */
+#define ONB_UPD_H         280
+
 /* ---- main view (always visible) ---- */
 static lv_obj_t *s_view_main;
 static lv_obj_t *s_title;
@@ -56,7 +74,12 @@ static lv_obj_t *s_qr_head;
 static lv_obj_t *s_qr_caption;
 static lv_obj_t *s_code_label;
 static lv_obj_t *s_code_hint;
+
+/* ---- updates area (bottom quarter) ---- */
+static lv_obj_t *s_upd_box;
+static lv_obj_t *s_upd_hint;
 static lv_obj_t *s_status;
+static bool s_upd_expanded;
 
 /* ---- slide-out sheets ---- */
 static lv_obj_t *s_scrim;        /* dimmer over the main view          */
@@ -97,6 +120,65 @@ static void stop_scan_timer(void)
     }
 }
 
+/* -------------------------------------------------------- updates area */
+
+/* Show the expand/collapse affordance only when it means something:
+ * collapsed + clipped text -> "tap to expand"; expanded -> "tap to close". */
+static void upd_refresh_hint(void)
+{
+    if (s_upd_box == NULL) {
+        return;
+    }
+    lv_obj_update_layout(s_upd_box);
+    if (s_upd_expanded) {
+        lv_label_set_text(s_upd_hint, LV_SYMBOL_DOWN "  Tap to close");
+    } else if (lv_obj_get_scroll_bottom(s_upd_box) > 0) {
+        lv_label_set_text(s_upd_hint, LV_SYMBOL_UP "  Tap to read all");
+    } else {
+        lv_label_set_text(s_upd_hint, "");
+    }
+}
+
+static void upd_collapse(void)
+{
+    if (!s_upd_expanded) {
+        return;
+    }
+    s_upd_expanded = false;
+    lv_obj_remove_flag(s_upd_box, LV_OBJ_FLAG_FLOATING);
+    lv_obj_remove_flag(s_upd_box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_height(s_upd_box, ONB_UPD_H);
+    lv_obj_scroll_to_y(s_upd_box, 0, LV_ANIM_OFF);
+    upd_refresh_hint();
+}
+
+static void upd_toggle_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_upd_expanded) {
+        upd_collapse();
+        return;
+    }
+    s_upd_expanded = true;
+    /* Grow upward over the QR card: float out of the flex column, pin to
+     * the bottom, take the full view height, scroll if still too long. */
+    lv_obj_add_flag(s_upd_box, LV_OBJ_FLAG_FLOATING);
+    lv_obj_align(s_upd_box, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_height(s_upd_box, lv_pct(100));
+    lv_obj_add_flag(s_upd_box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(s_upd_box, LV_DIR_VER);
+    upd_refresh_hint();
+}
+
+/* Every status write goes through here so the affordance stays honest. */
+static void set_status_text(const char *txt)
+{
+    lv_label_set_text(s_status, txt);
+    upd_refresh_hint();
+}
+
+/* --------------------------------------------------------- sheet engine */
+
 static int panel_height(lv_obj_t *panel)
 {
     return (panel == s_panel_ap) ? ONB_AP_PANEL_H : ONB_JOIN_PANEL_H;
@@ -107,9 +189,52 @@ static void panel_anim_ty(void *obj, int32_t v)
     lv_obj_set_style_translate_y(obj, v, 0);
 }
 
+/* Belt-and-braces: shortly after every open/close the guard forces the
+ * sheet into its final state, so even if the animation never ticks the
+ * sheet still fully appears / fully disappears (never a stuck invisible
+ * overlay). No-op when the animation completed normally. */
+static lv_timer_t *s_sheet_guard;
+
+static void sheet_guard_cb(lv_timer_t *t)
+{
+    lv_obj_t *panel = lv_timer_get_user_data(t);
+    s_sheet_guard = NULL; /* one-shot: deletes itself via repeat count */
+    if (panel == NULL) {
+        return;
+    }
+    if (s_open_panel == panel) {
+        lv_obj_set_style_translate_y(panel, 0, 0);      /* fully open  */
+    } else {
+        lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);     /* fully closed */
+        lv_obj_set_style_translate_y(panel, 0, 0);
+        if (s_open_panel == NULL && s_scrim != NULL) {
+            lv_obj_add_flag(s_scrim, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
+static void sheet_guard_arm(lv_obj_t *panel, uint32_t delay_ms)
+{
+    if (s_sheet_guard != NULL) {
+        lv_timer_delete(s_sheet_guard);
+    }
+    s_sheet_guard = lv_timer_create(sheet_guard_cb, delay_ms, panel);
+    lv_timer_set_repeat_count(s_sheet_guard, 1);
+}
+
+static void sheet_guard_cancel(void)
+{
+    if (s_sheet_guard != NULL) {
+        lv_timer_delete(s_sheet_guard);
+        s_sheet_guard = NULL;
+    }
+}
+
 static void panel_close_done(lv_anim_t *a)
 {
-    lv_obj_add_flag((lv_obj_t *)a->var, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *panel = a->var;
+    lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_translate_y(panel, 0, 0); /* rest state: hidden, ty 0 */
     /* keep the scrim if another sheet was opened mid-animation */
     if (s_open_panel == NULL && s_scrim != NULL) {
         lv_obj_add_flag(s_scrim, LV_OBJ_FLAG_HIDDEN);
@@ -126,6 +251,9 @@ static void panel_close(bool animated)
     lv_obj_t *panel = s_open_panel;
     s_open_panel = NULL;
     stop_scan_timer();
+    ESP_LOGI(TAG, "sheet close: %s%s",
+             (panel == s_panel_ap) ? "hotspot" : "join",
+             animated ? "" : " (instant)");
     lv_anim_delete(panel, panel_anim_ty);
     if (animated) {
         lv_anim_t a;
@@ -138,8 +266,10 @@ static void panel_close(bool animated)
         lv_anim_set_path_cb(&a, lv_anim_path_ease_in);
         lv_anim_set_completed_cb(&a, panel_close_done);
         lv_anim_start(&a);
+        sheet_guard_arm(panel, ONB_ANIM_CLOSE_MS + 150);
     } else {
-        lv_obj_set_style_translate_y(panel, panel_height(panel), 0);
+        sheet_guard_cancel();
+        lv_obj_set_style_translate_y(panel, 0, 0);
         lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_scrim, LV_OBJ_FLAG_HIDDEN);
     }
@@ -154,10 +284,17 @@ static void panel_open(lv_obj_t *panel)
         panel_close(false);
     }
     s_open_panel = panel;
-    lv_obj_remove_flag(s_scrim, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(panel, LV_OBJ_FLAG_HIDDEN);
+    ESP_LOGI(TAG, "sheet open: %s",
+             (panel == s_panel_ap) ? "hotspot" : "join");
+
+    /* Re-assert z-order every open: scrim above the main view, sheet on top. */
+    lv_obj_move_foreground(s_scrim);
+    lv_obj_move_foreground(panel);
+
     lv_anim_delete(panel, panel_anim_ty);
     lv_obj_set_style_translate_y(panel, panel_height(panel), 0);
+    lv_obj_remove_flag(s_scrim, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(panel, LV_OBJ_FLAG_HIDDEN);
 
     lv_anim_t a;
     lv_anim_init(&a);
@@ -167,6 +304,7 @@ static void panel_open(lv_obj_t *panel)
     lv_anim_set_duration(&a, ONB_ANIM_OPEN_MS);
     lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
     lv_anim_start(&a);
+    sheet_guard_arm(panel, ONB_ANIM_OPEN_MS + 150);
 }
 
 static void scrim_cb(lv_event_t *e)
@@ -286,7 +424,7 @@ static void net_row_cb(lv_event_t *e)
         char line[64];
         snprintf(line, sizeof(line), "Connecting to %s…", s_sel_ssid);
         panel_close(true);
-        lv_label_set_text(s_status, line);
+        set_status_text(line);
     }
 }
 
@@ -355,6 +493,7 @@ static void open_net_list(void)
 static void join_option_cb(lv_event_t *e)
 {
     (void)e;
+    ESP_LOGI(TAG, "option tapped: join wifi");
     open_net_list();
 }
 
@@ -401,14 +540,14 @@ static void pw_connect(void)
 {
     const char *pass = lv_textarea_get_text(s_pw_ta);
     if (ln_net_join_wifi(s_sel_ssid, pass) != ESP_OK) {
-        lv_label_set_text(s_status, "Couldn't start the connection — try again.");
         panel_close(true);
+        set_status_text("Couldn't start the connection — try again.");
         return;
     }
     char line[64];
     snprintf(line, sizeof(line), "Connecting to %s…", s_sel_ssid);
     panel_close(true);
-    lv_label_set_text(s_status, line);
+    set_status_text(line);
 }
 
 static void pw_connect_cb(lv_event_t *e)
@@ -452,6 +591,7 @@ static void ap_pick_192_cb(lv_event_t *e)
 static void ap_option_cb(lv_event_t *e)
 {
     (void)e;
+    ESP_LOGI(TAG, "option tapped: setup hotspot");
     /* Preselect whatever subnet is live right now. */
     char url[40] = {0};
     ln_net_portal_url(url, sizeof(url)); /* "http://a.b.c.1/" */
@@ -470,7 +610,7 @@ static void ap_apply_cb(lv_event_t *e)
     snprintf(line, sizeof(line),
              "Hotspot mode — connect to \"%s\" and scan the QR below.",
              "LiveNinja-Setup");
-    lv_label_set_text(s_status, line);
+    set_status_text(line);
     schedule_qr_refresh();
 }
 
@@ -504,8 +644,9 @@ static lv_obj_t *make_option(lv_obj_t *parent, const char *title,
     return btn;
 }
 
-/* Bottom-sheet shell: full-width card aligned to the screen bottom, parked
- * off-screen (translate_y = height) and hidden until panel_open(). */
+/* Bottom-sheet shell: full-width card aligned to the screen bottom. At rest
+ * it is HIDDEN with zero translate; panel_open() parks it below the screen
+ * (translate_y = height) and slides it up. */
 static lv_obj_t *make_panel(lv_obj_t *parent, int height)
 {
     lv_obj_t *p = lv_obj_create(parent);
@@ -520,7 +661,6 @@ static lv_obj_t *make_panel(lv_obj_t *parent, int height)
     lv_obj_set_style_pad_all(p, 28, 0);
     lv_obj_remove_flag(p, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(p, LV_OBJ_FLAG_CLICKABLE); /* eat taps: don't hit scrim */
-    lv_obj_set_style_translate_y(p, height, 0);
     lv_obj_add_flag(p, LV_OBJ_FLAG_HIDDEN);
     return p;
 }
@@ -538,8 +678,11 @@ static lv_obj_t *make_panel_header(lv_obj_t *parent, const char *title_txt)
 lv_obj_t *ln_scr_onboarding_create(void)
 {
     lv_obj_t *scr = ln_w_screen();
+    /* The screen must never pan — a sheet's mid-animation coords reach
+     * below the display and would otherwise make the screen scrollable. */
+    lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* ================= main view: welcome top, options mid, QR bottom */
+    /* ==== main view: welcome top, options mid, QR to 3/4, updates last */
     s_view_main = ln_w_plain(scr);
     lv_obj_set_size(s_view_main, lv_pct(100), lv_pct(100));
     lv_obj_set_flex_flow(s_view_main, LV_FLEX_FLOW_COLUMN);
@@ -572,8 +715,9 @@ lv_obj_t *ln_scr_onboarding_create(void)
                 "Keep this device as its own access point (AP mode).",
                 ap_option_cb);
 
-    /* QR hero — fills all remaining screen below the options (the "box"
-     * is tall; the QR itself stays its normal size, centered in it). */
+    /* QR hero — fills the screen between the options and the updates area,
+     * so its bottom edge lands at ~3/4 screen height (owner spec). The QR
+     * itself stays its normal size, centered in the card. */
     lv_obj_t *hero = ln_w_card(s_view_main);
     lv_obj_set_width(hero, lv_pct(100));
     lv_obj_set_flex_grow(hero, 1);
@@ -608,8 +752,40 @@ lv_obj_t *ln_scr_onboarding_create(void)
     s_qr_caption = ln_w_label(hero, "http://10.0.0.1", LN_FONT_SM,
                               LN_COL_TEAL);
 
-    s_status = ln_w_label(s_view_main, "Waiting for a device to connect…",
-                          LN_FONT_SM, LN_COL_DIM);
+    /* ==== updates area — the last quarter of the screen. Status copy in a
+     * big wrapped font; tap to expand over the QR card when it clips. */
+    s_upd_box = lv_obj_create(s_view_main);
+    lv_obj_remove_style_all(s_upd_box);
+    lv_obj_set_size(s_upd_box, lv_pct(100), ONB_UPD_H);
+    lv_obj_set_style_bg_color(s_upd_box, LN_COL_SURFACE, 0);
+    lv_obj_set_style_bg_opa(s_upd_box, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(s_upd_box, LN_COL_SURFACE2, LV_STATE_PRESSED);
+    lv_obj_set_style_border_color(s_upd_box, LN_COL_BORDER, 0);
+    lv_obj_set_style_border_width(s_upd_box, 1, 0);
+    lv_obj_set_style_radius(s_upd_box, LN_RADIUS, 0);
+    lv_obj_set_style_pad_all(s_upd_box, 20, 0);
+    lv_obj_set_flex_flow(s_upd_box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(s_upd_box, 10, 0);
+    lv_obj_remove_flag(s_upd_box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_upd_box, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_upd_box, upd_toggle_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *upd_hdr = ln_w_plain(s_upd_box);
+    lv_obj_set_size(upd_hdr, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(upd_hdr, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(upd_hdr, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_t *upd_title = ln_w_label(upd_hdr, "STATUS", LN_FONT_XS,
+                                     LN_COL_DIM);
+    lv_obj_set_style_text_letter_space(upd_title, 2, 0);
+    s_upd_hint = ln_w_label(upd_hdr, "", LN_FONT_XS, LN_COL_TEAL);
+
+    /* LN_FONT_LG = montserrat_30 — the old footer was montserrat_20 and the
+     * owner called it too small; copy always wraps, never overflows. */
+    s_status = ln_w_label(s_upd_box, "Waiting for a device to connect…",
+                          LN_FONT_LG, LN_COL_TEXT);
+    lv_label_set_long_mode(s_status, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(s_status, lv_pct(100));
 
     /* ================= scrim (tap outside a sheet to close it) */
     s_scrim = lv_obj_create(scr);
@@ -759,7 +935,8 @@ void ln_scr_onboarding_portal(const char *ssid, const char *url)
     lv_obj_add_flag(s_code_label, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_code_hint, LV_OBJ_FLAG_HIDDEN);
     set_qr(url);
-    lv_label_set_text(s_status, "Waiting for a device to connect…");
+    set_status_text("Waiting for a device to connect…");
+    upd_collapse();
     panel_close(false);
 }
 
@@ -784,7 +961,8 @@ void ln_scr_onboarding_pairing(const char *claim_url, const char *code)
         lv_obj_add_flag(s_code_hint, LV_OBJ_FLAG_HIDDEN);
     }
     set_qr(claim_url);
-    lv_label_set_text(s_status, "Waiting for you to approve in the browser…");
+    set_status_text("Waiting for you to approve in the browser…");
+    upd_collapse();
     panel_close(false);
 }
 
@@ -805,13 +983,13 @@ void ln_scr_onboarding_connected(const char *ip)
     set_qr(url);
     lv_obj_add_flag(s_code_label, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_code_hint, LV_OBJ_FLAG_HIDDEN);
-    lv_label_set_text(s_status, "Connected — linking your account…");
+    set_status_text("Connected — linking your account…");
     panel_close(false);
 }
 
 void ln_scr_onboarding_status(const char *text)
 {
     if (s_status != NULL && text != NULL) {
-        lv_label_set_text(s_status, text);
+        set_status_text(text);
     }
 }
