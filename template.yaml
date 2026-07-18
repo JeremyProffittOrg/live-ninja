@@ -1765,6 +1765,8 @@ Resources:
               Value: amazon.nova-sonic-v1:0
             - Name: BEDROCK_REGION
               Value: us-east-1
+            - Name: API_BASE_URL
+              Value: !Sub "https://${DomainName}"
             - Name: LOG_LEVEL
               Value: debug
           LogConfiguration:
