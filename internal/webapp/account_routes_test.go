@@ -6,6 +6,7 @@ package webapp
 // (including credential-attribute stripping and part chunking).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -51,6 +52,14 @@ func (f *exportCaptureS3) PutObject(ctx context.Context, params *s3.PutObjectInp
 	}
 	f.objects[aws.ToString(params.Key)] = b
 	return &s3.PutObjectOutput{}, nil
+}
+
+func (f *exportCaptureS3) GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	b, ok := f.objects[aws.ToString(params.Key)]
+	if !ok {
+		return nil, errNoSuchKey
+	}
+	return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewReader(b)), ContentLength: aws.Int64(int64(len(b)))}, nil
 }
 
 func (f *exportCaptureS3) DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {

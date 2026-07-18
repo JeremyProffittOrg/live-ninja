@@ -31,7 +31,9 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -52,6 +54,7 @@ const (
 	CodeConfirmationRequired = "confirmation_required"
 	CodeForbidden            = "forbidden"
 	CodeNotFound             = "not_found"
+	CodeAlreadyExists        = "already_exists"
 	CodeNotConfigured        = "not_configured"
 	CodeUpstreamError        = "upstream_error"
 )
@@ -136,6 +139,8 @@ func (r *Result) StatusCode() int {
 	switch r.Error.Code {
 	case CodeUnknownTool, CodeNotFound:
 		return http.StatusNotFound
+	case CodeAlreadyExists:
+		return http.StatusConflict
 	case CodeInvalidArgs, CodeConfirmationRequired:
 		return http.StatusBadRequest
 	case CodeForbidden:
@@ -159,6 +164,26 @@ type ParamSpec struct {
 	MaxLen      int      // strings: maximum length (0 = no cap)
 	Min         *float64 // numbers: inclusive minimum
 	Max         *float64 // numbers: inclusive maximum
+
+	// SafeName restricts a string param to a safe filename slug: it must
+	// match safeFileNamePattern (ASCII letters/digits/dot/dash/underscore,
+	// leading alphanumeric) and contain no ".." — so path traversal, path
+	// separators, control characters, and hidden-file names are rejected
+	// at the schema gate before any handler runs.
+	SafeName bool
+}
+
+// safeFileNamePattern is the advertised (and enforced) filename shape for
+// SafeName params. The leading [A-Za-z0-9] bans hidden/dot files; the
+// class bans path separators, spaces, quotes, and control characters.
+const safeFileNamePattern = `^[A-Za-z0-9][A-Za-z0-9._-]*$`
+
+var safeFileNameRe = regexp.MustCompile(safeFileNamePattern)
+
+// isSafeFileName reports whether s is a safe filename slug: pattern-
+// conformant and free of any ".." sequence.
+func isSafeFileName(s string) bool {
+	return !strings.Contains(s, "..") && safeFileNameRe.MatchString(s)
 }
 
 // HandlerFunc executes a validated, re-authorized tool call. args has
@@ -287,6 +312,9 @@ func NewRegistry(deps *Deps) (*Registry, error) {
 		deliverableCreateDefinition(),
 		deliverableZipDefinition(),
 		deliverableDeliverDefinition(),
+		fileListDefinition(),
+		fileReadDefinition(),
+		fileCreateDefinition(),
 		memorySearchDefinition(),
 		memoryWriteDefinition(),
 		entityGetDefinition(),
@@ -361,6 +389,9 @@ func (p ParamSpec) jsonSchema() map[string]any {
 		}
 		if p.MaxLen > 0 {
 			s["maxLength"] = p.MaxLen
+		}
+		if p.SafeName {
+			s["pattern"] = safeFileNamePattern
 		}
 	}
 	if p.Min != nil {
@@ -616,6 +647,11 @@ func (p ParamSpec) coerce(v any) (any, *ToolError) {
 		}
 		if p.MaxLen > 0 && len(s) > p.MaxLen {
 			return nil, toolErrf(CodeInvalidArgs, "argument %q must be at most %d characters", p.Name, p.MaxLen)
+		}
+		if p.SafeName && !isSafeFileName(s) {
+			return nil, toolErrf(CodeInvalidArgs,
+				"argument %q must be a plain filename (letters, digits, dot, dash, underscore; "+
+					"starting with a letter or digit; no path separators, no '..')", p.Name)
 		}
 		if len(p.Enum) > 0 {
 			for _, e := range p.Enum {

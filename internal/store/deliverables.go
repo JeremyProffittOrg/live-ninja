@@ -45,9 +45,19 @@ const (
 // deliverableSKPrefix is the sk namespace for deliverable index items.
 const deliverableSKPrefix = "DELIV#"
 
+// deliverableNameSKPrefix is the sk namespace for per-user filename
+// uniqueness claims (owner rule: the assistant may create documents but
+// never overwrite one, so a filename is claimed atomically before any
+// object write). "DELIVNAME#" deliberately does NOT begin with "DELIV#"
+// (N != #), so claims never surface in ListDeliverables' begins_with
+// Query.
+const deliverableNameSKPrefix = "DELIVNAME#"
+
 func deliverableSK(createdAt, id string) string {
 	return deliverableSKPrefix + createdAt + "#" + id
 }
+
+func deliverableNameSK(name string) string { return deliverableNameSKPrefix + name }
 
 func deliverableGSI1PK(id string) string { return "DELIV#" + id }
 
@@ -102,6 +112,58 @@ func (s *Store) CreateDeliverable(ctx context.Context, d *Deliverable) error {
 			return ErrAlreadyExists
 		}
 		return fmt.Errorf("store: create deliverable: %w", err)
+	}
+	return nil
+}
+
+// ClaimDeliverableName atomically claims a display filename for one user
+// via a conditional PutItem at USER#<uid> / DELIVNAME#<name>. It is the
+// load-bearing no-overwrite guarantee of the deliverables corpus: two
+// concurrent creates for the same name race on this single conditional
+// write, and exactly one wins — never check-then-put. ErrAlreadyExists
+// when the name is already claimed.
+func (s *Store) ClaimDeliverableName(ctx context.Context, userID, name, deliverableID string) error {
+	if userID == "" || name == "" || deliverableID == "" {
+		return errors.New("store: userID, name, and deliverableID are required")
+	}
+	_, err := s.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(s.table),
+		Item: map[string]types.AttributeValue{
+			"pk":            &types.AttributeValueMemberS{Value: userPK(userID)},
+			"sk":            &types.AttributeValueMemberS{Value: deliverableNameSK(name)},
+			"userId":        &types.AttributeValueMemberS{Value: userID},
+			"name":          &types.AttributeValueMemberS{Value: name},
+			"deliverableId": &types.AttributeValueMemberS{Value: deliverableID},
+		},
+		ConditionExpression: aws.String("attribute_not_exists(pk) AND attribute_not_exists(sk)"),
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return ErrAlreadyExists
+		}
+		return fmt.Errorf("store: claim deliverable name: %w", err)
+	}
+	return nil
+}
+
+// ReleaseDeliverableName frees a claimed filename (rollback of a failed
+// create, or deletion of the deliverable that owned it). Deleting an
+// absent claim is a no-op, so legacy deliverables that predate name
+// claims release harmlessly.
+func (s *Store) ReleaseDeliverableName(ctx context.Context, userID, name string) error {
+	if userID == "" || name == "" {
+		return errors.New("store: userID and name are required")
+	}
+	_, err := s.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: aws.String(s.table),
+		Key: map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: userPK(userID)},
+			"sk": &types.AttributeValueMemberS{Value: deliverableNameSK(name)},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("store: release deliverable name: %w", err)
 	}
 	return nil
 }

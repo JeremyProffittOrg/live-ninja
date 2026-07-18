@@ -8,7 +8,9 @@ package webapp
 // settings API tests use.
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -25,17 +27,35 @@ import (
 	"github.com/JeremyProffittOrg/live-ninja/internal/testutil"
 )
 
-type routeFakeS3 struct{ deleted []string }
+type routeFakeS3 struct {
+	deleted []string
+	objects map[string][]byte
+}
 
 func (f *routeFakeS3) PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
-	_, _ = io.Copy(io.Discard, params.Body)
+	b, _ := io.ReadAll(params.Body)
+	if f.objects == nil {
+		f.objects = map[string][]byte{}
+	}
+	f.objects[aws.ToString(params.Key)] = b
 	return &s3.PutObjectOutput{}, nil
+}
+
+func (f *routeFakeS3) GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	b, ok := f.objects[aws.ToString(params.Key)]
+	if !ok {
+		return nil, errNoSuchKey
+	}
+	return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewReader(b)), ContentLength: aws.Int64(int64(len(b)))}, nil
 }
 
 func (f *routeFakeS3) DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
 	f.deleted = append(f.deleted, aws.ToString(params.Key))
 	return &s3.DeleteObjectOutput{}, nil
 }
+
+// errNoSuchKey stands in for S3's NoSuchKey in the route fakes.
+var errNoSuchKey = errors.New("NoSuchKey")
 
 type routeFakePresign struct{}
 

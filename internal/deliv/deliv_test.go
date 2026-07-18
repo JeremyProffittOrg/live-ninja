@@ -28,9 +28,11 @@ type fakeS3 struct {
 	objects    map[string][]byte // key -> body
 	types      map[string]string // key -> content type
 	putErr     error
+	getErr     error
 	deleteErr  error
 	deleted    []string
 	putCalls   int
+	getCalls   int
 	delCalls   int
 	lastBucket string
 }
@@ -52,6 +54,23 @@ func (f *fakeS3) PutObject(ctx context.Context, params *s3.PutObjectInput, optFn
 	f.objects[aws.ToString(params.Key)] = b
 	f.types[aws.ToString(params.Key)] = aws.ToString(params.ContentType)
 	return &s3.PutObjectOutput{}, nil
+}
+
+func (f *fakeS3) GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	f.getCalls++
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	key := aws.ToString(params.Key)
+	b, ok := f.objects[key]
+	if !ok {
+		return nil, errors.New("NoSuchKey: " + key)
+	}
+	return &s3.GetObjectOutput{
+		Body:          io.NopCloser(bytes.NewReader(b)),
+		ContentType:   aws.String(f.types[key]),
+		ContentLength: aws.Int64(int64(len(b))),
+	}, nil
 }
 
 func (f *fakeS3) DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
@@ -189,7 +208,9 @@ func TestCreateRejectsBadInput(t *testing.T) {
 func TestCreateCleansUpOrphanOnIndexFailure(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t, func(c *Config) {
-		c.Store = &failingCreateStore{ItemStore: nil}
+		// Wrap the real store so the name claim works but the index write
+		// fails — exercises both the orphan cleanup and the claim rollback.
+		c.Store = &failingCreateStore{ItemStore: c.Store}
 	})
 
 	_, err := h.svc.Create(ctx, "u1", "a.md", "text/plain", []byte("x"))
@@ -197,6 +218,197 @@ func TestCreateCleansUpOrphanOnIndexFailure(t *testing.T) {
 	require.Len(t, h.s3.deleted, 1, "the orphaned object must be deleted")
 	assert.True(t, strings.HasPrefix(h.s3.deleted[0], UserPrefix("u1")))
 	assert.Empty(t, h.s3.objects, "no object may survive a failed index write")
+
+	// The name claim must have been rolled back: creating the same name
+	// against a healthy store now succeeds.
+	h2 := newHarness(t, func(c *Config) { c.Store = h.st })
+	_, err = h2.svc.Create(ctx, "u1", "a.md", "text/plain", []byte("x"))
+	require.NoError(t, err, "a failed create must not leave the name claimed")
+}
+
+// ---- create-only corpus (no overwrite) ----
+
+func TestCreateRejectsDuplicateNameAtomically(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, nil)
+
+	_, err := h.svc.Create(ctx, "u1", "notes.md", "text/markdown", []byte("v1"))
+	require.NoError(t, err)
+	require.Equal(t, 1, h.s3.putCalls)
+
+	// Second create with the same name loses the conditional name claim
+	// BEFORE any S3 write — the guarantee is the conditional put, not a
+	// check-then-put race.
+	_, err = h.svc.Create(ctx, "u1", "notes.md", "text/markdown", []byte("v2"))
+	require.ErrorIs(t, err, ErrNameTaken)
+	assert.Equal(t, 1, h.s3.putCalls, "a rejected duplicate must never reach S3")
+	assert.Len(t, h.s3.objects, 1, "the original object must be untouched")
+
+	// A different user is a different namespace.
+	_, err = h.svc.Create(ctx, "u2", "notes.md", "text/markdown", []byte("v1"))
+	require.NoError(t, err)
+
+	// Sanitization collisions collide too ("trip plan.md" == "trip-plan.md").
+	_, err = h.svc.Create(ctx, "u1", "trip plan.md", "text/markdown", []byte("x"))
+	require.NoError(t, err)
+	_, err = h.svc.Create(ctx, "u1", "trip-plan.md", "text/markdown", []byte("y"))
+	require.ErrorIs(t, err, ErrNameTaken)
+}
+
+func TestCreateRejectsLegacyDuplicateName(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, nil)
+
+	// A deliverable that predates name claims: index item only, no
+	// DELIVNAME# claim.
+	legacy := &store.Deliverable{
+		DeliverableID: "old1", UserID: "u1", Name: "legacy.md",
+		ContentType: "text/markdown", Kind: store.DeliverableKindFile,
+		Status: store.DeliverableStatusReady,
+		S3Key:  UserPrefix("u1") + "old1/legacy.md", CreatedAt: "2026-07-01T00:00:00Z",
+	}
+	require.NoError(t, h.st.CreateDeliverable(ctx, legacy))
+
+	_, err := h.svc.Create(ctx, "u1", "legacy.md", "text/markdown", []byte("x"))
+	require.ErrorIs(t, err, ErrNameTaken)
+	assert.Zero(t, h.s3.putCalls, "legacy duplicate must be caught before S3")
+
+	// The probe claim was rolled back: deleting the legacy item frees the
+	// name for a fresh create.
+	require.NoError(t, h.svc.Delete(ctx, "u1", "old1"))
+	_, err = h.svc.Create(ctx, "u1", "legacy.md", "text/markdown", []byte("x"))
+	require.NoError(t, err)
+}
+
+func TestDeleteFreesTheNameForReuse(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, nil)
+
+	d, err := h.svc.Create(ctx, "u1", "report.md", "text/markdown", []byte("v1"))
+	require.NoError(t, err)
+	_, err = h.svc.Create(ctx, "u1", "report.md", "text/markdown", []byte("v2"))
+	require.ErrorIs(t, err, ErrNameTaken)
+
+	require.NoError(t, h.svc.Delete(ctx, "u1", d.DeliverableID))
+	d2, err := h.svc.Create(ctx, "u1", "report.md", "text/markdown", []byte("v2"))
+	require.NoError(t, err, "deleting a deliverable must release its name claim")
+	assert.NotEqual(t, d.DeliverableID, d2.DeliverableID)
+}
+
+func TestFindByName(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, nil)
+
+	a, err := h.svc.Create(ctx, "u1", "a.md", "text/markdown", []byte("A"))
+	require.NoError(t, err)
+	_, err = h.svc.Create(ctx, "u1", "b.md", "text/markdown", []byte("B"))
+	require.NoError(t, err)
+
+	got, err := h.svc.FindByName(ctx, "u1", "a.md")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, a.DeliverableID, got.DeliverableID)
+
+	got, err = h.svc.FindByName(ctx, "u1", "ghost.md")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+
+	// Another user cannot resolve u1's names.
+	got, err = h.svc.FindByName(ctx, "u2", "a.md")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+// ---- ReadContent ----
+
+func TestReadContentReturnsTextAndCaps(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, nil)
+
+	small, err := h.svc.Create(ctx, "u1", "small.md", "text/markdown; charset=utf-8", []byte("# Hi"))
+	require.NoError(t, err)
+	d, content, truncated, err := h.svc.ReadContent(ctx, "u1", small.DeliverableID)
+	require.NoError(t, err)
+	assert.Equal(t, small.DeliverableID, d.DeliverableID)
+	assert.Equal(t, "# Hi", string(content))
+	assert.False(t, truncated)
+
+	// An object larger than the cap comes back truncated at exactly
+	// MaxReadBytes with the flag set.
+	big := bytes.Repeat([]byte("y"), MaxReadBytes+1000)
+	bd, err := h.svc.Create(ctx, "u1", "big.txt", "text/plain", big)
+	require.NoError(t, err)
+	_, content, truncated, err = h.svc.ReadContent(ctx, "u1", bd.DeliverableID)
+	require.NoError(t, err)
+	assert.Len(t, content, MaxReadBytes)
+	assert.True(t, truncated)
+	assert.Equal(t, big[:MaxReadBytes], content)
+}
+
+func TestReadContentRefusesBinaryNotReadyAndEscapedKeys(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, nil)
+
+	// Binary content type → ErrNotText, and S3 is never touched.
+	zipItem := &store.Deliverable{
+		DeliverableID: "z1", UserID: "u1", Name: "bundle.zip",
+		ContentType: "application/zip", Kind: store.DeliverableKindZip,
+		Status: store.DeliverableStatusReady,
+		S3Key:  UserPrefix("u1") + "z1/bundle.zip", CreatedAt: "2026-07-17T10:00:00Z",
+	}
+	require.NoError(t, h.st.CreateDeliverable(ctx, zipItem))
+	d, _, _, err := h.svc.ReadContent(ctx, "u1", "z1")
+	require.ErrorIs(t, err, ErrNotText)
+	require.NotNil(t, d, "ErrNotText must carry the deliverable so callers can name the type")
+	assert.Equal(t, "application/zip", d.ContentType)
+	assert.Zero(t, h.s3.getCalls, "binary refusal must happen before any S3 read")
+
+	// Pending → ErrNotReady.
+	pending := &store.Deliverable{
+		DeliverableID: "p1", UserID: "u1", Name: "p.md",
+		ContentType: "text/markdown", Kind: store.DeliverableKindFile,
+		Status: store.DeliverableStatusPending,
+		S3Key:  UserPrefix("u1") + "p1/p.md", CreatedAt: "2026-07-17T10:01:00Z",
+	}
+	require.NoError(t, h.st.CreateDeliverable(ctx, pending))
+	_, _, _, err = h.svc.ReadContent(ctx, "u1", "p1")
+	require.ErrorIs(t, err, ErrNotReady)
+
+	// A corrupted index item whose key escapes the prefix fails closed.
+	escaped := &store.Deliverable{
+		DeliverableID: "e1", UserID: "u1", Name: "e.md",
+		ContentType: "text/markdown", Kind: store.DeliverableKindFile,
+		Status: store.DeliverableStatusReady,
+		S3Key:  "deliverables/other-user/e1/e.md", CreatedAt: "2026-07-17T10:02:00Z",
+	}
+	require.NoError(t, h.st.CreateDeliverable(ctx, escaped))
+	_, _, _, err = h.svc.ReadContent(ctx, "u1", "e1")
+	require.ErrorIs(t, err, ErrKeyEscape)
+	assert.Zero(t, h.s3.getCalls)
+
+	// Ghost ids and other users' ids are both not-found.
+	_, _, _, err = h.svc.ReadContent(ctx, "u1", "ghost")
+	require.ErrorIs(t, err, ErrNotFound)
+	_, _, _, err = h.svc.ReadContent(ctx, "u2", "z1")
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestIsTextContentType(t *testing.T) {
+	for ct, want := range map[string]bool{
+		"text/markdown; charset=utf-8": true,
+		"text/plain":                   true,
+		"text/csv":                     true,
+		"text/html":                    true,
+		"application/json":             true,
+		"application/csv":              true,
+		"application/markdown":         true,
+		"application/zip":              false,
+		"application/octet-stream":     false,
+		"image/png":                    false,
+		"":                             false,
+	} {
+		assert.Equal(t, want, IsTextContentType(ct), "contentType %q", ct)
+	}
 }
 
 // ---- Zip ----
@@ -289,6 +501,20 @@ func TestZipValidatesSources(t *testing.T) {
 	require.ErrorIs(t, err, ErrKeyEscape)
 
 	assert.Empty(t, h.lam.invokes, "no invalid zip request may reach the zipper")
+}
+
+func TestZipRejectsDuplicateName(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, nil)
+
+	a, err := h.svc.Create(ctx, "u1", "a.md", "text/markdown", []byte("A"))
+	require.NoError(t, err)
+
+	_, err = h.svc.Zip(ctx, "u1", []string{a.DeliverableID}, "bundle")
+	require.NoError(t, err)
+	_, err = h.svc.Zip(ctx, "u1", []string{a.DeliverableID}, "bundle")
+	require.ErrorIs(t, err, ErrNameTaken)
+	require.Len(t, h.lam.invokes, 1, "the duplicate zip must never reach the zipper")
 }
 
 func TestZipInvokeFailureMarksItemFailed(t *testing.T) {

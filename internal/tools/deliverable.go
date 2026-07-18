@@ -23,6 +23,9 @@ type DeliverableService interface {
 	Create(ctx context.Context, userID, filename, contentType string, content []byte) (*store.Deliverable, error)
 	Zip(ctx context.Context, userID string, deliverableIDs []string, zipName string) (*store.Deliverable, error)
 	Deliver(ctx context.Context, userID, deliverableID, emailTo string) (*deliv.DeliverResult, error)
+	List(ctx context.Context, userID string, limit int32, cursor string) ([]store.Deliverable, string, error)
+	FindByName(ctx context.Context, userID, name string) (*store.Deliverable, error)
+	ReadContent(ctx context.Context, userID, deliverableID string) (*store.Deliverable, []byte, bool, error)
 }
 
 // deliverableFormats maps the tool's closed `format` enum onto the MIME
@@ -44,7 +47,8 @@ func deliverableCreateDefinition() *Definition {
 		Name: "deliverable_create",
 		Description: "Create a downloadable file (a 'deliverable') from content you produce — a " +
 			"document, report, list, or table. The file is stored in the user's Download Center; " +
-			"use deliverable_deliver to hand the user a download link or email it.",
+			"use deliverable_deliver to hand the user a download link or email it. Fails with " +
+			"already_exists if a file with that name exists — files are never overwritten; pick a new name.",
 		SideEffecting: true,
 		Params: []ParamSpec{
 			{Name: "name", Type: "string", Required: true, MinLen: 1, MaxLen: 100,
@@ -202,6 +206,9 @@ func deliverableToolError(deps *Deps, tool string, err error) *ToolError {
 		return toolErrf(CodeNotFound, "no such deliverable (or it belongs to another user)")
 	case errors.Is(err, deliv.ErrNotReady):
 		return toolErrf(CodeInvalidArgs, "that deliverable is not ready yet (still building or failed)")
+	case errors.Is(err, deliv.ErrNameTaken):
+		return toolErrf(CodeAlreadyExists,
+			"a file with that name already exists — existing files are never overwritten; choose a different name")
 	case errors.Is(err, deliv.ErrBadInput):
 		return toolErrf(CodeInvalidArgs, "%s", err.Error())
 	}

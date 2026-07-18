@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"time"
@@ -58,6 +59,18 @@ const (
 	// Query + an S3 GET, so this also bounds the zipper's work.
 	MaxZipSources = 50
 
+	// MaxReadBytes caps the text returned by ReadContent (the file_read
+	// tool): 64 KiB is plenty for the model's context, and larger files
+	// come back truncated with an explicit flag so the model offers a
+	// download link instead.
+	MaxReadBytes = 64 << 10
+
+	// nameLookupPageSize / maxNameLookupPages bound FindByName's walk of
+	// the caller's single-partition DELIV# Query (never a Scan): up to
+	// 1000 items, far beyond any real per-user corpus.
+	nameLookupPageSize = 100
+	maxNameLookupPages = 10
+
 	// maxFilenameLen bounds the sanitized display filename.
 	maxFilenameLen = 100
 
@@ -72,12 +85,15 @@ var (
 	ErrNotFound  = errors.New("deliv: deliverable not found")
 	ErrNotReady  = errors.New("deliv: deliverable is not ready")
 	ErrBadInput  = errors.New("deliv: invalid input")
+	ErrNameTaken = errors.New("deliv: a deliverable with that name already exists") // create-only corpus: never overwritten
+	ErrNotText   = errors.New("deliv: deliverable content is not readable text")
 	ErrKeyEscape = errors.New("deliv: object key escapes the caller's prefix") // never expected; fail closed
 )
 
 // S3API is the narrow S3 surface the service needs (tests inject fakes).
 type S3API interface {
 	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
 }
 
@@ -99,6 +115,8 @@ type ItemStore interface {
 	ListDeliverables(ctx context.Context, userID string, limit int32, cursor string) ([]store.Deliverable, string, error)
 	UpdateDeliverableStatus(ctx context.Context, userID, sk, status string, sizeBytes int64) error
 	DeleteDeliverable(ctx context.Context, userID, sk string) error
+	ClaimDeliverableName(ctx context.Context, userID, name, deliverableID string) error
+	ReleaseDeliverableName(ctx context.Context, userID, name string) error
 }
 
 // EnqueueEmailFunc enqueues one email onto the shared email queue —
@@ -156,6 +174,14 @@ func keyWithinUser(userID, key string) bool {
 
 // Create uploads content as a new ready deliverable: one S3 object at
 // deliverables/<uid>/<id>/<filename> plus its index item.
+//
+// The corpus is create-only (owner rule: the assistant must never
+// overwrite or delete a document), so the display filename is claimed
+// FIRST via a conditional DynamoDB write — the atomic authority; two
+// concurrent creates of the same name race on that single conditional
+// put and exactly one wins. Deliverables that predate name claims are
+// then covered by a bounded Query walk. ErrNameTaken when the name is
+// already in use.
 func (s *Service) Create(ctx context.Context, userID, filename, contentType string, content []byte) (*store.Deliverable, error) {
 	if userID == "" {
 		return nil, fmt.Errorf("%w: user id is required", ErrBadInput)
@@ -175,12 +201,22 @@ func (s *Service) Create(ctx context.Context, userID, filename, contentType stri
 	id := uuid.NewString()
 	key := UserPrefix(userID) + id + "/" + name
 
+	if err := s.claimName(ctx, userID, name, id); err != nil {
+		return nil, err
+	}
+	releaseClaim := func() {
+		if rerr := s.cfg.Store.ReleaseDeliverableName(ctx, userID, name); rerr != nil {
+			s.cfg.Log.Warn("deliv: release name claim failed", "name", name, "error", rerr.Error())
+		}
+	}
+
 	if _, err := s.cfg.S3.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(s.cfg.Bucket),
 		Key:         aws.String(key),
 		Body:        bytes.NewReader(content),
 		ContentType: aws.String(contentType),
 	}); err != nil {
+		releaseClaim()
 		return nil, fmt.Errorf("deliv: put object: %w", err)
 	}
 
@@ -198,15 +234,140 @@ func (s *Service) Create(ctx context.Context, userID, filename, contentType stri
 	if err := s.cfg.Store.CreateDeliverable(ctx, d); err != nil {
 		// Index write lost after the object landed: best-effort cleanup so
 		// the bucket doesn't accumulate orphans (lifecycle expiry is the
-		// backstop either way).
+		// backstop either way), and the name claim is rolled back so the
+		// name isn't locked by a create that never happened.
 		if _, derr := s.cfg.S3.DeleteObject(ctx, &s3.DeleteObjectInput{
 			Bucket: aws.String(s.cfg.Bucket), Key: aws.String(key),
 		}); derr != nil {
 			s.cfg.Log.Warn("deliv: orphan cleanup failed", "key", key, "error", derr.Error())
 		}
+		releaseClaim()
 		return nil, fmt.Errorf("deliv: index deliverable: %w", err)
 	}
 	return d, nil
+}
+
+// claimName performs the atomic filename claim plus the legacy-corpus
+// check (deliverables created before name claims existed have no claim
+// item, so a fresh claim alone wouldn't notice them). The conditional
+// write happens first and is the authority; on any post-claim failure
+// the claim is rolled back.
+func (s *Service) claimName(ctx context.Context, userID, name, deliverableID string) error {
+	if err := s.cfg.Store.ClaimDeliverableName(ctx, userID, name, deliverableID); err != nil {
+		if errors.Is(err, store.ErrAlreadyExists) {
+			return fmt.Errorf("%w: %s", ErrNameTaken, name)
+		}
+		return fmt.Errorf("deliv: claim name: %w", err)
+	}
+	legacy, err := s.FindByName(ctx, userID, name)
+	if err != nil {
+		if rerr := s.cfg.Store.ReleaseDeliverableName(ctx, userID, name); rerr != nil {
+			s.cfg.Log.Warn("deliv: release name claim failed", "name", name, "error", rerr.Error())
+		}
+		return err
+	}
+	if legacy != nil {
+		if rerr := s.cfg.Store.ReleaseDeliverableName(ctx, userID, name); rerr != nil {
+			s.cfg.Log.Warn("deliv: release name claim failed", "name", name, "error", rerr.Error())
+		}
+		return fmt.Errorf("%w: %s", ErrNameTaken, name)
+	}
+	return nil
+}
+
+// FindByName resolves the caller's deliverable by exact display filename,
+// walking the single-partition DELIV# Query newest-first (never a Scan;
+// bounded at maxNameLookupPages pages). Returns (nil, nil) when no
+// deliverable carries the name.
+func (s *Service) FindByName(ctx context.Context, userID, name string) (*store.Deliverable, error) {
+	if userID == "" || name == "" {
+		return nil, fmt.Errorf("%w: user id and name are required", ErrBadInput)
+	}
+	cursor := ""
+	for page := 0; page < maxNameLookupPages; page++ {
+		items, next, err := s.cfg.Store.ListDeliverables(ctx, userID, nameLookupPageSize, cursor)
+		if err != nil {
+			return nil, fmt.Errorf("deliv: find by name: %w", err)
+		}
+		for i := range items {
+			if items[i].Name == name {
+				return &items[i], nil
+			}
+		}
+		if next == "" {
+			return nil, nil
+		}
+		cursor = next
+	}
+	return nil, nil
+}
+
+// ---- read ----
+
+// IsTextContentType reports whether a stored content type is safe to
+// return as text to the model: text/* plus the JSON/CSV/markdown
+// application aliases. Everything else (zip archives, images, unknown
+// binaries) must be delivered as a download link instead.
+func IsTextContentType(contentType string) bool {
+	mt := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
+	if strings.HasPrefix(mt, "text/") {
+		return true
+	}
+	switch mt {
+	case "application/json", "application/csv", "application/markdown":
+		return true
+	}
+	return false
+}
+
+// ReadContent fetches a ready deliverable's bytes for the file_read tool.
+// Returns the resolved deliverable, up to MaxReadBytes of content, and
+// whether the object was truncated at that cap. Sentinels: ErrNotFound,
+// ErrNotReady, ErrKeyEscape, and ErrNotText (returned WITH the resolved
+// deliverable so callers can name the offending content type) for
+// non-text objects.
+func (s *Service) ReadContent(ctx context.Context, userID, deliverableID string) (*store.Deliverable, []byte, bool, error) {
+	d, err := s.cfg.Store.GetDeliverable(ctx, userID, deliverableID)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("deliv: resolve deliverable: %w", err)
+	}
+	if d == nil {
+		return nil, nil, false, ErrNotFound
+	}
+	if d.Status != store.DeliverableStatusReady {
+		return d, nil, false, fmt.Errorf("%w: status %s", ErrNotReady, d.Status)
+	}
+	// Mandatory prefix check before any S3 read — same invariant as
+	// presign/zip: a corrupted index item must never read outside the
+	// caller's own namespace.
+	if !keyWithinUser(userID, d.S3Key) {
+		return nil, nil, false, ErrKeyEscape
+	}
+	if !IsTextContentType(d.ContentType) {
+		return d, nil, false, fmt.Errorf("%w: %s", ErrNotText, d.ContentType)
+	}
+
+	out, err := s.cfg.S3.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.cfg.Bucket),
+		Key:    aws.String(d.S3Key),
+	})
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("deliv: get object: %w", err)
+	}
+	defer func() { _ = out.Body.Close() }()
+
+	// Read one byte past the cap to learn whether truncation happened
+	// without ever buffering more than the cap.
+	data, err := io.ReadAll(io.LimitReader(out.Body, MaxReadBytes+1))
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("deliv: read object: %w", err)
+	}
+	truncated := false
+	if len(data) > MaxReadBytes {
+		data = data[:MaxReadBytes]
+		truncated = true
+	}
+	return d, data, truncated, nil
 }
 
 // ---- zip ----
@@ -264,6 +425,13 @@ func (s *Service) Zip(ctx context.Context, userID string, deliverableIDs []strin
 	id := uuid.NewString()
 	key := UserPrefix(userID) + id + "/" + name
 
+	// Same create-only corpus rule as Create: the archive's name is
+	// claimed atomically so a zip can never shadow or duplicate an
+	// existing deliverable name.
+	if err := s.claimName(ctx, userID, name, id); err != nil {
+		return nil, err
+	}
+
 	d := &store.Deliverable{
 		DeliverableID: id,
 		UserID:        userID,
@@ -276,6 +444,9 @@ func (s *Service) Zip(ctx context.Context, userID string, deliverableIDs []strin
 		Sources:       sourceIDs,
 	}
 	if err := s.cfg.Store.CreateDeliverable(ctx, d); err != nil {
+		if rerr := s.cfg.Store.ReleaseDeliverableName(ctx, userID, name); rerr != nil {
+			s.cfg.Log.Warn("deliv: release name claim failed", "name", name, "error", rerr.Error())
+		}
 		return nil, fmt.Errorf("deliv: index zip deliverable: %w", err)
 	}
 
@@ -405,6 +576,11 @@ func (s *Service) Delete(ctx context.Context, userID, deliverableID string) erro
 	}
 	if err := s.cfg.Store.DeleteDeliverable(ctx, userID, d.SK()); err != nil {
 		return fmt.Errorf("deliv: delete deliverable item: %w", err)
+	}
+	// Free the filename claim so the name becomes creatable again
+	// (releasing an unclaimed legacy name is a harmless no-op).
+	if err := s.cfg.Store.ReleaseDeliverableName(ctx, userID, d.Name); err != nil {
+		s.cfg.Log.Warn("deliv: release name claim failed", "name", d.Name, "error", err.Error())
 	}
 	return nil
 }

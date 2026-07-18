@@ -227,7 +227,8 @@ var toolManifest = []map[string]any{
 		"type": "function",
 		"name": "deliverable_create",
 		"description": "Create a downloadable file (a 'deliverable') from content you produce — a document, report, list, or table. " +
-			"It is stored in the user's Download Center; use deliverable_deliver to hand the user a download link or email it.",
+			"It is stored in the user's Download Center; use deliverable_deliver to hand the user a download link or email it. " +
+			"Fails with already_exists if a file with that name exists — files are never overwritten; pick a new name.",
 		"parameters": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -274,6 +275,86 @@ var toolManifest = []map[string]any{
 				},
 			},
 			"required": []string{"deliverableId"},
+		},
+	},
+	// Assistant file access over the same deliverables corpus: list/read/
+	// create only. There is deliberately NO overwrite and NO delete tool —
+	// file_create fails atomically (conditional index write) when the name
+	// already exists.
+	{
+		"type": "function",
+		"name": "file_list",
+		"description": "List the user's stored documents newest first: name, size in bytes, content type, " +
+			"and creation time, plus the fileId used by file_read and deliverable_deliver. Paginated — " +
+			"when the result carries a nextCursor, pass it as cursor to fetch the next page.",
+		"parameters": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"limit": map[string]any{
+					"type": "integer", "minimum": 1, "maximum": 100,
+					"description": "Maximum files to return in one page (default 50, max 100).",
+				},
+				"cursor": map[string]any{
+					"type":        "string",
+					"maxLength":   512,
+					"description": "Opaque pagination cursor from a previous file_list result; omit for the first page.",
+				},
+			},
+		},
+	},
+	{
+		"type": "function",
+		"name": "file_read",
+		"description": "Read the text content of one of the user's stored documents, by fileId (from file_list " +
+			"or a create result) or by exact filename. Only text-like files can be read (text, markdown, " +
+			"CSV, HTML, JSON); for binary files (e.g. zip archives) this fails — offer the user a download " +
+			"link via deliverable_deliver instead. Content longer than 64 KB is returned truncated.",
+		"parameters": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"fileId": map[string]any{
+					"type":        "string",
+					"maxLength":   64,
+					"description": "The document's id. Provide fileId or name (fileId wins if both are given).",
+				},
+				"name": map[string]any{
+					"type":        "string",
+					"maxLength":   100,
+					"pattern":     "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+					"description": "The document's exact filename, e.g. 'trip-plan.md'.",
+				},
+			},
+		},
+	},
+	{
+		"type": "function",
+		"name": "file_create",
+		"description": "Create a NEW document in the user's file store. Fails with already_exists if a file " +
+			"with that name already exists — documents are never overwritten or replaced; to revise one, " +
+			"create a new file under a different name.",
+		"parameters": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{
+					"type":        "string",
+					"minLength":   1,
+					"maxLength":   100,
+					"pattern":     "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+					"description": "Filename, e.g. 'meeting-notes.md'. Letters, digits, dot, dash, and underscore only. If no extension is given, one matching the content type is appended.",
+				},
+				"content": map[string]any{
+					"type":        "string",
+					"minLength":   1,
+					"maxLength":   100000,
+					"description": "The full document content.",
+				},
+				"contentType": map[string]any{
+					"type":        "string",
+					"enum":        []string{"text/markdown", "text/plain", "text/html", "text/csv", "application/json"},
+					"description": "MIME type of the content (default text/markdown).",
+				},
+			},
+			"required": []string{"content", "name"},
 		},
 	},
 	{
