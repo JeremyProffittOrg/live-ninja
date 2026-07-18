@@ -300,6 +300,12 @@ function syncVisualToState(state) {
 
 // ---- mic controller + transcript sink ------------------------------------
 
+// Declared before MicController: its constructor renders synchronously and
+// calls getWakePhrase() -> wakePhraseText(), which reads wakeEngine. A `let`
+// below this point would be in its temporal dead zone (ReferenceError).
+let wakeEngine = null;
+let wakeStarting = false;
+
 const mic = new MicController({
   getMicDeviceId: () => (settingsDoc && typeof settingsDoc.micDeviceId === 'string' ? settingsDoc.micDeviceId : null),
   getWakePhrase: () => wakePhraseText(),
@@ -322,8 +328,6 @@ mic.addEventListener('toast', (e) => toast(e.detail.message));
 const wakeToggle = $('wakeToggle');
 const wakeHint = $('wakeHint');
 const wakePhraseEl = $('wakePhrase');
-let wakeEngine = null;
-let wakeStarting = false;
 
 function wakePhraseText() {
   if (wakeEngine && wakeEngine.phrase) return wakeEngine.phrase;

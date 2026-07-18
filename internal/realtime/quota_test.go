@@ -2,6 +2,7 @@ package realtime
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"testing"
 	"time"
@@ -232,6 +233,245 @@ func TestCheckFallbackSkipsDailyCap(t *testing.T) {
 	var qe *QuotaExceededError
 	require.ErrorAs(t, err, &qe)
 	assert.Equal(t, "monthly_tokens", qe.Kind)
+}
+
+// seedProfile seeds a USER#<uid>/PROFILE row with the given status.
+func seedProfile(fake *testutil.FakeDynamo, userID, status string) {
+	fake.SeedItem(map[string]types.AttributeValue{
+		"pk":     &types.AttributeValueMemberS{Value: "USER#" + userID},
+		"sk":     &types.AttributeValueMemberS{Value: "PROFILE"},
+		"status": &types.AttributeValueMemberS{Value: status},
+		"userId": &types.AttributeValueMemberS{Value: userID},
+	})
+}
+
+// captureAlerts installs a recording alerter and returns the sink.
+func captureAlerts(g *Gate) *[]SuspendAlert {
+	var alerts []SuspendAlert
+	g.SetAlerter(func(_ context.Context, a SuspendAlert) {
+		alerts = append(alerts, a)
+	})
+	return &alerts
+}
+
+func profileAttr(t *testing.T, fake *testutil.FakeDynamo, userID, attr string) types.AttributeValue {
+	t.Helper()
+	item := fake.RawItem("USER#"+userID, "PROFILE")
+	require.NotNil(t, item, "profile item must exist")
+	return item[attr]
+}
+
+func TestSuspendedUserDeniedBeforeBucket(t *testing.T) {
+	g, fake, _ := newTestGate()
+	seedProfile(fake, "u1", "suspended")
+
+	_, err := g.CheckMint(context.Background(), "u1")
+	var se *SuspendedError
+	require.ErrorAs(t, err, &se)
+
+	// Denied pre-bucket: no rate-limiter token was spent (item never created).
+	assert.Nil(t, fake.RawItem("USER#u1", "BUCKET#mint"))
+
+	// Fallback modes are equally denied.
+	err = g.CheckFallback(context.Background(), "u1")
+	require.ErrorAs(t, err, &se)
+}
+
+func TestHourlyBurnAnomalySuspendsAndAlertsOnce(t *testing.T) {
+	g, fake, clock := newTestGate()
+	ctx := context.Background()
+	seedProfile(fake, "u1", "active")
+	alerts := captureAlerts(g)
+	day := clock.t.UTC().Format("2006-01-02")
+
+	// Mint 1 anchors the hourly snapshot at dayTokens=0.
+	_, err := g.CheckMint(ctx, "u1")
+	require.NoError(t, err)
+
+	// The user then burns 200,001 tokens inside the same UTC hour
+	// (default threshold 200,000 — strictly-greater trips).
+	seedUsage(fake, "u1", "USAGE#"+day, "dayTokens", 200001)
+	clock.advance(5 * time.Second) // refill the bucket token spent above
+
+	_, err = g.CheckMint(ctx, "u1")
+	var se *SuspendedError
+	require.ErrorAs(t, err, &se)
+	assert.Equal(t, "hourly_burn", se.Reason)
+
+	// PROFILE flipped to suspended with reason + JWT kill-switch bump.
+	statusAV, _ := profileAttr(t, fake, "u1", "status").(*types.AttributeValueMemberS)
+	require.NotNil(t, statusAV)
+	assert.Equal(t, "suspended", statusAV.Value)
+	reasonAV, _ := profileAttr(t, fake, "u1", "suspendReason").(*types.AttributeValueMemberS)
+	require.NotNil(t, reasonAV)
+	assert.Equal(t, "hourly_burn", reasonAV.Value)
+	tvaAV, _ := profileAttr(t, fake, "u1", "tokensValidAfter").(*types.AttributeValueMemberN)
+	require.NotNil(t, tvaAV)
+	assert.Equal(t, strconv.FormatInt(clock.t.Unix(), 10), tvaAV.Value)
+
+	// Exactly one alert, with the anomaly math attached.
+	require.Len(t, *alerts, 1)
+	a := (*alerts)[0]
+	assert.Equal(t, "u1", a.UserID)
+	assert.Equal(t, "hourly_burn", a.Reason)
+	assert.Equal(t, 200001.0, a.BurnTokens)
+	assert.Equal(t, 200000.0, a.Threshold)
+
+	// Further mints are denied by the status check (pre-bucket) and do
+	// NOT fire a second alert.
+	tokensBefore, _ := bucketState(t, fake, "u1")
+	_, err = g.CheckMint(ctx, "u1")
+	require.ErrorAs(t, err, &se)
+	tokensAfter, _ := bucketState(t, fake, "u1")
+	assert.Equal(t, tokensBefore, tokensAfter, "suspended mint must not spend a bucket token")
+	assert.Len(t, *alerts, 1)
+}
+
+func TestHourlyBurnAtThresholdIsAllowed(t *testing.T) {
+	g, fake, clock := newTestGate()
+	ctx := context.Background()
+	seedProfile(fake, "u1", "active")
+	alerts := captureAlerts(g)
+	day := clock.t.UTC().Format("2006-01-02")
+
+	_, err := g.CheckMint(ctx, "u1") // anchor at 0
+	require.NoError(t, err)
+
+	seedUsage(fake, "u1", "USAGE#"+day, "dayTokens", 200000) // == threshold
+	clock.advance(5 * time.Second)
+	_, err = g.CheckMint(ctx, "u1")
+	require.NoError(t, err, "burn equal to the threshold must not suspend")
+	assert.Empty(t, *alerts)
+}
+
+func TestHourlyBurnWindowResetsEachHour(t *testing.T) {
+	g, fake, clock := newTestGate()
+	ctx := context.Background()
+	seedProfile(fake, "u1", "active")
+	alerts := captureAlerts(g)
+	day := clock.t.UTC().Format("2006-01-02")
+
+	_, err := g.CheckMint(ctx, "u1") // anchor hour 12 at 0
+	require.NoError(t, err)
+
+	// 300k tokens land, but the next mint happens in hour 13: the window
+	// re-anchors at 300k and the mint is allowed.
+	seedUsage(fake, "u1", "USAGE#"+day, "dayTokens", 300000)
+	clock.advance(time.Hour)
+	_, err = g.CheckMint(ctx, "u1")
+	require.NoError(t, err)
+	assert.Empty(t, *alerts)
+
+	// Another 250k inside hour 13 -> over threshold -> suspended.
+	seedUsage(fake, "u1", "USAGE#"+day, "dayTokens", 550000)
+	clock.advance(5 * time.Second)
+	_, err = g.CheckMint(ctx, "u1")
+	var se *SuspendedError
+	require.ErrorAs(t, err, &se)
+	assert.Len(t, *alerts, 1)
+	assert.Equal(t, 250000.0, (*alerts)[0].BurnTokens)
+}
+
+func TestHourlyBurnReanchorsWhenTokensDrop(t *testing.T) {
+	g, fake, clock := newTestGate()
+	ctx := context.Background()
+	seedProfile(fake, "u1", "active")
+	day := clock.t.UTC().Format("2006-01-02")
+
+	seedUsage(fake, "u1", "USAGE#"+day, "dayTokens", 100000)
+	_, err := g.CheckMint(ctx, "u1") // anchor at 100k
+	require.NoError(t, err)
+
+	// dayTokens regresses (rollup recompute / day rollover): re-anchor
+	// down instead of computing a bogus negative burn or suspending.
+	seedUsage(fake, "u1", "USAGE#"+day, "dayTokens", 50000)
+	clock.advance(5 * time.Second)
+	_, err = g.CheckMint(ctx, "u1")
+	require.NoError(t, err)
+
+	snap := fake.RawItem("USER#u1", "BUCKET#burn")
+	require.NotNil(t, snap)
+	start, _ := snap["startTokens"].(*types.AttributeValueMemberN)
+	require.NotNil(t, start)
+	assert.Equal(t, "50000", start.Value, "snapshot must re-anchor at the lower reading")
+}
+
+func TestConcurrentSessionLimit(t *testing.T) {
+	g, _, clock := newTestGate()
+	ctx := context.Background()
+	start := clock.t
+
+	// Three sessions minted 5s apart (staying inside the token bucket).
+	for i := 0; i < 3; i++ {
+		_, err := g.CheckMint(ctx, "u1")
+		require.NoError(t, err, "mint %d must pass", i+1)
+		require.NoError(t, g.RecordMint(ctx, "u1", fmt.Sprintf("sess-%d", i), "web"))
+		clock.advance(5 * time.Second)
+	}
+
+	// 4th concurrent session is rejected; Retry-After points at the
+	// earliest slot expiry: sess-0 expires at start+600s, now=start+15s.
+	_, err := g.CheckMint(ctx, "u1")
+	var cle *ConcurrentLimitError
+	require.ErrorAs(t, err, &cle)
+	assert.Equal(t, 3, cle.Limit)
+	assert.Equal(t, 585, cle.RetryAfterSeconds)
+
+	// Once the 10-minute hard cap passes, all slots have expired and a
+	// new session is allowed again (expired slot items are ignored even
+	// though lazy TTL hasn't physically deleted them).
+	clock.t = start.Add(11 * time.Minute)
+	_, err = g.CheckMint(ctx, "u1")
+	require.NoError(t, err)
+}
+
+func TestRecordMintSessionCapBookkeeping(t *testing.T) {
+	g, fake, clock := newTestGate()
+	require.NoError(t, g.RecordMint(context.Background(), "u1", "sess-1", "web"))
+
+	now := clock.t.UTC()
+	end := now.Add(600 * time.Second)
+
+	// Ledger marker carries the FR-V08 hard-cap expiresAt and the
+	// RETENTION_DAYS (default 30d) TTL.
+	marker := fake.RawItem("USER#u1", "LOG#sess-1#000000")
+	require.NotNil(t, marker)
+	expAt, _ := marker["expiresAt"].(*types.AttributeValueMemberS)
+	require.NotNil(t, expAt)
+	assert.Equal(t, end.Format(time.RFC3339), expAt.Value)
+	ttlAV, _ := marker["ttl"].(*types.AttributeValueMemberN)
+	require.NotNil(t, ttlAV)
+	assert.Equal(t, strconv.FormatInt(now.Add(30*24*time.Hour).Unix(), 10), ttlAV.Value)
+
+	// Concurrency slot expires exactly at the session cap.
+	slot := fake.RawItem("USER#u1", "BUCKET#sess#sess-1")
+	require.NotNil(t, slot)
+	expAV, _ := slot["exp"].(*types.AttributeValueMemberN)
+	require.NotNil(t, expAV)
+	assert.Equal(t, strconv.FormatInt(end.Unix(), 10), expAV.Value)
+	slotTTL, _ := slot["ttl"].(*types.AttributeValueMemberN)
+	require.NotNil(t, slotTTL)
+	assert.Equal(t, strconv.FormatInt(end.Add(time.Hour).Unix(), 10), slotTTL.Value)
+}
+
+func TestHardeningEnvOverrides(t *testing.T) {
+	t.Setenv("QUOTA_HOURLY_BURN_TOKENS", "1000")
+	t.Setenv("QUOTA_MAX_CONCURRENT_SESSIONS", "1")
+	t.Setenv("QUOTA_SESSION_CAP_SECONDS", "120")
+	t.Setenv("RETENTION_DAYS", "7")
+
+	g := NewGate(testutil.NewFakeDynamo(), "live-ninja-test")
+	assert.Equal(t, 1000.0, g.hourlyBurnTokens)
+	assert.Equal(t, 1, g.maxConcurrent)
+	assert.Equal(t, 120, g.sessionCapSeconds)
+	assert.Equal(t, 7, g.retentionDays)
+
+	// Invalid values fall back to defaults.
+	t.Setenv("QUOTA_HOURLY_BURN_TOKENS", "-5")
+	t.Setenv("QUOTA_MAX_CONCURRENT_SESSIONS", "zero")
+	g = NewGate(testutil.NewFakeDynamo(), "live-ninja-test")
+	assert.Equal(t, 200000.0, g.hourlyBurnTokens)
+	assert.Equal(t, 3, g.maxConcurrent)
 }
 
 func TestRecordMintWritesLedger(t *testing.T) {

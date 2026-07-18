@@ -29,6 +29,7 @@ import (
 	"time"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/firehose"
 	lambdasvc "github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -82,13 +83,22 @@ func main() {
 
 	app.Use(requestLoggerMiddleware(logger))
 	app.Use(webapp.SecurityHeaders())
+	// X-LN-Server on every response + X-LN-Client parsing/EMF/below-min
+	// 426 gate (contracts/headers.md, plan.md M7 "Versioning/compat") —
+	// mounted early like SecurityHeaders so it applies uniformly ahead of
+	// both the public routes below and the authenticated route groups.
+	app.Use(webapp.VersionMiddleware(deps))
 
-	// Registered before the auth middleware: liveness and static assets
-	// need neither auth context nor CSRF handling. /sw.js sits at the root
-	// so the service worker's scope is "/".
+	// Registered before the auth middleware: liveness, static assets, and
+	// the compat-negotiation route need neither auth context nor CSRF
+	// handling. /sw.js sits at the root so the service worker's scope is
+	// "/". /v1/compat must be reachable by a device that cannot yet
+	// authenticate (contracts/headers.md) — already in cmd/authorizer's
+	// public allowlist.
 	app.Get("/healthz", healthzHandler)
 	app.Get("/static/*", assets.Handler())
 	app.Get("/sw.js", swHandler)
+	webapp.RegisterCompatRoute(app, deps)
 
 	// Auth context extraction (authorizer passthrough header, Bearer JWT
 	// fallback) + CSRF double-submit enforcement for cookie-bearing POSTs,
@@ -99,11 +109,13 @@ func main() {
 	app.Use(webapp.CSRFProtect())
 	webapp.RegisterAuthRoutes(app, deps)
 	webapp.RegisterAPIRoutes(app, deps)
+	webapp.RegisterAccountRoutes(app, deps)
 	webapp.RegisterSettingsRoutes(app, deps)
 	webapp.RegisterDeliverablesRoutes(app, deps)
 	webapp.RegisterWakewordRoutes(app, deps)
 	webapp.RegisterMemoryRoutes(app, deps, buildMemoryService(ctx, deps, logger))
 	webapp.RegisterHistoryRoutes(app, deps)
+	webapp.RegisterTelemetryRoutes(app, deps)
 	webapp.RegisterPageRoutes(app, deps)
 
 	// Catch-all: HTML error page for browser navigations, JSON 404 for
@@ -174,16 +186,21 @@ func buildDeps(ctx context.Context, cfg config.App, logger *slog.Logger) (*webap
 
 	lambdaClient := lambdasvc.NewFromConfig(awsCfg)
 	deps := &webapp.Deps{
-		Store:       st,
-		LWA:         lwa,
-		Signer:      signer,
-		Cfg:         cfg,
-		Secrets:     loader,
-		Log:         logger,
-		BrokerFn:    os.Getenv("BROKER_FUNCTION_NAME"),
-		SQSEmailURL: cfg.EmailQueueURL,
-		SQS:         sqs.NewFromConfig(awsCfg),
-		Lambda:      lambdaClient,
+		Store:               st,
+		LWA:                 lwa,
+		Signer:              signer,
+		Cfg:                 cfg,
+		Secrets:             loader,
+		Log:                 logger,
+		BrokerFn:            os.Getenv("BROKER_FUNCTION_NAME"),
+		SQSEmailURL:         cfg.EmailQueueURL,
+		SQS:                 sqs.NewFromConfig(awsCfg),
+		Lambda:              lambdaClient,
+		Firehose:            firehose.NewFromConfig(awsCfg),
+		TelemetryStreamName: os.Getenv("TELEMETRY_FIREHOSE_STREAM_NAME"),
+	}
+	if deps.TelemetryStreamName == "" {
+		logger.Warn("telemetry lake disabled (TELEMETRY_FIREHOSE_STREAM_NAME not set)")
 	}
 
 	// M9 deliverables service: only wired when the dedicated bucket is

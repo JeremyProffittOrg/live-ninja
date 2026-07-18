@@ -153,7 +153,15 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Build Lambda functions (arm64)
-        run: make build
+        run: |
+          # Stamped into internal/webapp.BuildVersion via the Makefile's
+          # ldflags (contracts/headers.md X-LN-Server: <deployedSemver>+
+          # <gitSha>). VERSION is a manually-bumped semver file at the repo
+          # root; the short SHA correlates a deployed binary back to this
+          # run. Exported so the Makefile's `${BUILD_VERSION:-...}` fallback
+          # picks it up rather than recomputing it itself.
+          export BUILD_VERSION="$(cat VERSION 2>/dev/null || echo 0.0.0)+$(git rev-parse --short HEAD)"
+          make build
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -239,6 +247,29 @@ jobs:
               CertificateArn=${{ vars.CERTIFICATE_ARN }} \
               HostedZoneId=${{ vars.HOSTED_ZONE_ID }} \
               OpenAIRealtimeModel=${{ vars.OPENAI_REALTIME_MODEL || 'gpt-realtime' }}
+
+      # M7 log-retention hygiene: functions now log to stack-managed
+      # /live-ninja/lambda/<fn> groups (30d retention) via LoggingConfig,
+      # because CloudFormation cannot adopt the pre-existing auto-created
+      # /aws/lambda/live-ninja-* groups. Delete those legacy groups so
+      # never-expire logs don't linger — guarded on retentionInDays being
+      # unset, which is only true for the unmanaged legacy groups, so this
+      # is a no-op once they're gone and can never touch a stack-managed
+      # group (all of which carry an explicit retention).
+      - name: Delete legacy unmanaged Lambda log groups
+        run: |
+          set -eu
+          for fn in web authorizer realtime-broker iot-ingest shadow-ingest usage-rollup email-dispatch deliverables-zipper topics-extract; do
+            lg="/aws/lambda/live-ninja-$fn"
+            ret=$(aws logs describe-log-groups --log-group-name-prefix "$lg" \
+              --query "logGroups[?logGroupName=='$lg'].retentionInDays | [0]" --output text)
+            if [ "$ret" = "None" ] || [ "$ret" = "null" ]; then
+              # "None" is also what an absent group yields; delete tolerates both.
+              if aws logs delete-log-group --log-group-name "$lg" 2>/dev/null; then
+                echo "deleted legacy log group $lg"
+              fi
+            fi
+          done
 
       # Allowed to fail on the very first deploy while DNS/CloudFront propagate;
       # subsequent runs should pass reliably.

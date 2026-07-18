@@ -69,6 +69,15 @@ type Deps struct {
 	// deliverables routes then answer 503 and the deliverable_* tools
 	// report not_configured.
 	Deliv *deliv.Service
+
+	// Firehose is the M7 telemetry-lake sink (Kinesis Firehose Direct
+	// PUT -> live-ninja-analytics S3 bucket -> Glue/Athena, wired in
+	// template.yaml). TelemetryStreamName names the delivery stream
+	// (TELEMETRY_FIREHOSE_STREAM_NAME env). Either left unset degrades
+	// POST /api/v1/telemetry to an explicit 503 not_configured
+	// (telemetry_routes.go) — never a silent no-op.
+	Firehose            FirehosePutBatchAPI
+	TelemetryStreamName string
 }
 
 // emailMessage mirrors cmd/email-dispatch's EmailMessage — the SQS body

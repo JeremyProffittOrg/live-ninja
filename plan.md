@@ -631,7 +631,23 @@ Also: `concurrency: deploy-main` (serialize pushes, no cancel) + automatic ROLLB
 **Resume:** `Workflow({scriptPath: 'C:\\Users\\Jeremy\\.claude\\projects\\C--dev-live-ninja\\8f47f390-5048-4ab6-8822-9909c0bd61a9\\workflows\\scripts\\m6-m9-wake-settings-deliverables-wf_4bf35707-f73.js', resumeFromRunId: 'wf_4bf35707-f73'})` — the 2 finished agents replay from cache; 6 rerun. Locked decisions in that script: no FCM (no Firebase account) → poll/foreground reconcile on web+Android, IoT shadow push for M5; openWakeWord-only training (Batch Fargate ARM64, piper synthetic positives, ≤3/day/user); Porcupine catalog-flagged unavailable; deliverables bucket `live-ninja-deliverables-759775734231` 180d lifecycle.
 
 ### M7 — Hardening / observability / cost / privacy
-_(no notes yet)_
+
+**2026-07-18 01:00–02:00 EDT — 6 authors + integrator + 3-lens adversarial security review (workflow `wf_f3476c1d`).**
+- Observability: explicit 30-day LogGroups (all 10 fns), `live-ninja-ops` CloudWatch dashboard, telemetry lake (POST `/api/v1/telemetry` → Firehose → analytics bucket + Glue + Athena; transcript-content keys rejected server-side), extra alarms (broker errors, queue depth, DLQ). Integrator caught two silently-disabled wirings: `FIREHOSE_STREAM`→`TELEMETRY_FIREHOSE_STREAM_NAME` name mismatch, and missing broker `EMAIL_QUEUE_URL`/`OWNER_EMAIL`/`RETENTION_DAYS` env for the auto-suspend alert.
+- Cost/quota: hourly-burn anomaly → auto-suspend (status=suspended, SES alert, denied at broker+authorizer), concurrent-session counter, retention default 90d→**30d**.
+- Privacy: `cmd/account-purge` Lambda (paginated partition purge + S3 prefix deletes + IoT teardown + SES confirm), `DELETE /api/v1/account` + export, CONSENT# records.
+- Edge/versioning: WAF (CloudFront-scope WebACL — WAFv2 doesn't associate to HTTP APIs; managed common rules + 2000/5min rate), `X-LN-Server` middleware + `GET /v1/compat` + client-version EMF.
+- Load probe: `scripts/loadtest/goload.go` run against prod read-only paths — table read units flat (proves no Scan), 0 5xx.
+
+**Security review — findings + remediation (all CONFIRMED fixes landed this commit):**
+- Auth core rated solid (no alg-confusion/kid-injection/replay; refresh reuse-detection robust; `__Host-` cookies correct).
+- **[HIGH] SSRF via redirect in `web_research`** → FIXED: per-hop `CheckRedirect` re-validates https + allow-list on every redirect (open-redirect / link-local reads blocked). Regression test added.
+- **[MED] `send_email` exfil** (model-attested `confirmExternal` bypassable by injection) → FIXED: external recipients must be on the owner-managed access allow-list server-side, not just the model's boolean. Regression test added.
+- **[MED] OAuth login-CSRF / no state↔browser binding** → FIXED: `__Host-ln_oauth` cookie set at login, constant-time matched at callback.
+- **[HIGH] Device-pairing has no user_code binding** (RFC 8628 anti-phishing) → DEFERRED to a tracked pre-device-launch task (needs firmware+portal+backend coordination, not HIL-verifiable tonight; not exploitable in prod — no device onboarded). See task + M5 DoD gate.
+- Lower findings (idempotency-before-execute, shadow `ln-` prefix collapse) noted for M8 cleanup.
+
+**Also this commit — 3 prod bugs from the user's live report (2026-07-18 ~01:45):** (1) OpenAI GA realtime API moved `turn_detection` under `session.audio.input` — top-level 400'd every ephemeral mint, so speaking never connected; (2) `.gitignore` `vendor/` also matched `web/static/vendor/`, so the onnxruntime-web files 404'd and the wake word failed — root-anchored to `/vendor/`, committed pinned ORT; (3) `conversation.mjs` temporal-dead-zone (`wakeEngine` read by the MicController constructor before its `let`) — hoisted the declaration.
 
 ### M8 — Launch
 _(no notes yet)_

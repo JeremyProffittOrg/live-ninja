@@ -7,7 +7,7 @@
 SHELL := /bin/sh
 
 # Logical function name -> ./cmd/<name> directory (per shared spec).
-FUNCTIONS := web authorizer realtime-broker iot-ingest usage-rollup email-dispatch deliverables-zipper shadow-ingest topics-extract
+FUNCTIONS := web authorizer realtime-broker iot-ingest usage-rollup email-dispatch deliverables-zipper shadow-ingest topics-extract account-purge
 
 .PHONY: all build test vet lint clean
 
@@ -21,7 +21,7 @@ build:
 	for fn in $(FUNCTIONS); do \
 		echo "==> building $$fn (./cmd/$$fn -> .build/$$fn/bootstrap)"; \
 		mkdir -p .build/$$fn; \
-		GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -trimpath -ldflags "-s -w" -o .build/$$fn/bootstrap ./cmd/$$fn; \
+		GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -trimpath -ldflags "-s -w -X 'github.com/JeremyProffittOrg/live-ninja/internal/webapp.BuildVersion=$${BUILD_VERSION:-$$(cat VERSION 2>/dev/null || echo 0.0.0)+$$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}'" -o .build/$$fn/bootstrap ./cmd/$$fn; \
 	done
 
 test:

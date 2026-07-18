@@ -498,8 +498,16 @@ func handleToolsInvoke(deps *Deps, registry *tools.Registry) fiber.Handler {
 
 // ---- POST /api/v1/transcript ----
 
-// transcriptTTL matches the shared spec's LOG# retention (90 days).
-const transcriptTTL = 90 * 24 * time.Hour
+// transcriptTTL is the LOG# retention window. M7 privacy default is 30
+// days (plan.md M7 / Crosscut §4: "transcripts 30d default"); the
+// RETENTION_DAYS env var (template.yaml, WebFunction) overrides it.
+var transcriptTTL = func() time.Duration {
+	days := 30
+	if v, err := strconv.Atoi(os.Getenv("RETENTION_DAYS")); err == nil && v > 0 {
+		days = v
+	}
+	return time.Duration(days) * 24 * time.Hour
+}()
 
 // activeUserMarkerTTL only needs to outlive usage-rollup's hourly pass
 // over "today" (and comfortably cover a late/retried run into the next

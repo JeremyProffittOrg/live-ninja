@@ -66,11 +66,27 @@ func handleSendEmail(ctx context.Context, deps *Deps, inv Invocation, args map[s
 	}
 
 	external := !strings.EqualFold(strings.TrimSpace(to), strings.TrimSpace(deps.OwnerEmail))
-	confirmed, _ := args["confirmExternal"].(bool)
-	if external && !confirmed {
-		return nil, toolErrf(CodeConfirmationRequired,
-			"sending to an external address (%s) requires the user's explicit confirmation; "+
-				"ask the user, then retry with confirmExternal=true", to)
+	if external {
+		// The model's own confirmExternal boolean is NOT sufficient — anything
+		// that reaches the model context (web_research output, a note it reads)
+		// can set it, making arbitrary exfiltration a one-call prompt injection.
+		// Require server-side evidence the recipient is trusted: it must be on
+		// the owner-managed access allow-list. confirmExternal still gates the
+		// model's intent, but the allow-list is the actual security boundary.
+		allowed, err := deps.Store.IsAllowed(ctx, "", to)
+		if err != nil {
+			return nil, toolErrf(CodeUpstreamError, "could not verify the recipient right now")
+		}
+		if !allowed {
+			return nil, toolErrf(CodeConfirmationRequired,
+				"%s is not on the approved-recipient allow-list; external email is limited to "+
+					"the owner and allow-listed addresses (add them in Settings)", to)
+		}
+		if confirmed, _ := args["confirmExternal"].(bool); !confirmed {
+			return nil, toolErrf(CodeConfirmationRequired,
+				"sending to %s requires the user's explicit confirmation; ask the user, "+
+					"then retry with confirmExternal=true", to)
+		}
 	}
 
 	body, _ := json.Marshal(emailQueueMessage{

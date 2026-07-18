@@ -75,6 +75,13 @@ Resources:
       Description: Go Fiber app behind Lambda Web Adapter; serves /healthz and all routes.
       CodeUri: .build/web/
       MemorySize: 512
+      # M7: stack-managed log group with 30-day retention. Custom-named
+      # (/live-ninja/lambda/<fn>) rather than the default /aws/lambda/<fn>
+      # because the default groups were already auto-created by Lambda and
+      # an AWS::Logs::LogGroup at an existing name fails the deploy; the
+      # legacy unmanaged groups are cleaned up post-deploy by the workflow.
+      LoggingConfig:
+        LogGroup: !Ref WebLogGroup
       Layers:
         - arn:aws:lambda:us-east-1:753240598075:layer:LambdaAdapterLayerArm64:25
       Environment:
@@ -105,6 +112,17 @@ Resources:
           # extraction trigger.
           BEDROCK_EMBED_MODEL: amazon.titan-embed-text-v2:0
           TOPICS_EXTRACT_FUNCTION_NAME: !Ref TopicsExtractFunction
+          # M7: telemetry lake — POST /api/v1/telemetry batches (max 25 events,
+          # contracts/telemetry.schema.json, server-side banned-key validation)
+          # are forwarded to this Direct PUT Firehose stream. Each record MUST
+          # be newline-terminated JSON so the gzip objects Firehose lands in
+          # the analytics bucket are directly Athena-queryable.
+          TELEMETRY_FIREHOSE_STREAM_NAME: !Ref TelemetryDeliveryStream
+          # M7 privacy: right-to-delete worker (DELETE /api/v1/account
+          # marks status=deleting then async-invokes it) + transcript
+          # LOG# retention override (days; code default is 30).
+          ACCOUNT_PURGE_FUNCTION_NAME: !Ref AccountPurgeFunction
+          RETENTION_DAYS: "30"
       Events:
         CatchAll:
           Type: HttpApi
@@ -290,6 +308,23 @@ Resources:
                 - lambda:InvokeFunction
               Resource:
                 - !GetAtt TopicsExtractFunction.Arn
+            # ---- M7: telemetry lake ingest (batched PutRecordBatch only —
+            # single-record PutRecord deliberately not granted; the handler
+            # always batches).
+            - Sid: TelemetryFirehosePut
+              Effect: Allow
+              Action:
+                - firehose:PutRecordBatch
+              Resource:
+                - !GetAtt TelemetryDeliveryStream.Arn
+            # ---- M7 privacy: DELETE /api/v1/account async-invokes the
+            # right-to-delete worker after marking status=deleting.
+            - Sid: InvokeAccountPurge
+              Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource:
+                - !GetAtt AccountPurgeFunction.Arn
 
   AuthorizerFunction:
     Type: AWS::Serverless::Function
@@ -299,6 +334,8 @@ Resources:
         HTTP API v2 simple-response Lambda authorizer, attached to the HTTP API as
         DefaultAuthorizer (M1). Deny-by-default; allows only explicitly public routes.
       CodeUri: .build/authorizer/
+      LoggingConfig:
+        LogGroup: !Ref AuthorizerLogGroup
       Environment:
         Variables:
           JWKS_URL: !Sub "https://${DomainName}/.well-known/jwks.json"
@@ -320,12 +357,26 @@ Resources:
         Direct-invoke realtime token broker (invoked by the web function in M2+).
         Sole holder of ssm:GetParameter on the OpenAI API key parameter.
       CodeUri: .build/realtime-broker/
+      LoggingConfig:
+        LogGroup: !Ref RealtimeBrokerLogGroup
       Environment:
         Variables:
           OPENAI_REALTIME_MODEL: !Ref OpenAIRealtimeModel
+          # M7 cost/quota: hourly-burn auto-suspend owner alert (enqueued to
+          # the email queue; cmd/email-dispatch sends via SES) + LOG# ledger
+          # TTL override (days; code default is 30).
+          EMAIL_QUEUE_URL: !Ref EmailQueue
+          OWNER_EMAIL: proffitt.jeremy@gmail.com
+          RETENTION_DAYS: "30"
       Policies:
         - Version: "2012-10-17"
           Statement:
+            - Sid: SuspendAlertEnqueue
+              Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource:
+                - !GetAtt EmailQueue.Arn
             - Sid: TableUsageBucketLog
               Effect: Allow
               Action:
@@ -356,6 +407,8 @@ Resources:
       FunctionName: live-ninja-iot-ingest
       Description: IoT rule target - parses device telemetry and records DEVICE#/TELEM lastSeen.
       CodeUri: .build/iot-ingest/
+      LoggingConfig:
+        LogGroup: !Ref IotIngestLogGroup
       Events:
         Telemetry:
           Type: IoTRule
@@ -383,6 +436,8 @@ Resources:
         folds device reported state back into DynamoDB (DEVICE# lastSeen/reportedVersion;
         never downgrades the canonical SETTINGS# version - contracts/shadow.md).
       CodeUri: .build/shadow-ingest/
+      LoggingConfig:
+        LogGroup: !Ref ShadowIngestLogGroup
       Events:
         ConfigShadowAccepted:
           Type: IoTRule
@@ -428,6 +483,8 @@ Resources:
       FunctionName: live-ninja-usage-rollup
       Description: Hourly usage rollup - Query-only reads of the USAGE partition, emits EMF metrics.
       CodeUri: .build/usage-rollup/
+      LoggingConfig:
+        LogGroup: !Ref UsageRollupLogGroup
       Timeout: 60
       Events:
         Hourly:
@@ -455,6 +512,14 @@ Resources:
       FunctionName: live-ninja-email-dispatch
       Description: SQS consumer - sends templated email via SES with DynamoDB idempotency.
       CodeUri: .build/email-dispatch/
+      LoggingConfig:
+        LogGroup: !Ref EmailDispatchLogGroup
+      Environment:
+        Variables:
+          # M7: sends MUST pass this as ConfigurationSetName so SES streams
+          # bounce/complaint events to the ops SNS topic (email alert — the
+          # $0 alternative to per-notification polling).
+          EMAIL_CONFIGURATION_SET: !Ref SesConfigurationSet
       Events:
         EmailJobs:
           Type: SQS
@@ -471,6 +536,9 @@ Resources:
               Resource:
                 - !Sub "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/jeremy.ninja"
                 - !Sub "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/jeremy@jeremy.ninja"
+                # Sending with a ConfigurationSetName also authorizes against
+                # the configuration-set ARN (M7 bounce/complaint wiring).
+                - !Sub "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/${SesConfigurationSet}"
             - Sid: IdempotencyWrite
               Effect: Allow
               Action:
@@ -495,6 +563,8 @@ Resources:
         deliverable_zip tool; streams S3 objects through archive/zip + io.Pipe into a
         new deliverable object (no /tmp spooling of the full archive).
       CodeUri: .build/deliverables-zipper/
+      LoggingConfig:
+        LogGroup: !Ref DeliverablesZipperLogGroup
       MemorySize: 512
       Timeout: 300
       Environment:
@@ -540,6 +610,8 @@ Resources:
         function on {final:true}. Queries a session's LOG# turns, calls the realtime
         broker's "extract-topics" mode, writes CONV#/TOPICREF#/TOPIC# items. Query-only.
       CodeUri: .build/topics-extract/
+      LoggingConfig:
+        LogGroup: !Ref TopicsExtractLogGroup
       Timeout: 60
       Policies:
         - Version: "2012-10-17"
@@ -559,6 +631,175 @@ Resources:
                 - lambda:InvokeFunction
               Resource:
                 - !GetAtt RealtimeBrokerFunction.Arn
+
+  AccountPurgeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: live-ninja-account-purge
+# Right-to-delete worker (M7), async-invoked by DELETE /api/v1/account.
+      # Query-paginates USER#/DEVICE# partitions into BatchWriteItem deletes
+      # (never a Scan), purges the user's S3 prefixes, tears down IoT
+      # thing/cert material, enqueues the SES confirmation. Idempotent and
+      # resumable - a retried invoke re-runs to completion.
+      Description: >-
+        Direct-invoke right-to-delete worker (M7) - invoked async by the web
+        function's DELETE /api/v1/account. Table purge + S3 prefix purge + IoT
+        teardown + SES confirmation enqueue. Idempotent/resumable.
+      CodeUri: .build/account-purge/
+      MemorySize: 512
+      Timeout: 300
+      Environment:
+        Variables:
+          DELIVERABLES_BUCKET: !Ref DeliverablesBucket
+          USER_BUCKET: !Ref UserBucket
+          WAKEWORDS_BUCKET: !Ref WakewordsBucket
+          EMAIL_QUEUE_URL: !Ref EmailQueue
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Sid: TablePurge
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:PutItem
+                - dynamodb:DeleteItem
+                - dynamodb:BatchWriteItem
+              Resource:
+                - !GetAtt Table.Arn
+                - !Sub "${Table.Arn}/index/*"
+            - Sid: PurgeDeliverablesPrefix
+              Effect: Allow
+              Action:
+                - s3:DeleteObject
+              Resource:
+                - !Sub "${DeliverablesBucket.Arn}/deliverables/*"
+            - Sid: PurgeUserPrefix
+              Effect: Allow
+              Action:
+                - s3:DeleteObject
+              Resource:
+                - !Sub "${UserBucket.Arn}/users/*"
+            - Sid: PurgeWakewordsPrefix
+              Effect: Allow
+              Action:
+                - s3:DeleteObject
+              Resource:
+                - !Sub "${WakewordsBucket.Arn}/wakewords/*"
+            - Sid: PurgeListBuckets
+              Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource:
+                - !GetAtt DeliverablesBucket.Arn
+                - !GetAtt UserBucket.Arn
+                - !GetAtt WakewordsBucket.Arn
+              Condition:
+                StringLike:
+                  s3:prefix:
+                    - "deliverables/*"
+                    - "users/*"
+                    - "wakewords/*"
+            # IoT teardown for provisioned devices (thing/cert material on
+            # DEVICE items). Detach/delete actions; cert + policy actions
+            # have partial resource-level support - scoped where possible.
+            - Sid: IotDeviceTeardown
+              Effect: Allow
+              Action:
+                - iot:ListAttachedPolicies
+                - iot:DetachPolicy
+                - iot:DetachThingPrincipal
+                - iot:UpdateCertificate
+                - iot:DeleteCertificate
+                - iot:DeleteThing
+              Resource: "*"
+            - Sid: EmailConfirm
+              Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource:
+                - !GetAtt EmailQueue.Arn
+
+  # ------------------------------------------------------------------
+  # M7: explicit stack-managed Lambda log groups, 30-day retention.
+  #
+  # Lambda's implicitly-created /aws/lambda/<fn> groups default to
+  # never-expire; five of them already exist in the account (created on
+  # first invoke), and CloudFormation cannot adopt an existing log group
+  # (AWS::Logs::LogGroup create fails with AlreadyExists) — a
+  # delete-before-deploy would race live traffic re-creating the group.
+  # So every function instead declares LoggingConfig pointing at a
+  # fresh custom-named group here (/live-ninja/lambda/<fn>); the legacy
+  # unmanaged /aws/lambda/live-ninja-* groups are deleted (guarded on
+  # retention==null, i.e. not stack-managed) by a post-deploy workflow
+  # step. Exception: account-purge does not exist in AWS yet, so its
+  # group can safely use the default /aws/lambda/ name and applies even
+  # if the function omits LoggingConfig.
+  # ------------------------------------------------------------------
+  WebLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /live-ninja/lambda/web
+      RetentionInDays: 30
+
+  AuthorizerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /live-ninja/lambda/authorizer
+      RetentionInDays: 30
+
+  RealtimeBrokerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /live-ninja/lambda/realtime-broker
+      RetentionInDays: 30
+
+  IotIngestLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /live-ninja/lambda/iot-ingest
+      RetentionInDays: 30
+
+  ShadowIngestLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /live-ninja/lambda/shadow-ingest
+      RetentionInDays: 30
+
+  UsageRollupLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /live-ninja/lambda/usage-rollup
+      RetentionInDays: 30
+
+  EmailDispatchLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /live-ninja/lambda/email-dispatch
+      RetentionInDays: 30
+
+  DeliverablesZipperLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /live-ninja/lambda/deliverables-zipper
+      RetentionInDays: 30
+
+  TopicsExtractLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /live-ninja/lambda/topics-extract
+      RetentionInDays: 30
+
+  # M7 account-purge Lambda (cmd/account-purge, added in this milestone —
+  # FunctionName must be live-ninja-account-purge). Default-name group is
+  # safe here because the function has never existed in AWS, so Lambda has
+  # never auto-created it; retention applies with or without a
+  # LoggingConfig on the function.
+  AccountPurgeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/live-ninja-account-purge
+      RetentionInDays: 30
 
   # ------------------------------------------------------------------
   # DynamoDB single table
@@ -747,6 +988,147 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+
+  # ------------------------------------------------------------------
+  # M7: telemetry lake — web fn (POST /api/v1/telemetry, schema-validated,
+  # no transcript content) --PutRecordBatch--> Firehose (Direct PUT, gzip,
+  # 5 min / 5 MB buffers) --> s3://<analytics>/telemetry/ --> Glue table
+  # --> Athena workgroup. Records are newline-delimited JSON envelopes per
+  # contracts/telemetry.schema.json.
+  # ------------------------------------------------------------------
+  TelemetryFirehoseLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/kinesisfirehose/live-ninja-telemetry
+      RetentionInDays: 30
+
+  TelemetryFirehoseLogStream:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref TelemetryFirehoseLogGroup
+      LogStreamName: S3Delivery
+
+  TelemetryFirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: live-ninja-telemetry-firehose
+      Description: Assumed by Kinesis Data Firehose to land gzip'd telemetry batches in the analytics bucket.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: telemetry-s3-delivery
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: AnalyticsWrite
+                Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                  - s3:PutObject
+                Resource:
+                  - !GetAtt AnalyticsBucket.Arn
+                  - !Sub "${AnalyticsBucket.Arn}/*"
+              - Sid: DeliveryErrorLogs
+                Effect: Allow
+                Action:
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub "${TelemetryFirehoseLogGroup.Arn}:log-stream:*"
+
+  TelemetryDeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: live-ninja-telemetry
+      DeliveryStreamType: DirectPut
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !GetAtt AnalyticsBucket.Arn
+        RoleARN: !GetAtt TelemetryFirehoseRole.Arn
+        # Locked buffers: whichever of 5 minutes / 5 MB fills first.
+        BufferingHints:
+          IntervalInSeconds: 300
+          SizeInMBs: 5
+        CompressionFormat: GZIP
+        Prefix: "telemetry/"
+        ErrorOutputPrefix: "telemetry-errors/"
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Ref TelemetryFirehoseLogGroup
+          LogStreamName: !Ref TelemetryFirehoseLogStream
+
+  AnalyticsGlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: live_ninja
+        Description: live-ninja self-hosted telemetry/analytics lake (Athena over the analytics bucket).
+
+  # Schema mirrors contracts/telemetry.schema.json. attrs stays a raw JSON
+  # string (query with json_extract / json_extract_scalar) because its keys
+  # are open-ended per event; the OpenX SerDe lower-cases JSON keys onto the
+  # lower-cased column names below. Firehose's default yyyy/MM/dd/HH key
+  # layout under telemetry/ is read recursively — no partitions to manage.
+  AnalyticsTelemetryTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref AnalyticsGlueDatabase
+      TableInput:
+        Name: telemetry_events
+        Description: Telemetry event envelopes (contracts/telemetry.schema.json) landed by the live-ninja-telemetry Firehose stream.
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: json
+          compressionType: gzip
+        StorageDescriptor:
+          Location: !Sub "s3://${AnalyticsBucket}/telemetry/"
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
+            Parameters:
+              ignore.malformed.json: "true"
+          Columns:
+            - Name: event
+              Type: string
+            - Name: deviceid
+              Type: string
+            - Name: surface
+              Type: string
+            - Name: ts
+              Type: string
+            - Name: sessionid
+              Type: string
+            - Name: userid
+              Type: string
+            - Name: attrs
+              Type: string
+
+  AnalyticsWorkGroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: live-ninja-analytics
+      Description: Athena workgroup for the live-ninja telemetry lake; results land back in the analytics bucket.
+      State: ENABLED
+      WorkGroupConfiguration:
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetricsEnabled: true
+        # Cost guard: no single query may scan more than 1 GB.
+        BytesScannedCutoffPerQuery: 1073741824
+        ResultConfiguration:
+          OutputLocation: !Sub "s3://${AnalyticsBucket}/athena-results/"
 
   DeliverablesBucket:
     Type: AWS::S3::Bucket
@@ -1123,6 +1505,68 @@ Resources:
             FrameOption: DENY
             Override: true
 
+  # WAFv2 does NOT support associating a WebACL with an HTTP API (v2) —
+  # AWS::WAFv2::WebACLAssociation only accepts APPLICATION_LOAD_BALANCER,
+  # API_GATEWAY (REST/v1), APPSYNC, COGNITO_USER_POOL, APP_RUNNER_SERVICE,
+  # and VERIFIED_ACCESS_INSTANCE as resource types (verified against the
+  # WAFv2 resource-type enum; HTTP API and CloudFront are both absent from
+  # WebACLAssociation's allowed list). So this WebACL is CLOUDFRONT-scope
+  # and attaches directly via CloudFrontDistribution's WebACLId property
+  # instead, which is the only supported path for an HTTP-API-backed
+  # CloudFront distribution. CLOUDFRONT scope requires the WebACL be
+  # created in us-east-1 — this stack already deploys there (samconfig.toml).
+  EdgeWebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: live-ninja-edge
+      Scope: CLOUDFRONT
+      Description: Rate limiting + AWS managed common rule set in front of the live-ninja CloudFront distribution.
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: live-ninja-edge
+      Rules:
+        - Name: RateLimitPerIP
+          Priority: 0
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              Limit: 2000
+              EvaluationWindowSec: 300
+              AggregateKeyType: IP
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: live-ninja-rate-limit
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 1
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+              # SizeRestrictions_BODY defaults to blocking any request body
+              # over 8KB. POST /api/v1/fallback/stt accepts a multipart
+              # audio upload up to 25MB (internal/webapp/api_routes.go,
+              # io.LimitReader(f, 25<<20)) through this same CloudFront
+              # distribution/origin, so the managed rule's default Block
+              # action would break that upload path. Every other POST body
+              # on this API (transcript batches, tool invokes, JSON turns)
+              # is well under 8KB, so only this one sub-rule is downgraded
+              # to Count instead of excluding the whole managed group.
+              RuleActionOverrides:
+                - Name: SizeRestrictions_BODY
+                  ActionToUse:
+                    Count: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: live-ninja-common-rules
+
   CloudFrontDistribution:
     Type: AWS::CloudFront::Distribution
     Properties:
@@ -1131,6 +1575,7 @@ Resources:
         Comment: live-ninja edge for live.jeremy.ninja
         Aliases:
           - !Ref DomainName
+        WebACLId: !GetAtt EdgeWebACL.Arn
         HttpVersion: http2and3
         IPV6Enabled: true
         PriceClass: PriceClass_100
@@ -1211,6 +1656,72 @@ Resources:
       Subscription:
         - Protocol: email
           Endpoint: proffitt.jeremy@gmail.com
+
+  # M7: explicit topic policy — SES event publishing (bounce/complaint
+  # destination below) requires ses.amazonaws.com be granted sns:Publish;
+  # an AWS::SNS::TopicPolicy replaces the default policy wholesale, so the
+  # owner + CloudWatch-alarms statements are restated here.
+  OpsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref OpsTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: OwnerAccess
+            Effect: Allow
+            Principal:
+              AWS: "*"
+            Action:
+              - sns:Publish
+              - sns:Subscribe
+              - sns:Receive
+              - sns:GetTopicAttributes
+              - sns:ListSubscriptionsByTopic
+            Resource: !Ref OpsTopic
+            Condition:
+              StringEquals:
+                AWS:SourceOwner: !Ref AWS::AccountId
+          - Sid: CloudWatchAlarmsPublish
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref OpsTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+          - Sid: SesEventPublish
+            Effect: Allow
+            Principal:
+              Service: ses.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref OpsTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  # M7: SES bounce/complaint visibility via SNS -> ops email ($0 — no
+  # Firehose/EventBridge event bus needed). email-dispatch passes
+  # EMAIL_CONFIGURATION_SET on every SendEmail so events flow through here.
+  SesConfigurationSet:
+    Type: AWS::SES::ConfigurationSet
+    Properties:
+      Name: live-ninja
+
+  SesBounceEventDestination:
+    Type: AWS::SES::ConfigurationSetEventDestination
+    Properties:
+      ConfigurationSetName: !Ref SesConfigurationSet
+      EventDestination:
+        Name: ops-sns-bounces
+        Enabled: true
+        MatchingEventTypes:
+          - bounce
+          - complaint
+        SnsDestination:
+          TopicARN: !Ref OpsTopic
 
   TableReadCapacityAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -1308,6 +1819,83 @@ Resources:
       AlarmActions:
         - !Ref OpsTopic
 
+  # ---- M7 alarms ----
+  BrokerErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: live-ninja-broker-errors
+      AlarmDescription: live-ninja-realtime-broker Lambda errors >= 3 in 5 minutes (ephemeral-token mint / fallback / topic-extract failures).
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref RealtimeBrokerFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref OpsTopic
+
+  AuthorizerErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: live-ninja-authorizer-errors
+      AlarmDescription: live-ninja-authorizer Lambda errors >= 5 in 5 minutes — auth outage risk; every API route depends on this function.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AuthorizerFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref OpsTopic
+
+  EmailQueueDepthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: live-ninja-email-queue-depth
+      AlarmDescription: live-ninja-email queue backlog > 100 visible messages — email-dispatch is stalled or SES is rejecting sends.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt EmailQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 100
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref OpsTopic
+
+  EmailDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: live-ninja-email-dlq
+      AlarmDescription: live-ninja-email-dlq has >= 1 message — an email job exhausted its 5 receives and was dead-lettered.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt EmailDeadLetterQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref OpsTopic
+
   HttpApi5xxAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -1326,6 +1914,150 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions:
         - !Ref OpsTopic
+
+  # M7: single-pane ops dashboard. Custom metrics are EMF-emitted
+  # (internal/observ) so SEARCH expressions are used for them — they match
+  # whatever dimension values appear without hardcoding Surface/Tool/Kind
+  # value lists.
+  OpsDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: live-ninja-ops
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "text", "x": 0, "y": 0, "width": 24, "height": 3,
+              "properties": {
+                "markdown": "## live-ninja-ops\nAll times UTC. Custom metrics are EMF from `internal/observ` (namespaces `LiveNinja/*`).\n\n**Budgets (no CloudWatch metric — see AWS Budgets console):** monthly cost budgets at **$20 / $50 / $100**, each emailing proffitt.jeremy@gmail.com at 100% of actual spend, filtered to tag `Project=live-ninja`. For per-service breakdown use Cost Explorer grouped by `USAGE_TYPE` with the same tag filter."
+              }
+            },
+            {
+              "type": "metric", "x": 0, "y": 3, "width": 8, "height": 6,
+              "properties": {
+                "title": "Broker mint latency (ms)",
+                "view": "timeSeries", "stacked": false, "region": "${AWS::Region}", "period": 300,
+                "metrics": [
+                  [ { "expression": "SEARCH('{LiveNinja/RealtimeBroker,Surface} MetricName=\"EphemeralTokenMintLatency\"', 'Average', 300)", "id": "mintAvg", "label": "avg" } ],
+                  [ { "expression": "SEARCH('{LiveNinja/RealtimeBroker,Surface} MetricName=\"EphemeralTokenMintLatency\"', 'p99', 300)", "id": "mintP99", "label": "p99" } ]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 8, "y": 3, "width": 8, "height": 6,
+              "properties": {
+                "title": "Broker mint errors + quota/rate rejections",
+                "view": "timeSeries", "stacked": false, "region": "${AWS::Region}", "period": 300,
+                "metrics": [
+                  [ { "expression": "SEARCH('{LiveNinja/RealtimeBroker,Surface} MetricName=\"MintErrors\"', 'Sum', 300)", "id": "mintErr", "label": "MintErrors" } ],
+                  [ { "expression": "SEARCH('{LiveNinja/RealtimeBroker,Kind} MetricName=\"QuotaRejections\"', 'Sum', 300)", "id": "quotaRej", "label": "QuotaRejections" } ]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 16, "y": 3, "width": 8, "height": 6,
+              "properties": {
+                "title": "Sessions brokered (by surface)",
+                "view": "timeSeries", "stacked": true, "region": "${AWS::Region}", "period": 300,
+                "metrics": [
+                  [ { "expression": "SEARCH('{LiveNinja/RealtimeBroker,Surface} MetricName=\"SessionsBrokered\"', 'Sum', 300)", "id": "sessions", "label": "SessionsBrokered" } ]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 0, "y": 9, "width": 8, "height": 6,
+              "properties": {
+                "title": "Tool invocations (tool/outcome/surface)",
+                "view": "timeSeries", "stacked": true, "region": "${AWS::Region}", "period": 300,
+                "metrics": [
+                  [ { "expression": "SEARCH('{LiveNinja/Tools,Outcome,Surface,Tool} MetricName=\"ToolInvocations\"', 'Sum', 300)", "id": "tools", "label": "ToolInvocations" } ]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 8, "y": 9, "width": 8, "height": 6,
+              "properties": {
+                "title": "HTTP API 4xx / 5xx",
+                "view": "timeSeries", "stacked": false, "region": "${AWS::Region}", "period": 300,
+                "metrics": [
+                  [ "AWS/ApiGateway", "4xx", "ApiId", "${HttpApi}", { "stat": "Sum", "label": "4xx" } ],
+                  [ "AWS/ApiGateway", "5xx", "ApiId", "${HttpApi}", { "stat": "Sum", "label": "5xx", "color": "#d62728" } ]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 16, "y": 9, "width": 8, "height": 6,
+              "properties": {
+                "title": "DynamoDB consumed capacity (flat reads = no Scan)",
+                "view": "timeSeries", "stacked": false, "region": "${AWS::Region}", "period": 300,
+                "metrics": [
+                  [ "AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "${Table}", { "stat": "Sum", "label": "RCU" } ],
+                  [ "AWS/DynamoDB", "ConsumedWriteCapacityUnits", "TableName", "${Table}", { "stat": "Sum", "label": "WCU" } ]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 0, "y": 15, "width": 12, "height": 6,
+              "properties": {
+                "title": "Lambda errors (per function)",
+                "view": "timeSeries", "stacked": false, "region": "${AWS::Region}", "period": 300,
+                "metrics": [
+                  [ "AWS/Lambda", "Errors", "FunctionName", "live-ninja-web", { "stat": "Sum" } ],
+                  [ "AWS/Lambda", "Errors", "FunctionName", "live-ninja-authorizer", { "stat": "Sum" } ],
+                  [ "AWS/Lambda", "Errors", "FunctionName", "live-ninja-realtime-broker", { "stat": "Sum" } ],
+                  [ "AWS/Lambda", "Errors", "FunctionName", "live-ninja-iot-ingest", { "stat": "Sum" } ],
+                  [ "AWS/Lambda", "Errors", "FunctionName", "live-ninja-shadow-ingest", { "stat": "Sum" } ],
+                  [ "AWS/Lambda", "Errors", "FunctionName", "live-ninja-usage-rollup", { "stat": "Sum" } ],
+                  [ "AWS/Lambda", "Errors", "FunctionName", "live-ninja-email-dispatch", { "stat": "Sum" } ],
+                  [ "AWS/Lambda", "Errors", "FunctionName", "live-ninja-deliverables-zipper", { "stat": "Sum" } ],
+                  [ "AWS/Lambda", "Errors", "FunctionName", "live-ninja-topics-extract", { "stat": "Sum" } ],
+                  [ "AWS/Lambda", "Errors", "FunctionName", "live-ninja-account-purge", { "stat": "Sum" } ]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 12, "y": 15, "width": 12, "height": 6,
+              "properties": {
+                "title": "Lambda duration p99 (ms, per function)",
+                "view": "timeSeries", "stacked": false, "region": "${AWS::Region}", "period": 300,
+                "metrics": [
+                  [ "AWS/Lambda", "Duration", "FunctionName", "live-ninja-web", { "stat": "p99" } ],
+                  [ "AWS/Lambda", "Duration", "FunctionName", "live-ninja-authorizer", { "stat": "p99" } ],
+                  [ "AWS/Lambda", "Duration", "FunctionName", "live-ninja-realtime-broker", { "stat": "p99" } ],
+                  [ "AWS/Lambda", "Duration", "FunctionName", "live-ninja-iot-ingest", { "stat": "p99" } ],
+                  [ "AWS/Lambda", "Duration", "FunctionName", "live-ninja-shadow-ingest", { "stat": "p99" } ],
+                  [ "AWS/Lambda", "Duration", "FunctionName", "live-ninja-usage-rollup", { "stat": "p99" } ],
+                  [ "AWS/Lambda", "Duration", "FunctionName", "live-ninja-email-dispatch", { "stat": "p99" } ],
+                  [ "AWS/Lambda", "Duration", "FunctionName", "live-ninja-deliverables-zipper", { "stat": "p99" } ],
+                  [ "AWS/Lambda", "Duration", "FunctionName", "live-ninja-topics-extract", { "stat": "p99" } ],
+                  [ "AWS/Lambda", "Duration", "FunctionName", "live-ninja-account-purge", { "stat": "p99" } ]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 0, "y": 21, "width": 12, "height": 6,
+              "properties": {
+                "title": "Email queue depth (visible messages)",
+                "view": "timeSeries", "stacked": false, "region": "${AWS::Region}", "period": 300,
+                "metrics": [
+                  [ "AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "live-ninja-email", { "stat": "Maximum", "label": "email" } ],
+                  [ "AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "live-ninja-email-dlq", { "stat": "Maximum", "label": "email-dlq", "color": "#d62728" } ]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 12, "y": 21, "width": 12, "height": 6,
+              "properties": {
+                "title": "Telemetry Firehose (records in / delivered to S3)",
+                "view": "timeSeries", "stacked": false, "region": "${AWS::Region}", "period": 300,
+                "metrics": [
+                  [ "AWS/Firehose", "IncomingRecords", "DeliveryStreamName", "live-ninja-telemetry", { "stat": "Sum", "label": "in" } ],
+                  [ "AWS/Firehose", "DeliveryToS3.Records", "DeliveryStreamName", "live-ninja-telemetry", { "stat": "Sum", "label": "to S3" } ]
+                ]
+              }
+            }
+          ]
+        }
 
   Budget20:
     Type: AWS::Budgets::Budget
@@ -1421,3 +2153,15 @@ Outputs:
   WakewordTrainJobDefinitionArn:
     Description: AWS Batch job definition ARN (revision-pinned) for wake-word training.
     Value: !Ref WakewordTrainJobDefinition
+  TelemetryDeliveryStreamName:
+    Description: Direct PUT Firehose stream the web function batches telemetry events into (M7).
+    Value: !Ref TelemetryDeliveryStream
+  AnalyticsBucketName:
+    Description: S3 bucket holding the gzip'd telemetry lake + Athena query results (M7).
+    Value: !Ref AnalyticsBucket
+  AthenaWorkGroupName:
+    Description: Athena workgroup for querying live_ninja.telemetry_events (M7).
+    Value: !Ref AnalyticsWorkGroup
+  OpsDashboardName:
+    Description: CloudWatch ops dashboard (M7).
+    Value: !Ref OpsDashboard

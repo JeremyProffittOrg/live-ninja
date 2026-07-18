@@ -29,6 +29,13 @@ const defaultResearchDays = 30
 // page fetch so one tool call can't flood the model context.
 const maxDirectFetchChars = 6000
 
+// directFetchTimeout / maxDirectFetchRedirects bound a single web_research
+// direct fetch; the redirect cap pairs with the per-hop allow-list re-check.
+const (
+	directFetchTimeout      = 10 * time.Second
+	maxDirectFetchRedirects = 5
+)
+
 // hnSearchByDateURL is a var (not a const) so unit tests can point it at
 // an httptest fixture.
 var hnSearchByDateURL = "https://hn.algolia.com/api/v1/search_by_date"
@@ -170,7 +177,27 @@ func researchDirectFetch(ctx context.Context, deps *Deps, rawURL string) (map[st
 	req.Header.Set("User-Agent", toolsUserAgent)
 	req.Header.Set("Accept", "text/html, text/plain;q=0.9, */*;q=0.5")
 
-	resp, err := deps.HTTPClient.Do(req)
+	// Re-validate every redirect hop: the initial allow-list check is not
+	// enough because Go's default client follows up to 10 redirects, so an
+	// open-redirect on an allow-listed host (or a Location: http://169.254.169.254/…)
+	// would otherwise defeat the allow-list — an SSRF + prompt-injection
+	// delivery channel. Each hop must stay https AND on an allow-listed host.
+	client := &http.Client{
+		// Inherit the injected transport (tests supply one; prod uses the
+		// default) but enforce our own timeout + per-hop redirect guard.
+		Transport: deps.HTTPClient.Transport,
+		Timeout:   directFetchTimeout,
+		CheckRedirect: func(r *http.Request, via []*http.Request) error {
+			if len(via) >= maxDirectFetchRedirects {
+				return fmt.Errorf("too many redirects")
+			}
+			if r.URL.Scheme != "https" || !researchHostAllowed(r.URL.Hostname()) {
+				return fmt.Errorf("redirect to disallowed target %q blocked", r.URL.Redacted())
+			}
+			return nil
+		},
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		deps.Log.Error("tools: web_research direct fetch failed", "error", err.Error(), "url", rawURL)
 		return nil, toolErrf(CodeUpstreamError, "the page could not be fetched right now")

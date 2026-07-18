@@ -110,6 +110,17 @@ func (r *authRoutes) login(c *fiber.Ctx) error {
 			"Could not start sign-in. Please try again in a moment.")
 	}
 
+	// Bind this transaction to the initiating browser (see OAuthStateCookieName).
+	c.Cookie(&fiber.Cookie{
+		Name:     OAuthStateCookieName,
+		Value:    state,
+		Path:     "/",
+		Secure:   true,
+		HTTPOnly: true,
+		SameSite: "Lax",
+		MaxAge:   600,
+	})
+
 	return c.Redirect(r.deps.LWA.BuildAuthorizeURL(state, s256Challenge(verifier), redirectURI),
 		fiber.StatusFound)
 }
@@ -129,6 +140,17 @@ func (r *authRoutes) callback(c *fiber.Ctx) error {
 	if code == "" || state == "" {
 		return htmlMessage(c, fiber.StatusBadRequest, "Invalid sign-in response",
 			"The sign-in response was missing required parameters.")
+	}
+
+	// The state must match the cookie set on THIS browser at login — proves the
+	// browser completing the callback is the one that started the flow (blocks
+	// login-CSRF / session fixation). Device-pairing callbacks arrive on the
+	// device's own browser leg with the same cookie, so this applies uniformly.
+	stateCookie := c.Cookies(OAuthStateCookieName)
+	c.ClearCookie(OAuthStateCookieName)
+	if stateCookie == "" || subtle.ConstantTimeCompare([]byte(stateCookie), []byte(state)) != 1 {
+		return htmlMessage(c, fiber.StatusBadRequest, "Sign-in link expired",
+			"This sign-in attempt could not be verified in this browser. Please start again.")
 	}
 
 	st, err := r.deps.Store.GetOAuthState(ctx, state)

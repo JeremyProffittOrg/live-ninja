@@ -215,6 +215,27 @@ func TestHandlerTokensValidAfterKillSwitch(t *testing.T) {
 	assert.False(t, resp.IsAuthorized, "iat < tokensValidAfter must be denied")
 }
 
+func TestHandlerDeniesSuspendedUser(t *testing.T) {
+	// M7 hardening: a user auto-suspended by the quota gate (hourly-burn
+	// anomaly) must be denied by the authorizer's status check — any
+	// status other than "active" is rejected, "suspended" included.
+	signer, testStore := setupAuthorizer(t)
+	ctx := context.Background()
+
+	require.NoError(t, testStore.CreateUser(ctx, &store.User{
+		UserID:       "uid-1",
+		AmazonUserID: "amzn1.account.a",
+		Role:         store.RoleMember,
+		Status:       store.UserStatusSuspended,
+	}))
+	token, err := signer.SignAccessToken(ctx, auth.Claims{Sub: "uid-1", Sid: "s", Surface: "web"})
+	require.NoError(t, err)
+
+	resp, err := handler(ctx, authorizerRequest(http.MethodGet, "/api/v1/realtime/session", token))
+	require.NoError(t, err)
+	assert.False(t, resp.IsAuthorized)
+}
+
 func TestHandlerDeniesDisabledUser(t *testing.T) {
 	signer, testStore := setupAuthorizer(t)
 	ctx := context.Background()

@@ -24,6 +24,12 @@ const (
 	CSRFCookieName = "__Host-ln_csrf"
 	// CSRFHeaderName is the request header that must match CSRFCookieName.
 	CSRFHeaderName = "X-LN-CSRF"
+	// OAuthStateCookieName binds an in-flight LWA transaction to the browser
+	// that started it: login sets it to the state value, callback requires an
+	// exact match. Without it, callback only checks that the state exists
+	// server-side, so an attacker's captured (code,state) could be replayed
+	// into a victim's browser (login-CSRF / session fixation). HttpOnly.
+	OAuthStateCookieName = "__Host-ln_oauth"
 )
 
 // Locals keys populated by ExtractAuthContext and read via the accessor

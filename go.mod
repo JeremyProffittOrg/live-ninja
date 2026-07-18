@@ -11,6 +11,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/batch v1.67.1
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.55.1
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.60.1
+	github.com/aws/aws-sdk-go-v2/service/firehose v1.45.1
 	github.com/aws/aws-sdk-go-v2/service/iot v1.76.1
 	github.com/aws/aws-sdk-go-v2/service/iotdataplane v1.34.1
 	github.com/aws/aws-sdk-go-v2/service/kms v1.54.1

@@ -28,6 +28,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -35,8 +36,10 @@ import (
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
@@ -391,6 +394,37 @@ func gateErrResponse(l *slog.Logger, err error, op string) (Response, bool) {
 		}, true
 	}
 
+	// M7 hardening rejections: suspension (403) and the concurrent-session
+	// cap (surfaced as the standard 429 rate_limited shape so every client
+	// reuses its existing Retry-After backoff — the message and the EMF
+	// dimension distinguish it for humans/ops).
+	var se *realtime.SuspendedError
+	if errors.As(err, &se) {
+		observ.EmitMetric(metricsNamespace, "QuotaRejections", 1, "Count",
+			map[string]string{"Kind": "suspended"})
+		l.Warn("realtime-broker: account suspended",
+			slog.String("op", op), slog.String("reason", se.Reason))
+		return Response{
+			Error:   "account_suspended",
+			Code:    http.StatusForbidden,
+			Message: "This account is suspended after unusual usage was detected. Contact the owner to restore access.",
+		}, true
+	}
+
+	var cl *realtime.ConcurrentLimitError
+	if errors.As(err, &cl) {
+		observ.EmitMetric(metricsNamespace, "QuotaRejections", 1, "Count",
+			map[string]string{"Kind": "concurrent_sessions"})
+		l.Warn("realtime-broker: concurrent session limit reached",
+			slog.String("op", op), slog.Int("limit", cl.Limit))
+		return Response{
+			Error:             "rate_limited",
+			Code:              http.StatusTooManyRequests,
+			Message:           fmt.Sprintf("Concurrent session limit (%d) reached. Retry when a session ends.", cl.Limit),
+			RetryAfterSeconds: cl.RetryAfterSeconds,
+		}, true
+	}
+
 	return Response{}, false
 }
 
@@ -438,13 +472,56 @@ func main() {
 		model = realtime.DefaultRealtimeModel
 	}
 
+	gate := realtime.NewGate(ddb, appCfg.TableName)
+	wireSuspendAlerts(gate, logger, awsCfg, appCfg.EmailQueueURL, os.Getenv("OWNER_EMAIL"))
+
 	b := &broker{
 		log:      logger,
-		gate:     realtime.NewGate(ddb, appCfg.TableName),
+		gate:     gate,
 		minter:   realtime.NewMinter(loader, model),
 		fallback: realtime.NewFallbackClient(loader),
 		ddb:      ddb,
 		table:    appCfg.TableName,
 	}
 	lambda.Start(b.Handle)
+}
+
+// wireSuspendAlerts installs the auto-suspension owner notification: an
+// EmailQueue SQS message ({template,to,subject,text} — the exact shape
+// cmd/email-dispatch consumes, which sends via SES from jeremy@jeremy.ninja).
+// Requires EMAIL_QUEUE_URL + OWNER_EMAIL on this function (plus
+// sqs:SendMessage on the queue); when either is unset the alert hook stays
+// nil — suspension enforcement and the UserAutoSuspended EMF metric are
+// independent of it and always active.
+func wireSuspendAlerts(gate *realtime.Gate, logger *slog.Logger, awsCfg aws.Config, queueURL, ownerEmail string) {
+	if queueURL == "" || ownerEmail == "" {
+		logger.Warn("realtime-broker: suspend email alerts disabled (EMAIL_QUEUE_URL / OWNER_EMAIL not set); EMF metric still emitted")
+		return
+	}
+	sqsClient := sqs.NewFromConfig(awsCfg)
+	gate.SetAlerter(func(ctx context.Context, a realtime.SuspendAlert) {
+		body, err := json.Marshal(map[string]string{
+			"template": "quota-suspend",
+			"to":       ownerEmail,
+			"subject":  "Live Ninja: user auto-suspended (" + a.Reason + ")",
+			"text": fmt.Sprintf(
+				"User %s was automatically suspended at %s.\n\n"+
+					"Reason: %s\n"+
+					"Observed burn: %.0f tokens this UTC hour (threshold %.0f, env QUOTA_HOURLY_BURN_TOKENS).\n\n"+
+					"All outstanding access tokens were invalidated (tokensValidAfter bumped).\n"+
+					"To reinstate after review: set USER#%s / PROFILE status back to \"active\" (store.ReinstateUser).",
+				a.UserID, a.At.Format(time.RFC3339), a.Reason, a.BurnTokens, a.Threshold, a.UserID),
+		})
+		if err != nil {
+			logger.Error("realtime-broker: marshal suspend alert failed", slog.String("error", err.Error()))
+			return
+		}
+		if _, err := sqsClient.SendMessage(ctx, &sqs.SendMessageInput{
+			QueueUrl:    aws.String(queueURL),
+			MessageBody: aws.String(string(body)),
+		}); err != nil {
+			logger.Error("realtime-broker: suspend alert enqueue failed",
+				slog.String("error", err.Error()), slog.String("userId", a.UserID))
+		}
+	})
 }

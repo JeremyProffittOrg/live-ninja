@@ -219,3 +219,30 @@ func TestStripHTML(t *testing.T) {
 	out := stripHTML(in)
 	assert.Equal(t, "a b c", strings.Join(strings.Fields(out), " "))
 }
+
+// TestWebResearchDirectFetchBlocksRedirectOffAllowList is the regression for
+// the SSRF finding: an allow-listed host that 3xx-redirects to a target NOT on
+// the allow-list must be blocked at the redirect hop (CheckRedirect fires
+// before the next hop is dialed, so no second server is needed).
+func TestWebResearchDirectFetchBlocksRedirectOffAllowList(t *testing.T) {
+	redirector := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Open-redirect to a DIFFERENT host that is not allow-listed.
+		http.Redirect(w, r, "https://attacker.example.net/latest/meta-data", http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	redirURL, err := url.Parse(redirector.URL)
+	require.NoError(t, err)
+	prevDomains := researchAllowedDomains
+	researchAllowedDomains = append([]string{redirURL.Hostname()}, prevDomains...) // only the redirector
+	defer func() { researchAllowedDomains = prevDomains }()
+
+	deps := newTestDeps()
+	deps.HTTPClient = redirector.Client()
+	r := newTestRegistry(t, deps)
+
+	res := r.Invoke(context.Background(), invocation("web_research", map[string]any{
+		"query": "x", "url": redirector.URL + "/open-redirect",
+	}))
+	require.False(t, res.OK, "redirect to a non-allow-listed host must be blocked, got %+v", res.Output)
+}
