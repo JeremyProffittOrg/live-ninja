@@ -425,23 +425,23 @@ func (s *Service) countActiveJobs(ctx context.Context) (int, error) {
 const jobTimeoutSeconds = int32(20 * 60)
 
 func (s *Service) submitTrainingJob(ctx context.Context, w *store.Wakeword) (string, error) {
-	// Environment contract with containers/wakeword-train: the trainer
-	// reads WW_ID/WW_PHRASE, trains openWakeWord (piper-sample-generator
-	// synthetic positives, small CPU preset), exports int8 .onnx per
-	// platform, and uploads model.onnx + manifest.json under
-	// OUTPUT_PREFIX/<platform>/ in OUTPUT_BUCKET.
+	// CLI contract with containers/wakeword-train/train.py: the image's
+	// ENTRYPOINT is ["python", ".../train.py"], so the container-override
+	// Command becomes its arguments (--phrase/--ww-id/--user-id are
+	// argparse-required — submitting with env vars only made every job die
+	// with argparse exit 2 before doing any work, seen on the first real
+	// training run). The bucket/table/email queue come from the job
+	// definition's own environment (WAKEWORDS_BUCKET etc.).
 	out, err := s.batch.SubmitJob(ctx, &batch.SubmitJobInput{
 		JobName:       aws.String("ww-train-" + w.ID),
 		JobQueue:      aws.String(s.cfg.JobQueue),
 		JobDefinition: aws.String(s.cfg.JobDefinition),
 		Timeout:       &batchtypes.JobTimeout{AttemptDurationSeconds: aws.Int32(jobTimeoutSeconds)},
 		ContainerOverrides: &batchtypes.ContainerOverrides{
-			Environment: []batchtypes.KeyValuePair{
-				{Name: aws.String("WW_ID"), Value: aws.String(w.ID)},
-				{Name: aws.String("WW_USER_ID"), Value: aws.String(w.UserID)},
-				{Name: aws.String("WW_PHRASE"), Value: aws.String(w.Phrase)},
-				{Name: aws.String("OUTPUT_BUCKET"), Value: aws.String(s.cfg.Bucket)},
-				{Name: aws.String("OUTPUT_PREFIX"), Value: aws.String("wakewords/" + w.ID)},
+			Command: []string{
+				"--phrase", w.Phrase,
+				"--ww-id", w.ID,
+				"--user-id", w.UserID,
 			},
 		},
 	})

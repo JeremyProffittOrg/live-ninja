@@ -309,19 +309,17 @@ func TestCreateSubmitsTrainingJob(t *testing.T) {
 	// One slot consumed for today.
 	assert.Equal(t, 1, env.store.slots["u1/2026-07-17"])
 
-	// Job carried the trainer env contract + the 20-min hard timeout.
+	// Job carried the trainer CLI contract (train.py argparse: --phrase /
+	// --ww-id / --user-id) + the 20-min hard timeout.
 	require.Len(t, env.batch.submitted, 1)
 	sub := env.batch.submitted[0]
 	require.NotNil(t, sub.Timeout)
 	assert.EqualValues(t, 1200, aws.ToInt32(sub.Timeout.AttemptDurationSeconds))
-	envMap := map[string]string{}
-	for _, kv := range sub.ContainerOverrides.Environment {
-		envMap[aws.ToString(kv.Name)] = aws.ToString(kv.Value)
-	}
-	assert.Equal(t, w.ID, envMap["WW_ID"])
-	assert.Equal(t, "hey purple parrot", envMap["WW_PHRASE"])
-	assert.Equal(t, "test-bucket", envMap["OUTPUT_BUCKET"])
-	assert.Equal(t, "wakewords/"+w.ID, envMap["OUTPUT_PREFIX"])
+	assert.Equal(t, []string{
+		"--phrase", "hey purple parrot",
+		"--ww-id", w.ID,
+		"--user-id", "u1",
+	}, sub.ContainerOverrides.Command)
 
 	// Stored item is retrievable.
 	got, err := env.store.GetWakeword(ctx, "u1", w.ID)
