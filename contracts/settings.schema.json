@@ -140,13 +140,13 @@
     },
     "theme": {
       "type": "string",
-      "description": "UI theme, segmented control (UX-R02).",
+      "description": "UI theme, segmented control (UX-R02). `light` is the app-zone default look (ninja-light); the live panel's chrome comes from appearance.liveStyle, not from this axis.",
       "enum": [
         "light",
         "dark",
         "system"
       ],
-      "default": "system"
+      "default": "light"
     },
     "micDeviceId": {
       "type": [
@@ -229,10 +229,23 @@
     },
     "appearance": {
       "type": "object",
-      "description": "Visual customization (two axes, podcasts.jeremy.ninja-style): a style preset and an accent color. Optional; absent normalizes to the defaults.",
+      "description": "Visual customization across two style zones plus a global accent color. `appStyle` styles everything OUTSIDE the conversation page's live panel (the ninja navy-and-teal app chrome); `liveStyle` styles the conversation page's live panel (orb/mic rail — hal9000 red glowing eye by default). `accentColor` \"\" means each zone uses its style's own default accent. Optional; absent normalizes to the defaults. MIGRATION: the pre-split single `themeStyle` (which styled the conversation orb/mic panel) migrates to `liveStyle` on read/write and the deprecated key is dropped.",
+      "additionalProperties": true,
       "properties": {
-        "themeStyle": {
+        "appStyle": {
           "type": "string",
+          "description": "Style zone for everything outside the live panel (the app chrome).",
+          "enum": [
+            "hal9000",
+            "ninja",
+            "minimal",
+            "terminal"
+          ],
+          "default": "ninja"
+        },
+        "liveStyle": {
+          "type": "string",
+          "description": "Style zone for the conversation page's live panel (orb/mic rail).",
           "enum": [
             "hal9000",
             "ninja",
@@ -245,7 +258,7 @@
           "type": "string",
           "pattern": "^(#[0-9a-fA-F]{6})?$",
           "default": "",
-          "description": "#rrggbb, or empty string for the style's default accent."
+          "description": "#rrggbb, or empty string for each zone's style default accent."
         }
       }
     }

@@ -54,7 +54,10 @@ Parameters:
       Master switch for the entire M12 nova-bridge subsystem (ECS/ALB/CloudFront
       /nova/*). Default off so the core stack deploys independently of the
       Fargate voice bridge; enabled in a dedicated deploy once the bridge is
-      verified. The ECR repo stays unconditional so its image persists.
+      verified. Drives the NovaBridgeReady condition. The ECR repo is gated by
+      this switch alone (NOT by NovaBridgeImageReady), so once the subsystem is
+      enabled the repo persists across both image-bring-up phases and its pushed
+      image is retained.
   NovaBridgeImageReady:
     Type: String
     Default: "false"
@@ -63,9 +66,12 @@ Parameters:
       M12 two-phase bootstrap. The nova-bridge ECR repo is created by this stack,
       so on the first deploy no image exists yet — and AWS::EarlyValidation runs a
       ResourceExistenceCheck on the ECS TaskDefinition's container image, failing
-      changeset creation. The workflow sets this to "true" only once the image is
-      present in ECR; until then the TaskDefinition + Service are skipped (the ALB,
-      target group, repo and CloudFront /nova/* origin still deploy). Batch job
+      changeset creation. Combined with NovaBridgeEnable in the
+      NovaBridgeServiceReady condition, which gates ONLY the ECS TaskDefinition +
+      Service. The workflow (deploy.yml "Determine nova-bridge desired count")
+      sets this to "true" only once the image is present in ECR; until then the
+      TaskDefinition + Service are skipped while the ALB, target group, repo and
+      CloudFront /nova/* origin (all on NovaBridgeReady) still deploy. Batch job
       defs (wakeword-train) are not image-existence-checked, which is why only ECS
       needs this gate.
   CloudFrontPrefixListId:
@@ -96,12 +102,33 @@ Globals:
         LOG_LEVEL: debug
 
 Conditions:
-  # M12: gate the nova-bridge ECS TaskDefinition + Service on the image being
-  # present in ECR (see NovaBridgeImageReady). First deploy creates the repo;
-  # the image is pushed; a subsequent deploy (NovaBridgeImageReady=true) brings
-  # up the service. The ALB, target group, repo and CloudFront /nova/* origin
-  # deploy in both phases.
+  # M12: the whole nova-bridge subsystem is gated OFF by default
+  # (NovaBridgeEnable=false) so the core stack deploys without the Fargate
+  # voice bridge. On re-enable it comes up in TWO phases, because the ECS
+  # TaskDefinition's container image is existence-checked by
+  # AWS::EarlyValidation and no image exists until the ECR repo (created by
+  # this stack) has been pushed to. Two conditions implement that gate:
+  #   NovaBridgeReady        — Enable==true. Gates the repo, ALB, target group,
+  #                            cluster, security groups, CloudFront /nova/*
+  #                            origin and the ALB/repo/cluster outputs. These
+  #                            carry no image dependency, so they deploy in BOTH
+  #                            phases (phase 1 creates the repo the image is
+  #                            then pushed to).
+  #   NovaBridgeServiceReady — Enable==true AND ImageReady==true. Gates ONLY the
+  #                            ECS TaskDefinition + Service (the sole image-
+  #                            existence-checked resources) and the service-name
+  #                            output. Skipped on the first (image-absent)
+  #                            deploy so changeset creation does not fail; the
+  #                            container-bootstrap job then pushes the image and
+  #                            the next deploy (ImageReady=true) brings the
+  #                            service up. This is the wiring the two-phase
+  #                            bring-up depends on — without it the
+  #                            TaskDefinition would deploy in phase 1 and fail
+  #                            the image-existence check.
   NovaBridgeReady: !Equals [!Ref NovaBridgeEnable, "true"]
+  NovaBridgeServiceReady: !And
+    - !Equals [!Ref NovaBridgeEnable, "true"]
+    - !Equals [!Ref NovaBridgeImageReady, "true"]
 
 Resources:
   # ------------------------------------------------------------------
@@ -1743,7 +1770,9 @@ Resources:
 
   NovaBridgeTaskDefinition:
     Type: AWS::ECS::TaskDefinition
-    Condition: NovaBridgeReady
+    # Image-existence-checked (ContainerDefinitions.Image), so gated on the
+    # image being present — skipped in phase 1, added in phase 2.
+    Condition: NovaBridgeServiceReady
     Properties:
       Family: live-ninja-nova-bridge
       RequiresCompatibilities:
@@ -1789,7 +1818,8 @@ Resources:
 
   NovaBridgeService:
     Type: AWS::ECS::Service
-    Condition: NovaBridgeReady
+    # Depends on the TaskDefinition, so gated on the same image-ready phase.
+    Condition: NovaBridgeServiceReady
     # The listener must exist before the service registers with the target
     # group (ELB association ordering).
     DependsOn:
@@ -2472,7 +2502,8 @@ Outputs:
     Description: ECS cluster hosting the nova-bridge Fargate service (M12).
     Value: !Ref NovaBridgeCluster
   NovaBridgeServiceName:
-    Condition: NovaBridgeReady
+    # References NovaBridgeService, which only exists once the image is ready.
+    Condition: NovaBridgeServiceReady
     Description: nova-bridge ECS service name (used by the container-bootstrap scale-to-1 step) (M12).
     Value: !GetAtt NovaBridgeService.Name
   NovaBridgeAlbDnsName:

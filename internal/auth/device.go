@@ -7,15 +7,28 @@
 // 24h rotation entry point steady-state device check-ins use.
 //
 // Route mapping (contracts/api.md — authoritative over plan.md's M1 prose
-// shorthand):
-//   - POST /auth/device/pair/start   -> RegisterPairing
-//   - GET  /auth/device/pair/poll    -> PollPairing
-//   - GET  /auth/lwa/device/callback -> serves the user-code confirm page
-//     (LWA code-exchange + two-check Validate + Authorize preview; that
-//     HTTP glue belongs to the web-core/auth route handler, not here)
-//   - POST /auth/device/pair/confirm -> BindPairing (called once the human
-//     has typed the RFC 8628 user code shown on the device's screen)
-//   - GET  /auth/device/pair/claim   -> ClaimPairing
+// shorthand; verified against internal/webapp/auth_routes.go
+// RegisterAuthRoutes):
+//   - POST /auth/device/pair/start   -> RegisterPairing (returns nonce +
+//     claimUrl + userCode)
+//   - POST /auth/device/pair/poll    -> PollPairing, then ClaimPairing folded
+//     into the SAME call: the device sends {nonce} while waiting and, once the
+//     pairing is bound, {nonce, codeVerifier} to fold in the PKCE claim and
+//     receive its 10-year credential. Terminal states surface here: pending /
+//     failed / bound(+token). There is no separate GET claim route.
+//   - GET  /auth/device/claim        -> the browser entry leg (the URL the
+//     human opens from the device screen/QR): validates the nonce is still
+//     claimable, then 302s into /auth/lwa/login carrying the nonce.
+//   - GET  /auth/lwa/callback        -> the SHARED LWA callback, reused for the
+//     device browser leg when the consumed OAuth state carries a DeviceNonce
+//     (the nonce rides through the round-trip in the OAUTHSTATE row, not the
+//     URL): runs the LWA code-exchange + two-check Validate + Authorize
+//     preview, then serves the user-code confirm page — the bind does NOT
+//     happen here. That HTTP glue belongs to the web-core/auth route handler,
+//     not this file.
+//   - POST /auth/device/pair/confirm -> BindPairing (called once the human has
+//     typed the RFC 8628 user code shown on the device's screen; CSRF-exempt —
+//     a bare device browser has no web session/CSRF cookie to echo).
 //   - POST /auth/refresh (surface=device) -> RotateDeviceSession
 //
 // Pairing flow, end to end:
@@ -27,10 +40,13 @@
 //     "BCDFGHJKLMNPQRSTVWXZ" alphabet) that the device displays on its
 //     screen as "XXXX-XXXX".
 //
-//  2. A human completes LWA sign-in in a phone/laptop browser, landing on
-//     GET /auth/lwa/device/callback with state=<nonce>. That handler
-//     serves a confirm page where the human must type the user code shown
-//     on the device's screen, then calls BindPairing with it. BindPairing
+//  2. A human opens GET /auth/device/claim?nonce=<nonce> (the device's
+//     screen/QR link), which 302s into the shared LWA login carrying the
+//     nonce. After LWA sign-in the browser lands back on the shared GET
+//     /auth/lwa/callback; because the consumed OAuth state carries the
+//     DeviceNonce, that handler serves a confirm page where the human must
+//     type the user code shown on the device's screen, then calls BindPairing
+//     with it. BindPairing
 //     re-runs the exact same Authorize gate every other sign-in surface
 //     goes through (owner-binds-first, else owner match or allowlist, else
 //     ErrNotAllowed), then requires a constant-time match of the presented
@@ -46,11 +62,13 @@
 //     the device's whole 10-year credential lineage) and atomically flip
 //     the PAIR row pending -> bound, recording deviceId + userId on it.
 //
-//  3. The device itself keeps polling GET /auth/device/pair/poll (->
-//     PollPairing, read-only) until it observes status "bound".
+//  3. The device itself keeps polling POST /auth/device/pair/poll (->
+//     PollPairing, read-only) with {nonce} until it observes status "bound".
 //
-//  4. The device calls GET /auth/device/pair/claim with its original
-//     code_verifier. ClaimPairing checks SHA256(code_verifier) against the
+//  4. The device repeats POST /auth/device/pair/poll, now sending {nonce,
+//     codeVerifier}; the handler folds in the claim by calling ClaimPairing
+//     with its original code_verifier. ClaimPairing checks SHA256(code_verifier)
+//     against the
 //     stored code_challenge (constant-time compare) — only on success does
 //     it mint the device's first SESSION row (a fresh DeviceWindow/10-year
 //     refresh token, generated here and returned in plaintext for the
@@ -225,7 +243,7 @@ func RegisterPairing(ctx context.Context, st *store.Store, codeChallenge string)
 	return nonce, userCode, time.Unix(pair.TTL, 0).UTC(), nil
 }
 
-// PollPairing implements GET /auth/device/pair/poll?nonce=<nonce>: the
+// PollPairing backs POST /auth/device/pair/poll (the {nonce} it carries): the
 // device polls this while a human completes the browser leg elsewhere.
 // Read-only — never mutates the PAIR row. Callers should surface only
 // pair.Status to the (still fully unauthenticated) device — RefreshToken
@@ -245,10 +263,12 @@ func PollPairing(ctx context.Context, st *store.Store, nonce string) (*store.Pai
 	return pair, nil
 }
 
-// BindPairing implements the backend-side completion of GET
-// /auth/lwa/device/callback (contracts/api.md): once that handler has run
-// the browser leg's LWA code exchange and two-check Validate, it calls
-// this with the resolved profile and the nonce carried in `state`.
+// BindPairing implements the backend-side completion of the device browser
+// leg: it is called from the POST /auth/device/pair/confirm handler once the
+// human has typed the user code on the confirm page that the shared GET
+// /auth/lwa/callback served (after that callback ran the browser leg's LWA
+// code exchange and two-check Validate). It receives the resolved profile and
+// the nonce (carried through the round-trip in the OAuthState DeviceNonce).
 //
 // BindPairing runs the exact same access-control gate as every other
 // sign-in surface (Authorize — first sign-in binds the owner; otherwise
@@ -349,9 +369,10 @@ func BindPairing(ctx context.Context, st *store.Store, log *slog.Logger, nonce, 
 	return nil
 }
 
-// ClaimPairing implements the single-use GET /auth/device/pair/claim: the
-// device presents the PKCE code_verifier matching the code_challenge it
-// registered in RegisterPairing. Only once that proof succeeds
+// ClaimPairing is the single-use claim folded into POST
+// /auth/device/pair/poll once the pairing is bound: the device presents (in
+// that same poll call, as codeVerifier) the PKCE code_verifier matching the
+// code_challenge it registered in RegisterPairing. Only once that proof succeeds
 // (constant-time S256 compare) does this mint the device's SESSION row —
 // the first member of its 10-year (DeviceWindow) refresh-token family —
 // and return the plaintext refresh token for the first and only time,
