@@ -377,31 +377,35 @@ func handleGetConversation(deps *Deps) fiber.Handler {
 		resp := conversationJSON(conv)
 		resp["turns"] = turns
 
-		// ?raw=1 — the stored LOG# rows verbatim (every field, INCLUDING
+		// rawTurns — the stored LOG# rows verbatim (every field, INCLUDING
 		// the role=system session-start marker and the tool audit lines,
 		// in raw sk order, no ts merge/sort): the history detail view's
 		// "Raw transcript" toggle renders these for debugging what the
 		// LLM pipeline actually stored. seq is the sk's numeric tail
 		// (the sink's counter, or the tool router's millisecond clock).
-		if c.QueryBool("raw", false) {
-			rawTurns := make([]fiber.Map, 0, len(raw))
-			for i := range raw {
-				entry := fiber.Map{"sk": raw[i].SK, "role": raw[i].Role, "text": raw[i].Text}
-				if idx := strings.LastIndex(raw[i].SK, "#"); idx >= 0 && idx+1 < len(raw[i].SK) {
-					entry["seq"] = raw[i].SK[idx+1:]
-				}
-				for k, v := range map[string]string{
-					"ts": raw[i].TS, "engine": raw[i].Engine,
-					"surface": raw[i].Surface, "output": raw[i].Output,
-				} {
-					if v != "" {
-						entry[k] = v
-					}
-				}
-				rawTurns = append(rawTurns, entry)
+		// Always included, NOT gated behind a query param: the detail path
+		// id carries an encoded '#' (%23), and the prod edge chain
+		// (CloudFront/API GW/LWA) drops everything after it — including
+		// the query string — before Fiber sees the request, so a ?raw=1
+		// flag silently never arrives on ConvID paths. Transcripts are
+		// bounded, so shipping both views costs little.
+		rawTurns := make([]fiber.Map, 0, len(raw))
+		for i := range raw {
+			entry := fiber.Map{"sk": raw[i].SK, "role": raw[i].Role, "text": raw[i].Text}
+			if idx := strings.LastIndex(raw[i].SK, "#"); idx >= 0 && idx+1 < len(raw[i].SK) {
+				entry["seq"] = raw[i].SK[idx+1:]
 			}
-			resp["rawTurns"] = rawTurns
+			for k, v := range map[string]string{
+				"ts": raw[i].TS, "engine": raw[i].Engine,
+				"surface": raw[i].Surface, "output": raw[i].Output,
+			} {
+				if v != "" {
+					entry[k] = v
+				}
+			}
+			rawTurns = append(rawTurns, entry)
 		}
+		resp["rawTurns"] = rawTurns
 		return c.JSON(resp)
 	}
 }

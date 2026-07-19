@@ -504,19 +504,12 @@ func TestGetConversationRawTurns(t *testing.T) {
 
 	id := url.PathEscape("2026-07-10T12:00:00Z#sess-raw")
 
-	// Default response has no rawTurns.
+	// rawTurns always ships (deliberately NOT behind a query param — the
+	// %23 in ConvID paths makes the prod edge drop query strings) and
+	// carries every LOG# row verbatim, INCLUDING the system marker.
 	resp, body := doJSON(t, app, http.MethodGet, "/api/v1/conversations/"+id, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("detail status = %d (%v)", resp.StatusCode, body)
-	}
-	if _, present := body["rawTurns"]; present {
-		t.Errorf("rawTurns must be absent without ?raw=1")
-	}
-
-	// ?raw=1 ships every LOG# row verbatim, INCLUDING the system marker.
-	resp, body = doJSON(t, app, http.MethodGet, "/api/v1/conversations/"+id+"?raw=1", nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("raw detail status = %d (%v)", resp.StatusCode, body)
 	}
 	rawTurns, _ := body["rawTurns"].([]any)
 	if len(rawTurns) != 3 {

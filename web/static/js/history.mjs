@@ -832,7 +832,10 @@ async function loadDetail() {
   const id = detailConvId;
   setDetailState('loading');
   try {
-    const resp = await apiJSON(`/api/v1/conversations/${encodeURIComponent(id)}?raw=1`);
+    // NOTE: no query params on this URL — the encoded '#' (%23) in the
+    // ConvID makes the prod edge chain drop everything after it, query
+    // string included; rawTurns ships unconditionally instead.
+    const resp = await apiJSON(`/api/v1/conversations/${encodeURIComponent(id)}`);
     if (detailConvId !== id) return; // navigated away meanwhile
     detailTurns = extractTurns(resp);
     detailRawTurns = Array.isArray(resp.rawTurns) ? resp.rawTurns.filter((r) => r && typeof r === 'object') : [];
