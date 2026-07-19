@@ -17,7 +17,7 @@ config LN_RT_DEFAULT_MODEL
 
 config LN_RT_CLIENT_SEMVER
     string "Client semver for the X-LN-Client header"
-    default "0.1.0"
+    default "1.4.2"
     help
         Semantic version reported as X-LN-Client: m5stack/<semver>+<build>
         (contracts/headers.md). The +<build> part comes from the app

@@ -1,7 +1,7 @@
 /*
  * ln_rt_session.c — realtime session bootstrap against the Live Ninja backend.
  *
- * GET {CONFIG_LN_RT_BACKEND_BASE_URL}/v1/realtime/session
+ * GET {CONFIG_LN_RT_BACKEND_BASE_URL}/api/v1/realtime/session
  *   Authorization: Bearer <device JWT from ln_auth_get_jwt (ln_net)>
  *   X-LN-Client: m5stack/<semver>+<build>          (contracts/headers.md)
  *
@@ -42,9 +42,17 @@
 
 static const char *TAG = "ln_rt_sess";
 
-#define LN_RT_SESSION_URL   CONFIG_LN_RT_BACKEND_BASE_URL "/v1/realtime/session"
+/* The mint route lives under the shared /api prefix (internal/webapp
+ * api_routes.go). The bare /v1/... spelling 404s — it was masked for months
+ * by the version-gate 426 that fired before routing. */
+#define LN_RT_SESSION_URL   CONFIG_LN_RT_BACKEND_BASE_URL "/api/v1/realtime/session"
 #define LN_RT_JWT_MAX       2048
-#define LN_RT_HTTP_BODY_CAP (16 * 1024)
+/* The mint response carries the whole resolved session: rates, sessionConfig
+ * (persona instructions + memory directive) and the ~20-tool manifest — well
+ * over 16 KB, which silently truncated the JSON ("not valid JSON" parse
+ * failures while the mint burned broker slots). PSRAM buffer, so size is
+ * cheap. */
+#define LN_RT_HTTP_BODY_CAP (64 * 1024)
 #define LN_RT_HTTP_TIMEOUT_MS 10000
 
 /* Single worker task calls into this file, so static buffers are safe and
@@ -156,6 +164,14 @@ static esp_err_t parse_session_body(const char *body, size_t len,
     /* --- OpenAI-direct shape (default) ----------------------------------- */
     out->mode = LN_RT_ENGINE_OPENAI_DIRECT;
     const char *token = json_str_at(root, "value", NULL);
+    if (token == NULL) {
+        /* The deployed broker shape (internal/webapp api_routes.go
+         * brokerResponse): {"clientSecret":{"value":"ek_..."},"model":...}.
+         * Missing this spelling burned a broker concurrency slot per retry
+         * (mint 2xx server-side, token unread client-side) until the user
+         * hit the 3-session 429 lock. */
+        token = json_str_at(root, "clientSecret", "value");
+    }
     if (token == NULL) {
         token = json_str_at(root, "client_secret", "value");
     }
@@ -281,6 +297,13 @@ esp_err_t ln_rt_session_fetch(ln_rt_session_info_t *out, ln_rt_error_info_t *err
     }
 
     err = parse_session_body(s_body, body_len, out, err_out);
+    if (err != ESP_OK) {
+        /* A 2xx we couldn't parse still consumed a broker concurrency slot —
+         * make the mismatch loud instead of silently re-minting. */
+        ESP_LOGE(TAG, "broker 2xx but unusable body (%s): %.*s",
+                 (err_out != NULL) ? err_out->message : "?",
+                 (int)(body_len > 300 ? 300 : body_len), s_body);
+    }
     if (err == ESP_OK) {
         if (out->mode == LN_RT_ENGINE_NOVA_BRIDGE) {
             ESP_LOGI(TAG, "nova-bridge session bootstrapped");

@@ -1,5 +1,12 @@
 # `/v1` API Route Inventory (all milestones)
 
+> **Deployed path prefix (2026-07-19):** every `/v1/...` row below is actually served under
+> **`/api/v1/...`** (`internal/webapp/api_routes.go` mounts the group at `/api/v1`); the
+> unversioned `/auth/*`, `/.well-known/*`, `/healthz` routes are exactly as written. The bare
+> `/v1/...` spelling 404s in production. This bit the M5Stack firmware (the one consumer that
+> followed this doc literally — its mint calls 404'd, masked for months behind the version
+> gate's 426 which fired before routing). Client implementers: use `/api/v1/...`.
+
 Consolidated, canonical route inventory across M0–M12, reconciling the PRD §5 "REST endpoint
 catalog" with the concrete route names used in plan.md's per-milestone task lists (which
 sometimes used shorthand like `GET auth login` or `/api/v1/auth/lwa/exchange`). Where a
