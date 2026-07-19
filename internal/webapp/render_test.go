@@ -7,11 +7,9 @@ package webapp
 
 import (
 	"bytes"
-	"html/template"
 	"strings"
 	"testing"
 
-	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 	"github.com/JeremyProffittOrg/live-ninja/web"
 )
 
@@ -26,28 +24,6 @@ func newTestShell(t *testing.T) (*Assets, *Renderer) {
 		t.Fatalf("NewRenderer: %v", err)
 	}
 	return assets, rend
-}
-
-func testSettingsView() *settingsPageView {
-	v := &settingsPageView{
-		SettingsJSON:    template.JS(`{"version":1,"voice":"cedar"}`),
-		CatalogsJSON:    template.JS(`{"voices":[],"personas":[]}`),
-		WakeWord:        "hey-live-ninja",
-		WakeEngine:      "openwakeword",
-		SensitivityPct:  50,
-		PersonaPreset:   "default",
-		TurnDetection:   "semantic_vad",
-		Theme:           "dark",
-		StoreTranscript: true,
-		RetentionDays:   30,
-	}
-	// Voice rows are gone from this page: personas are the unit of voice
-	// identity (personaPrefs; edited in the conversation page's persona
-	// editor pop-up).
-	for _, p := range realtime.ListPersonas() {
-		v.Personas = append(v.Personas, settingsPersonaRow{PersonaInfo: p, Selected: p.ID == "default"})
-	}
-	return v
 }
 
 func TestRenderAllPages(t *testing.T) {
@@ -78,17 +54,11 @@ func TestRenderAllPages(t *testing.T) {
 				`id="wakeToggle"`,
 				`role="log"`,
 				`id="composerInput"`,
-			},
-		},
-		{
-			name: "pages/settings",
-			bind: testSettingsView(),
-			contains: []string{
-				`id="settings-data"`,
-				`{"version":1,"voice":"cedar"}`,
+				// Settings moved inline into the docked drawer (owner
+				// 2026-07-19) — the standalone /settings page is gone, so
+				// this page's render must carry its controls.
 				`id="personaPreset"`,
 				"Each persona carries its own voice and accent",
-				`aria-current="page"`,
 				"Sign out everywhere",
 			},
 		},

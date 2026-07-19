@@ -285,6 +285,11 @@ export class Transcript {
    * @param {Array<[string, string]>} card.fields Ordered [label, value] pairs
    *   rendered as <dt>/<dd> — the only supported shape, so every value is
    *   guaranteed to reach the DOM as text, never as a raw object dump.
+   * @param {() => void} [card.onDetails] When supplied, renders a "Details"
+   *   button in the card head that invokes this callback (the caller opens
+   *   tooldetails.mjs's shared prettified-JSON popup — this module stays
+   *   ignorant of that dialog, it just renders the trigger).
+   * @param {string} [card.detailsLabel='Details'] Button text override.
    * @returns {HTMLElement} the inserted card element, in case the caller
    *   needs to update it later (e.g. a running timer's "Remaining" field).
    */
@@ -326,6 +331,16 @@ export class Transcript {
       badgeEl.style.marginLeft = "auto";
       badgeEl.textContent = card.badge;
       head.appendChild(badgeEl);
+    }
+
+    if (typeof card.onDetails === "function") {
+      const detailsBtn = document.createElement("button");
+      detailsBtn.type = "button";
+      detailsBtn.className = "ln-btn ln-btn--ghost toolcard-details-btn";
+      detailsBtn.textContent = card.detailsLabel || "Details";
+      detailsBtn.setAttribute("aria-label", `Show full details for ${card.title || "this tool call"}`);
+      detailsBtn.addEventListener("click", card.onDetails);
+      head.appendChild(detailsBtn);
     }
 
     cardEl.appendChild(head);

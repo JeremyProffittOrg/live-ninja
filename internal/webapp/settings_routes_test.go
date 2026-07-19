@@ -1,134 +1,12 @@
 package webapp
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 )
-
-// TestSettingsPageRenders proves the full SSR path: the settings page
-// template set (layouts/base + partials/nav + pages/settings) parses
-// from the embedded FS and executes with a real default document, and —
-// critically — the <script type="application/json"> data island survives
-// html/template's contextual escaping as byte-for-byte parseable JSON
-// (json.Marshal HTML-escapes <,>,& so raw emission is safe; this test
-// is the guard that stays true if the template or marshaling changes).
-func TestSettingsPageRenders(t *testing.T) {
-	doc := store.DefaultSettings()
-	doc["voice"] = "marin"
-	doc["theme"] = "light"
-	doc["persona"] = map[string]any{"presetId": "custom", "systemInstructions": "Be <brief> & \"kind\"."}
-	doc["privacy"] = map[string]any{"storeAudio": true, "storeTranscripts": true, "retentionDays": 7}
-
-	view, err := buildSettingsPageView(doc)
-	if err != nil {
-		t.Fatalf("buildSettingsPageView: %v", err)
-	}
-
-	_, rend := newTestShell(t)
-	var buf bytes.Buffer
-	if err := rend.Render(&buf, "pages/settings", view); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	html := buf.String()
-
-	// An explicit stored theme SSRs onto <html> (themeAttr reflection).
-	if !strings.Contains(html, `<html lang="en" data-theme="light">`) {
-		t.Errorf("expected data-theme=light on <html> for theme=light")
-	}
-
-	// The JSON island must round-trip.
-	island := extractBetween(t, html, `<script type="application/json" id="settings-data">`, `</script>`)
-	var back map[string]any
-	if err := json.Unmarshal([]byte(island), &back); err != nil {
-		t.Fatalf("settings-data island is not valid JSON after templating: %v\n%s", err, island)
-	}
-	if back["voice"] != "marin" {
-		t.Errorf("island voice = %v, want marin", back["voice"])
-	}
-	persona, _ := back["persona"].(map[string]any)
-	if persona == nil || persona["systemInstructions"] != `Be <brief> & "kind".` {
-		t.Errorf("island persona did not round-trip: %v", back["persona"])
-	}
-
-	catalogIsland := extractBetween(t, html, `<script type="application/json" id="catalogs-data">`, `</script>`)
-	var cat struct {
-		Voices   []map[string]any `json:"voices"`
-		Accents  []map[string]any `json:"accents"`
-		Personas []map[string]any `json:"personas"`
-	}
-	if err := json.Unmarshal([]byte(catalogIsland), &cat); err != nil {
-		t.Fatalf("catalogs-data island is not valid JSON: %v", err)
-	}
-	if len(cat.Voices) != 10 {
-		t.Errorf("catalog voices = %d, want 10", len(cat.Voices))
-	}
-	for _, vc := range cat.Voices {
-		if g, _ := vc["gender"].(string); g != "female" && g != "male" && g != "neutral" {
-			t.Errorf("catalog voice %v gender = %q, want female|male|neutral", vc["id"], g)
-		}
-	}
-	if len(cat.Accents) != 10 {
-		t.Errorf("catalog accents = %d, want 10", len(cat.Accents))
-	}
-	if len(cat.Personas) == 0 {
-		t.Errorf("catalog personas empty")
-	}
-
-	// SSR'd control states. The standalone Voice/Accent section is gone —
-	// personas are the unit of voice identity (personaPrefs; edited in the
-	// conversation page's persona editor) — so the page must NOT render
-	// voice controls but MUST point at the editor from the Persona section.
-	for _, notWant := range []string{`name="voice"`, `id="voiceGenderChips"`, `id="voiceAccent"`} {
-		if strings.Contains(html, notWant) {
-			t.Errorf("rendered page still contains removed voice control %q", notWant)
-		}
-	}
-	for _, want := range []string{
-		`Each persona carries its own voice and accent`,
-		`name="theme" value="light" checked`,
-		`name="liveStyle" value="hal9000" checked`,
-		`name="appStyle" value="ninja" checked`,
-		`name="retentionDays" value="7" checked`,
-		`id="storeAudio" aria-describedby="storeAudioNote" checked`,
-		`value="custom" selected`,
-		`aria-current="page"`, // nav marks /settings
-	} {
-		if !strings.Contains(html, want) {
-			t.Errorf("rendered page missing %q", want)
-		}
-	}
-	if strings.Contains(html, `id="customInstructionsField" hidden`) {
-		t.Errorf("custom instructions field should be visible for presetId=custom")
-	}
-}
-
-// TestSettingsPageVoicePreservedInIsland: with no voice controls on the
-// page anymore, the stored top-level voice (the account fallback default)
-// and the personaPrefs map must still ride the SettingsJSON island so
-// write-backs preserve them verbatim (schema forward-compat rule).
-func TestSettingsPageVoicePreservedInIsland(t *testing.T) {
-	doc := store.DefaultSettings()
-	doc["voice"] = "future-voice-x"
-	doc["personaPrefs"] = map[string]any{
-		"noir-detective": map[string]any{"voice": "ash", "accent": "irish"},
-	}
-
-	view, err := buildSettingsPageView(doc)
-	if err != nil {
-		t.Fatalf("buildSettingsPageView: %v", err)
-	}
-	island := string(view.SettingsJSON)
-	for _, want := range []string{"future-voice-x", "personaPrefs", "noir-detective"} {
-		if !strings.Contains(island, want) {
-			t.Errorf("data island missing %q", want)
-		}
-	}
-}
 
 func TestValidateAndNormalizeSettings(t *testing.T) {
 	valid := func() map[string]any {
@@ -310,18 +188,4 @@ func TestValidateAndNormalizeSettings(t *testing.T) {
 	if _, present := d["version"]; present {
 		t.Errorf("client-sent version must be stripped")
 	}
-}
-
-func extractBetween(t *testing.T, s, start, end string) string {
-	t.Helper()
-	i := strings.Index(s, start)
-	if i < 0 {
-		t.Fatalf("marker %q not found in rendered page", start)
-	}
-	rest := s[i+len(start):]
-	j := strings.Index(rest, end)
-	if j < 0 {
-		t.Fatalf("closing marker %q not found", end)
-	}
-	return rest[:j]
 }

@@ -7,7 +7,9 @@
     <a class="ln-appbar__link" href="/memory"{{if eq pagePath "/memory"}} aria-current="page"{{end}}>Memory</a>
     <a class="ln-appbar__link" href="/personas"{{if eq pagePath "/personas"}} aria-current="page"{{end}}>Personas</a>
     <a class="ln-appbar__link" href="/downloads"{{if eq pagePath "/downloads"}} aria-current="page"{{end}}>Downloads</a>
-    <a class="ln-appbar__link" href="/settings"{{if eq pagePath "/settings"}} aria-current="page"{{end}}>Settings</a>
+    {{- /* Settings has no standalone page anymore — it lives inline in the
+           conversation page's docked drawer (owner 2026-07-19). */}}
+    <a class="ln-appbar__link" href="/conversation?openSettings=1">Settings</a>
   </nav>
 </header>
 {{end}}

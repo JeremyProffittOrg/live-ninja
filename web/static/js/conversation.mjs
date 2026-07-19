@@ -8,6 +8,10 @@
 //   transcriptsink.mjs — batched POST /api/v1/transcript logging
 //   visualizer.mjs     — AnalyserNode canvas bars
 //   wakeword.mjs       — WASM openWakeWord engine (hands-free mode)
+//   settings.mjs       — settings-panel controller for the docked drawer
+//     (owner 2026-07-19: the standalone /settings page is gone; its own
+//     optimistic-concurrency PUT loop is independent of this file's
+//     settingsDoc/putSettings below — see settings.mjs's header comment)
 //
 // This file only wires them to the page DOM (ids from
 // templates/pages/conversation.html) and to the settings document:
@@ -19,7 +23,8 @@
 //     (personaeditor.mjs, lazily imported; Author B owns that module);
 //   - mic sensitivity chips (Low/Medium/High) ↔ settings micEagerness,
 //     live-applied via session.updateAudioInput;
-//   - docked settings drawer (native <dialog>: focus trap + Escape free);
+//   - docked settings drawer (native <dialog>: focus trap + Escape free),
+//     now full-screen and hosting the settings panel (settings.mjs) inline;
 //   - optimistic PUT /api/v1/settings with the §3.6 409 retry-once rule;
 //   - composer → live session sendUserText, or POST /api/v1/fallback/turn
 //     when no session is connected (spec §2.5 "you can still type below");
@@ -33,6 +38,8 @@ import { Transcript } from './transcript.mjs';
 import { createTranscriptSink } from './transcriptsink.mjs';
 import { Visualizer } from './visualizer.mjs';
 import { createWakeWordEngine, isWakeWordSupported } from './wakeword.mjs';
+import { initSettingsPanel } from './settings.mjs';
+import { openToolDetails } from './tooldetails.mjs';
 
 const SETTINGS_PATH = '/api/v1/settings';
 const VOICES_PATH = '/api/v1/realtime/voices';
@@ -534,29 +541,27 @@ function attachTranscriptRendering(session) {
   session.addEventListener('connectionlost', () => transcript.hideTypingIndicator());
   session.addEventListener('closed', () => transcript.hideTypingIndicator());
 
-  session.addEventListener('toolcall', () => toolActivityStart());
+  // Every tool event is buffered UNCONDITIONALLY (bufferToolCall/Result/
+  // Error below) regardless of the "Show tool calls" toggle, so turning it
+  // on mid-conversation can retroactively reveal cards for calls that
+  // already finished while it was off (replayBufferedToolCalls) — the
+  // toggle only gates whether a card renders NOW, never whether the call
+  // is remembered.
+  session.addEventListener('toolcall', (e) => {
+    toolActivityStart();
+    bufferToolCall(e.detail);
+  });
   session.addEventListener('toolresult', (e) => {
     toolActivityEnd();
+    const entry = bufferToolResult(e.detail);
     if (!showToolCalls()) return;
-    const { tool, result } = e.detail;
-    transcript.appendToolResultCard({
-      icon: '🛠',
-      title: toolTitle(tool),
-      badge: 'Done',
-      badgeVariant: 'teal',
-      fields: toolFields(result),
-    });
+    renderToolCard(entry);
   });
   session.addEventListener('toolerror', (e) => {
     toolActivityEnd();
+    const entry = bufferToolError(e.detail);
     if (!showToolCalls()) return;
-    transcript.appendToolResultCard({
-      icon: '🛠',
-      title: toolTitle(e.detail.tool),
-      badge: 'Failed',
-      badgeVariant: 'error',
-      fields: [['Status', 'The tool call failed — the assistant was told.']],
-    });
+    renderToolCard(entry);
   });
   session.addEventListener('closed', () => toolActivityReset());
   session.addEventListener('connectionlost', () => toolActivityReset());
@@ -583,6 +588,9 @@ if (showToolsToggle) {
     } catch {
       /* non-fatal */
     }
+    // Retroactive reveal: cards for calls that already finished while the
+    // toggle was off never got rendered — replay them now, in order.
+    if (showToolsToggle.checked) replayBufferedToolCalls();
   });
 }
 
@@ -594,6 +602,7 @@ function toolActivityStart() {
   toolsInFlight++;
   clearTimeout(toolActivityLinger);
   if (toolActivityEl) toolActivityEl.hidden = false;
+  if (orbEl) orbEl.classList.add('ln-orb--toolcall');
 }
 
 function toolActivityEnd() {
@@ -603,6 +612,7 @@ function toolActivityEnd() {
     clearTimeout(toolActivityLinger);
     toolActivityLinger = setTimeout(() => {
       toolActivityEl.hidden = true;
+      if (orbEl) orbEl.classList.remove('ln-orb--toolcall');
     }, 800);
   }
 }
@@ -611,6 +621,7 @@ function toolActivityReset() {
   toolsInFlight = 0;
   clearTimeout(toolActivityLinger);
   if (toolActivityEl) toolActivityEl.hidden = true;
+  if (orbEl) orbEl.classList.remove('ln-orb--toolcall');
 }
 
 function toolTitle(tool) {
@@ -634,6 +645,187 @@ function toolFields(result) {
     rows.push([toolTitle(key), text]);
   }
   return rows.length ? rows : [['Result', 'OK']];
+}
+
+/** args may arrive as an already-parsed object (fallback path never has
+ * args at all — tools.Result carries no Args field server-side) or a JSON
+ * string (realtime tool-call args, history's stored audit line) — parsed
+ * defensively, falling back to the raw string when it isn't valid JSON. */
+function parseArgsLoose(args) {
+  if (typeof args !== 'string') return args;
+  const trimmed = args.trim();
+  if (!trimmed) return undefined;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return args;
+  }
+}
+
+/** Flatten tool-call INPUT into [label, value] rows, mirroring toolFields()
+ * but prefixed "In · " so input and output rows read as one group inside
+ * the same <dl class="kv"> without a second heading element. */
+function toolInputFields(args) {
+  const parsed = parseArgsLoose(args);
+  if (parsed === undefined || parsed === null) return [];
+  if (typeof parsed !== 'object') return [['Input', String(parsed)]];
+  const rows = [];
+  for (const [key, value] of Object.entries(parsed)) {
+    if (rows.length >= 8) break;
+    let text;
+    if (value === null || value === undefined) text = '—';
+    else if (typeof value === 'object') {
+      text = Array.isArray(value) ? `${value.length} item${value.length === 1 ? '' : 's'}` : '(details)';
+    } else text = String(value);
+    rows.push([`In · ${toolTitle(key)}`, text]);
+  }
+  return rows;
+}
+
+/** POST /api/v1/tools/invoke's response (and each fallback-turn executed
+ * call) IS the whole tools.Result envelope ({tool, callId, ok, output,
+ * error, ...}, internal/tools/registry.go) — a card/Details "Output" means
+ * the TOOL's own output, so unwrap `.output` when present rather than
+ * flattening envelope metadata (tool/callId/ok/duplicate) as if it were
+ * the result. */
+function unwrapToolOutput(result) {
+  if (result && typeof result === 'object' && !Array.isArray(result) && 'output' in result) {
+    return result.output;
+  }
+  return result;
+}
+
+function toolErrorMessage(error) {
+  if (!error) return '';
+  if (typeof error === 'string') return error;
+  return (error && error.message) || '';
+}
+
+// ---- tool-call buffer (Feature: retroactive "Show tool calls" reveal) ----
+//
+// Every toolcall/toolresult/toolerror — live AND fallback-turn — is
+// buffered here regardless of the showToolCalls() gate, keyed by callId so
+// the call and its eventual result/error correlate into one entry. This is
+// what lets flipping "Show tool calls" ON mid-conversation retroactively
+// render cards for calls that already completed while it was off
+// (replayBufferedToolCalls), instead of only affecting calls from that
+// point forward. Bounded so a very long/tool-heavy conversation can't grow
+// this unboundedly; only startNewConversation() clears it — a dropped
+// connection ('closed'/'connectionlost') must NOT, since the transcript
+// (and its buffered tool history) stays on screen through a reconnect.
+
+const TOOL_BUFFER_MAX = 200;
+const toolCallBuffer = []; // ordered [{tool, callId, args, result, error, failed, done, rendered, ts}]
+const toolEntryByCallId = new Map();
+let fallbackCallSeq = 0;
+
+function trimToolBuffer() {
+  while (toolCallBuffer.length > TOOL_BUFFER_MAX) {
+    const dropped = toolCallBuffer.shift();
+    if (dropped) toolEntryByCallId.delete(dropped.callId);
+  }
+}
+
+function clearToolBuffer() {
+  toolCallBuffer.length = 0;
+  toolEntryByCallId.clear();
+}
+
+function bufferToolCall({ tool, callId, args }) {
+  const entry = {
+    tool,
+    callId,
+    args,
+    result: undefined,
+    error: undefined,
+    failed: false,
+    done: false,
+    rendered: false,
+    ts: Date.now(),
+  };
+  if (callId) toolEntryByCallId.set(callId, entry);
+  toolCallBuffer.push(entry);
+  trimToolBuffer();
+  return entry;
+}
+
+function bufferToolResult({ tool, callId, result }) {
+  const entry = (callId && toolEntryByCallId.get(callId)) || bufferToolCall({ tool, callId, args: undefined });
+  entry.result = result;
+  entry.done = true;
+  entry.failed = false;
+  return entry;
+}
+
+function bufferToolError({ tool, callId, error }) {
+  const entry = (callId && toolEntryByCallId.get(callId)) || bufferToolCall({ tool, callId, args: undefined });
+  entry.error = error;
+  entry.done = true;
+  entry.failed = true;
+  return entry;
+}
+
+/** Fallback-turn calls arrive already complete (no separate call/result
+ * events) — buffer the whole executed entry in one shot. `call` is one
+ * tools.Result-shaped object; it never carries the original arguments
+ * (server-side tools.Result has no Args field), so `args` stays undefined
+ * and the Details popup shows "(no input recorded)" for these rather than
+ * inventing data. */
+function bufferFallbackCall(call) {
+  const failed = !(call && call.ok);
+  const callId = (call && call.callId) || `fallback-${Date.now().toString(36)}-${++fallbackCallSeq}`;
+  const entry = {
+    tool: call && call.tool,
+    callId,
+    args: undefined,
+    result: failed ? undefined : call,
+    error: failed ? call && call.error : undefined,
+    failed,
+    done: true,
+    rendered: false,
+    ts: Date.now(),
+  };
+  toolEntryByCallId.set(callId, entry);
+  toolCallBuffer.push(entry);
+  trimToolBuffer();
+  return entry;
+}
+
+/** Renders one buffered tool-call entry as a transcript card. Shared by
+ * the live toolresult/toolerror listeners, the fallback-turn path, and the
+ * toggle's retroactive replay — so all three produce byte-identical cards.
+ * Idempotent (checks/sets entry.rendered) so replay can never double-render
+ * a card that already went up live. */
+function renderToolCard(entry) {
+  if (!entry || entry.rendered) return;
+  entry.rendered = true;
+  const failed = !!entry.failed;
+  transcript.appendToolResultCard({
+    icon: '🛠',
+    title: toolTitle(entry.tool),
+    badge: failed ? 'Failed' : 'Done',
+    badgeVariant: failed ? 'error' : 'teal',
+    fields: failed
+      ? [['Status', toolErrorMessage(entry.error) || 'The tool call failed — the assistant was told.']]
+      : [...toolInputFields(entry.args), ...toolFields(unwrapToolOutput(entry.result))],
+    onDetails: () =>
+      openToolDetails({
+        tool: entry.tool,
+        callId: entry.callId,
+        args: entry.args,
+        result: failed ? undefined : unwrapToolOutput(entry.result),
+        error: failed ? entry.error : undefined,
+        ts: entry.ts,
+      }),
+  });
+}
+
+/** Toggle turned ON: surface cards for every buffered call that finished
+ * while it was off, in the order they happened — never just future ones. */
+function replayBufferedToolCalls() {
+  for (const entry of toolCallBuffer) {
+    if (entry.done && !entry.rendered) renderToolCard(entry);
+  }
 }
 
 // ---- visualizer + orb ----------------------------------------------------
@@ -660,7 +852,15 @@ function attachVisualizer(session) {
 }
 
 function syncVisualToState(state) {
-  if (orbEl) orbEl.classList.toggle('ln-orb--idle', !state.startsWith('live-'));
+  if (orbEl) {
+    orbEl.classList.toggle('ln-orb--idle', !state.startsWith('live-'));
+    // Rings pulse only while the assistant is actually talking; the core
+    // spins faster while "thinking" (owner spec 2026-07-19). ln-orb--toolcall
+    // is driven separately by toolActivityStart/End below.
+    orbEl.classList.toggle('ln-orb--listening', state === MicState.LISTENING);
+    orbEl.classList.toggle('ln-orb--thinking', state === MicState.THINKING);
+    orbEl.classList.toggle('ln-orb--speaking', state === MicState.SPEAKING);
+  }
   switch (state) {
     case MicState.LISTENING:
       viz.setActiveSource('local');
@@ -852,6 +1052,9 @@ function startNewConversation() {
   toolActivityReset();
   resetCostBadge();
   hidePendingBanner();
+  // A dropped/reconnected session must NOT clear this (the transcript and
+  // its tool history stay on screen) — only an explicit new conversation.
+  clearToolBuffer();
   toast('New conversation — tap the mic when ready.');
 }
 
@@ -981,20 +1184,14 @@ if (composerInput && composerSend) {
 /** Render the tool calls the fallback turn executed server-side, using the
  * exact same card treatment as live-session tools (spec §2.3). Each entry is
  * the tool router's Result JSON ({tool, ok, output, error, ...}) — the same
- * shape the live dispatcher hands to the toolresult listener. */
+ * shape the live dispatcher hands to the toolresult listener. Buffered
+ * unconditionally (same rule as the live path) so toggling "Show tool
+ * calls" on later still reveals these retroactively. */
 function renderFallbackToolCalls(calls) {
-  if (!Array.isArray(calls) || calls.length === 0 || !showToolCalls()) return;
+  if (!Array.isArray(calls) || calls.length === 0) return;
   for (const call of calls) {
-    const failed = !(call && call.ok);
-    transcript.appendToolResultCard({
-      icon: '🛠',
-      title: toolTitle(call && call.tool),
-      badge: failed ? 'Failed' : 'Done',
-      badgeVariant: failed ? 'error' : 'teal',
-      fields: failed
-        ? [['Status', (call && call.error && call.error.message) || 'The tool call failed — the assistant was told.']]
-        : toolFields(call),
-    });
+    const entry = bufferFallbackCall(call);
+    if (showToolCalls()) renderToolCard(entry);
   }
 }
 
@@ -1162,6 +1359,20 @@ if (settingsDrawer && settingsDrawerBtn && typeof settingsDrawer.showModal === '
   settingsDrawer.addEventListener('click', (e) => {
     if (e.target === settingsDrawer) settingsDrawer.close();
   });
+  // Owner 2026-07-19: settings moved inline into this drawer (the
+  // standalone /settings page is gone) — wire every control once. The
+  // panel's elements are always in the DOM regardless of <dialog> open
+  // state, so this doesn't need to wait for a first open.
+  initSettingsPanel().catch((err) => {
+    console.error('settings panel failed to initialize', err);
+  });
+  // A Settings link elsewhere in the app (nav.html, history.html) can't
+  // deep-link into this dialog directly, so it points here with
+  // ?openSettings=1 and this opens the drawer on load.
+  if (new URLSearchParams(window.location.search).get('openSettings') === '1') {
+    settingsDrawer.showModal();
+    void loadDrawerCost();
+  }
 }
 
 // Month-to-date cost line in the Menu drawer (GET /api/v1/costs — the sum

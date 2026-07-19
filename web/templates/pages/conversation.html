@@ -17,14 +17,15 @@
          stamped server-side so first paint has no flash; theme.js re-stamps
          it from the cached/synced appearance (appearance.liveStyle). -->
     <section class="conv-rail" id="livePanel" data-ln-style="hal9000" aria-label="Voice controls">
-      {{- /* Rail top row (owner layout 2026-07-18 v2): New conversation on
-             the left; upper-right a small stacked column, right-aligned —
-             session STATE pill on top, live COST estimate under it
-             (conversation.mjs; cost hidden until a session starts, resets
-             on New conversation; internal/realtime/rates.go supplies the
-             pricing). mic.mjs drives the pill text + data-state. */}}
+      {{- /* Rail top row (owner layout 2026-07-19): upper-right a small
+             stacked column, right-aligned — session STATE pill on top,
+             live COST estimate under it (conversation.mjs; cost hidden
+             until a session starts, resets on New conversation;
+             internal/realtime/rates.go supplies the pricing). mic.mjs
+             drives the pill text + data-state. New conversation moved into
+             the orb wrap (far right, aligned with the orb's bottom edge —
+             see audio_viz.html). */}}
       <div class="conv-rail__top">
-        <button class="ln-btn ln-btn--ghost" type="button" id="newConversationBtn">New conversation</button>
         <div class="conv-rail__status">
           <span class="state-pill" id="statePill" data-state="idle" role="status" aria-live="polite">
             <span class="state-pill__dot" aria-hidden="true"></span>
@@ -68,52 +69,59 @@
 
       <button class="ln-btn ln-btn--ghost" type="button" data-ln-end hidden>End conversation</button>
 
-      {{- /* Rail bottom cluster (owner spec 2026-07-18 v2, top-to-bottom):
-             mic test + tool-call slider row, mic sensitivity chips, rule,
-             persona picker + editor, rule, History/Memory link-buttons.
-             margin-top:auto on .conv-rail__bottom pins the cluster low. */}}
-      <div class="conv-rail__bottom">
-        <button class="ln-btn ln-btn--ghost" type="button" id="micTestBtn">Test my mic</button>
-        <label class="ln-toggle">
+      {{- /* Rail bottom cluster (owner spec 2026-07-19, tightened,
+             top-to-bottom): Mic Test + sensitivity chips on one line, rule,
+             persona picker + editor, rule, History/Memory link-buttons,
+             Show tool calls last (no rule above it). margin-top:auto on
+             .conv-rail__settings pins the whole cluster low; its internal
+             gap is tighter than the rail's own sp-5 gap between the earlier
+             sections (mic button, orb, ptt). */}}
+      <div class="conv-rail__settings">
+        {{- /* Mic Test + mic sensitivity chips (task #5), combined onto one
+               line. Chips bind to settings micEagerness (low|medium|high;
+               'auto' = none pressed until the user picks). Saved via the
+               quick-switch path and live-applied to a connected session
+               through session.updateAudioInput (conversation.mjs). The
+               "Mic sensitivity" label is sr-only — the combined line has no
+               room for it visibly, aria-labelledby keeps it accessible. */}}
+        <div class="conv-miclineup" id="micSensGroup" role="group" aria-labelledby="micSensLabel">
+          <button class="ln-btn ln-btn--ghost ln-btn--compact" type="button" id="micTestBtn">Mic Test</button>
+          <span class="ln-sr-only" id="micSensLabel">Mic sensitivity</span>
+          <div class="conv-miclineup__chips">
+            <button class="ln-chip ln-chip--sm" type="button" data-eagerness="low" aria-pressed="false">Low</button>
+            <button class="ln-chip ln-chip--sm" type="button" data-eagerness="medium" aria-pressed="false">Med</button>
+            <button class="ln-chip ln-chip--sm" type="button" data-eagerness="high" aria-pressed="false">High</button>
+          </div>
+        </div>
+
+        <hr class="conv-rail__rule">
+
+        {{- /* Persona picker (no visible label by owner spec — aria-label
+               carries the name). Populated from GET /api/v1/personas (grouped
+               Built-in / Mine / Shared); "default" is the only entry
+               guaranteed to exist. Voice quick-switch is gone: voice is
+               embedded in the persona (edited in the persona editor). */}}
+        <div class="conv-persona-row">
+          <select class="ln-select" id="personaSelect" aria-label="Persona">
+            <option value="default" selected>Live Ninja (default)</option>
+          </select>
+          <button class="ln-btn ln-btn--ghost" type="button" id="personaEditBtn" aria-label="Edit persona">Edit</button>
+        </div>
+
+        <hr class="conv-rail__rule">
+
+        <nav class="conv-rail__nav" aria-label="Conversation pages">
+          <a class="ln-btn ln-btn--ghost" href="/history">History</a>
+          <a class="ln-btn ln-btn--ghost" href="/memory">Memory</a>
+          <a class="ln-btn ln-btn--ghost" href="/downloads">Downloads</a>
+        </nav>
+
+        <label class="ln-toggle" id="showToolsWrap">
           <input type="checkbox" id="showToolsToggle">
           <span class="ln-toggle-track" aria-hidden="true"><span class="ln-toggle-thumb"></span></span>
           <span>Show tool calls</span>
         </label>
       </div>
-
-      {{- /* Mic sensitivity chips (task #5): bound to settings micEagerness
-             (low|medium|high; 'auto' = none pressed until the user picks).
-             Saved via the quick-switch path and live-applied to a connected
-             session through session.updateAudioInput (conversation.mjs). */}}
-      <div class="conv-chiprow" id="micSensGroup" role="group" aria-labelledby="micSensLabel">
-        <span class="conv-chiprow__label" id="micSensLabel">Mic sensitivity</span>
-        <div class="conv-chiprow__chips">
-          <button class="ln-chip" type="button" data-eagerness="low" aria-pressed="false">Low</button>
-          <button class="ln-chip" type="button" data-eagerness="medium" aria-pressed="false">Medium</button>
-          <button class="ln-chip" type="button" data-eagerness="high" aria-pressed="false">High</button>
-        </div>
-      </div>
-
-      <hr class="conv-rail__rule">
-
-      {{- /* Persona picker (no visible label by owner spec — aria-label
-             carries the name). Populated from GET /api/v1/personas (grouped
-             Built-in / Mine / Shared); "default" is the only entry
-             guaranteed to exist. Voice quick-switch is gone: voice is
-             embedded in the persona (edited in the persona editor). */}}
-      <div class="conv-persona-row">
-        <select class="ln-select" id="personaSelect" aria-label="Persona">
-          <option value="default" selected>Live Ninja (default)</option>
-        </select>
-        <button class="ln-btn ln-btn--ghost" type="button" id="personaEditBtn" aria-label="Edit persona">Edit</button>
-      </div>
-
-      <hr class="conv-rail__rule">
-
-      <nav class="conv-rail__nav" aria-label="Conversation pages">
-        <a class="ln-btn ln-btn--ghost" href="/history">History</a>
-        <a class="ln-btn ln-btn--ghost" href="/memory">Memory</a>
-      </nav>
     </section>
 
     <!-- Right column: transcript + composer -->
@@ -149,9 +157,12 @@
   </div>
 </div>
 
-{{- /* Docked settings slide-out (owner spec 2026-07-18 v2): a slim tab on
-       the right edge, vertically centered; opens a modal drawer with the
-       site nav (this page has no header nav). Native <dialog> supplies the
+{{- /* Docked settings slide-out (owner spec 2026-07-19): a slim tab on the
+       right edge, vertically centered; opens a full-screen modal drawer
+       over the conversation column. Settings now live INLINE here (no more
+       standalone /settings page — settings.mjs's initSettingsPanel() wires
+       every control below, hydrating from GET /api/v1/settings client-side
+       since there is no SSR data island). Native <dialog> supplies the
        focus trap + Escape; conversation.mjs closes on scrim click. */}}
 <button class="conv-settings-tab" type="button" id="settingsDrawerBtn"
         aria-label="Settings" aria-haspopup="dialog">
@@ -160,16 +171,472 @@
 <dialog class="conv-drawer" id="settingsDrawer" aria-labelledby="settingsDrawerTitle">
   <div class="conv-drawer__inner">
     <div class="conv-drawer__head">
-      <h2 class="conv-drawer__title" id="settingsDrawerTitle">Menu</h2>
-      <button class="ln-iconbtn" type="button" id="settingsDrawerClose" aria-label="Close menu">×</button>
+      <h2 class="conv-drawer__title" id="settingsDrawerTitle">Settings</h2>
+      <button class="ln-iconbtn" type="button" id="settingsDrawerClose" aria-label="Close settings">×</button>
     </div>
+
+    {{- /* Full-screen drawer (owner 2026-07-19): everything below the head
+           bar is width-capped and centered so form rows stay readable on
+           wide screens instead of stretching edge-to-edge. */}}
+    <div class="conv-drawer__body">
+    {{- /* Only Personas remains a separate page (a library/management view
+           distinct from the persona quick-switch on the rail) — History,
+           Memory, and Downloads moved to buttons on the rail itself (owner
+           2026-07-19). */}}
     <nav class="conv-drawer__nav" aria-label="Primary">
-      <a class="conv-drawer__link" href="/settings">Settings</a>
       <a class="conv-drawer__link" href="/personas">Personas</a>
-      <a class="conv-drawer__link" href="/downloads">Downloads</a>
-      <a class="conv-drawer__link" href="/history">History</a>
-      <a class="conv-drawer__link" href="/memory">Memory</a>
     </nav>
+
+    <p class="ln-muted conv-drawer__intro">Changes save automatically and apply on every device you use Live Ninja on.</p>
+
+    <!-- ============ Wake word ============ -->
+    <section class="ln-card set-section" aria-labelledby="sectionWakeWord">
+      <div class="set-section__intro">
+        <h2 class="ln-card__title" id="sectionWakeWord">Wake word</h2>
+        <p class="ln-muted">What Live Ninja listens for before it starts a conversation.</p>
+      </div>
+
+      <div class="ln-field ln-combobox" id="wakeWordCombobox">
+        <label for="wakeWordInput">Wake phrase</label>
+        {{- /* Searchable combobox over /static/wakewords/catalog.json —
+               selection only, never a free-typed phrase (FR-K02).
+               settings.mjs sets the value once the settings doc + catalog
+               resolve; there is no SSR value to pre-fill. */}}
+        <input class="ln-input" id="wakeWordInput" type="text" role="combobox"
+               aria-expanded="false" aria-controls="wakeWordListbox" aria-autocomplete="list"
+               autocomplete="off" spellcheck="false"
+               aria-describedby="wakeWordHint">
+        <ul class="ln-combobox-panel" id="wakeWordListbox" role="listbox" aria-label="Wake phrases" hidden></ul>
+        <p class="ln-hint" id="wakeWordHint">Pick a built-in phrase, or train your own below.</p>
+      </div>
+
+      <!-- ==================== wake-word-section:BEGIN ====================
+           M6 custom wake-word studio (FR-K02/K03), owned by the M6 web-UI
+           workstream — edit only inside these markers. settings.mjs's
+           matching marked block drives everything here: it reveals the
+           form when GET /api/v1/wakewords responds (training backend
+           deployed), renders the user's custom phrases as status chips,
+           polls pending/training jobs, and swaps ready models into the
+           combobox catalog above. -->
+      <div class="ww-studio" id="wwStudio" hidden>
+        <div class="ln-field">
+          <label for="wwPhraseInput">Train your own phrase</label>
+          <div class="ww-form-row">
+            {{- /* Genuinely open-ended input (a novel phrase that does not
+                   exist anywhere yet) — the one case free text is correct.
+                   Everything selectable stays in the combobox above. */}}
+            <input class="ln-input" id="wwPhraseInput" type="text" maxlength="48"
+                   autocomplete="off" spellcheck="false"
+                   placeholder="e.g. Hey Computer"
+                   aria-describedby="wwPhraseHint wwPhraseError">
+            <button class="ln-btn ln-btn--primary" id="wwTrainBtn" type="button">Start training</button>
+          </div>
+          <p class="ln-hint" id="wwPhraseHint">2–4 words, letters only. Training takes a few minutes on our servers
+            (openWakeWord — works in this browser and the Android app; up to 3 requests per day).
+            We’ll email you when it’s ready.</p>
+          <p class="ln-error-text" id="wwPhraseError" role="alert" hidden></p>
+        </div>
+        <div id="wwChipsWrap" hidden>
+          <span class="ln-label">Your custom phrases</span>
+          <div class="ww-chips" id="wwChips" role="list" aria-label="Your custom wake phrases"></div>
+        </div>
+      </div>
+      <!-- ==================== wake-word-section:END ==================== -->
+
+      <fieldset class="ln-fieldset">
+        <legend>Wake engine</legend>
+        <div class="ln-choices">
+          <label class="ln-choice">
+            <input type="radio" name="wakeEngine" value="openwakeword">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">openWakeWord</span>
+              <span class="ln-choice__desc">Runs in this browser — free, on-device (default).</span>
+            </span>
+          </label>
+          <label class="ln-choice is-disabled">
+            <input type="radio" name="wakeEngine" value="porcupine" disabled aria-describedby="engineHintPorcupine">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Porcupine</span>
+              <span class="ln-choice__desc" id="engineHintPorcupine">Available on the Android app.</span>
+            </span>
+          </label>
+          <label class="ln-choice is-disabled">
+            <input type="radio" name="wakeEngine" value="wakenet" disabled aria-describedby="engineHintWakenet">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">WakeNet</span>
+              <span class="ln-choice__desc" id="engineHintWakenet">Available on M5Stack hardware.</span>
+            </span>
+          </label>
+        </div>
+      </fieldset>
+
+      <div class="ln-field">
+        <label for="sensitivity">Wake sensitivity</label>
+        <div class="ln-slider-row">
+          <input class="ln-slider" id="sensitivity" type="range" min="0" max="100" step="1" value="50"
+                 style="--val: 50%;" aria-valuetext="50%">
+          <output class="ln-slider-value" id="sensitivityValue" for="sensitivity">50%</output>
+        </div>
+        <p class="ln-hint">Higher values trigger more easily but may cause false wakes.</p>
+      </div>
+    </section>
+
+    <!-- ============ Persona ============ -->
+    <section class="ln-card set-section" aria-labelledby="sectionPersona">
+      <div class="set-section__intro">
+        <h2 class="ln-card__title" id="sectionPersona">Persona</h2>
+        <p class="ln-muted">How Live Ninja speaks and behaves.</p>
+      </div>
+
+      <div class="ln-field">
+        <label for="personaPreset">Persona</label>
+        {{- /* Populated client-side by settings.mjs's loadPersonaCatalog()
+               from GET /api/v1/realtime/personas, + the literal "custom"
+               option last (spec §3.3) — no more SSR {{range .Personas}}. */}}
+        <select class="ln-select" id="personaPreset"></select>
+        {{- /* Voice + accent live outside Settings: personas are the unit of
+               voice identity (settings.schema.json personaPrefs) — each
+               persona carries its own voice and accent, edited in the
+               persona editor pop-up (the Edit button next to the persona
+               picker above, on this same rail). */}}
+        <p class="ln-hint">Each persona carries its own voice and accent — use Edit next to the persona picker to change how it sounds.</p>
+      </div>
+
+      <div class="ln-field" id="customInstructionsField" hidden>
+        <label for="systemInstructions">Custom instructions</label>
+        <textarea class="ln-textarea" id="systemInstructions" maxlength="4000"
+                  aria-describedby="instructionsCharCount"
+                  placeholder="e.g. Always answer in a calm, brief tone and call me Jeremy."></textarea>
+        <div class="ln-charcount"><span id="instructionsCharCount">0 / 4000</span></div>
+      </div>
+    </section>
+
+    <!-- ============ Voice engine (M12 FR-VE-04) ============ -->
+    <!-- ==================== voice-engine-section:BEGIN ====================
+         M12 secondary-voice-engine picker, owned by the M12 web-client
+         workstream — edit only inside these markers. settings.mjs's matching
+         marked block wires the segmented control to voiceEngine.default and
+         checks the current value from the fetched settings doc on init.
+         Per settings.schema.json, `default` is the engine used by this
+         browser session and any device without its own pin; the broker
+         resolves engine-for-session as devices[deviceId] ?? default. -->
+    <section class="ln-card set-section" aria-labelledby="sectionVoiceEngine">
+      <div class="set-section__intro">
+        <h2 class="ln-card__title" id="sectionVoiceEngine">Voice engine</h2>
+        <p class="ln-muted">Which speech-to-speech model powers your conversations. Applies to this browser and any device you haven't set separately.</p>
+      </div>
+
+      <fieldset class="ln-fieldset">
+        <legend class="ln-sr-only">Voice engine</legend>
+        <div class="ln-choices" id="voiceEngineChoices">
+          <label class="ln-choice">
+            <input type="radio" name="voiceEngine" value="openai-realtime">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">OpenAI Realtime</span>
+              <span class="ln-choice__desc">Highest quality and lowest latency. Runs directly from your device (default).</span>
+            </span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="voiceEngine" value="openai-realtime-mini">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">OpenAI Realtime Mini</span>
+              <span class="ln-choice__desc">Cheaper and faster, with slightly less nuance. Also runs directly from your device.</span>
+            </span>
+          </label>
+          {{- /* Amazon Nova Sonic (nova-sonic) removed from the picker
+                 2026-07-18: the bridge subsystem is disabled
+                 (NovaBridgeEnable=false — owner declined the ALB + Fargate
+                 standing cost). The M12 code stays gated in the repo; restore
+                 this option when re-enabling. */}}
+        </div>
+        <p class="ln-hint">All engines share the same tools, memory, and transcripts — only cost, latency, and voice quality differ.</p>
+      </fieldset>
+    </section>
+    <!-- ==================== voice-engine-section:END ==================== -->
+
+    <!-- ============ Turn detection ============ -->
+    <section class="ln-card set-section" aria-labelledby="sectionTurn">
+      <div class="set-section__intro">
+        <h2 class="ln-card__title" id="sectionTurn">Turn detection</h2>
+        <p class="ln-muted">How Live Ninja decides you've finished speaking.</p>
+      </div>
+
+      <fieldset class="ln-fieldset">
+        <legend class="ln-sr-only">Turn detection</legend>
+        <div class="ln-choices">
+          <label class="ln-choice">
+            <input type="radio" name="turnDetection" value="semantic_vad">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Semantic VAD</span>
+              <span class="ln-choice__desc">Live Ninja judges when you're done speaking from meaning, not just silence (recommended).</span>
+            </span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="turnDetection" value="server_vad">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Server VAD</span>
+              <span class="ln-choice__desc">Ends your turn after a fixed silence gap.</span>
+            </span>
+          </label>
+        </div>
+      </fieldset>
+
+      <fieldset class="ln-fieldset">
+        <legend class="ln-sr-only">Mic pickup sensitivity</legend>
+        <p class="ln-muted" style="margin-top:16px">Mic pickup — how quickly Live Ninja treats a pause as the end of your turn.</p>
+        <div class="ln-choices">
+          <label class="ln-choice">
+            <input type="radio" name="micEagerness" value="auto">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Auto</span>
+              <span class="ln-choice__desc">Adapts to how you speak (recommended).</span>
+            </span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="micEagerness" value="low">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Patient</span>
+              <span class="ln-choice__desc">Waits longer before responding — best if you pause mid-thought.</span>
+            </span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="micEagerness" value="medium">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Balanced</span>
+              <span class="ln-choice__desc">A steady middle ground.</span>
+            </span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="micEagerness" value="high">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Fast</span>
+              <span class="ln-choice__desc">Jumps in quickly at the first pause.</span>
+            </span>
+          </label>
+        </div>
+      </fieldset>
+    </section>
+
+    <!-- ============ Appearance ============ -->
+    <section class="ln-card set-section" aria-labelledby="sectionAppearance">
+      <div class="set-section__intro">
+        <h2 class="ln-card__title" id="sectionAppearance">Appearance</h2>
+      </div>
+
+      <fieldset class="ln-fieldset">
+        <legend>Theme</legend>
+        <div class="ln-seg" id="themeSeg">
+          <label><input type="radio" name="theme" value="light"><span>Light</span></label>
+          <label><input type="radio" name="theme" value="dark"><span>Dark</span></label>
+          <label><input type="radio" name="theme" value="system"><span>System</span></label>
+        </div>
+        <p class="ln-hint">System follows your device's light/dark preference. Applies immediately.</p>
+      </fieldset>
+
+      <fieldset class="ln-fieldset">
+        <legend>Live panel style</legend>
+        <p class="ln-hint">The voice panel on the conversation screen — orb, mic and hands-free controls.</p>
+        <div class="ln-choices">
+          <label class="ln-choice">
+            <input type="radio" name="liveStyle" value="hal9000">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">HAL 9000</span>
+              <span class="ln-choice__desc">Deep black with a glowing red eye. "I'm sorry Dave" energy (default).</span>
+            </span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="liveStyle" value="ninja">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Ninja</span>
+              <span class="ln-choice__desc">The original navy-and-teal look.</span>
+            </span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="liveStyle" value="minimal">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Minimal</span>
+              <span class="ln-choice__desc">Flat and quiet — no glow, no gradients.</span>
+            </span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="liveStyle" value="terminal">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Terminal</span>
+              <span class="ln-choice__desc">Pure black, phosphor green, CRT vibes.</span>
+            </span>
+          </label>
+        </div>
+      </fieldset>
+
+      <fieldset class="ln-fieldset">
+        <legend>App style</legend>
+        <p class="ln-hint">Everything else — navigation, transcript, settings, history and downloads.</p>
+        <div class="ln-choices">
+          <label class="ln-choice">
+            <input type="radio" name="appStyle" value="ninja">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Ninja</span>
+              <span class="ln-choice__desc">The original navy-and-teal look (default).</span>
+            </span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="appStyle" value="hal9000">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">HAL 9000</span>
+              <span class="ln-choice__desc">Deep black with a glowing red eye. "I'm sorry Dave" energy.</span>
+            </span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="appStyle" value="minimal">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Minimal</span>
+              <span class="ln-choice__desc">Flat and quiet — no glow, no gradients.</span>
+            </span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="appStyle" value="terminal">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Terminal</span>
+              <span class="ln-choice__desc">Pure black, phosphor green, CRT vibes.</span>
+            </span>
+          </label>
+        </div>
+      </fieldset>
+
+      <fieldset class="ln-fieldset">
+        <legend>Accent color</legend>
+        <div class="ln-swatches" id="accentSwatches" role="radiogroup" aria-label="Accent color">
+          <button type="button" class="ln-swatch" data-accent="" style="--swatch: #888" title="Style default" aria-label="Style default"><span>Auto</span></button>
+          <button type="button" class="ln-swatch" data-accent="#e32636" style="--swatch: #e32636" aria-label="HAL red"></button>
+          <button type="button" class="ln-swatch" data-accent="#22e0d0" style="--swatch: #22e0d0" aria-label="Ninja teal"></button>
+          <button type="button" class="ln-swatch" data-accent="#38d0ff" style="--swatch: #38d0ff" aria-label="Cyan"></button>
+          <button type="button" class="ln-swatch" data-accent="#33ff66" style="--swatch: #33ff66" aria-label="Phosphor green"></button>
+          <button type="button" class="ln-swatch" data-accent="#ffca4a" style="--swatch: #ffca4a" aria-label="Amber"></button>
+          <button type="button" class="ln-swatch" data-accent="#b388ff" style="--swatch: #b388ff" aria-label="Violet"></button>
+          <button type="button" class="ln-swatch" data-accent="#ff7ab8" style="--swatch: #ff7ab8" aria-label="Pink"></button>
+        </div>
+        <div class="ln-field" style="margin-top:10px">
+          <label for="accentCustom">Custom color</label>
+          <input type="color" class="ln-color" id="accentCustom" value="#e32636">
+        </div>
+        <p class="ln-hint">"Auto" follows the style's own color. Applies immediately on every device.</p>
+      </fieldset>
+    </section>
+
+    <!-- ============ Microphone ============ -->
+    <section class="ln-card set-section" aria-labelledby="sectionMic">
+      <div class="set-section__intro">
+        <h2 class="ln-card__title" id="sectionMic">Microphone</h2>
+      </div>
+
+      <div class="ln-field">
+        <label for="micDevice">Input device</label>
+        {{- /* Populated from enumerateDevices(); the grant button appears
+               instead of unlabeled entries when mic permission was never
+               granted in this browser (spec §3.3). refreshMicDevices()
+               (settings.mjs) rebuilds this fully on init, so no SSR
+               placeholder is needed. */}}
+        <select class="ln-select" id="micDevice">
+          <option value="" selected>System default</option>
+        </select>
+        <button class="ln-btn ln-btn--ghost" id="micGrant" type="button" hidden>
+          Grant microphone access to see device names
+        </button>
+        <p class="ln-hint">Used for voice conversations in this browser.</p>
+      </div>
+    </section>
+
+    <!-- ============ Privacy ============ -->
+    <section class="ln-card set-section" aria-labelledby="sectionPrivacy">
+      <div class="set-section__intro">
+        <h2 class="ln-card__title" id="sectionPrivacy">Privacy</h2>
+        <p class="ln-muted">What Live Ninja keeps, and for how long.</p>
+      </div>
+
+      <div class="ln-field">
+        <label class="ln-toggle">
+          <input type="checkbox" id="storeAudio" aria-describedby="storeAudioNote">
+          <span class="ln-toggle-track" aria-hidden="true"><span class="ln-toggle-thumb"></span></span>
+          <span>Store audio recordings</span>
+        </label>
+        <p class="ln-hint" id="storeAudioNote" hidden>Audio storage isn't wired up yet in this build — this preference is saved for when it is.</p>
+      </div>
+
+      <div class="ln-field">
+        <label class="ln-toggle">
+          <input type="checkbox" id="storeTranscripts">
+          <span class="ln-toggle-track" aria-hidden="true"><span class="ln-toggle-thumb"></span></span>
+          <span>Store transcripts</span>
+        </label>
+      </div>
+
+      <fieldset class="ln-fieldset">
+        <legend>Keep transcripts for</legend>
+        <div class="ln-choices">
+          <label class="ln-choice">
+            <input type="radio" name="retentionDays" value="0">
+            <span class="ln-choice__body"><span class="ln-choice__title">Don't keep transcripts</span></span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="retentionDays" value="7">
+            <span class="ln-choice__body"><span class="ln-choice__title">7 days</span></span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="retentionDays" value="30">
+            <span class="ln-choice__body"><span class="ln-choice__title">30 days</span></span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="retentionDays" value="90">
+            <span class="ln-choice__body"><span class="ln-choice__title">90 days</span></span>
+          </label>
+        </div>
+      </fieldset>
+    </section>
+
+    <!-- ============ Account ============ -->
+    <section class="ln-card set-section set-danger-card" aria-labelledby="sectionAccount">
+      <div class="set-section__intro">
+        <h2 class="ln-card__title" id="sectionAccount">Account</h2>
+      </div>
+
+      <div class="set-danger-row">
+        <div class="set-danger-row__body">
+          <div class="set-danger-row__title">Sign out</div>
+          <div class="set-danger-row__sub">Signs out this browser only.</div>
+        </div>
+        <div class="set-danger-row__action">
+          <button class="ln-btn ln-btn--ghost" id="signOut" type="button">Sign out</button>
+        </div>
+      </div>
+
+      <div class="set-danger-row">
+        <div class="set-danger-row__body">
+          <div class="set-danger-row__title">Sign out everywhere</div>
+          <div class="set-danger-row__sub">Signs out every device, including this one.</div>
+        </div>
+        <div class="set-danger-row__action">
+          <button class="ln-btn ln-btn--danger" id="signOutAll" type="button"
+                  aria-expanded="false" aria-controls="signOutAllConfirm">Sign out everywhere</button>
+        </div>
+      </div>
+      <div class="set-confirm-panel" id="signOutAllConfirm" hidden>
+        <p>This signs out every device, including this one. You'll need to sign in again everywhere.</p>
+        <div class="set-confirm-actions" style="display:flex; gap: var(--ln-sp-3); flex-wrap: wrap;">
+          <button class="ln-btn ln-btn--danger" id="signOutAllConfirmBtn" type="button">Yes, sign out everywhere</button>
+          <button class="ln-btn ln-btn--ghost" id="signOutAllCancelBtn" type="button">Cancel</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Save status -->
+    <div class="set-savebar">
+      <p class="set-savebar__status" id="saveStatus" role="status" aria-live="polite">
+        <span class="dot" aria-hidden="true"></span>
+        <span id="saveStatusText">All changes saved</span>
+      </p>
+      <button class="ln-btn ln-btn--ghost" id="saveRetryBtn" type="button" hidden>Retry</button>
+    </div>
+
     {{- /* Month-to-date estimated cost across saved conversations
            (GET /api/v1/costs, fetched by conversation.mjs on first open;
            links to /history where per-conversation costs live). */}}
@@ -178,8 +645,18 @@
       <span class="conv-drawer__cost-value" id="drawerCostValue"></span>
       <span class="conv-drawer__cost-sub" id="drawerCostSub"></span>
     </a>
+    </div>
   </div>
 </dialog>
+
+{{- /* Drawer-scoped toast (settings.mjs) — deliberately separate from the
+       page's own #toast (conversation.mjs's richer session/error banner
+       below) so the two independent renderers never collide on one
+       element. */}}
+<div class="ln-toast" id="drawerToast" role="status" aria-live="polite" hidden>
+  <span id="drawerToastMsg"></span>
+  <button class="ln-btn ln-btn--ghost" id="drawerToastActionBtn" type="button" hidden></button>
+</div>
 
 {{- /* Remote assistant audio (realtime.mjs attaches the WebRTC track and
        routes it through a GainNode for the barge-in ramp). */}}
@@ -195,7 +672,7 @@
     <ul>
       <li><strong>Flat line / no level?</strong> Check the mic's physical mute switch and that it's plugged in, then speak at normal volume about an arm's length away.</li>
       <li><strong>Chrome blocked the mic:</strong> click the tune (or lock) icon at the left of the address bar &rarr; <em>Site settings</em> &rarr; set <em>Microphone</em> to <em>Allow</em>, then reload this page. You can also open <code>chrome://settings/content/microphone</code> and remove live.jeremy.ninja from the "Not allowed" list.</li>
-      <li><strong>Wrong microphone?</strong> Chrome records from your system default mic unless you pick one on the <a href="/settings">Settings</a> page. On Windows, change the default under Settings &rarr; System &rarr; Sound &rarr; Input.</li>
+      <li><strong>Wrong microphone?</strong> Chrome records from your system default mic unless you pick one in the ⚙ Settings panel (Microphone section). On Windows, change the default under Settings &rarr; System &rarr; Sound &rarr; Input.</li>
       <li><strong>Windows is blocking desktop apps:</strong> Windows Settings &rarr; Privacy &amp; security &rarr; Microphone &mdash; turn on microphone access and "Let desktop apps access your microphone".</li>
       <li><strong>Another app is holding the mic</strong> (shows as "could not open the microphone"): close Zoom, Teams, OBS, or other recording apps and test again.</li>
       <li><strong>Level moves here but the assistant doesn't respond:</strong> raise the input volume in Windows Sound settings, and make sure you speak after the status pill says <em>Listening</em>.</li>

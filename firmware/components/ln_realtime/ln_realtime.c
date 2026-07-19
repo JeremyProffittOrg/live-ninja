@@ -55,7 +55,14 @@ static const char *TAG = "ln_rt";
 #define LN_RT_DEC_BUF_SZ        (24 * 1024)
 #define LN_RT_B64_CHUNK         30000 /* multiple of 4; decodes to 22500 B < DEC_BUF */
 #define LN_RT_UPLINK_BUF_SZ     (16 * 1024)
-#define LN_RT_UPLINK_MAX_SAMPLES 4800 /* 300 ms @ 16 kHz -> ~12.8 KB base64 frame */
+#define LN_RT_UPLINK_MAX_SAMPLES 4800 /* 200 ms @ 24 kHz -> ~12.8 KB base64 frame */
+/* Uplink resampler: the AFE delivers 16 kHz frames but a GA realtime pcm
+ * session only speaks 24 kHz (audio/pcm rate=24000 is the sole supported
+ * rate) — sending 16 kHz raw made the server hear 1.5x-speed audio, so VAD
+ * and transcription never produced a usable turn (the "hears me but never
+ * answers" HIL failure). Input is sliced so one slice's 3/2 output fits the
+ * uplink frame. */
+#define LN_RT_RESAMPLE_IN_MAX   3200  /* 3200 in @16k -> 4800 out @24k */
 #define LN_RT_MAX_RECONNECT     5
 #define LN_RT_CONNECT_TIMEOUT_MS 15000
 #define LN_RT_SEND_TIMEOUT      pdMS_TO_TICKS(1000)
@@ -91,6 +98,7 @@ static uint8_t s_carry;
 static bool s_have_carry;
 
 static char *s_uplink_buf; /* PSRAM, JSON frame + base64 payload */
+static int16_t *s_rs_buf;  /* PSRAM, 16k->24k resampled uplink staging */
 
 static char s_ws_url[1280];   /* OpenAI URL is short; Nova bridge URL (ws_url[640]) + "?token=" + token[512] needs headroom */
 static char s_ws_headers[576]; /* "Authorization: Bearer ek_...\r\n" (OpenAI-direct only) */
@@ -125,6 +133,83 @@ static void post_transcript(const char *text, size_t len, bool final)
     memcpy(c.text, text, len);
     c.text[len] = '\0';
     esp_event_post(LN_RT_EVENT, LN_RT_EVENT_TRANSCRIPT_DELTA, &c, sizeof(c), pdMS_TO_TICKS(20));
+}
+
+/* ------------------------------------------------------- uplink resampler -- */
+
+/*
+ * Rational 3/2 resampler (16 kHz -> 24 kHz), polyphase over a virtual 48 kHz
+ * stream: zero-stuff the input x3, lowpass, keep every 2nd virtual sample.
+ * The prototype filter is ln_resample.c's 33-tap Hamming windowed-sinc
+ * (fc = 6.8 kHz @ 48 kHz) scaled x3 — a zero-stuffed x3 interpolation needs
+ * passband gain 3 to restore unity (same rule as ln_itp2's gain-2 taps).
+ * Self-contained here because ln_audio keeps ln_resample.h private.
+ */
+#define LN_R32_TAPS 33
+static const int16_t s_r32_coef[LN_R32_TAPS] = {
+    156,   132,   -27,   -318,  -531,  -288,  567,   1542,  1566,  -147,
+    -3015, -4800, -2748, 4359,  14742, 24060, 27804, 24060, 14742, 4359,
+    -2748, -4800, -3015, -147,  1566,  1542,  567,   -288,  -531,  -318,
+    -27,   132,   156,
+};
+#define LN_R32_HIST ((LN_R32_TAPS + 2) / 3) /* past input samples a tap can reach */
+
+static struct {
+    int16_t hist[LN_R32_HIST];
+    uint8_t odd; /* parity of the next virtual 48 kHz position */
+} s_r32;
+
+static void r32_reset(void)
+{
+    memset(&s_r32, 0, sizeof(s_r32));
+}
+
+/** Resample in (16 kHz) into out (24 kHz). out must hold 3*in_samples/2 + 2.
+ *  Returns output sample count. */
+static size_t r32_process(const int16_t *in, size_t in_samples, int16_t *out)
+{
+    size_t out_n = 0;
+    for (size_t i = 0; i < in_samples; i++) {
+        /* Input sample i sits at virtual positions [3i, 3i+2]; emit the even
+         * ones. `sub` is also the polyphase index (v mod 3) for tap
+         * selection: y[v] = sum h[t] * x[(v - t)/3] over t ≡ sub (mod 3). */
+        for (int sub = 0; sub < 3; sub++) {
+            if (s_r32.odd) {
+                s_r32.odd = 0;
+                continue;
+            }
+            s_r32.odd = 1;
+            int32_t acc = 0;
+            for (int t = sub; t < LN_R32_TAPS; t += 3) {
+                int32_t idx = (int32_t)i - (t - sub) / 3;
+                int16_t x;
+                if (idx >= 0) {
+                    x = in[idx];
+                } else if (idx >= -LN_R32_HIST) {
+                    x = s_r32.hist[LN_R32_HIST + idx];
+                } else {
+                    x = 0;
+                }
+                acc += (int32_t)x * s_r32_coef[t];
+            }
+            int32_t v = acc >> 15;
+            if (v > 32767) {
+                v = 32767;
+            } else if (v < -32768) {
+                v = -32768;
+            }
+            out[out_n++] = (int16_t)v;
+        }
+    }
+    if (in_samples >= LN_R32_HIST) {
+        memcpy(s_r32.hist, &in[in_samples - LN_R32_HIST],
+               LN_R32_HIST * sizeof(int16_t));
+    } else {
+        size_t keep = LN_R32_HIST - in_samples;
+        memmove(s_r32.hist, &s_r32.hist[in_samples], keep * sizeof(int16_t));
+        memcpy(&s_r32.hist[keep], in, in_samples * sizeof(int16_t));
+    }
+    return out_n;
 }
 
 /* ------------------------------------------------------------------ send -- */
@@ -185,9 +270,12 @@ esp_err_t ln_realtime_send_audio(const int16_t *samples, size_t n_samples)
     }
     esp_err_t ret = ESP_OK;
     while (n_samples > 0 && ret == ESP_OK) {
-        size_t slice = (n_samples > LN_RT_UPLINK_MAX_SAMPLES) ? LN_RT_UPLINK_MAX_SAMPLES
-                                                              : n_samples;
-        ret = send_audio_slice(samples, slice);
+        size_t slice = (n_samples > LN_RT_RESAMPLE_IN_MAX) ? LN_RT_RESAMPLE_IN_MAX
+                                                           : n_samples;
+        size_t rs_n = r32_process(samples, slice, s_rs_buf);
+        if (rs_n > 0) {
+            ret = send_audio_slice(s_rs_buf, rs_n);
+        }
         samples += slice;
         n_samples -= slice;
     }
@@ -394,17 +482,14 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t event_id,
         s_have_carry = false;
         s_response_active = false;
         s_session_ready_posted = false;
-        if (s_engine_mode == LN_RT_ENGINE_OPENAI_DIRECT) {
-            /* Locked decision: configure pcm16 in/out. The ephemeral token is
-             * config-bound by the broker; this only pins the audio wire format.
-             * The Nova bridge fixes pcm16 itself and normalizes events
-             * server-side, so no OpenAI session.update is sent on that path. */
-            static const char k_session_update[] =
-                "{\"type\":\"session.update\",\"session\":{"
-                "\"input_audio_format\":\"pcm16\",\"output_audio_format\":\"pcm16\"}}";
-            esp_websocket_client_send_text(s_ws, k_session_update,
-                                           sizeof(k_session_update) - 1, LN_RT_SEND_TIMEOUT);
-        }
+        r32_reset(); /* fresh session — drop stale uplink filter history */
+        /* No session.update here (GA API). A WSS GA session already defaults
+         * to audio/pcm @ 24 kHz both directions, and the broker's mint is
+         * config-bound (turn_detection/noise_reduction/transcription live in
+         * audio.input). GA session.update REPLACES the whole audio.input
+         * object, so a format-only update would silently wipe that minted
+         * config — and the old beta-shape update (input_audio_format) was
+         * rejected by GA sessions with an error event anyway. */
         s_connected = true;
         xEventGroupSetBits(s_eg, EG_WS_CONNECTED);
         post_evt(LN_RT_EVENT_CONNECTED);
@@ -617,8 +702,9 @@ esp_err_t ln_realtime_init(void)
     s_rx_cap = LN_RT_RX_BUF_INIT;
     s_dec_buf = ln_rt_alloc(LN_RT_DEC_BUF_SZ);
     s_uplink_buf = ln_rt_alloc(LN_RT_UPLINK_BUF_SZ);
+    s_rs_buf = ln_rt_alloc((3 * LN_RT_RESAMPLE_IN_MAX / 2 + 2) * sizeof(int16_t));
     if (s_cmd_q == NULL || s_eg == NULL || s_send_mtx == NULL || s_rx_buf == NULL ||
-        s_dec_buf == NULL || s_uplink_buf == NULL) {
+        s_dec_buf == NULL || s_uplink_buf == NULL || s_rs_buf == NULL) {
         ESP_LOGE(TAG, "init: out of memory");
         return ESP_ERR_NO_MEM;
     }

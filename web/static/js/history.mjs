@@ -30,6 +30,7 @@
 // All data-driven markup is built with textContent (never innerHTML).
 
 import { apiJSON, ApiError } from './toolclient.mjs';
+import { openToolDetails } from './tooldetails.mjs';
 
 const $ = (id) => document.getElementById(id);
 
@@ -625,8 +626,6 @@ function jsonPreview(raw, max = 200) {
   return s.length > max ? s.slice(0, max) + '…' : s;
 }
 
-let toolCardSeq = 0;
-
 function buildToolCard(turn) {
   const outer = document.createElement('div');
   outer.className = 'ln-toolcard hist-toolcard';
@@ -663,54 +662,31 @@ function buildToolCard(turn) {
   badge.textContent = badgeText;
   head.appendChild(badge);
 
-  // Full args + output (the audit rows store an output snippet) behind an
-  // accessible disclosure: the Details button pins the panel open
-  // (aria-expanded), while mouse hover or keyboard focus anywhere in the
-  // card reveals it transiently (CSS :hover / :focus-within). A plain
-  // `title` tooltip on the card is the last-resort fallback.
+  // Full args/output/error behind an explicit Details button — opens the
+  // SAME shared prettified-JSON popup the live conversation transcript's
+  // tool cards use (tooldetails.mjs), instead of history's own inline
+  // hover/focus disclosure panel. turn.args/turn.output are stored strings
+  // (args verbatim, output possibly a server-truncated snippet) — parsed
+  // defensively inside tooldetails.mjs, same as the live path.
   const fullArgs = String(turn.args || '').trim();
   const fullOutput = String(turn.output || '').trim();
-  let fullPanel = null;
   if (fullArgs || fullOutput || turn.error) {
-    const tipParts = [];
-    if (fullArgs) tipParts.push(`Arguments: ${fullArgs}`);
-    if (turn.error) tipParts.push(`Error: ${turn.error}`);
-    if (fullOutput) tipParts.push(`Output: ${fullOutput}`);
-    const tip = tipParts.join('\n');
-    outer.title = tip.length > 1500 ? tip.slice(0, 1500) + '…' : tip;
-
-    const panelId = `histToolFull-${++toolCardSeq}`;
     const detailsBtn = document.createElement('button');
     detailsBtn.type = 'button';
-    detailsBtn.className = 'ln-btn ln-btn--ghost hist-toolcard__details-btn';
+    detailsBtn.className = 'ln-btn ln-btn--ghost toolcard-details-btn';
     detailsBtn.textContent = 'Details';
-    detailsBtn.setAttribute('aria-expanded', 'false');
-    detailsBtn.setAttribute('aria-controls', panelId);
     detailsBtn.setAttribute('aria-label', `Show full details for the ${turn.tool || 'tool'} call`);
-    head.appendChild(detailsBtn);
-
-    fullPanel = document.createElement('div');
-    fullPanel.className = 'hist-toolcard__full';
-    fullPanel.id = panelId;
-    fullPanel.hidden = true;
-    const panel = fullPanel;
-    const addBlock = (label, value) => {
-      const lab = document.createElement('div');
-      lab.className = 'hist-toolcard__full-label';
-      lab.textContent = label;
-      const pre = document.createElement('pre');
-      pre.textContent = value;
-      panel.appendChild(lab);
-      panel.appendChild(pre);
-    };
-    if (fullArgs) addBlock('Arguments', fullArgs);
-    if (turn.error) addBlock('Error', turn.error);
-    if (fullOutput) addBlock('Output', fullOutput);
-
     detailsBtn.addEventListener('click', () => {
-      panel.hidden = !panel.hidden;
-      detailsBtn.setAttribute('aria-expanded', panel.hidden ? 'false' : 'true');
+      openToolDetails({
+        tool: turn.tool,
+        callId: turn.callId,
+        args: fullArgs || undefined,
+        result: turn.error ? undefined : fullOutput || undefined,
+        error: turn.error || undefined,
+        ts: turn.ts,
+      });
     });
+    head.appendChild(detailsBtn);
   }
 
   card.appendChild(head);
@@ -738,9 +714,6 @@ function buildToolCard(turn) {
     }
     card.appendChild(dl);
   }
-
-  // Full detail sits below the compact preview.
-  if (fullPanel) card.appendChild(fullPanel);
 
   outer.appendChild(card);
   return outer;

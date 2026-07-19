@@ -313,7 +313,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  *   usertranscriptfailed {itemId}
  *   toolcall       {tool, callId, args}
  *   toolresult     {tool, callId, result}
- *   toolerror      {tool, callId}
+ *   toolerror      {tool, callId, error: {message, code}}
  *   servererror    {error}                   — realtime API error event
  *   connectionlost {reason}                  — ICE/datachannel drop mid-call
  *   closed         {}                        — deliberate close() finished
@@ -375,7 +375,16 @@ export class RealtimeSession extends EventTarget {
       sendEvent: (evt) => this.sendEvent(evt),
       onToolCall: (d) => this.#emit('toolcall', d),
       onToolResult: (d) => this.#emit('toolresult', d),
-      onToolError: (d) => this.#emit('toolerror', { tool: d.tool, callId: d.callId }),
+      // `d.error` is whatever createToolDispatcher's invoke caught — an
+      // ApiError (message/code/txId) or a generic Error/AuthLostError.
+      // Surfaced here (not just swallowed) so the tool-card Details popup
+      // can show the real failure instead of a bare "it failed".
+      onToolError: (d) => {
+        const err = d.error;
+        const message = (err && (err.message || String(err))) || 'The tool call failed.';
+        const code = (err && err.code) || '';
+        this.#emit('toolerror', { tool: d.tool, callId: d.callId, error: { message, code } });
+      },
     });
   }
 

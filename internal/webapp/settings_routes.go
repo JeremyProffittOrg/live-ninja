@@ -1,9 +1,6 @@
 // Settings surface (M3 subset of the M6 FR-S01 contract), owned by the
 // WS-D settings workstream per docs/web-ui-spec.md §3/§4:
 //
-//   - GET  /settings                  — SSR settings page (pages/settings
-//     template, current document inlined server-side per spec §3.2 — no
-//     client fetch on first paint).
 //   - GET  /api/v1/settings           — canonical JSON document (defaults
 //     synthesized when absent; voice default cedar).
 //   - PUT  /api/v1/settings           — {settings, version} optimistic-
@@ -12,6 +9,11 @@
 //     catalog (populates the voice pickers — never a blind text box).
 //   - GET  /api/v1/realtime/personas  — static persona catalog (IDs and
 //     display copy only; instruction text never leaves the server).
+//
+// Owner 2026-07-19: the standalone SSR settings page is gone — its
+// controls now live inline in the conversation page's docked drawer
+// (web/static/js/settings.mjs, imported by conversation.mjs), hydrating
+// from GET /api/v1/settings client-side instead of an SSR data island.
 //
 // RegisterSettingsRoutes is called from cmd/web/main.go alongside
 // RegisterAuthRoutes/RegisterAPIRoutes, behind the same global
@@ -24,9 +26,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"html/template"
-	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -44,90 +43,11 @@ import (
 // RegisterSettingsRoutes mounts the settings page and the settings/
 // catalog JSON API.
 func RegisterSettingsRoutes(app *fiber.App, deps *Deps) {
-	app.Get("/settings", handleSettingsPage(deps))
-
 	api := app.Group("/api/v1", RequireAuth())
 	api.Get("/settings", handleGetSettings(deps))
 	api.Put("/settings", handlePutSettings(deps))
 	api.Get("/realtime/voices", handleListVoices())
 	api.Get("/realtime/personas", handleListPersonas())
-}
-
-// ---- GET /settings (SSR page) ----
-
-// settingsPageView is the template bind for pages/settings. SettingsJSON
-// is the full canonical document (json.Marshal HTML-escapes <,>,& so it
-// is safe to emit raw inside the <script type="application/json"> data
-// island); the typed fields drive the server-rendered initial control
-// states so the page needs no client fetch (and shows no skeleton) on
-// first paint — spec §3.2.
-type settingsPageView struct {
-	SettingsJSON template.JS
-	CatalogsJSON template.JS // {voices:[...], personas:[...]} for JS re-renders
-
-	// ThemeAttr is read by layouts/base.html's themeAttr func (reflection
-	// over the bind): "light"/"dark" SSRs data-theme so an explicit theme
-	// choice paints right even before theme.js/settings.mjs run; ""
-	// (system) leaves the attribute off → prefers-color-scheme rules.
-	ThemeAttr string
-
-	Personas []settingsPersonaRow
-
-	WakeWord        string
-	WakeEngine      string
-	SensitivityPct  int
-	PersonaPreset   string
-	IsCustomPersona bool
-	Instructions    string
-	InstructionsLen int
-	TurnDetection   string
-	MicEagerness    string
-	AppStyle        string // style zone: everything outside the live panel
-	LiveStyle       string // style zone: the conversation page's live panel
-	AccentColor     string
-	Theme           string
-	MicDeviceID     string
-	StoreAudio      bool
-	StoreTranscript bool
-	RetentionDays   int
-}
-
-type settingsPersonaRow struct {
-	realtime.PersonaInfo
-	Selected bool
-}
-
-func handleSettingsPage(deps *Deps) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		userID := UserID(c)
-		if userID == "" {
-			// A plain browser navigation carries only the HttpOnly refresh
-			// cookie (no Bearer header), so resolve the session from it —
-			// read-only hash check, no rotation (rotation stays the
-			// exclusive job of POST /auth/refresh).
-			userID = resolveWebSessionUser(c, deps)
-		}
-		if userID == "" {
-			return c.Redirect("/", fiber.StatusFound)
-		}
-
-		doc, err := deps.Store.GetSettings(c.Context(), userID)
-		if err != nil {
-			return apiInternalError(c, deps, "get settings for page", err)
-		}
-
-		view, err := buildSettingsPageView(doc)
-		if err != nil {
-			return apiInternalError(c, deps, "build settings view", err)
-		}
-
-		// HTML documents are never cached (spec §0); only fingerprinted
-		// /static/* assets are immutable.
-		c.Set(fiber.HeaderCacheControl, "no-cache")
-		// Renders through the shared Views engine (pages_routes.go
-		// Renderer: layouts/base + partials/nav + this page's file).
-		return c.Render("pages/settings", view)
-	}
 }
 
 // resolveWebSessionUser validates the web refresh cookie against its
@@ -161,62 +81,6 @@ func resolveWebSessionUser(c *fiber.Ctx, deps *Deps) string {
 		return ""
 	}
 	return sess.UserID
-}
-
-func buildSettingsPageView(doc map[string]any) (*settingsPageView, error) {
-	docJSON, err := json.Marshal(doc)
-	if err != nil {
-		return nil, fmt.Errorf("marshal settings doc: %w", err)
-	}
-	catalogs, err := json.Marshal(fiber.Map{
-		"voices":   realtime.SupportedVoices,
-		"accents":  realtime.SupportedAccents,
-		"personas": realtime.ListPersonas(),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("marshal catalogs: %w", err)
-	}
-
-	v := &settingsPageView{
-		SettingsJSON:    template.JS(docJSON),
-		CatalogsJSON:    template.JS(catalogs),
-		WakeWord:        docString(doc, "wakeWord", "hey-live-ninja"),
-		WakeEngine:      docString(doc, "wakeEngine", "openwakeword"),
-		SensitivityPct:  int(math.Round(docFloat(doc, "sensitivity", 0.5) * 100)),
-		TurnDetection:   docString(doc, "turnDetection", "semantic_vad"),
-		MicEagerness:    docString(doc, "micEagerness", "auto"),
-		AppStyle:        docNestedString(doc, "appearance", "appStyle", "ninja"),
-		LiveStyle:       docNestedString(doc, "appearance", "liveStyle", "hal9000"),
-		AccentColor:     docNestedString(doc, "appearance", "accentColor", ""),
-		Theme:           docString(doc, "theme", "system"),
-		MicDeviceID:     docString(doc, "micDeviceId", ""),
-		StoreAudio:      docBool(doc, "privacy", "storeAudio", false),
-		StoreTranscript: docBool(doc, "privacy", "storeTranscripts", true),
-		RetentionDays:   int(docNestedFloat(doc, "privacy", "retentionDays", 30)),
-	}
-	if v.Theme == "light" || v.Theme == "dark" {
-		v.ThemeAttr = v.Theme
-	}
-
-	if persona, ok := doc["persona"].(map[string]any); ok {
-		v.PersonaPreset = strOr(persona["presetId"], "default")
-		v.Instructions = strOr(persona["systemInstructions"], "")
-	} else {
-		v.PersonaPreset = "default"
-	}
-	v.IsCustomPersona = v.PersonaPreset == "custom"
-	v.InstructionsLen = len([]rune(v.Instructions))
-
-	// Voice + accent no longer render on this page: personas are the unit
-	// of voice identity (personaPrefs, edited in the conversation page's
-	// persona editor). The stored top-level voice/voiceAccent remain in the
-	// SettingsJSON island purely so write-backs preserve the fallback
-	// default; CatalogsJSON keeps shipping the voice/accent catalogs for
-	// client-side consumers.
-	for _, p := range realtime.ListPersonas() {
-		v.Personas = append(v.Personas, settingsPersonaRow{PersonaInfo: p, Selected: p.ID == v.PersonaPreset})
-	}
-	return v, nil
 }
 
 // ---- GET /api/v1/settings[?since=<v>] ----
@@ -602,56 +466,6 @@ func handleListPersonas() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"personas": realtime.ListPersonas()})
 	}
-}
-
-// ---- small doc accessors (map[string]any → typed with default) ----
-
-func docString(doc map[string]any, key, def string) string {
-	if s, ok := doc[key].(string); ok {
-		return s
-	}
-	return def
-}
-
-func docFloat(doc map[string]any, key string, def float64) float64 {
-	if n, ok := numberVal(doc[key]); ok {
-		return n
-	}
-	return def
-}
-
-func docBool(doc map[string]any, objKey, key string, def bool) bool {
-	if m, ok := doc[objKey].(map[string]any); ok {
-		if b, ok := m[key].(bool); ok {
-			return b
-		}
-	}
-	return def
-}
-
-func docNestedString(doc map[string]any, objKey, key, def string) string {
-	if m, ok := doc[objKey].(map[string]any); ok {
-		if s, ok := m[key].(string); ok {
-			return s
-		}
-	}
-	return def
-}
-
-func docNestedFloat(doc map[string]any, objKey, key string, def float64) float64 {
-	if m, ok := doc[objKey].(map[string]any); ok {
-		if n, ok := numberVal(m[key]); ok {
-			return n
-		}
-	}
-	return def
-}
-
-func strOr(v any, def string) string {
-	if s, ok := v.(string); ok {
-		return s
-	}
-	return def
 }
 
 // numberVal normalizes the numeric shapes that reach a map[string]any

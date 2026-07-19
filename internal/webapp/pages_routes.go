@@ -1,5 +1,5 @@
 // SSR page shell (WS-D): the html/template Views engine, the page routes
-// (/ landing, /conversation — /settings is mounted by settings_routes.go),
+// (/ landing, /conversation, /downloads, /memory, /history, /personas),
 // the HTML-aware 404/error handlers, and the security-header middleware.
 //
 // Template engine decision (task brief: "Fiber html template engine or std
@@ -11,10 +11,9 @@
 // the settings JSON data island) with no new dependency.
 //
 // Every page template renders inside layouts/base.html. The bind passed to
-// c.Render flows to the template unchanged (settings_routes.go binds its
-// settingsPageView directly); per-page constants (title, nav path, body
-// class) are injected as template funcs at parse time, so binds never need
-// shell-specific fields.
+// c.Render flows to the template unchanged; per-page constants (title, nav
+// path, body class) are injected as template funcs at parse time, so binds
+// never need shell-specific fields.
 package webapp
 
 import (
@@ -62,7 +61,6 @@ type pageMeta struct {
 var pageMetas = map[string]pageMeta{
 	"pages/landing":      {Title: "Live Ninja — your private realtime voice assistant", Path: "/"},
 	"pages/conversation": {Title: "Conversation — Live Ninja", Path: "/conversation"},
-	"pages/settings":     {Title: "Settings — Live Ninja", Path: "/settings"},
 	"pages/downloads":    {Title: "Downloads — Live Ninja", Path: "/downloads"},
 	"pages/memory":       {Title: "Memory — Live Ninja", Path: "/memory"},
 	"pages/personas":     {Title: "Personas — Live Ninja", Path: "/personas"},
@@ -181,10 +179,10 @@ type errorPageView struct {
 // RegisterPageRoutes mounts the SSR page routes that pages_routes.go owns:
 // GET / (landing, or redirect to /conversation when signed in),
 // GET /conversation and GET /downloads (both redirect to / when signed
-// out). GET /settings is registered by RegisterSettingsRoutes
-// (settings_routes.go) because its handler SSRs the settings document.
-// Must be registered after ExtractAuthContext so the cookie/JWT auth gate
-// sees the request context.
+// out). Settings has no standalone page — its controls live inline in the
+// conversation page's docked drawer (settings.mjs). Must be registered
+// after ExtractAuthContext so the cookie/JWT auth gate sees the request
+// context.
 func RegisterPageRoutes(app *fiber.App, deps *Deps) {
 	app.Get("/", handleLandingPage(deps))
 	app.Get("/conversation", handleConversationPage(deps))

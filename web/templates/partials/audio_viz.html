@@ -4,19 +4,34 @@
        Visualizer: real AnalyserNode-driven canvas (visualizer.mjs),
        always aria-hidden. */}}
 <div class="conv-rail__orbwrap">
-  {{- /* Tool-activity badge: shown (conversation.mjs) while a function
-         call is executing; upper-left of the orb. */}}
-  <div class="tool-activity" id="toolActivity" hidden aria-hidden="false"
-       role="status" aria-label="A tool is running">
-    <span aria-hidden="true">🛠</span>
+  {{- /* Stage sizes itself to the orb (200px) and is the positioning
+         context for the tool-activity badge, independent of orbwrap's
+         full rail width (needed so New conversation can sit far right —
+         see below). */}}
+  <div class="ln-orb-stage">
+    {{- /* Tool-activity badge: shown (conversation.mjs) while a function
+           call is executing; upper-left of the orb. */}}
+    <div class="tool-activity" id="toolActivity" hidden aria-hidden="false"
+         role="status" aria-label="A tool is running">
+      <span aria-hidden="true">🛠</span>
+    </div>
+    <div class="ln-orb ln-orb--idle" id="orb" aria-hidden="true">
+      <div class="ln-orb__glow"></div>
+      <div class="ln-orb__ring"></div>
+      <div class="ln-orb__ring ln-orb__ring--2"></div>
+      <div class="ln-orb__ring ln-orb__ring--3"></div>
+      <div class="ln-orb__core"></div>
+    </div>
   </div>
-  <div class="ln-orb ln-orb--idle" id="orb" aria-hidden="true">
-    <div class="ln-orb__glow"></div>
-    <div class="ln-orb__ring"></div>
-    <div class="ln-orb__ring ln-orb__ring--2"></div>
-    <div class="ln-orb__ring ln-orb__ring--3"></div>
-    <div class="ln-orb__core"></div>
-  </div>
+  {{- /* New conversation: icon button, parallel with the orb's bottom
+         edge, far right of the rail (owner spec 2026-07-19). Native title
+         doubles as the hover tooltip; aria-label carries it for
+         screen readers. Id unchanged so conversation.mjs's binding
+         still finds it. */}}
+  <button class="ln-orb-newconv" type="button" id="newConversationBtn"
+          aria-label="New conversation" title="New conversation">
+    <span aria-hidden="true">＋</span>
+  </button>
 </div>
 <canvas class="viz" id="viz" width="300" height="48" aria-hidden="true"></canvas>
 {{end}}

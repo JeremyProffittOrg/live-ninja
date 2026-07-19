@@ -147,24 +147,10 @@
   .hist-tools-toggle .ln-toggle:has(input:checked) { color: var(--ln-text); }
   .hist-toolcard dd { word-break: break-word; }
 
-  /* Full args/output disclosure on tool cards: pinned open via the
-     focusable Details button (aria-expanded), and transiently revealed on
-     mouse hover or keyboard focus within the card. */
-  .hist-toolcard__details-btn { min-height: 32px; padding: 0 var(--ln-sp-3); font-size: var(--ln-fs-xs); flex: none; }
-  .hist-toolcard__full { margin-top: var(--ln-sp-3); border-top: 1px solid var(--ln-border); padding-top: var(--ln-sp-3); }
-  .hist-toolcard:hover .hist-toolcard__full[hidden],
-  .hist-toolcard:focus-within .hist-toolcard__full[hidden] { display: block; }
-  .hist-toolcard__full-label {
-    font-size: var(--ln-fs-xs); font-weight: 700; text-transform: uppercase;
-    letter-spacing: 0.05em; color: var(--ln-text-muted); margin-bottom: var(--ln-sp-1);
-  }
-  .hist-toolcard__full pre {
-    white-space: pre-wrap; word-break: break-word; margin: 0 0 var(--ln-sp-3);
-    font-size: var(--ln-fs-xs); background: var(--ln-surface-2);
-    border: 1px solid var(--ln-border); border-radius: var(--ln-r-sm);
-    padding: var(--ln-sp-2) var(--ln-sp-3); max-height: 320px; overflow: auto;
-  }
-  .hist-toolcard__full pre:last-child { margin-bottom: 0; }
+  /* The full args/output/error disclosure moved to the shared
+     tooldetails.mjs popup (its .tooldetails* styles live in app.css) —
+     the Details button here is .toolcard-details-btn, also styled in
+     app.css since transcript.mjs's live cards share it. */
 
   /* Topic manager */
   .hist-manage summary {
@@ -229,7 +215,7 @@
            page must say so instead of sitting silently empty. */}}
     <div class="hist-storage-note" id="histStorageOff" role="status" hidden>
       <span>Transcript storage is off — new conversations aren’t being saved.</span>
-      <a href="/settings">Turn it on in Settings</a>
+      <a href="/conversation?openSettings=1">Turn it on in Settings</a>
     </div>
 
     <section class="ln-card" aria-labelledby="filterHeading">

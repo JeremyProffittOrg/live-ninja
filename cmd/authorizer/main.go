@@ -78,7 +78,6 @@ var (
 		// (cookie check → login redirect); the API-GW layer must let the HTML
 		// request through or a signed-in browser gets a bare 403 JSON.
 		"/conversation": true,
-		"/settings":     true,
 		"/downloads":    true,
 		"/memory":       true,
 		"/history":      true,

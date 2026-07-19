@@ -685,15 +685,17 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
   filter: blur(2px);
   animation: ln-orb-spin 8s linear infinite;
 }
+/* Rings are still by default (owner spec 2026-07-19: they represent
+   "talking" — only the assistant's voice actually pulses them; see
+   .ln-orb--speaking below). */
 .ln-orb__ring {
   position: absolute; inset: -6%;
   border-radius: 50%;
   border: 2px solid var(--ln-orb-ring-color, var(--ln-teal-glow));
   display: var(--ln-orb-ring-display, block);
-  animation: ln-orb-pulse 2.4s ease-out infinite;
+  animation: none;
+  opacity: .35;
 }
-.ln-orb__ring--2 { animation-delay: .8s; }
-.ln-orb__ring--3 { animation-delay: 1.6s; }
 .ln-orb__glow {
   position: absolute; inset: 8%; border-radius: 50%;
   background: var(--ln-orb-glow-bg, none);
@@ -704,11 +706,40 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
 .ln-orb--lg { width: 280px; height: 280px; }
 .ln-orb--sm { width: 96px; height: 96px; }
 .ln-orb--idle .ln-orb__core { animation-duration: 24s; opacity: .7; }
-.ln-orb--idle .ln-orb__ring { animation: none; opacity: .3; }
+.ln-orb--idle .ln-orb__ring { opacity: .3; }
 @keyframes ln-orb-spin { to { transform: rotate(360deg); } }
 @keyframes ln-orb-pulse {
   0% { transform: scale(0.9); opacity: .7; }
   100% { transform: scale(1.35); opacity: 0; }
+}
+
+/* ---- orb state visuals (mic.mjs state -> conversation.mjs class toggle,
+   owner spec 2026-07-19) --------------------------------------------------
+   - speaking (assistant voice out): the rings pulse outward — "the lines
+     represent talking".
+   - thinking (working): the core's spin speeds up.
+   - toolcall (a function call is in flight): the core switches to a
+     distinct reverse-spin + pulse motion instead of just spinning faster,
+     so it reads as a different kind of activity, not just "thinking harder".
+     Declared after .ln-orb--thinking so it wins when both classes are set
+     (a tool call usually fires mid-"thinking"). */
+.ln-orb--speaking .ln-orb__ring {
+  animation: ln-orb-pulse 1.1s ease-out infinite;
+  opacity: 1;
+}
+.ln-orb--speaking .ln-orb__ring--2 { animation-delay: .35s; }
+.ln-orb--speaking .ln-orb__ring--3 { animation-delay: .7s; }
+.ln-orb--thinking .ln-orb__core {
+  animation-name: ln-orb-spin;
+  animation-duration: 2.2s;
+}
+.ln-orb--toolcall .ln-orb__core {
+  animation: ln-orb-core-toolcall 1.4s ease-in-out infinite;
+}
+@keyframes ln-orb-core-toolcall {
+  0%   { transform: rotate(0deg) scale(1); }
+  50%  { transform: rotate(-180deg) scale(1.15); }
+  100% { transform: rotate(-360deg) scale(1); }
 }
 
 /* ====================================================================
@@ -738,20 +769,65 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
   border-bottom-left-radius: var(--ln-r-sm);
 }
 
-/* Tool-result card (rendered live inside the transcript; real <dl>) */
-.ln-toolcard { align-self: flex-start; max-width: 78%; }
-.ln-toolcard .ln-card { padding: var(--ln-sp-4); }
-.ln-toolcard__head { display: flex; align-items: center; gap: var(--ln-sp-2); margin-bottom: var(--ln-sp-3); }
-.ln-toolcard__icon {
+/* Tool-result card (rendered live inside the transcript; real <dl>).
+   transcript.mjs's live cards use `.conv-toolcard*` classnames while
+   history.mjs's use `.ln-toolcard*` for the same visual pattern — combined
+   here (owner fix, tool-details work) rather than duplicated, since the
+   `.conv-toolcard*` half had never actually been styled. */
+.ln-toolcard, .conv-toolcard { align-self: flex-start; max-width: 78%; }
+.ln-toolcard .ln-card, .conv-toolcard .ln-card { padding: var(--ln-sp-4); }
+.ln-toolcard__head, .conv-toolcard__head {
+  display: flex; align-items: center; gap: var(--ln-sp-2); margin-bottom: var(--ln-sp-3); flex-wrap: wrap;
+}
+.ln-toolcard__icon, .conv-toolcard__icon {
   width: 30px; height: 30px; border-radius: var(--ln-r-sm); flex: none;
   display: grid; place-items: center; font-size: 16px;
   background: var(--ln-accent-tint); color: var(--ln-accent-ink);
 }
-.ln-toolcard__title { font-weight: 700; font-size: var(--ln-fs-sm); }
-.ln-toolcard__sub { font-size: var(--ln-fs-xs); color: var(--ln-text-dim); }
-.ln-toolcard dl.kv { display: grid; grid-template-columns: auto 1fr; gap: var(--ln-sp-2) var(--ln-sp-4); margin: 0; }
-.ln-toolcard dl.kv dt { font-size: var(--ln-fs-xs); color: var(--ln-text-dim); font-weight: 650; text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
-.ln-toolcard dl.kv dd { margin: 0; font-size: var(--ln-fs-sm); font-weight: 600; }
+.ln-toolcard__title, .conv-toolcard__title { font-weight: 700; font-size: var(--ln-fs-sm); }
+.ln-toolcard__sub, .conv-toolcard__sub { font-size: var(--ln-fs-xs); color: var(--ln-text-dim); }
+.ln-toolcard dl.kv, .conv-toolcard dl.kv { display: grid; grid-template-columns: auto 1fr; gap: var(--ln-sp-2) var(--ln-sp-4); margin: 0; }
+.ln-toolcard dl.kv dt, .conv-toolcard dl.kv dt { font-size: var(--ln-fs-xs); color: var(--ln-text-dim); font-weight: 650; text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
+.ln-toolcard dl.kv dd, .conv-toolcard dl.kv dd { margin: 0; font-size: var(--ln-fs-sm); font-weight: 600; }
+
+/* "Details" trigger shared by every tool-result card (live transcript,
+   fallback-turn cards, History) — opens tooldetails.mjs's shared dialog
+   (below). Sits in the card head next to the badge. */
+.toolcard-details-btn { min-height: 32px; padding: 0 var(--ln-sp-3); font-size: var(--ln-fs-xs); flex: none; }
+
+/* ---- Tool-call Details popup (tooldetails.mjs) ----------------------
+   One lazily-created <dialog>, reused by every "Details" button above —
+   shows the fully prettified JSON of a tool call's input and output/error,
+   plus Save-as-file + Copy-to-clipboard. Panel treatment mirrors
+   .mictest's (rounded surface-raised card, same backdrop). */
+.tooldetails {
+  width: min(640px, calc(100vw - 32px));
+  max-height: min(720px, calc(100vh - 64px));
+  border: 1px solid var(--ln-border-strong);
+  border-radius: 14px;
+  background: var(--ln-surface-raised);
+  color: var(--ln-text);
+  padding: var(--ln-sp-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ln-sp-4);
+}
+.tooldetails::backdrop { background: rgba(2, 8, 18, 0.65); }
+.tooldetails__head { display: flex; align-items: center; justify-content: space-between; gap: var(--ln-sp-3); flex: none; }
+.tooldetails__title { margin: 0; font-size: 1.15rem; word-break: break-word; }
+.tooldetails__body { display: flex; flex-direction: column; gap: var(--ln-sp-4); overflow-y: auto; min-height: 0; }
+.tooldetails__label {
+  font-size: var(--ln-fs-xs); font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--ln-text-muted); margin-bottom: var(--ln-sp-2);
+}
+.tooldetails__pre {
+  margin: 0; white-space: pre-wrap; word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--ln-fs-xs); background: var(--ln-surface-2);
+  border: 1px solid var(--ln-border); border-radius: var(--ln-r-sm);
+  padding: var(--ln-sp-3); max-height: 260px; overflow: auto;
+}
+.tooldetails__actions { display: flex; justify-content: flex-end; gap: var(--ln-sp-3); flex-wrap: wrap; flex: none; }
 
 /* ====================================================================
    LANDING PAGE
@@ -930,7 +1006,41 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
   background-image: var(--ln-bg-grad);
   background-color: var(--ln-bg);
 }
-.conv-rail__orbwrap { position: relative; margin-top: var(--ln-sp-3); }
+/* Full-width so the new-conversation button (far right) and the orb
+   (centered) can share one row without pushing each other off-center. */
+.conv-rail__orbwrap {
+  position: relative;
+  width: 100%;
+  margin-top: var(--ln-sp-3);
+  display: flex;
+  justify-content: center;
+}
+/* Shrinks to the orb's own size (200px) so the tool-activity badge (its
+   top-left corner) positions against the orb, not against the full-width
+   orbwrap. */
+.ln-orb-stage { position: relative; }
+/* New conversation: icon button, right edge of the rail, bottom edge
+   aligned with the orb's bottom (orbwrap's height == the orb's height,
+   since the badge/button are both position:absolute and don't add to it). */
+.ln-orb-newconv {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  display: flex; align-items: center; justify-content: center;
+  width: var(--ln-touch); height: var(--ln-touch);
+  padding: 0;
+  font: inherit; font-size: 22px; line-height: 1;
+  color: var(--ln-text);
+  background: var(--ln-surface-2);
+  border: 1px solid var(--ln-border-strong);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: background .12s ease, transform .08s ease;
+}
+.ln-orb-newconv:hover { background: var(--ln-surface-raised); }
+.ln-orb-newconv:active { transform: scale(.92); }
+.ln-orb-newconv:focus-visible { box-shadow: var(--ln-focus); }
 /* Status sits tight under the visualizer (owner spec 2026-07-18): pull it up
    against the rail's sp-5 gap, leaving sp-1. */
 .conv-status-text {
@@ -942,7 +1052,7 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
   width: 100%;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: var(--ln-sp-2);
 }
 
@@ -1032,6 +1142,22 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
 .set-section__intro p { margin-bottom: 0; }
 .set-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--ln-sp-5); }
 @media (max-width: 720px) { .set-row { grid-template-columns: 1fr; } }
+
+/* Wake-word training studio (moved from settings.html's page-local <style>
+   when settings moved into the conversation drawer — owner 2026-07-19). */
+.ww-studio { margin-top: var(--ln-sp-4); }
+.ww-form-row { display: flex; gap: var(--ln-sp-3); flex-wrap: wrap; align-items: flex-start; }
+.ww-form-row .ln-input { flex: 1 1 240px; }
+.ww-chips { display: flex; flex-wrap: wrap; gap: var(--ln-sp-2); margin-top: var(--ln-sp-3); }
+.ww-chip {
+  display: inline-flex; align-items: center; gap: var(--ln-sp-2);
+  padding: 6px 12px; border-radius: var(--ln-r-pill);
+  border: 1px solid var(--ln-border-strong); background: var(--ln-input-bg);
+  font-size: var(--ln-fs-sm); font-weight: 600;
+}
+.ww-chip .ln-badge { font-size: 11px; }
+.ww-badge--warn { background: var(--ln-warn-tint); color: var(--ln-warn-ink); border-color: currentColor; }
+.ww-chip .ln-btn { min-height: 28px; padding: 0 10px; font-size: var(--ln-fs-xs); }
 
 /* Voice radio rows with inline preview */
 .set-voice-list { display: flex; flex-direction: column; gap: var(--ln-sp-3); }
@@ -1161,22 +1287,22 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
 .mictest__tips code { word-break: break-all; }
 .mictest__actions { display: flex; justify-content: flex-end; margin-top: 18px; }
 
-/* ---- rail bottom row (owner spec 2026-07-18): "Test my mic" left,
-   "Show tool calls" slider right, vertical centers aligned. margin-top:auto
-   pins the row to the bottom of the flex-column rail. */
-.conv-rail__bottom {
+/* ---- rail settings cluster (owner spec 2026-07-19): Mic Test + sensitivity
+   line, persona row, History/Memory nav, Show tool calls — in that order.
+   margin-top:auto pins the whole cluster to the bottom of the flex-column
+   rail; its own gap is tighter than the rail's sp-5 so these tightly-related
+   rows read as one group instead of the rail's normal loose spacing. */
+.conv-rail__settings {
   margin-top: auto;
   width: 100%;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--ln-sp-3);
+  flex-direction: column;
+  gap: var(--ln-sp-2);
 }
-.conv-rail__bottom .ln-toggle { font-size: var(--ln-fs-sm); font-weight: 600; color: var(--ln-text-muted); }
-.conv-rail__bottom .ln-toggle:has(input:checked) { color: var(--ln-text); }
+.conv-rail__settings .ln-toggle { font-size: var(--ln-fs-sm); font-weight: 600; color: var(--ln-text-muted); }
+.conv-rail__settings .ln-toggle:has(input:checked) { color: var(--ln-text); }
 
 /* ---- tool-activity badge (upper-left of the orb) ---------------------- */
-.conv-rail__orbwrap { position: relative; }
 .tool-activity {
   position: absolute;
   top: 2px;
@@ -1495,8 +1621,14 @@ html[data-ln-style="hal9000"] .conv-main { background: #23232b; }
   flex: 1 1 auto;
   min-width: 0;               /* long persona names ellipsize, never overflow */
   font-size: var(--ln-fs-sm);
+  /* Horizontal padding halved (owner spec 2026-07-19): left from sp-4/16px,
+     right (room for the arrow icon) from sp-7/48px. */
+  padding-left: var(--ln-sp-2);
+  padding-right: var(--ln-sp-5);
 }
-.conv-persona-row .ln-btn { flex: none; padding: 0 var(--ln-sp-4); }
+/* Halved from sp-4/16px (owner spec 2026-07-19: tighter horizontal padding
+   on the rail's ghost buttons). */
+.conv-persona-row .ln-btn { flex: none; padding: 0 var(--ln-sp-2); }
 
 /* ---- History / Memory link-buttons (house ghost style, 44px targets) ---- */
 .conv-rail__nav {
@@ -1504,27 +1636,26 @@ html[data-ln-style="hal9000"] .conv-main { background: #23232b; }
   display: flex;
   gap: var(--ln-sp-2);
 }
-.conv-rail__nav .ln-btn { flex: 1 1 0; min-width: 0; font-size: var(--ln-fs-sm); }
+/* Padding halved from the ln-btn base's sp-5/24px to sp-3/12px (owner spec
+   2026-07-19). */
+.conv-rail__nav .ln-btn { flex: 1 1 0; min-width: 0; font-size: var(--ln-fs-sm); padding: 0 var(--ln-sp-3); }
 
-/* ---- mic sensitivity chips (settings micEagerness; under "Test my mic").
-   Pressed state = tint + ink + border + weight (never color alone; the
-   aria-pressed attribute carries the semantic). Tokens keep AA on the HAL
-   rail (accent-ink teal 12.9:1 on #050507) and in the light app theme. ---- */
-.conv-chiprow {
+/* ---- Mic Test + mic sensitivity chips, combined on one line (owner spec
+   2026-07-19). Pressed state = tint + ink + border + weight (never color
+   alone; the aria-pressed attribute carries the semantic). Tokens keep AA
+   on the HAL rail (accent-ink teal 12.9:1 on #050507) and in the light
+   app theme. ---- */
+.conv-miclineup {
   width: 100%;
   display: flex;
-  flex-direction: column;
-  gap: var(--ln-sp-1);
-}
-.conv-chiprow__label {
-  font-size: var(--ln-fs-sm);
-  font-weight: 600;
-  color: var(--ln-text-muted);
-}
-.conv-chiprow__chips {
-  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--ln-sp-2);
-  width: 100%;
+}
+.conv-miclineup__chips {
+  display: flex;
+  gap: var(--ln-sp-1);
+  flex: none;
 }
 .ln-chip {
   flex: 1 1 0;
@@ -1549,6 +1680,17 @@ html[data-ln-style="hal9000"] .conv-main { background: #23232b; }
   border-color: currentColor;
   font-weight: 750;
 }
+/* Low/Medium/High on the combined mic line: shrink to content width
+   (no longer 3-way flex split) with half-padding (owner spec 2026-07-19). */
+.ln-chip--sm {
+  flex: none;
+  padding: 0 var(--ln-sp-1);
+}
+
+/* Ghost buttons that share a tight row with other controls (e.g. Mic Test
+   next to the sensitivity chips): half the base ln-btn horizontal padding
+   (sp-5/24px -> sp-3/12px). */
+.ln-btn--compact { padding: 0 var(--ln-sp-3); }
 
 /* ---- docked settings slide-out: slim tab, right edge, vertically centered.
    The tab and drawer sit in the APP style zone (outside #livePanel), so
@@ -1582,21 +1724,23 @@ html[data-ln-style="hal9000"] .conv-main { background: #23232b; }
 /* Native <dialog> drawer: showModal() supplies focus trap + Escape;
    conversation.mjs closes on scrim click. Padding lives on the inner
    wrapper so a click that reaches the dialog element itself is always the
-   ::backdrop scrim. */
+   ::backdrop scrim.
+   Full-screen overlay (owner 2026-07-19): settings moved inline into this
+   drawer, so it now fills the viewport over the conversation column instead
+   of docking as a slim 320px side panel — still slides in from the right. */
 dialog.conv-drawer {
   position: fixed;
-  inset: 0 0 0 auto;          /* docked to the right edge */
+  inset: 0;
   margin: 0;
   height: 100vh;
   height: 100dvh;
   max-height: 100dvh;
-  width: min(320px, 88vw);
-  max-width: 88vw;
+  width: 100vw;
+  max-width: 100vw;
   padding: 0;
   background: var(--ln-surface-raised);
   color: var(--ln-text);
   border: none;
-  border-left: 1px solid var(--ln-border-strong);
   box-shadow: -12px 0 32px rgba(0, 0, 0, 0.35);
 }
 dialog.conv-drawer::backdrop { background: rgba(4, 8, 14, 0.5); }
@@ -1615,7 +1759,7 @@ dialog.conv-drawer[open] {
   display: flex;
   flex-direction: column;
   gap: var(--ln-sp-3);
-  padding: var(--ln-sp-4) var(--ln-sp-4) var(--ln-sp-5);
+  padding: var(--ln-sp-4) var(--ln-sp-5) var(--ln-sp-5);
   overflow-y: auto;
 }
 .conv-drawer__head {
@@ -1623,19 +1767,32 @@ dialog.conv-drawer[open] {
   align-items: center;
   justify-content: space-between;
   gap: var(--ln-sp-2);
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
 }
 .conv-drawer__title {
   margin: 0;
-  font-size: var(--ln-fs-sm);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ln-text-muted);
+  font-size: var(--ln-fs-lg);
+  font-weight: 750;
+  color: var(--ln-text);
 }
+/* Everything below the head bar is width-capped and centered — a
+   full-viewport dialog would otherwise stretch form rows edge-to-edge on
+   wide screens. Plain block flow (not flex) so the existing
+   .set-section + .set-section margin rule alone spaces the settings
+   sections, without a parent flex `gap` doubling it up. */
+.conv-drawer__body {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+}
+.conv-drawer__intro { margin: 0 0 var(--ln-sp-5); }
 .conv-drawer__nav {
   display: flex;
   flex-direction: column;
   gap: var(--ln-sp-1);
+  margin-bottom: var(--ln-sp-3);
 }
 .conv-drawer__link {
   display: flex;

@@ -64,9 +64,13 @@ lv_obj_t *ln_scr_listening_create(void)
         s_mic_bars[i] = bar;
     }
 
-    /* live transcript card */
+    /* live transcript card — the conversation is the point of this screen
+     * (owner 2026-07-19), so it flex-grows to claim all height the fixed
+     * rows (heading, bars, hint, actions) don't use instead of a fixed
+     * 260 px strip. */
     lv_obj_t *card = ln_w_card(col);
-    lv_obj_set_size(card, lv_pct(90), 260);
+    lv_obj_set_width(card, lv_pct(96));
+    lv_obj_set_flex_grow(card, 1);
     s_listen_scroll = card;
     lv_obj_set_scroll_dir(card, LV_DIR_VER);
 
@@ -207,8 +211,11 @@ lv_obj_t *ln_scr_speaking_create(void)
     lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
     ln_w_label(head, "Speaking", LN_FONT_HUGE, LN_COL_SUCCESS);
 
+    /* Response text card fills the screen (owner 2026-07-19) — same
+     * flex-grow treatment as the Listening transcript card. */
     lv_obj_t *card = ln_w_card(col);
-    lv_obj_set_size(card, lv_pct(94), 420);
+    lv_obj_set_width(card, lv_pct(96));
+    lv_obj_set_flex_grow(card, 1);
     lv_obj_set_scroll_dir(card, LV_DIR_VER);
     s_speak_scroll = card;
 

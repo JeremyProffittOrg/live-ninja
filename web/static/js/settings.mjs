@@ -1,13 +1,19 @@
-// settings.mjs — /settings page controller (WS-D settings workstream,
-// docs/web-ui-spec.md §3).
+// settings.mjs — settings-panel controller for the conversation page's
+// docked drawer (WS-D settings workstream, docs/web-ui-spec.md §3).
 //
-// Hydrates from the SSR data islands (#settings-data = the full canonical
-// settings document incl. `version`, #catalogs-data = the static voice/
-// persona catalogs) — no settings fetch on first paint (spec §3.2). Every
-// control autosaves through the shared optimistic-concurrency engine
-// below: PUT /api/v1/settings {settings, version}; a 409 runs the spec
-// §3.6 reconcile (remote wins per-field on a true collision, unrelated
-// local edits re-apply and retry once automatically).
+// Owner 2026-07-19: the standalone /settings page is gone — every control
+// this module drives now lives inline inside conversation.html's
+// #settingsDrawer. conversation.mjs imports initSettingsPanel() and calls it
+// once; there is no more SSR data island (#settings-data/#catalogs-data) —
+// the settings document and the persona catalog are both fetched client-side
+// here, exactly like conversation.mjs's own settingsDoc bootstrap. This
+// module keeps its OWN optimistic-concurrency PUT loop (doc/version/
+// baseline/pendingKeys below), independent of conversation.mjs's separate
+// settingsDoc/putSettings — the two are two writers of the same whole-
+// document PUT /api/v1/settings, exactly as two browser tabs already were
+// before this move; the existing 409 version-conflict reconcile (below)
+// is the same mechanism that already covers that case, so this is not a new
+// failure mode, just a same-tab instance of an already-handled one.
 //
 // Network access goes through toolclient.mjs (authFetch/apiJSON): the
 // in-memory access JWT, refresh-once-on-401, and the X-LN-CSRF header all
@@ -18,12 +24,6 @@
 import { apiJSON, authFetch, ApiError } from './toolclient.mjs';
 
 const $ = (id) => document.getElementById(id);
-
-function readIsland(id) {
-  const el = $(id);
-  if (!el) throw new Error(`settings: missing data island #${id}`);
-  return JSON.parse(el.textContent);
-}
 
 const clone = (v) => (v === undefined ? v : JSON.parse(JSON.stringify(v)));
 
@@ -38,21 +38,28 @@ function stable(v) {
 }
 const deepEq = (a, b) => JSON.stringify(stable(a)) === JSON.stringify(stable(b));
 
-// ---- state ------------------------------------------------------------
+/** Wires every control inside #settingsDrawer. Called once by
+ * conversation.mjs after the drawer's markup exists (the dialog need not be
+ * open — elements are in the DOM regardless of <dialog> open state). */
+export async function initSettingsPanel() {
+// ---- state --------------------------------------------------------------
 
-const doc = readIsland('settings-data'); // canonical settings document
-const catalogs = readIsland('catalogs-data'); // {voices, accents, personas}
+const doc = await apiJSON('/api/v1/settings'); // canonical settings document
 let version = Number(doc.version) || 1;
 let baseline = clone(doc); // last server-confirmed document
 const pendingKeys = new Set(); // top-level keys edited since last confirm
 
-// Defensive: the server always fills these, but a malformed island must
-// not take down every control on the page.
+// Defensive: the server always fills these, but a malformed response must
+// not take down every control in the drawer.
 if (!doc.persona || typeof doc.persona !== 'object') doc.persona = { presetId: 'default', systemInstructions: null };
 if (!doc.privacy || typeof doc.privacy !== 'object') doc.privacy = { storeAudio: false, storeTranscripts: true, retentionDays: 30 };
 if (!doc.voiceEngine || typeof doc.voiceEngine !== 'object') doc.voiceEngine = { default: 'openai-realtime', devices: {} };
 
-// ---- save-status bar + toast ------------------------------------------
+// ---- save-status bar + toast --------------------------------------------
+// Drawer-scoped toast (#drawerToast/...) — deliberately NOT the page's own
+// #toast (conversation.mjs owns that one for session/error banners with a
+// different, richer DOM shape; reusing it would collide two incompatible
+// renderers on one element).
 
 const statusEl = $('saveStatus');
 const statusTextEl = $('saveStatusText');
@@ -72,9 +79,9 @@ function setStatus(state) {
   }
 }
 
-const toastEl = $('toast');
-const toastMsgEl = $('toastMsg');
-const toastActionBtn = $('toastActionBtn');
+const toastEl = $('drawerToast');
+const toastMsgEl = $('drawerToastMsg');
+const toastActionBtn = $('drawerToastActionBtn');
 let toastTimer = 0;
 let toastAction = null;
 
@@ -296,7 +303,7 @@ function renderField(key) {
       // per persona in the conversation page's persona editor
       // (personaeditor.mjs) and stored under personaPrefs; the top-level
       // voice/voiceAccent remain in the doc purely as the fallback default.
-      // No controls on this page — the values ride the write-back untouched.
+      // No controls in the drawer — the values ride the write-back untouched.
       break;
     case 'turnDetection': {
       const r = document.querySelector(`input[name="turnDetection"][value="${CSS.escape(doc.turnDetection)}"]`);
@@ -927,7 +934,12 @@ sensSlider.addEventListener('change', () => {
   markChanged('sensitivity', { debounce: 400 });
 });
 
-// ---- persona -----------------------------------------------------------
+// ---- persona -------------------------------------------------------------
+// The persona <select>'s options used to be SSR'd (server-rendered
+// {{range .Personas}}); now that this panel lives in the drawer with no SSR
+// data island, loadPersonaCatalog() fetches GET /api/v1/realtime/personas
+// (id/name/description only — instruction text never leaves the server)
+// and builds the options client-side, same catalog handleSettingsPage used.
 
 const personaSel = $('personaPreset');
 const instructionsField = $('customInstructionsField');
@@ -936,6 +948,35 @@ const instructionsCount = $('instructionsCharCount');
 
 function syncInstructionsCount() {
   instructionsCount.textContent = `${instructionsArea.value.length} / 4000`;
+}
+
+async function loadPersonaCatalog() {
+  let list = [];
+  try {
+    const resp = await apiJSON('/api/v1/realtime/personas');
+    list = Array.isArray(resp.personas) ? resp.personas : [];
+  } catch {
+    /* fall through to the single-entry fallback below */
+  }
+  personaSel.textContent = '';
+  if (list.length === 0) {
+    const fallback = document.createElement('option');
+    fallback.value = 'default';
+    fallback.textContent = 'Live Ninja (default)';
+    personaSel.appendChild(fallback);
+  } else {
+    for (const p of list) {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.description ? `${p.name} — ${p.description}` : p.name;
+      personaSel.appendChild(opt);
+    }
+  }
+  const customOpt = document.createElement('option');
+  customOpt.value = 'custom';
+  customOpt.textContent = 'Custom — write your own instructions';
+  personaSel.appendChild(customOpt);
+  renderField('persona');
 }
 
 personaSel.addEventListener('change', () => {
@@ -972,7 +1013,7 @@ instructionsArea.addEventListener('paste', (e) => {
 });
 
 // ---- voice + accent: moved to the persona editor -----------------------
-// The standalone Voice/Accent section is gone from this page: personas are
+// The standalone Voice/Accent section is gone from this panel: personas are
 // the unit of voice identity (settings.schema.json personaPrefs), edited in
 // the conversation page's persona editor (personaeditor.mjs). The doc's
 // top-level voice/voiceAccent fields survive as the fallback default and
@@ -1001,9 +1042,9 @@ for (const r of document.querySelectorAll('input[name="micEagerness"]')) {
 // ---- appearance: two style zones + accent color -------------------------
 // appStyle themes everything outside the live panel (<html>); liveStyle
 // themes the conversation page's orb/mic rail (#livePanel). The server
-// migrates legacy {themeStyle} docs on read, but a stale island/cached
-// bundle may still carry one — migrate it here too so the pickers and
-// write-backs always use the two-zone shape.
+// migrates legacy {themeStyle} docs on read, but a stale cached bundle may
+// still carry one — migrate it here too so the pickers and write-backs
+// always use the two-zone shape.
 
 function appearanceDoc() {
   if (!doc.appearance || typeof doc.appearance !== 'object') {
@@ -1072,18 +1113,13 @@ if (accentCustom) {
   });
 }
 
-// Hydrate from the island on load: normalizes any legacy shape, marks the
-// active swatch, and applies + caches the authoritative appearance (the
-// island beats a stale ln.appearance cache from another device/session).
-renderField('appearance');
-
 // ==================== voice-engine-section:BEGIN ====================
 // M12 secondary-voice-engine picker (FR-VE-04), owned by the M12 web-client
 // workstream — edit only inside these markers. Bound to voiceEngine.default
 // (the engine this browser session and any un-pinned device use; the broker
-// resolves devices[deviceId] ?? default). The segmented radios are SSR'd
+// resolves devices[deviceId] ?? default). The segmented radios render
 // without a checked attribute — the current value is hydrated from the
-// settings island via renderField('voiceEngine') on init below. Unknown
+// fetched doc via renderField('voiceEngine') at the bottom of init(). Unknown
 // forward-compat fields (e.g. voiceEngine.devices) are preserved untouched
 // by the spread + the autosave engine's whole-document PUT.
 for (const r of document.querySelectorAll('input[name="voiceEngine"]')) {
@@ -1093,7 +1129,6 @@ for (const r of document.querySelectorAll('input[name="voiceEngine"]')) {
     markChanged('voiceEngine');
   });
 }
-renderField('voiceEngine');
 // ==================== voice-engine-section:END ====================
 
 // ---- theme -------------------------------------------------------------
@@ -1269,14 +1304,22 @@ $('signOutAllConfirmBtn').addEventListener('click', async () => {
   }
 });
 
-// ---- init --------------------------------------------------------------
+// ---- init ----------------------------------------------------------------
+// Every field below was previously SSR'd with a checked/value attribute
+// baked in by the Go template; with no more SSR data island, each one needs
+// an explicit renderField() pass once the fetched doc is available.
 
-applyTheme(doc.theme); // also seeds localStorage for theme.js on next load
+await loadPersonaCatalog(); // populates #personaPreset options, then renderField('persona')
+renderField('wakeEngine');
+renderField('sensitivity');
+renderField('turnDetection');
+renderField('micEagerness');
+renderField('theme'); // also applies the theme attribute + localStorage
+renderField('privacy');
+renderField('appearance');
+renderField('voiceEngine');
 loadWakeCatalog();
 refreshMicDevices();
 setStatus('saved');
 statusTextEl.textContent = 'All changes saved'; // no misleading timestamp yet
-
-// The catalogs island is currently informational (controls are fully
-// SSR'd); exported for the console/tests and future dynamic re-renders.
-export { doc, catalogs, renderField };
+}
