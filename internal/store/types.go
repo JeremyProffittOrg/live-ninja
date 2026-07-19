@@ -114,6 +114,13 @@ type OAuthState struct {
 	Surface      string `dynamodbav:"surface"`
 	RedirectURI  string `dynamodbav:"redirectURI"`
 	DeviceNonce  string `dynamodbav:"deviceNonce,omitempty"`
+	// AppChallenge/AppState carry the Android broker flow through the shared
+	// LWA callback: when AppChallenge is set, the callback hands a one-shot
+	// handoff code back to the app via its custom scheme (PKCE-bound to
+	// AppChallenge, replayed under AppState) instead of opening a web
+	// session. See internal/webapp/auth_routes.go appLogin/completeAppHandoff.
+	AppChallenge string `dynamodbav:"appChallenge,omitempty"`
+	AppState     string `dynamodbav:"appState,omitempty"`
 	CreatedAt    int64  `dynamodbav:"createdAt"` // unix seconds
 	TTL          int64  `dynamodbav:"ttl"`       // unix seconds
 }
@@ -159,6 +166,23 @@ type PairConfirm struct {
 	TTL          int64  `dynamodbav:"ttl"`       // unix seconds
 }
 
+// AppHandoff is the one-shot APPHANDOFF#<code>/HANDOFF item (~2-minute TTL)
+// bridging the Android broker sign-in: after the shared LWA callback
+// resolves + authorizes the identity, it stores the authorized userId here
+// keyed by a random code and PKCE-bound to the app instance's
+// code_challenge, then 302s the code back to the app via its custom scheme.
+// The app claims it (POST /auth/lwa/app-claim) with the matching
+// code_verifier to receive its real session — so tokens never travel
+// through the custom-scheme URL, and an app that merely intercepted the
+// redirect (without the verifier) cannot claim it.
+type AppHandoff struct {
+	Code         string `dynamodbav:"-"`
+	UserID       string `dynamodbav:"userId"`
+	AppChallenge string `dynamodbav:"appChallenge"`
+	CreatedAt    int64  `dynamodbav:"createdAt"` // unix seconds
+	TTL          int64  `dynamodbav:"ttl"`       // unix seconds
+}
+
 // Device is the DEVICE#<deviceId>/META item. GSI2: DEVSEEN / <lastSeen
 // RFC3339> — the recently-seen feed (a bounded owner+allowlist fleet, so a
 // GSI2 Query + userId filter serves per-user listing without a Scan).
@@ -182,6 +206,7 @@ func sessSK(sessionID string) string       { return "SESS#" + sessionID }
 func sessGSI1PK(sessionID string) string   { return "SESS#" + sessionID }
 func sessGSI2PK(userID string) string      { return "USER#" + userID + "#SESS" }
 func oauthPK(state string) string          { return "OAUTH#" + state }
+func appHandoffPK(code string) string      { return "APPHANDOFF#" + code }
 func pairPK(nonce string) string           { return "PAIR#" + nonce }
 func pairConfirmPK(token string) string    { return "PAIRCONFIRM#" + token }
 func devicePK(deviceID string) string      { return "DEVICE#" + deviceID }
@@ -195,6 +220,7 @@ const (
 	skProfile     = "PROFILE"
 	skMeta        = "META"
 	skState       = "STATE"
+	skHandoff     = "HANDOFF"
 	skPair        = "PAIR"
 	skConfirm     = "CONFIRM"
 	skBucketMint  = "BUCKET#mint"

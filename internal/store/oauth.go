@@ -14,6 +14,7 @@ import (
 
 const (
 	oauthStateTTL  = 10 * time.Minute
+	appHandoffTTL  = 2 * time.Minute
 	pairTTL        = 15 * time.Minute
 	pairConfirmTTL = 10 * time.Minute
 )
@@ -87,6 +88,75 @@ func (s *Store) GetOAuthState(ctx context.Context, state string) (*OAuthState, e
 	}
 	st.State = state
 	return &st, nil
+}
+
+// PutAppHandoff stores the one-shot APPHANDOFF#<code> row (2-minute TTL)
+// bridging the Android broker sign-in. Conditional on the code not existing
+// (codes are single-use random values). Fills CreatedAt/TTL if unset.
+func (s *Store) PutAppHandoff(ctx context.Context, h *AppHandoff) error {
+	if h.Code == "" || h.UserID == "" || h.AppChallenge == "" {
+		return errors.New("store: code, userId and appChallenge are required")
+	}
+	now := time.Now()
+	if h.CreatedAt == 0 {
+		h.CreatedAt = now.Unix()
+	}
+	if h.TTL == 0 {
+		h.TTL = now.Add(appHandoffTTL).Unix()
+	}
+	it := struct {
+		PK string `dynamodbav:"pk"`
+		SK string `dynamodbav:"sk"`
+		AppHandoff
+	}{
+		PK:         appHandoffPK(h.Code),
+		SK:         skHandoff,
+		AppHandoff: *h,
+	}
+	av, err := attributevalue.MarshalMap(it)
+	if err != nil {
+		return fmt.Errorf("store: marshal app handoff: %w", err)
+	}
+	_, err = s.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:           aws.String(s.table),
+		Item:                av,
+		ConditionExpression: aws.String("attribute_not_exists(pk)"),
+	})
+	if err != nil {
+		var cond *types.ConditionalCheckFailedException
+		if errors.As(err, &cond) {
+			return ErrAlreadyExists
+		}
+		return fmt.Errorf("store: put app handoff: %w", err)
+	}
+	return nil
+}
+
+// GetAppHandoff consumes an app-handoff code — a one-shot DeleteItem with
+// ReturnValues ALL_OLD, so a code can never be claimed twice: the first
+// caller gets the row, every later caller gets (nil, nil). Also returns
+// (nil, nil) for rows past their TTL that DynamoDB has not reaped yet.
+func (s *Store) GetAppHandoff(ctx context.Context, code string) (*AppHandoff, error) {
+	out, err := s.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName:    aws.String(s.table),
+		Key:          keyOf(appHandoffPK(code), skHandoff),
+		ReturnValues: types.ReturnValueAllOld,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: consume app handoff: %w", err)
+	}
+	if len(out.Attributes) == 0 {
+		return nil, nil
+	}
+	var h AppHandoff
+	if err := attributevalue.UnmarshalMap(out.Attributes, &h); err != nil {
+		return nil, fmt.Errorf("store: unmarshal app handoff: %w", err)
+	}
+	if h.TTL > 0 && h.TTL < time.Now().Unix() {
+		return nil, nil // expired; already deleted above either way
+	}
+	h.Code = code
+	return &h, nil
 }
 
 // CreatePair registers a PAIR#<nonce> row (device pairing bootstrap).

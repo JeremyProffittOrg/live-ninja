@@ -15,6 +15,18 @@ data class LwaExchangeRequest(
     val redirectURI: String,
 )
 
+/**
+ * POST /auth/lwa/app-claim request body: the one-shot handoff code from the
+ * broker's custom-scheme redirect plus the PKCE code_verifier that binds the
+ * claim to this app instance (the backend checks S256(codeVerifier) against
+ * the app_challenge sent at /auth/lwa/app-login).
+ */
+@Serializable
+data class LwaAppClaimRequest(
+    val code: String,
+    val codeVerifier: String,
+)
+
 /** POST /auth/refresh request body (Android sends the wire refresh token). */
 @Serializable
 data class RefreshRequest(

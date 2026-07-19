@@ -17,10 +17,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import ninja.jeremy.liveninja.BuildConfig
 import ninja.jeremy.liveninja.config.BackendConfig
 import ninja.jeremy.liveninja.net.LiveNinjaApi
-import ninja.jeremy.liveninja.net.LwaExchangeRequest
+import ninja.jeremy.liveninja.net.LwaAppClaimRequest
 import ninja.jeremy.liveninja.net.RefreshOutcome
 import ninja.jeremy.liveninja.net.TokenRefresher
 import retrofit2.HttpException
@@ -48,15 +47,6 @@ class AuthRepository @Inject constructor(
     /** App-wide auth state. UI gates on this (login screen vs. main app). */
     val state: StateFlow<AuthState> = _state
 
-    /**
-     * The LWA return URI for this build. Release rides the App Link
-     * (assetlinks.json served by the backend, M8); debug uses the
-     * custom-scheme fallback, which needs no domain verification.
-     */
-    val redirectUri: String =
-        if (BuildConfig.DEBUG) BackendConfig.LWA_CUSTOM_SCHEME_REDIRECT
-        else BackendConfig.LWA_APP_LINK_REDIRECT
-
     /** Idempotent bootstrap: restore the persisted session + watch foregrounding. */
     fun start() {
         scope.launch {
@@ -82,9 +72,13 @@ class AuthRepository @Inject constructor(
     // ---- sign-in (Custom Tabs + PKCE) ----
 
     /**
-     * Begin a sign-in attempt: mint state + PKCE verifier, persist them for
-     * the round trip, and return the LWA authorize URL to open in a Custom
-     * Tab. Any previous pending attempt is superseded.
+     * Begin a sign-in attempt: mint an app_state nonce + PKCE verifier,
+     * persist them for the round trip, and return the backend broker
+     * kickoff URL to open in a Custom Tab. The backend runs the LWA
+     * round-trip against its own whitelisted callback and hands a one-shot
+     * handoff code back to [BackendConfig.LWA_CUSTOM_SCHEME_REDIRECT] — so
+     * LWA never sees our custom scheme. Any previous pending attempt is
+     * superseded.
      */
     suspend fun beginLogin(): String = withContext(Dispatchers.IO) {
         val state = Pkce.newState()
@@ -93,33 +87,27 @@ class AuthRepository @Inject constructor(
             PendingLogin(
                 state = state,
                 codeVerifier = verifier,
-                redirectUri = redirectUri,
+                redirectUri = BackendConfig.LWA_CUSTOM_SCHEME_REDIRECT,
                 createdAt = System.currentTimeMillis() / 1000,
             ),
         )
-        Uri.parse(BackendConfig.LWA_AUTHORIZE_URL).buildUpon()
-            .appendQueryParameter("client_id", BackendConfig.LWA_CLIENT_ID)
-            .appendQueryParameter("scope", BackendConfig.LWA_SCOPE)
-            .appendQueryParameter("response_type", "code")
-            .appendQueryParameter("redirect_uri", redirectUri)
-            .appendQueryParameter("state", state)
-            .appendQueryParameter("code_challenge", Pkce.codeChallengeS256(verifier))
-            .appendQueryParameter("code_challenge_method", "S256")
+        Uri.parse(BackendConfig.LWA_APP_LOGIN_URL).buildUpon()
+            .appendQueryParameter("app_challenge", Pkce.codeChallengeS256(verifier))
+            .appendQueryParameter("app_state", state)
             .build()
             .toString()
     }
 
-    /** True when [uri] is one of our two registered LWA return URIs. */
+    /** True when [uri] is our custom-scheme broker return URI. */
     fun isAuthRedirect(uri: Uri): Boolean {
-        val appLink = Uri.parse(BackendConfig.LWA_APP_LINK_REDIRECT)
         val custom = Uri.parse(BackendConfig.LWA_CUSTOM_SCHEME_REDIRECT)
-        return (uri.scheme == appLink.scheme && uri.host == appLink.host && uri.path == appLink.path) ||
-            (uri.scheme == custom.scheme && uri.host == custom.host)
+        return uri.scheme == custom.scheme && uri.host == custom.host
     }
 
     /**
-     * Complete the round trip: validate `state` (single-use), then exchange
-     * `code` + verifier at the backend for the first token grant.
+     * Complete the round trip: validate `state` (single-use), then claim the
+     * one-shot handoff `code` with our PKCE verifier at the backend for the
+     * first token grant.
      */
     fun handleRedirect(uri: Uri) {
         if (!isAuthRedirect(uri)) return
@@ -147,11 +135,10 @@ class AuthRepository @Inject constructor(
 
             _state.value = AuthState.Authorizing
             try {
-                val grant = api.exchangeLwaCode(
-                    LwaExchangeRequest(
+                val grant = api.claimLwaAppCode(
+                    LwaAppClaimRequest(
                         code = code,
                         codeVerifier = pending.codeVerifier,
-                        redirectURI = pending.redirectUri,
                     ),
                 )
                 tokenStore.saveSession(

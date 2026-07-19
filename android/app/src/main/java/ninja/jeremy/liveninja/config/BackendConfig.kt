@@ -12,17 +12,24 @@ object BackendConfig {
     const val LWA_CLIENT_ID: String =
         "amzn1.application-oa2-client.ba90ca5c0e9d4b559e091ccc79152f16"
 
-    /** App-Link return URL registered with LWA (assetlinks served by backend, M8). */
-    const val LWA_APP_LINK_REDIRECT: String = "$BASE_URL/auth/lwa/app-callback"
-
-    /** Custom-scheme fallback redirect for dev before App Links verification. */
+    /**
+     * Custom-scheme return the backend broker 302s to at the end of sign-in.
+     * LWA never sees this — the app opens [LWA_APP_LOGIN_URL], the backend
+     * runs LWA against its own whitelisted /auth/lwa/callback, then hands a
+     * one-shot code back here for the app to claim. So no custom-scheme
+     * return URL needs whitelisting in the Amazon Developer Portal.
+     */
     const val LWA_CUSTOM_SCHEME_REDIRECT: String = "ninja.jeremy.liveninja://lwa"
 
-    /** LWA authorization endpoint (Authorization Code + PKCE, Custom Tabs). */
-    const val LWA_AUTHORIZE_URL: String = "https://www.amazon.com/ap/oa"
+    /**
+     * Broker sign-in kickoff (opened in a Custom Tab). Carries the app's PKCE
+     * app_challenge + app_state; the backend brokers the LWA round-trip and
+     * returns to [LWA_CUSTOM_SCHEME_REDIRECT] with a one-shot handoff code.
+     */
+    const val LWA_APP_LOGIN_URL: String = "$BASE_URL/auth/lwa/app-login"
 
-    /** The only LWA scope Live Ninja requests. */
-    const val LWA_SCOPE: String = "profile"
+    /** Claim the one-shot broker handoff code (+ PKCE verifier) for a session. */
+    const val AUTH_APP_CLAIM_URL: String = "$BASE_URL/auth/lwa/app-claim"
 
     /**
      * Android code exchange: POST {code, codeVerifier, redirectURI} ->

@@ -46,18 +46,9 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- LWA App-Link return (assetlinks.json served by backend in M8). -->
-            <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:scheme="https"
-                    android:host="live.jeremy.ninja"
-                    android:path="/auth/lwa/app-callback" />
-            </intent-filter>
-
-            <!-- Custom-scheme fallback for dev before App Links verify. -->
+            <!-- LWA broker return: /auth/lwa/callback 302s the one-shot handoff
+                 code here (ninja.jeremy.liveninja://lwa). LWA never sees this
+                 scheme, so no assetlinks.json / portal redirect URI is needed. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />

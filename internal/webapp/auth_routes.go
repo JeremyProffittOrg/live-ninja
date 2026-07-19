@@ -41,6 +41,14 @@ const PairConfirmCookieName = "__Host-ln_pair"
 // with the terminal "failed" status after too many wrong user codes.
 const pairFailedReason = "user_code_attempts_exceeded"
 
+// appReturnScheme is the Android app's custom-scheme return target. The
+// broker callback 302s here with a one-shot handoff code; the app's
+// intent-filter (ninja.jeremy.liveninja://lwa) catches it. LWA itself never
+// sees this scheme — it only ever redirects to the whitelisted
+// /auth/lwa/callback, so no custom-scheme return URL has to be whitelisted
+// in the Amazon Developer Portal (which only accepts http/https anyway).
+const appReturnScheme = "ninja.jeremy.liveninja://lwa"
+
 // RegisterAuthRoutes mounts the M1 auth surface on app. Route names follow
 // the shared spec's M1+M2 route list; the contracts/api.md canonical
 // /auth/* spellings are mounted as aliases onto the same handlers so both
@@ -54,6 +62,12 @@ func RegisterAuthRoutes(app *fiber.App, deps *Deps) {
 
 	app.Get("/auth/lwa/login", r.login)
 	app.Get("/auth/lwa/callback", r.callback)
+
+	// Android broker sign-in: no LWA-portal redirect URI needed — the app
+	// rides the whitelisted /auth/lwa/callback and gets a one-shot handoff
+	// code back via its custom scheme, claimed here for a real session.
+	app.Get("/auth/lwa/app-login", r.appLogin)
+	app.Post("/auth/lwa/app-claim", r.appClaim)
 
 	app.Post("/api/v1/auth/lwa/exchange", r.exchange)
 	app.Post("/auth/lwa/exchange", r.exchange) // contracts/api.md canonical alias
@@ -196,6 +210,12 @@ func (r *authRoutes) callback(c *fiber.Ctx) error {
 		return r.completeDeviceBind(c, st.DeviceNonce, profile)
 	}
 
+	// Android broker leg: hand a one-shot, PKCE-bound handoff code back to
+	// the app via its custom scheme instead of opening a web session.
+	if st.AppChallenge != "" {
+		return r.completeAppHandoff(c, st, profile)
+	}
+
 	user, err := auth.Authorize(ctx, r.deps.Store, profile)
 	if err != nil {
 		if errors.Is(err, auth.ErrNotAllowed) {
@@ -221,6 +241,167 @@ func (r *authRoutes) callback(c *fiber.Ctx) error {
 
 	r.notifySignIn(c, user.Email, user.Name, store.SurfaceWeb, sess.SessionID)
 	return c.Redirect("/", fiber.StatusFound)
+}
+
+// ---- Android broker sign-in (no LWA-portal redirect URI) ----
+
+// appLogin starts the LWA flow for the Android app in a Custom Tab. The app
+// passes its own S256 code_challenge (app_challenge) and a state nonce
+// (app_state). We run the ordinary web-callback flow against the
+// already-whitelisted /auth/lwa/callback; the callback then hands a
+// one-shot, PKCE-bound handoff code back to the app via its custom scheme
+// (completeAppHandoff). This keeps LWA blind to the app's custom scheme, so
+// nothing new has to be whitelisted in the Amazon Developer Portal.
+func (r *authRoutes) appLogin(c *fiber.Ctx) error {
+	appChallenge := c.Query("app_challenge")
+	appState := c.Query("app_state")
+	if !validCodeChallenge(appChallenge) {
+		return htmlMessage(c, fiber.StatusBadRequest, "Sign-in unavailable",
+			"The app sign-in request was malformed. Please update Live Ninja and try again.")
+	}
+	if appState == "" {
+		return htmlMessage(c, fiber.StatusBadRequest, "Sign-in unavailable",
+			"The app sign-in request was incomplete. Please try again.")
+	}
+
+	state, err := randomURLToken(32)
+	if err != nil {
+		return fmt.Errorf("generate oauth state: %w", err)
+	}
+	verifier, err := randomURLToken(32)
+	if err != nil {
+		return fmt.Errorf("generate pkce verifier: %w", err)
+	}
+
+	redirectURI := r.baseURL(c) + "/auth/lwa/callback"
+	st := &store.OAuthState{
+		State:        state,
+		CodeVerifier: verifier,
+		Surface:      store.SurfaceAndroid,
+		RedirectURI:  redirectURI,
+		AppChallenge: appChallenge,
+		AppState:     appState,
+	}
+	if err := r.deps.Store.PutOAuthState(c.Context(), st); err != nil {
+		r.deps.Log.Error("app login: put oauth state failed", "error", err.Error())
+		return htmlMessage(c, fiber.StatusInternalServerError, "Sign-in unavailable",
+			"Could not start sign-in. Please try again in a moment.")
+	}
+
+	// Bind this transaction to the initiating Custom Tab (see the web login
+	// leg — the cookie is carried through the Amazon → callback navigation
+	// within the same Custom Tab browser session).
+	c.Cookie(&fiber.Cookie{
+		Name:     OAuthStateCookieName,
+		Value:    state,
+		Path:     "/",
+		Secure:   true,
+		HTTPOnly: true,
+		SameSite: "Lax",
+		MaxAge:   600,
+	})
+
+	return c.Redirect(r.deps.LWA.BuildAuthorizeURL(state, s256Challenge(verifier), redirectURI),
+		fiber.StatusFound)
+}
+
+// completeAppHandoff runs after the LWA round-trip of an app broker leg: it
+// runs the same Authorize access gate every surface uses, then stores a
+// one-shot APPHANDOFF row (the authorized userId, PKCE-bound to the app's
+// code_challenge) and 302s the code back to the app via its custom scheme.
+// No session or tokens are minted here — that happens at appClaim, so no
+// credential ever travels through the custom-scheme URL.
+func (r *authRoutes) completeAppHandoff(c *fiber.Ctx, st *store.OAuthState, profile *auth.LWAProfile) error {
+	ctx := c.Context()
+
+	user, err := auth.Authorize(ctx, r.deps.Store, profile)
+	if err != nil {
+		if errors.Is(err, auth.ErrNotAllowed) {
+			return htmlMessage(c, fiber.StatusForbidden, "Access restricted",
+				"This Live Ninja instance is private. Your Amazon account is not on the access list.")
+		}
+		r.deps.Log.Error("app handoff: authorize failed", "error", err.Error())
+		return htmlMessage(c, fiber.StatusInternalServerError, "Sign-in failed",
+			"Something went wrong completing sign-in. Please try again.")
+	}
+
+	code, err := randomURLToken(32)
+	if err != nil {
+		return fmt.Errorf("generate app handoff code: %w", err)
+	}
+	if err := r.deps.Store.PutAppHandoff(ctx, &store.AppHandoff{
+		Code:         code,
+		UserID:       user.UserID,
+		AppChallenge: st.AppChallenge,
+	}); err != nil {
+		r.deps.Log.Error("app handoff: put handoff failed", "error", err.Error())
+		return htmlMessage(c, fiber.StatusInternalServerError, "Sign-in failed",
+			"Something went wrong completing sign-in. Please try again.")
+	}
+
+	loc := appReturnScheme + "?code=" + url.QueryEscape(code) + "&state=" + url.QueryEscape(st.AppState)
+	return c.Redirect(loc, fiber.StatusFound)
+}
+
+// appClaim completes the Android broker flow: the app presents the one-shot
+// handoff code from the custom-scheme redirect plus its PKCE code_verifier.
+// We verify S256(verifier) == the stored challenge (proving this is the same
+// app instance that started the flow — an app that merely intercepted the
+// custom-scheme redirect cannot produce the verifier), then mint + return
+// the Android session, identical in shape to /auth/lwa/exchange.
+func (r *authRoutes) appClaim(c *fiber.Ctx) error {
+	ctx := c.Context()
+
+	var body struct {
+		Code         string `json:"code"`
+		CodeVerifier string `json:"codeVerifier"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return badRequest(c, "Body must be JSON with code and codeVerifier.")
+	}
+	if body.Code == "" || body.CodeVerifier == "" {
+		return badRequest(c, "code and codeVerifier are required.")
+	}
+
+	handoff, err := r.deps.Store.GetAppHandoff(ctx, body.Code)
+	if err != nil {
+		r.deps.Log.Error("app claim: get handoff failed", "error", err.Error())
+		return errorJSON(c, fiber.StatusInternalServerError, "internal", "Something went wrong. Please try again.")
+	}
+	if handoff == nil {
+		return errorJSON(c, fiber.StatusUnauthorized, "invalid_code",
+			"This sign-in code has expired or was already used. Please try again.")
+	}
+	// Constant-time PKCE check: the presented verifier must hash to the
+	// challenge captured at app-login. Both sides are fixed-length base64url
+	// S256 digests.
+	if subtle.ConstantTimeCompare([]byte(s256Challenge(body.CodeVerifier)), []byte(handoff.AppChallenge)) != 1 {
+		return errorJSON(c, fiber.StatusForbidden, "verifier_mismatch", "The sign-in verifier did not match.")
+	}
+
+	user, err := r.deps.Store.GetUser(ctx, handoff.UserID)
+	if err != nil {
+		r.deps.Log.Error("app claim: user lookup failed", "error", err.Error())
+		return errorJSON(c, fiber.StatusInternalServerError, "internal", "Something went wrong. Please try again.")
+	}
+	if user == nil || user.Status != store.UserStatusActive {
+		return errorJSON(c, fiber.StatusForbidden, "account_unavailable", "Your account is not available. Please sign in again.")
+	}
+
+	sess, wireRefresh, accessToken, accessExp, err := r.issueSession(c, user, store.SurfaceAndroid, "")
+	if err != nil {
+		r.deps.Log.Error("app claim: issue session failed", "error", err.Error())
+		return errorJSON(c, fiber.StatusInternalServerError, "internal", "Something went wrong. Please try again.")
+	}
+
+	r.notifySignIn(c, user.Email, user.Name, store.SurfaceAndroid, sess.SessionID)
+	return c.JSON(fiber.Map{
+		"accessToken":      accessToken,
+		"expiresAt":        accessExp,
+		"refreshToken":     wireRefresh,
+		"refreshExpiresAt": sess.ExpiresAt,
+		"sessionId":        sess.SessionID,
+	})
 }
 
 // exchange is the Android Custom-Tabs + PKCE code exchange:

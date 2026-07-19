@@ -30,6 +30,15 @@ interface LiveNinjaApi {
     suspend fun exchangeLwaCode(@Body body: LwaExchangeRequest): TokenGrant
 
     /**
+     * Broker sign-in claim: exchange the one-shot handoff code (delivered to
+     * the app's custom scheme by /auth/lwa/callback) + PKCE verifier for the
+     * first token grant. This is the path the app actually uses — LWA never
+     * sees the custom scheme, so no portal redirect URI is required.
+     */
+    @POST("auth/lwa/app-claim")
+    suspend fun claimLwaAppCode(@Body body: LwaAppClaimRequest): TokenGrant
+
+    /**
      * Revoke the current session server-side (identified by the Bearer JWT).
      * Idempotent — an already-gone session still returns ok.
      */
