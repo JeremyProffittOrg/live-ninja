@@ -65,6 +65,9 @@ the terminal prompt** (it never enters the conversation):
 ./scripts/set-secret.sh SECRET_NAME --file p   # multiline secrets (keys/certs) from a file
 ```
 
+From plain cmd/PowerShell without Git Bash, `scripts\set-secret.bat` is the equivalent
+(same modes; gh itself does the hidden prompt, so the value never enters the script).
+
 The script sets the secret on this repo, verifies `updated_at`, and prints only a
 fingerprint. If a workflow needs a secret that doesn't exist yet: reference it as
 `${{ secrets.NAME }}`, tell the user to run the script, and wait — never invent a value,

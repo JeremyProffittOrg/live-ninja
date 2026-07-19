@@ -382,9 +382,17 @@ Ordered tasks:
   (OIDC) → sam build/deploy. No Fargate/ALB/Lambda additions; broker + web-tier Lambdas
   redeploy with new env/IAM only.
 - **One new secret:** `GEMINI_API_KEY` (GitHub secret via `./scripts/set-secret.sh
-  GEMINI_API_KEY`, owner-typed; deploy workflow syncs → SSM SecureString
+  GEMINI_API_KEY` — or `scripts\set-secret.bat GEMINI_API_KEY` from cmd/PowerShell —
+  owner-typed; deploy workflow syncs → SSM SecureString
   `/live-ninja/prod/gemini/api_key`; broker gets the sole `ssm:GetParameter`). No
   Secrets Manager. Agents never see the value.
+  - **Where the key comes from:** Google AI Studio → <https://aistudio.google.com/apikey>
+    (create under a Google Cloud project). The **Google AI Pro consumer subscription
+    does NOT cover API-key usage** (verified 2026-04-20 announcement: subscriber perks
+    apply only inside AI Studio; API keys bill pay-per-request separately). The API
+    free tier (no card) exists but is rate-limited and its Live-API coverage is
+    unconfirmed — enable billing on the project (Tier 1) for real sessions; usage
+    bills at the §3.3 rates.
 - **One new variable-ish env:** `GEMINI_LIVE_MODEL` in template.yaml (default
   `gemini-3.1-flash-live-preview`) — model swaps (e.g. to 2.5, or future GA id) without
   code changes.
