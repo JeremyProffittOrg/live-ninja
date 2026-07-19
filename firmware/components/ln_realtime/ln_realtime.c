@@ -66,7 +66,12 @@ static const char *TAG = "ln_rt";
 #define LN_RT_RESAMPLE_IN_MAX   3200  /* 3200 in @16k -> 4800 out @24k */
 #define LN_RT_MAX_RECONNECT     5
 #define LN_RT_CONNECT_TIMEOUT_MS 15000
-#define LN_RT_SEND_TIMEOUT      pdMS_TO_TICKS(1000)
+/* 4 s, was 1 s: the SDIO TX path stalls transiently for 1-2 s under
+ * combined RX/TX load (HIL 2026-07-19) and a 1 s write timeout made
+ * esp_websocket_client abort the whole session on what was a survivable
+ * hiccup — the dedicated uplink task absorbs the block, the audio
+ * pipeline no longer cares (stream-buffer decoupling). */
+#define LN_RT_SEND_TIMEOUT      pdMS_TO_TICKS(4000)
 #define LN_RT_TASK_STACK        10240
 #define LN_RT_TASK_PRIO         5
 #define LN_RT_WS_TASK_STACK     8192
