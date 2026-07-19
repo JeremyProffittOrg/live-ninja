@@ -1181,7 +1181,10 @@ async function loadDrawerCost() {
     drawerCostFetchedAt = Date.now();
     const usd = Number(resp && resp.totalUsd);
     const n = Number(resp && resp.conversations) || 0;
-    if (!Number.isFinite(usd) || n === 0) {
+    const costed = Number(resp && resp.costed) || 0;
+    // Until at least one conversation carries a persisted cost, "$0.000
+    // across N conversations" would read as "free" — stay hidden instead.
+    if (!Number.isFinite(usd) || n === 0 || (costed === 0 && usd <= 0)) {
       drawerCostEl.hidden = true;
       return;
     }
