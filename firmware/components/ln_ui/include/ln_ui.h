@@ -47,6 +47,7 @@ typedef struct {
     uint8_t brightness_pct; /*!< display brightness 0-100           */
     float   sensitivity;    /*!< wake sensitivity 0.0-1.0           */
     char    device_name[33];/*!< user-visible device name           */
+    char    wake_model[32]; /*!< active WakeNet model, e.g. "wn9_hilili_tts" */
 } ln_ui_config_t;
 
 /**

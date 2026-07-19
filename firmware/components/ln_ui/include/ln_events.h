@@ -110,6 +110,7 @@ typedef enum {
     LN_UI_BRIGHTNESS_CHANGED,     /*!< payload: ln_evt_pct_t                   */
     LN_UI_SENSITIVITY_CHANGED,    /*!< payload: ln_evt_float_t (0.0-1.0)       */
     LN_UI_DEVICE_NAME_CHANGED,    /*!< payload: ln_evt_name_t                  */
+    LN_UI_WAKE_MODEL_SELECTED,    /*!< payload: ln_evt_wake_model_t            */
     LN_UI_WIFI_SETUP_REQUESTED,   /*!< no payload — re-run SoftAP portal       */
     LN_UI_FACTORY_RESET_REQUESTED,/*!< no payload — confirmed on-screen        */
 } ln_ui_event_id_t;
@@ -121,6 +122,10 @@ typedef struct {
 typedef struct {
     char name[33]; /*!< user-chosen device display name */
 } ln_evt_name_t;
+
+typedef struct {
+    char model[32]; /*!< WakeNet model name packed in the model partition */
+} ln_evt_wake_model_t;
 
 #ifdef __cplusplus
 }

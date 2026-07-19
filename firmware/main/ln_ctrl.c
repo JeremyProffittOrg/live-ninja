@@ -494,6 +494,7 @@ static void push_config_values(void)
     };
     strlcpy(ui_cfg.voice, s_cfg.voice, sizeof(ui_cfg.voice));
     strlcpy(ui_cfg.device_name, s_cfg.device_name, sizeof(ui_cfg.device_name));
+    strlcpy(ui_cfg.wake_model, ln_wake_model_name(), sizeof(ui_cfg.wake_model));
     ln_ui_config_values(&ui_cfg);
 }
 
@@ -586,6 +587,24 @@ static void on_ui_event(void *arg, esp_event_base_t base, int32_t id,
                 strlcpy(s_cfg.device_name, n->name, sizeof(s_cfg.device_name));
                 cfg_save();
             }
+        }
+        break;
+    case LN_UI_WAKE_MODEL_SELECTED:
+        if (data != NULL) {
+            const ln_evt_wake_model_t *m = data;
+            /* ln_wake persists the choice in its own NVS and live-restarts
+             * the pipeline; NOT_FOUND = the model isn't in the partition —
+             * re-push the (unchanged) applied state so the UI check reverts. */
+            esp_err_t werr = ln_wake_set_model(m->model);
+            if (werr != ESP_OK) {
+                ESP_LOGW(TAG, "wake model \"%s\" rejected: %s", m->model,
+                         esp_err_to_name(werr));
+            }
+            push_config_values();
+            char attrs[96];
+            snprintf(attrs, sizeof(attrs), "{\"model\":\"%s\",\"ok\":%s}",
+                     m->model, (werr == ESP_OK) ? "true" : "false");
+            ln_iot_publish_telemetry("wake_model_changed", NULL, attrs);
         }
         break;
     case LN_UI_WIFI_SETUP_REQUESTED:

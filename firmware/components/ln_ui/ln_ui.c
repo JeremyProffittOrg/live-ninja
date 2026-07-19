@@ -260,6 +260,7 @@ static const char *wake_model_phrase(const char *model)
         const char *phrase;
     } k_map[] = {
         { "hiesp",    "Hi ESP"    },
+        { "hilili",   "Hi Lily"   },
         { "hilexin",  "Hi Lexin"  },
         { "alexa",    "Alexa"     },
         { "hijason",  "Hi Jason"  },

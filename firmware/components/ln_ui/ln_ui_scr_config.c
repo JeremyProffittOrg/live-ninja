@@ -38,8 +38,24 @@ static const struct {
 };
 #define VOICE_COUNT ((int)(sizeof(k_voices) / sizeof(k_voices[0])))
 
+/* WakeNet models packed into the "model" flash partition (sdkconfig
+ * CONFIG_SR_WN_*) — selection only, never free text. Keep in sync with the
+ * packed set; a name that's missing from the partition makes
+ * ln_wake_set_model() return ESP_ERR_NOT_FOUND and the previous model stays. */
+static const struct {
+    const char *model;
+    const char *phrase;
+    const char *desc;
+} k_wake_models[] = {
+    { "wn9_hilili_tts", "\"Hi, Lily\"", "Distinct and easy to say (default)" },
+    { "wn9_hiesp",      "\"Hi, ESP\"",  "Espressif classic — very robust"    },
+    { "wn9_alexa",      "\"Alexa\"",    "May also wake nearby Echo devices"  },
+};
+#define WAKE_MODEL_COUNT ((int)(sizeof(k_wake_models) / sizeof(k_wake_models[0])))
+
 typedef enum {
-    SEC_VOICE = 0,
+    SEC_WAKEWORD = 0,
+    SEC_VOICE,
     SEC_VOLUME,
     SEC_SENSITIVITY,
     SEC_NAME,
@@ -49,7 +65,8 @@ typedef enum {
 } section_t;
 
 static const char *k_section_names[SEC_COUNT] = {
-    "Voice", "Volume", "Wake sensitivity", "Device name", "Wi-Fi", "About",
+    "Wake word", "Voice", "Volume", "Wake sensitivity", "Device name", "Wi-Fi",
+    "About",
 };
 
 static lv_obj_t *s_panels[SEC_COUNT];
@@ -61,6 +78,11 @@ static lv_obj_t *s_voice_rows[VOICE_COUNT];
 static lv_obj_t *s_voice_checks[VOICE_COUNT];
 static lv_obj_t *s_voice_pos_label;
 static int s_voice_active = 3; /* cedar */
+
+/* wake word */
+static lv_obj_t *s_wake_rows[WAKE_MODEL_COUNT];
+static lv_obj_t *s_wake_checks[WAKE_MODEL_COUNT];
+static int s_wake_active = 0; /* Hi Lily (default) */
 
 /* volume + sensitivity */
 static lv_obj_t *s_vol_slider;
@@ -129,6 +151,84 @@ static void back_btn_cb(lv_event_t *e)
 {
     (void)e;
     ln_ui_post(LN_UI_SETTINGS_CLOSED, NULL, 0);
+}
+
+/* ---- wake word ---- */
+
+static void wake_mark_active(int idx)
+{
+    if (idx < 0 || idx >= WAKE_MODEL_COUNT) {
+        return;
+    }
+    for (int i = 0; i < WAKE_MODEL_COUNT; i++) {
+        if (i == idx) {
+            lv_obj_remove_flag(s_wake_checks[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_style_border_color(s_wake_rows[i], LN_COL_TEAL, 0);
+        } else {
+            lv_obj_add_flag(s_wake_checks[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_style_border_color(s_wake_rows[i], LN_COL_BORDER, 0);
+        }
+    }
+    s_wake_active = idx;
+}
+
+static void wake_row_cb(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    wake_mark_active(idx);
+    ln_evt_wake_model_t sel = { 0 };
+    strlcpy(sel.model, k_wake_models[idx].model, sizeof(sel.model));
+    ln_ui_post(LN_UI_WAKE_MODEL_SELECTED, &sel, sizeof(sel));
+}
+
+static lv_obj_t *build_wakeword_panel(lv_obj_t *parent)
+{
+    lv_obj_t *panel = ln_w_col(parent, 12);
+    lv_obj_set_size(panel, lv_pct(100), lv_pct(100));
+
+    ln_w_label(panel, "Wake word", LN_FONT_XL, LN_COL_TEXT);
+    lv_obj_t *desc = ln_w_label(panel,
+        "What this device listens for. Applies immediately — say the new "
+        "phrase to start a conversation.", LN_FONT_SM, LN_COL_MUTED);
+    lv_label_set_long_mode(desc, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(desc, lv_pct(100));
+
+    lv_obj_t *list = ln_w_col(panel, 10);
+    lv_obj_set_width(list, lv_pct(100));
+    lv_obj_set_flex_grow(list, 1);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+
+    for (int i = 0; i < WAKE_MODEL_COUNT; i++) {
+        lv_obj_t *row = lv_button_create(list);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, lv_pct(100), 64);
+        lv_obj_set_style_bg_color(row, LN_COL_SURFACE, 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(row, LN_COL_SURFACE2, LV_STATE_PRESSED);
+        lv_obj_set_style_radius(row, LN_RADIUS, 0);
+        lv_obj_set_style_border_color(row, LN_COL_BORDER, 0);
+        lv_obj_set_style_border_width(row, 1, 0);
+        lv_obj_set_style_pad_hor(row, 20, 0);
+        lv_obj_add_event_cb(row, wake_row_cb, LV_EVENT_CLICKED,
+                            (void *)(intptr_t)i);
+        s_wake_rows[i] = row;
+
+        lv_obj_t *name = ln_w_label(row, k_wake_models[i].phrase, LN_FONT_MD,
+                                    LN_COL_TEXT);
+        lv_obj_align(name, LV_ALIGN_LEFT_MID, 0, -12);
+
+        lv_obj_t *d = ln_w_label(row, k_wake_models[i].desc, LN_FONT_XS,
+                                 LN_COL_DIM);
+        lv_obj_align(d, LV_ALIGN_LEFT_MID, 0, 14);
+
+        lv_obj_t *chk = ln_w_label(row, LV_SYMBOL_OK, LN_FONT_LG, LN_COL_TEAL);
+        lv_obj_align(chk, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_flag(chk, LV_OBJ_FLAG_HIDDEN);
+        s_wake_checks[i] = chk;
+    }
+    wake_mark_active(s_wake_active);
+    return panel;
 }
 
 /* ---- voice ---- */
@@ -594,6 +694,7 @@ lv_obj_t *ln_scr_config_create(void)
     lv_obj_set_height(host, lv_pct(100));
     lv_obj_set_style_pad_all(host, 28, 0);
 
+    s_panels[SEC_WAKEWORD]    = build_wakeword_panel(host);
     s_panels[SEC_VOICE]       = build_voice_panel(host);
     s_panels[SEC_VOLUME]      = build_volume_panel(host);
     s_panels[SEC_SENSITIVITY] = build_sensitivity_panel(host);
@@ -601,7 +702,7 @@ lv_obj_t *ln_scr_config_create(void)
     s_panels[SEC_WIFI]        = build_wifi_panel(host);
     s_panels[SEC_ABOUT]       = build_about_panel(host);
 
-    show_section(SEC_VOICE);
+    show_section(SEC_WAKEWORD);
     return scr;
 }
 
@@ -642,6 +743,14 @@ void ln_scr_config_set_values(const ln_ui_config_t *cfg)
     }
     if (s_name_ta != NULL && cfg->device_name[0] != '\0') {
         lv_textarea_set_text(s_name_ta, cfg->device_name);
+    }
+    if (cfg->wake_model[0] != '\0') {
+        for (int i = 0; i < WAKE_MODEL_COUNT; i++) {
+            if (strcmp(cfg->wake_model, k_wake_models[i].model) == 0) {
+                wake_mark_active(i);
+                break;
+            }
+        }
     }
 }
 
