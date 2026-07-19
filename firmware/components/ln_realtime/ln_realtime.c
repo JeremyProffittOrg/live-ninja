@@ -31,6 +31,7 @@
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
+#include "freertos/stream_buffer.h"
 #include "freertos/task.h"
 
 #include "cJSON.h"
@@ -99,6 +100,21 @@ static bool s_have_carry;
 
 static char *s_uplink_buf; /* PSRAM, JSON frame + base64 payload */
 static int16_t *s_rs_buf;  /* PSRAM, 16k->24k resampled uplink staging */
+
+/* Uplink decoupling (HIL find 2026-07-19): ln_realtime_send_audio used to
+ * base64+send synchronously on the CALLER's task — the AFE/wake pipeline —
+ * with a 1 s blocking send timeout, so one WSS/TLS/SDIO hiccup back-pressured
+ * straight into the audio path (AFE FEED ringbuffer overflow) and dropped the
+ * link. Now the producer only resamples into a PSRAM stream buffer (zero
+ * block; drop-newest on full — a real-time mic must never wait) and a
+ * dedicated sender task drains it to the socket. ~2 s of 24 kHz pcm16. */
+#define LN_RT_UP_SB_BYTES   (2 * 24000 * 2)
+#define LN_RT_UP_TASK_STACK 4096
+#define LN_RT_UP_TASK_PRIO  4
+static StreamBufferHandle_t s_up_sb;
+static StaticStreamBuffer_t s_up_sb_struct;
+static uint8_t *s_up_storage; /* PSRAM */
+static uint32_t s_up_dropped; /* bytes dropped while the buffer was full */
 
 static char s_ws_url[1280];   /* OpenAI URL is short; Nova bridge URL (ws_url[640]) + "?token=" + token[512] needs headroom */
 static char s_ws_headers[576]; /* "Authorization: Bearer ek_...\r\n" (OpenAI-direct only) */
@@ -268,18 +284,71 @@ esp_err_t ln_realtime_send_audio(const int16_t *samples, size_t n_samples)
     if (!s_connected) {
         return ESP_ERR_INVALID_STATE;
     }
-    esp_err_t ret = ESP_OK;
-    while (n_samples > 0 && ret == ESP_OK) {
+    /* Producer side (AFE/wake task): resample and enqueue only — the
+     * uplink task owns the (blocking) socket writes. Send with zero
+     * timeout: when the network is behind, newest audio is dropped here
+     * rather than stalling the real-time capture pipeline. */
+    while (n_samples > 0) {
         size_t slice = (n_samples > LN_RT_RESAMPLE_IN_MAX) ? LN_RT_RESAMPLE_IN_MAX
                                                            : n_samples;
         size_t rs_n = r32_process(samples, slice, s_rs_buf);
-        if (rs_n > 0) {
-            ret = send_audio_slice(s_rs_buf, rs_n);
+        if (rs_n > 0 && s_up_sb != NULL) {
+            size_t want = rs_n * sizeof(int16_t);
+            size_t put = xStreamBufferSend(s_up_sb, s_rs_buf, want, 0);
+            if (put < want) {
+                s_up_dropped += (uint32_t)(want - put);
+            }
         }
         samples += slice;
         n_samples -= slice;
     }
-    return ret;
+    return ESP_OK;
+}
+
+/* Drains the uplink stream buffer to the WSS in ≤200 ms slices. Runs
+ * forever; harmlessly idles while disconnected (the buffer is reset on
+ * every fresh connect). */
+static void ln_rt_uplink_task(void *arg)
+{
+    (void)arg;
+    /* Local staging: keep whole samples; stream-buffer reads are byte-wise. */
+    static int16_t frame[LN_RT_UPLINK_MAX_SAMPLES];
+    static uint8_t carry_byte;
+    static bool have_carry;
+    for (;;) {
+        if (!s_connected) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+        uint8_t *dst = (uint8_t *)frame;
+        size_t off = 0;
+        if (have_carry) {
+            dst[off++] = carry_byte;
+            have_carry = false;
+        }
+        size_t got = xStreamBufferReceive(s_up_sb, dst + off,
+                                          sizeof(frame) - off,
+                                          pdMS_TO_TICKS(100));
+        size_t total = off + got;
+        if (total < sizeof(int16_t)) {
+            if (total == 1) {
+                carry_byte = dst[0];
+                have_carry = true;
+            }
+            continue;
+        }
+        if ((total & 1U) != 0) {
+            carry_byte = dst[total - 1];
+            have_carry = true;
+            total--;
+        }
+        if (s_up_dropped != 0) {
+            ESP_LOGW(TAG, "uplink behind — dropped %u bytes of mic audio",
+                     (unsigned)s_up_dropped);
+            s_up_dropped = 0;
+        }
+        (void)send_audio_slice(frame, total / sizeof(int16_t));
+    }
 }
 
 esp_err_t ln_realtime_barge_in(void)
@@ -483,6 +552,10 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t event_id,
         s_response_active = false;
         s_session_ready_posted = false;
         r32_reset(); /* fresh session — drop stale uplink filter history */
+        if (s_up_sb != NULL) {
+            xStreamBufferReset(s_up_sb); /* stale mic audio must not lead the turn */
+        }
+        s_up_dropped = 0;
         /* No session.update here (GA API). A WSS GA session already defaults
          * to audio/pcm @ 24 kHz both directions, and the broker's mint is
          * config-bound (turn_detection/noise_reduction/transcription live in
@@ -703,13 +776,24 @@ esp_err_t ln_realtime_init(void)
     s_dec_buf = ln_rt_alloc(LN_RT_DEC_BUF_SZ);
     s_uplink_buf = ln_rt_alloc(LN_RT_UPLINK_BUF_SZ);
     s_rs_buf = ln_rt_alloc((3 * LN_RT_RESAMPLE_IN_MAX / 2 + 2) * sizeof(int16_t));
+    s_up_storage = ln_rt_alloc(LN_RT_UP_SB_BYTES);
     if (s_cmd_q == NULL || s_eg == NULL || s_send_mtx == NULL || s_rx_buf == NULL ||
-        s_dec_buf == NULL || s_uplink_buf == NULL || s_rs_buf == NULL) {
+        s_dec_buf == NULL || s_uplink_buf == NULL || s_rs_buf == NULL ||
+        s_up_storage == NULL) {
         ESP_LOGE(TAG, "init: out of memory");
+        return ESP_ERR_NO_MEM;
+    }
+    s_up_sb = xStreamBufferCreateStatic(LN_RT_UP_SB_BYTES, 1, s_up_storage,
+                                        &s_up_sb_struct);
+    if (s_up_sb == NULL) {
         return ESP_ERR_NO_MEM;
     }
     if (xTaskCreate(ln_rt_task, "ln_rt", LN_RT_TASK_STACK, NULL, LN_RT_TASK_PRIO,
                     &s_task) != pdPASS) {
+        return ESP_ERR_NO_MEM;
+    }
+    if (xTaskCreate(ln_rt_uplink_task, "ln_rt_up", LN_RT_UP_TASK_STACK, NULL,
+                    LN_RT_UP_TASK_PRIO, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
     ESP_LOGI(TAG, "initialized (backend %s)", CONFIG_LN_RT_BACKEND_BASE_URL);

@@ -669,7 +669,11 @@ static void tick_cb(void *arg)
     case LN_STATE_SPEAKING:
         if (s_resp_done_pending && !ln_audio_is_playing()) {
             s_resp_done_pending = false;
-            set_state(LN_STATE_IDLE); /* Speaking -> Idle: response done */
+            /* Owner 2026-07-19: a finished answer must NOT end the
+             * conversation — return to Listening for the follow-up turn
+             * (session stays up); the 25 s listen timeout of silence is
+             * what sends the exchange back to Idle, not the response. */
+            set_state(LN_STATE_LISTENING);
         }
         break;
     case LN_STATE_LISTENING:
