@@ -40,6 +40,11 @@ export function createTranscriptSink({
   // page dies), so they still make the final batch. Must be idempotent:
   // it can fire more than once per session.
   onBeforeFinal = null,
+  // Called with the sessionId when a final flush is being built; returns
+  // {usd, textTokens, audioTokens} (the page's per-session cost estimate,
+  // see conversation.mjs attachCostBadge) or null when unknown. The server
+  // persists it onto the conversation's history record.
+  getSessionCost = null,
 } = {}) {
   let enabled = true;
   let sessionId = '';
@@ -147,13 +152,32 @@ export function createTranscriptSink({
     inFlight = true;
     let ok = false;
     try {
+      const json = {
+        sessionId,
+        turns: batch.map(({ seq, role, text, engine: turnEngine }) => ({ seq, role, text, engine: turnEngine })),
+        final: isFinal,
+      };
+      if (isFinal && typeof getSessionCost === 'function') {
+        // Ship the page's cost estimate with the one final flush so the
+        // server can persist it on the conversation record. Best-effort:
+        // a broken getter must never block the final flush.
+        try {
+          const cost = getSessionCost(sessionId);
+          const usd = cost && Number.isFinite(cost.usd) ? cost.usd : 0;
+          if (cost && (usd > 0 || cost.textTokens > 0 || cost.audioTokens > 0)) {
+            json.cost = {
+              usd,
+              textTokens: Math.max(0, Math.round(cost.textTokens || 0)),
+              audioTokens: Math.max(0, Math.round(cost.audioTokens || 0)),
+            };
+          }
+        } catch {
+          /* cost is optional */
+        }
+      }
       const resp = await authFetch(endpoint, {
         method: 'POST',
-        json: {
-          sessionId,
-          turns: batch.map(({ seq, role, text, engine: turnEngine }) => ({ seq, role, text, engine: turnEngine })),
-          final: isFinal,
-        },
+        json,
         keepalive,
       });
       ok = resp.ok;

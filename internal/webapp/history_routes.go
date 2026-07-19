@@ -77,6 +77,14 @@ func conversationJSON(cv *store.Conversation) fiber.Map {
 		"topicIds":       topicIDs,
 		"turnCount":      cv.TurnCount,
 	}
+	// Cost is a client-side list-price estimate persisted on session end;
+	// absent on conversations that predate cost reporting (or whose engine
+	// surfaces no usage) — zero is "unknown", so the field is omitted.
+	if cv.CostUSD > 0 {
+		out["costUsd"] = cv.CostUSD
+		out["costTextTokens"] = cv.CostTextTokens
+		out["costAudioTokens"] = cv.CostAudioTokens
+	}
 	for k, v := range map[string]string{
 		"deviceId": cv.DeviceID,
 		"engine":   cv.Engine,
@@ -169,6 +177,7 @@ func RegisterHistoryRoutes(app *fiber.App, deps *Deps) {
 
 	api.Get("/conversations", handleListConversations(deps))
 	api.Get("/conversations/:id", handleGetConversation(deps))
+	api.Get("/costs", handleCostSummary(deps))
 
 	api.Get("/topics", handleListTopics(deps))
 	api.Post("/topics", handleCreateTopic(deps))
@@ -224,14 +233,21 @@ func handleListConversations(deps *Deps) fiber.Handler {
 		if !okTo {
 			return apiBadRequest(c, "to must be YYYY-MM-DD or RFC3339")
 		}
+		// ?turnsOver=8 keeps only conversations with MORE than 8 turns —
+		// the "long conversations" facet. 0/absent = no filter.
+		turnsOver := c.QueryInt("turnsOver", 0)
+		if turnsOver < 0 || turnsOver > 10000 {
+			return apiBadRequest(c, "turnsOver must be between 0 and 10000")
+		}
 
 		convs, next, err := deps.Store.ListConversations(c.Context(), userID, store.ListConversationsOpts{
-			TopicID:  topicID,
-			DeviceID: deviceFilter,
-			From:     from,
-			To:       to,
-			Limit:    int32(queryLimit(c, 25, 50)),
-			Cursor:   c.Query("cursor"),
+			TopicID:   topicID,
+			DeviceID:  deviceFilter,
+			From:      from,
+			To:        to,
+			TurnsOver: turnsOver,
+			Limit:     int32(queryLimit(c, 25, 50)),
+			Cursor:    c.Query("cursor"),
 		})
 		if err != nil {
 			if strings.Contains(err.Error(), "invalid cursor") {
@@ -360,7 +376,57 @@ func handleGetConversation(deps *Deps) fiber.Handler {
 
 		resp := conversationJSON(conv)
 		resp["turns"] = turns
+
+		// ?raw=1 — the stored LOG# rows verbatim (every field, INCLUDING
+		// the role=system session-start marker and the tool audit lines,
+		// in raw sk order, no ts merge/sort): the history detail view's
+		// "Raw transcript" toggle renders these for debugging what the
+		// LLM pipeline actually stored. seq is the sk's numeric tail
+		// (the sink's counter, or the tool router's millisecond clock).
+		if c.QueryBool("raw", false) {
+			rawTurns := make([]fiber.Map, 0, len(raw))
+			for i := range raw {
+				entry := fiber.Map{"sk": raw[i].SK, "role": raw[i].Role, "text": raw[i].Text}
+				if idx := strings.LastIndex(raw[i].SK, "#"); idx >= 0 && idx+1 < len(raw[i].SK) {
+					entry["seq"] = raw[i].SK[idx+1:]
+				}
+				for k, v := range map[string]string{
+					"ts": raw[i].TS, "engine": raw[i].Engine,
+					"surface": raw[i].Surface, "output": raw[i].Output,
+				} {
+					if v != "" {
+						entry[k] = v
+					}
+				}
+				rawTurns = append(rawTurns, entry)
+			}
+			resp["rawTurns"] = rawTurns
+		}
 		return c.JSON(resp)
+	}
+}
+
+// ---- GET /api/v1/costs ----
+
+// handleCostSummary totals the persisted per-session cost estimates for
+// the current UTC month (the conversation page's Menu drawer line). One
+// bounded single-partition Query over the month's CONV# range.
+func handleCostSummary(deps *Deps) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userID := UserID(c)
+
+		now := time.Now().UTC()
+		monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+		sum, err := deps.Store.SumConversationCosts(c.Context(), userID, monthStart, "")
+		if err != nil {
+			return apiInternalError(c, deps, "sum conversation costs", err)
+		}
+		return c.JSON(fiber.Map{
+			"monthStart":    monthStart,
+			"totalUsd":      sum.TotalUSD,
+			"conversations": sum.Conversations,
+			"costed":        sum.Costed,
+		})
 	}
 }
 

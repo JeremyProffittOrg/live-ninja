@@ -207,6 +207,76 @@ func TestListConversationsFilters(t *testing.T) {
 	assert.Empty(t, other)
 }
 
+func TestListConversationsTurnsOverAndCostSummary(t *testing.T) {
+	ctx := context.Background()
+	st, _ := newTestStore()
+	uid := "u1"
+
+	require.NoError(t, st.CreateTopic(ctx, uid, &Topic{TopicID: "t1", Name: "Work"}))
+	seedConversation(t, st, uid, &Conversation{
+		SessionID: "short", TS: "2026-07-01T10:00:00Z", TurnCount: 3,
+		TopicIDs: []string{"t1"}, CostUSD: 0.05, CostTextTokens: 10, CostAudioTokens: 20,
+	})
+	seedConversation(t, st, uid, &Conversation{
+		SessionID: "long", TS: "2026-07-02T10:00:00Z", TurnCount: 12,
+		TopicIDs: []string{"t1"}, CostUSD: 0.25, CostTextTokens: 100, CostAudioTokens: 200,
+	})
+	seedConversation(t, st, uid, &Conversation{
+		SessionID: "nocost", TS: "2026-07-03T10:00:00Z", TurnCount: 9,
+	})
+
+	sessionIDs := func(convs []Conversation) []string {
+		out := make([]string, 0, len(convs))
+		for _, c := range convs {
+			out = append(out, c.SessionID)
+		}
+		return out
+	}
+
+	// Cost fields round-trip on the CONV record.
+	got, err := st.GetConversation(ctx, uid, "2026-07-02T10:00:00Z#long")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.InDelta(t, 0.25, got.CostUSD, 1e-9)
+	assert.Equal(t, 100, got.CostTextTokens)
+	assert.Equal(t, 200, got.CostAudioTokens)
+
+	// TurnsOver is strictly greater-than, on the CONV path (Filter) ...
+	long, _, err := st.ListConversations(ctx, uid, ListConversationsOpts{TurnsOver: 8})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"nocost", "long"}, sessionIDs(long))
+
+	// ... and on the TREF path (post-resolve — refs carry no turnCount).
+	longTopic, _, err := st.ListConversations(ctx, uid, ListConversationsOpts{TopicID: "t1", TurnsOver: 8})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"long"}, sessionIDs(longTopic))
+
+	// Boundary: exactly N turns does NOT match TurnsOver=N.
+	none, _, err := st.ListConversations(ctx, uid, ListConversationsOpts{TurnsOver: 12})
+	require.NoError(t, err)
+	assert.Empty(t, none)
+
+	// Month summary: total across the range, counting only costed rows.
+	sum, err := st.SumConversationCosts(ctx, uid, "2026-07-01T00:00:00Z", "")
+	require.NoError(t, err)
+	assert.InDelta(t, 0.30, sum.TotalUSD, 1e-9)
+	assert.Equal(t, 3, sum.Conversations)
+	assert.Equal(t, 2, sum.Costed)
+
+	// From bound trims older conversations out of the sum.
+	sum, err = st.SumConversationCosts(ctx, uid, "2026-07-02T00:00:00Z", "")
+	require.NoError(t, err)
+	assert.InDelta(t, 0.25, sum.TotalUSD, 1e-9)
+	assert.Equal(t, 2, sum.Conversations)
+	assert.Equal(t, 1, sum.Costed)
+
+	// Another user's summary is empty.
+	sum, err = st.SumConversationCosts(ctx, "u2", "", "")
+	require.NoError(t, err)
+	assert.Zero(t, sum.TotalUSD)
+	assert.Zero(t, sum.Conversations)
+}
+
 func TestListConversationsPagination(t *testing.T) {
 	ctx := context.Background()
 	st, _ := newTestStore()

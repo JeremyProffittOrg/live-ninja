@@ -108,8 +108,9 @@ NFR-02/FR-A02's anti-confused-deputy posture.
 
 | Method | Path | Purpose | Auth |
 |---|---|---|---|
-| GET | `/v1/conversations` | List/filter conversation history by `topic`, `device`, `from`, `to` — `Query` against the most selective GSI (`GSI3` by-topic or `GSI4` by-device) + `FilterExpression` for remaining facets, never `Scan` (FR-TOP-04). | Session JWT |
-| GET | `/v1/conversations/{id}` | Fetch one conversation (transcript S3 pointer, summary, topic IDs). | Session JWT |
+| GET | `/v1/conversations` | List/filter conversation history by `topic`, `device`, `from`, `to`, `turnsOver` (strictly-greater-than turn-count facet — the UI's "long conversations" filter) — `Query` against the most selective GSI (`GSI3` by-topic or `GSI4` by-device) + `FilterExpression` for remaining facets, never `Scan` (FR-TOP-04). Rows carry `costUsd`/`costTextTokens`/`costAudioTokens` when the session's client-estimated cost was persisted. | Session JWT |
+| GET | `/v1/conversations/{id}` | Fetch one conversation (transcript S3 pointer, summary, topic IDs). `?raw=1` additionally returns `rawTurns`: every stored `LOG#` row verbatim (incl. the `role=system` session marker and tool audit lines, with `sk`/`seq`/`ts`/`engine`/`surface`) for the history detail "Raw transcript" view. | Session JWT |
+| GET | `/v1/costs` | Month-to-date cost summary: `{monthStart, totalUsd, conversations, costed}` — the sum of persisted per-session cost estimates over the current UTC month's `CONV#` range (single-partition `Query`). Shown in the conversation page's Menu drawer. | Session JWT |
 | GET | `/v1/topics` | List the caller's topic taxonomy. | Session JWT |
 | POST | `/v1/topics` | Create a topic. | Session JWT |
 | PATCH | `/v1/topics/{id}` | Rename / merge (via `mergedInto`) / split / color / archive a topic; tags reference the stable `topicId` so this never requires re-tagging conversations (FR-TOP-02). | Session JWT |

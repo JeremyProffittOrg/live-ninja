@@ -82,6 +82,28 @@
     background: var(--chip-color, var(--ln-text-dim));
   }
 
+  /* "Long conversations" facet chip (no topic-color dot) + raw view */
+  .hist-longchip { align-self: flex-end; }
+  .hist-longchip span::before { display: none; }
+  .hist-raw-toggle { font-size: var(--ln-fs-sm); font-weight: 600; color: var(--ln-text-muted); }
+  .hist-raw-toggle:has(input:checked) { color: var(--ln-text); }
+  .hist-rawlog { display: flex; flex-direction: column; gap: var(--ln-sp-3); }
+  .hist-rawrow {
+    border: 1px solid var(--ln-border); border-radius: var(--ln-r-sm);
+    background: var(--ln-surface-2); padding: var(--ln-sp-2) var(--ln-sp-3);
+  }
+  .hist-rawrow__meta {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: var(--ln-fs-xs); color: var(--ln-text-dim);
+    margin-bottom: var(--ln-sp-1); word-break: break-all;
+  }
+  .hist-rawrow pre {
+    margin: 0; white-space: pre-wrap; word-break: break-word;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: var(--ln-fs-xs); color: var(--ln-text);
+    max-height: 400px; overflow: auto;
+  }
+
   /* States */
   .hist-state { padding: var(--ln-sp-7) var(--ln-sp-5); text-align: center; }
   .hist-state h3 { font-size: var(--ln-fs-md); margin-bottom: var(--ln-sp-2); }
@@ -246,6 +268,13 @@
             </div>
           </div>
 
+          {{- /* "Long conversations" facet: >8 turns, server-side
+                 ?turnsOver=8 — a checkbox chip like the topic chips. */}}
+          <label class="hist-chip hist-longchip">
+            <input type="checkbox" id="longConvFilter">
+            <span>Long conversations (&gt;8 turns)</span>
+          </label>
+
           <button class="ln-btn ln-btn--ghost hist-clear" id="clearFilters" type="button" hidden>Clear filters</button>
         </div>
       </div>
@@ -287,6 +316,7 @@
               <th scope="col">Topics</th>
               <th scope="col">Device</th>
               <th scope="col" class="hist-num">Turns</th>
+              <th scope="col" class="hist-num" title="Estimated list-price cost of the session">Cost</th>
               <th scope="col" class="hist-actions-cell"><span class="ln-sr-only">Actions</span></th>
             </tr>
           </thead>
@@ -317,6 +347,14 @@
     <div class="hist-detail-head">
       <button class="ln-btn ln-btn--ghost" id="detailBack" type="button">← Back to history</button>
       <h2 id="detailHeading">Conversation</h2>
+      {{- /* Raw transcript toggle: renders the stored LOG# rows verbatim
+             (incl. the system session marker and tool audit lines) instead
+             of the merged bubble view. Remembered across visits. */}}
+      <label class="ln-toggle hist-raw-toggle">
+        <input type="checkbox" id="showRawTranscript">
+        <span class="ln-toggle-track" aria-hidden="true"><span class="ln-toggle-thumb"></span></span>
+        <span>Raw transcript</span>
+      </label>
     </div>
     <div class="hist-detail-meta" id="detailMeta"></div>
 
@@ -338,6 +376,10 @@
     </div>
 
     <div class="hist-transcript ln-transcript" id="detailTranscript" hidden></div>
+
+    {{- /* Raw LOG# rows (monospace), shown while the Raw-transcript
+           toggle is on. Built by history.mjs with textContent only. */}}
+    <div class="hist-rawlog" id="detailRaw" hidden></div>
   </section>
 </main>
 

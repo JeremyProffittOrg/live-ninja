@@ -80,6 +80,11 @@ type Event struct {
 	TS       string `json:"ts"`
 	DeviceID string `json:"deviceId,omitempty"`
 	Surface  string `json:"surface,omitempty"`
+	// Client-estimated session cost (list price), shipped by the web
+	// function from the final transcript flush; zero = not reported.
+	CostUSD         float64 `json:"costUsd,omitempty"`
+	CostTextTokens  int     `json:"costTextTokens,omitempty"`
+	CostAudioTokens int     `json:"costAudioTokens,omitempty"`
 }
 
 // brokerRequest / brokerResponse mirror cmd/realtime-broker's wire shapes
@@ -229,14 +234,17 @@ func (h *handler) Handle(ctx context.Context, ev Event) error {
 	}
 
 	conv := &store.Conversation{
-		SessionID: ev.SessionID,
-		TS:        ts,
-		DeviceID:  ev.DeviceID,
-		Engine:    firstEngine(spoken),
-		Surface:   resolveSurface(ev, spoken),
-		Title:     conversationTitle(spoken),
-		TopicIDs:  finalIDs,
-		TurnCount: len(spoken),
+		SessionID:       ev.SessionID,
+		TS:              ts,
+		DeviceID:        ev.DeviceID,
+		Engine:          firstEngine(spoken),
+		Surface:         resolveSurface(ev, spoken),
+		Title:           conversationTitle(spoken),
+		TopicIDs:        finalIDs,
+		TurnCount:       len(spoken),
+		CostUSD:         ev.CostUSD,
+		CostTextTokens:  ev.CostTextTokens,
+		CostAudioTokens: ev.CostAudioTokens,
 	}
 	if err := h.store.CreateConversation(ctx, ev.UserID, conv); err != nil &&
 		!errors.Is(err, store.ErrAlreadyExists) {

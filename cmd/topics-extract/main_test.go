@@ -76,6 +76,7 @@ func TestHandleTagsConversation(t *testing.T) {
 
 	require.NoError(t, h.Handle(ctx, Event{
 		UserID: uid, SessionID: sid, TS: ts, DeviceID: "devA", Surface: "web",
+		CostUSD: 0.1234, CostTextTokens: 1200, CostAudioTokens: 5400,
 	}))
 
 	// Broker saw the right mode, transcript and only the ACTIVE taxonomy.
@@ -105,6 +106,9 @@ func TestHandleTagsConversation(t *testing.T) {
 	assert.Equal(t, "openai-realtime", conv.Engine)
 	assert.Equal(t, "What should I cook tonight?", conv.Title)
 	assert.Equal(t, 2, conv.TurnCount)
+	assert.InDelta(t, 0.1234, conv.CostUSD, 1e-9)
+	assert.Equal(t, 1200, conv.CostTextTokens)
+	assert.Equal(t, 5400, conv.CostAudioTokens)
 	require.Len(t, conv.TopicIDs, 2)
 	assert.Equal(t, "cook", conv.TopicIDs[0])
 	newID := conv.TopicIDs[1]

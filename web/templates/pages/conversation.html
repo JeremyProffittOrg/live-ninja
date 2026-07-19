@@ -170,6 +170,14 @@
       <a class="conv-drawer__link" href="/history">History</a>
       <a class="conv-drawer__link" href="/memory">Memory</a>
     </nav>
+    {{- /* Month-to-date estimated cost across saved conversations
+           (GET /api/v1/costs, fetched by conversation.mjs on first open;
+           links to /history where per-conversation costs live). */}}
+    <a class="conv-drawer__cost" id="drawerCost" href="/history" hidden>
+      <span class="conv-drawer__cost-label">This month</span>
+      <span class="conv-drawer__cost-value" id="drawerCostValue"></span>
+      <span class="conv-drawer__cost-sub" id="drawerCostSub"></span>
+    </a>
   </div>
 </dialog>
 

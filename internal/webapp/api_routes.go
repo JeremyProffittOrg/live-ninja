@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -676,6 +677,14 @@ func handleTranscript(deps *Deps) fiber.Handler {
 			// topics-extract Lambda (FR-TOP-01). A final-only flush with
 			// zero turns is valid (client already flushed everything).
 			Final bool `json:"final"`
+			// Cost is the client's list-price session estimate (accumulated
+			// from realtime usage events); only meaningful on the final
+			// flush, where it's persisted onto the CONV record.
+			Cost *struct {
+				USD         float64 `json:"usd"`
+				TextTokens  int     `json:"textTokens"`
+				AudioTokens int     `json:"audioTokens"`
+			} `json:"cost"`
 			Turns []struct {
 				Seq    int    `json:"seq"`
 				Role   string `json:"role"`
@@ -738,11 +747,37 @@ func handleTranscript(deps *Deps) fiber.Handler {
 					slog.String("error", err.Error()), slog.String("sessionId", body.SessionID),
 					slog.String("userId", userID))
 			}
-			enqueueTopicExtraction(c.Context(), deps, userID, body.SessionID, DeviceID(c), surface, now)
+			cost := sessionCost{}
+			if body.Cost != nil {
+				cost = sanitizeSessionCost(body.Cost.USD, body.Cost.TextTokens, body.Cost.AudioTokens)
+			}
+			enqueueTopicExtraction(c.Context(), deps, userID, body.SessionID, DeviceID(c), surface, now, cost)
 		}
 
 		return c.JSON(fiber.Map{"ok": true, "written": written})
 	}
+}
+
+// sessionCost is the sanitized client cost estimate forwarded to the
+// topic extractor (zero value = not reported / rejected).
+type sessionCost struct {
+	USD         float64
+	TextTokens  int
+	AudioTokens int
+}
+
+// sanitizeSessionCost bounds the client-reported figures: the cost is an
+// unauthenticated-in-spirit client estimate, so reject anything non-finite,
+// negative, or absurd rather than persisting garbage. Caps: $1,000/session
+// and 1e9 tokens — orders of magnitude above any real session.
+func sanitizeSessionCost(usd float64, textTokens, audioTokens int) sessionCost {
+	if math.IsNaN(usd) || math.IsInf(usd, 0) || usd < 0 || usd > 1000 {
+		return sessionCost{}
+	}
+	if textTokens < 0 || textTokens > 1e9 || audioTokens < 0 || audioTokens > 1e9 {
+		return sessionCost{}
+	}
+	return sessionCost{USD: usd, TextTokens: textTokens, AudioTokens: audioTokens}
 }
 
 // enqueueTopicExtraction async-invokes the topics-extract Lambda
@@ -750,7 +785,7 @@ func handleTranscript(deps *Deps) fiber.Handler {
 // web function's lambda:InvokeFunction grant on it). InvocationType=Event
 // so the sink never waits on the extraction; identity fields come from the
 // verified auth context, mirroring cmd/topics-extract's Event shape.
-func enqueueTopicExtraction(ctx context.Context, deps *Deps, userID, sessionID, deviceID, surface string, now time.Time) {
+func enqueueTopicExtraction(ctx context.Context, deps *Deps, userID, sessionID, deviceID, surface string, now time.Time, cost sessionCost) {
 	fn := os.Getenv("TOPICS_EXTRACT_FUNCTION_NAME")
 	if fn == "" || deps.Lambda == nil {
 		deps.Log.Warn("api: topics-extract not configured; skipping topic extraction",
@@ -758,13 +793,19 @@ func enqueueTopicExtraction(ctx context.Context, deps *Deps, userID, sessionID, 
 		return
 	}
 
-	payload, err := json.Marshal(map[string]string{
+	event := map[string]any{
 		"userId":    userID,
 		"sessionId": sessionID,
 		"ts":        now.Format(time.RFC3339),
 		"deviceId":  deviceID,
 		"surface":   surface,
-	})
+	}
+	if cost.USD > 0 || cost.TextTokens > 0 || cost.AudioTokens > 0 {
+		event["costUsd"] = cost.USD
+		event["costTextTokens"] = cost.TextTokens
+		event["costAudioTokens"] = cost.AudioTokens
+	}
+	payload, err := json.Marshal(event)
 	if err != nil {
 		deps.Log.Error("api: marshal topics-extract event failed", slog.String("error", err.Error()))
 		return

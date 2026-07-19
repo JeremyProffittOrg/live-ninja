@@ -710,9 +710,28 @@ function resetCostBadge() {
   if (costBadgeEl) costBadgeEl.hidden = true;
 }
 
+// Per-session cost, keyed by sessionId. The badge above deliberately
+// accumulates across reconnects; History persists each SESSION's own share
+// (the transcript sink ships it on the final flush — see getSessionCost in
+// the sink wiring below), so the split is tracked here separately.
+const sessionCosts = new Map();
+
+function trackSessionCost(sid) {
+  if (!sid) return null;
+  const entry = { usd: 0, textTokens: 0, audioTokens: 0 };
+  sessionCosts.set(sid, entry);
+  // A page lives through a handful of sessions at most — keep the map tiny.
+  while (sessionCosts.size > 8) {
+    sessionCosts.delete(sessionCosts.keys().next().value);
+  }
+  return entry;
+}
+
 function attachCostBadge(session) {
-  if (!costBadgeEl) return;
-  session.addEventListener('sessionready', () => {
+  let sessCost = null;
+  session.addEventListener('sessionready', (e) => {
+    sessCost = trackSessionCost(e.detail && e.detail.sessionId);
+    if (!costBadgeEl) return;
     costBadgeEl.hidden = false;
     renderCostBadge();
   });
@@ -731,7 +750,7 @@ function attachCostBadge(session) {
     const outText = outDetails.text_tokens || 0;
     const outAudio = outDetails.audio_tokens || 0;
 
-    costTotalUSD +=
+    const deltaUSD =
       (inText * rates.textInPer1M +
         inTextCached * rates.cachedTextInPer1M +
         inAudio * rates.audioInPer1M +
@@ -739,9 +758,18 @@ function attachCostBadge(session) {
         outText * rates.textOutPer1M +
         outAudio * rates.audioOutPer1M) /
       1e6;
-    costTextTokens += inText + inTextCached + outText;
-    costAudioTokens += inAudio + inAudioCached + outAudio;
+    const deltaText = inText + inTextCached + outText;
+    const deltaAudio = inAudio + inAudioCached + outAudio;
+    costTotalUSD += deltaUSD;
+    costTextTokens += deltaText;
+    costAudioTokens += deltaAudio;
+    if (sessCost) {
+      sessCost.usd += deltaUSD;
+      sessCost.textTokens += deltaText;
+      sessCost.audioTokens += deltaAudio;
+    }
 
+    if (!costBadgeEl) return;
     costBadgeEl.hidden = false;
     renderCostBadge();
   });
@@ -767,6 +795,9 @@ const sink = createTranscriptSink({
   onBeforeFinal: () => {
     if (typeof drainLiveTurnsToSink === 'function') drainLiveTurnsToSink();
   },
+  // Per-session cost estimate (attachCostBadge tracks it) — persisted on
+  // the conversation's history record by the final flush.
+  getSessionCost: (sid) => sessionCosts.get(sid) || null,
 });
 sink.observe(mic);
 
@@ -1121,13 +1152,47 @@ const settingsDrawerBtn = $('settingsDrawerBtn');
 const settingsDrawerClose = $('settingsDrawerClose');
 
 if (settingsDrawer && settingsDrawerBtn && typeof settingsDrawer.showModal === 'function') {
-  settingsDrawerBtn.addEventListener('click', () => settingsDrawer.showModal());
+  settingsDrawerBtn.addEventListener('click', () => {
+    settingsDrawer.showModal();
+    void loadDrawerCost();
+  });
   if (settingsDrawerClose) {
     settingsDrawerClose.addEventListener('click', () => settingsDrawer.close());
   }
   settingsDrawer.addEventListener('click', (e) => {
     if (e.target === settingsDrawer) settingsDrawer.close();
   });
+}
+
+// Month-to-date cost line in the Menu drawer (GET /api/v1/costs — the sum
+// of every saved conversation's persisted per-session estimate). Fetched
+// on each drawer open, cached 60s so repeated opens stay free; a failed
+// fetch just leaves the line hidden — the menu must never break on it.
+const drawerCostEl = $('drawerCost');
+const drawerCostValue = $('drawerCostValue');
+const drawerCostSub = $('drawerCostSub');
+let drawerCostFetchedAt = 0;
+
+async function loadDrawerCost() {
+  if (!drawerCostEl || !drawerCostValue) return;
+  if (Date.now() - drawerCostFetchedAt < 60_000) return;
+  try {
+    const resp = await apiJSON('/api/v1/costs');
+    drawerCostFetchedAt = Date.now();
+    const usd = Number(resp && resp.totalUsd);
+    const n = Number(resp && resp.conversations) || 0;
+    if (!Number.isFinite(usd) || n === 0) {
+      drawerCostEl.hidden = true;
+      return;
+    }
+    drawerCostValue.textContent = formatCostUSD(usd);
+    if (drawerCostSub) {
+      drawerCostSub.textContent = `${n} conversation${n === 1 ? '' : 's'} · estimate`;
+    }
+    drawerCostEl.hidden = false;
+  } catch {
+    drawerCostEl.hidden = true;
+  }
 }
 
 // ---- cross-tab settings delivery + mid-session application ---------------

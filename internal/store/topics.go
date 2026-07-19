@@ -92,15 +92,24 @@ type Topic struct {
 
 // Conversation is the canonical USER#<uid>/CONV#<ts>#<sessionId> record
 // written once by the post-session extractor (FR-TOP-03).
+//
+// Cost fields are the client's list-price estimate for the session
+// (accumulated from OpenAI Realtime usage events, shipped on the final
+// transcript flush — see web/static/js/transcriptsink.mjs). Zero means
+// "not reported" (pre-cost conversations, or an engine that surfaces no
+// usage), never "free" — the UI renders it as absent.
 type Conversation struct {
-	SessionID string   `dynamodbav:"sessionId"`
-	TS        string   `dynamodbav:"ts"` // RFC3339 UTC; also embedded in sk
-	DeviceID  string   `dynamodbav:"deviceId,omitempty"`
-	Engine    string   `dynamodbav:"engine,omitempty"`
-	Surface   string   `dynamodbav:"surface,omitempty"`
-	Title     string   `dynamodbav:"title,omitempty"`
-	TopicIDs  []string `dynamodbav:"topicIds"`
-	TurnCount int      `dynamodbav:"turnCount"`
+	SessionID       string   `dynamodbav:"sessionId"`
+	TS              string   `dynamodbav:"ts"` // RFC3339 UTC; also embedded in sk
+	DeviceID        string   `dynamodbav:"deviceId,omitempty"`
+	Engine          string   `dynamodbav:"engine,omitempty"`
+	Surface         string   `dynamodbav:"surface,omitempty"`
+	Title           string   `dynamodbav:"title,omitempty"`
+	TopicIDs        []string `dynamodbav:"topicIds"`
+	TurnCount       int      `dynamodbav:"turnCount"`
+	CostUSD         float64  `dynamodbav:"costUsd,omitempty"`
+	CostTextTokens  int      `dynamodbav:"costTextTokens,omitempty"`
+	CostAudioTokens int      `dynamodbav:"costAudioTokens,omitempty"`
 }
 
 // ConvID is the stable public identifier for one conversation
@@ -611,14 +620,17 @@ func (s *Store) ListSessionTurns(ctx context.Context, userID, sessionID string) 
 
 // ListConversationsOpts are the /v1/conversations filter facets. Zero
 // values mean "no filter on that facet". From/To are inclusive RFC3339
-// bounds on the conversation timestamp.
+// bounds on the conversation timestamp. TurnsOver keeps only
+// conversations with MORE than that many turns (the UI's "long
+// conversations" facet, strictly greater-than).
 type ListConversationsOpts struct {
-	TopicID  string
-	DeviceID string
-	From     string
-	To       string
-	Limit    int32
-	Cursor   string
+	TopicID   string
+	DeviceID  string
+	From      string
+	To        string
+	TurnsOver int
+	Limit     int32
+	Cursor    string
 }
 
 // ListConversations pages the caller's history newest-first, honoring any
@@ -661,9 +673,20 @@ func (s *Store) ListConversations(ctx context.Context, userID string, opts ListC
 		ScanIndexForward: aws.Bool(false), // newest first
 		Limit:            aws.Int32(opts.Limit),
 	}
+	filters := make([]string, 0, 2)
 	if opts.DeviceID != "" {
-		in.FilterExpression = aws.String("deviceId = :dev")
+		filters = append(filters, "deviceId = :dev")
 		in.ExpressionAttributeValues[":dev"] = &types.AttributeValueMemberS{Value: opts.DeviceID}
+	}
+	// turnCount lives only on CONV rows, so the server-side filter applies
+	// to the no-topic path; the TREF path filters after resolving each ref
+	// to its CONV record below.
+	if opts.TurnsOver > 0 && opts.TopicID == "" {
+		filters = append(filters, "turnCount > :mt")
+		in.ExpressionAttributeValues[":mt"] = &types.AttributeValueMemberN{Value: strconv.Itoa(opts.TurnsOver)}
+	}
+	if len(filters) > 0 {
+		in.FilterExpression = aws.String(strings.Join(filters, " AND "))
 	}
 	if opts.Cursor != "" {
 		sk, err := decodeConversationCursor(opts.Cursor, prefix)
@@ -695,6 +718,9 @@ func (s *Store) ListConversations(ctx context.Context, userID string, opts ListC
 			if conv == nil {
 				continue // CONV deleted after the ref was written — skip
 			}
+			if opts.TurnsOver > 0 && conv.TurnCount <= opts.TurnsOver {
+				continue // TREF rows carry no turnCount — filter post-resolve
+			}
 			convs = append(convs, *conv)
 			continue
 		}
@@ -712,6 +738,53 @@ func (s *Store) ListConversations(ctx context.Context, userID string, opts ListC
 		}
 	}
 	return convs, next, nil
+}
+
+// ConversationCostSummary is SumConversationCosts's aggregate: the summed
+// client-estimated cost across a CONV# time range, plus how many
+// conversations the range held and how many of them actually carried a
+// cost figure (older rows predate cost persistence).
+type ConversationCostSummary struct {
+	TotalUSD      float64
+	Conversations int
+	Costed        int
+}
+
+// SumConversationCosts totals the persisted per-session cost estimates
+// over the caller's CONV#<from>..<to> range (inclusive RFC3339 bounds,
+// ""=open). Single-partition Query with a projection — never a Scan; the
+// range is a per-user month of conversations, comfortably bounded.
+func (s *Store) SumConversationCosts(ctx context.Context, userID, from, to string) (*ConversationCostSummary, error) {
+	if userID == "" {
+		return nil, errors.New("store: userID is required")
+	}
+	raw, err := s.queryAllPages(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(s.table),
+		KeyConditionExpression: aws.String("pk = :pk AND sk BETWEEN :lo AND :hi"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk": &types.AttributeValueMemberS{Value: userPK(userID)},
+			":lo": &types.AttributeValueMemberS{Value: convSKPrefix + from},
+			":hi": &types.AttributeValueMemberS{Value: convSKPrefix + to + skRangeHi},
+		},
+		ProjectionExpression: aws.String("costUsd"),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: sum conversation costs: %w", err)
+	}
+	sum := &ConversationCostSummary{Conversations: len(raw)}
+	for _, r := range raw {
+		n, ok := r["costUsd"].(*types.AttributeValueMemberN)
+		if !ok {
+			continue
+		}
+		usd, perr := strconv.ParseFloat(n.Value, 64)
+		if perr != nil || usd <= 0 {
+			continue
+		}
+		sum.TotalUSD += usd
+		sum.Costed++
+	}
+	return sum, nil
 }
 
 // ---- merge (FR-TOP-02: stable tags, mergedInto alias) ----

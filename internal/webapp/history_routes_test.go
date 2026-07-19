@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -424,5 +425,143 @@ func TestTopicMergeRepointsHistory(t *testing.T) {
 	resp, _ = doJSON(t, app, http.MethodPatch, "/api/v1/topics/dst", map[string]any{"mergedInto": "ghost"})
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("merge into missing status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// ---- Task #7: turnsOver facet, persisted cost, raw turns, cost summary ----
+
+func TestListConversationsTurnsOverAndCost(t *testing.T) {
+	app, st := newHistoryAPIApp(t)
+	ctx := context.Background()
+
+	mk := func(sid, ts string, turns int, usd float64) {
+		conv := &store.Conversation{
+			SessionID: sid, TS: ts, DeviceID: "web", Surface: "web",
+			TurnCount: turns, CostUSD: usd,
+		}
+		if usd > 0 {
+			conv.CostTextTokens = 100
+			conv.CostAudioTokens = 200
+		}
+		if err := st.CreateConversation(ctx, "u1", conv); err != nil {
+			t.Fatalf("seed conversation %s: %v", sid, err)
+		}
+	}
+	mk("short", "2026-07-01T10:00:00Z", 3, 0.05)
+	mk("long", "2026-07-02T10:00:00Z", 12, 0.25)
+	mk("nocost", "2026-07-03T10:00:00Z", 9, 0)
+
+	// turnsOver keeps strictly-greater-than matches only.
+	resp, body := doJSON(t, app, http.MethodGet, "/api/v1/conversations?turnsOver=8", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("turnsOver status = %d (%v)", resp.StatusCode, body)
+	}
+	if got := convIDs(t, body); len(got) != 2 || got[0] != "nocost" || got[1] != "long" {
+		t.Errorf("turnsOver=8 = %v, want [nocost long]", got)
+	}
+
+	// Cost fields ship on costed rows and are omitted on uncosted ones.
+	items, _ := body["items"].([]any)
+	byID := map[string]map[string]any{}
+	for _, it := range items {
+		row, _ := it.(map[string]any)
+		sid, _ := row["sessionId"].(string)
+		byID[sid] = row
+	}
+	if usd, ok := byID["long"]["costUsd"].(float64); !ok || usd != 0.25 {
+		t.Errorf("long costUsd = %v, want 0.25", byID["long"]["costUsd"])
+	}
+	if tok, ok := byID["long"]["costTextTokens"].(float64); !ok || tok != 100 {
+		t.Errorf("long costTextTokens = %v, want 100", byID["long"]["costTextTokens"])
+	}
+	if _, present := byID["nocost"]["costUsd"]; present {
+		t.Errorf("nocost row must omit costUsd, got %v", byID["nocost"]["costUsd"])
+	}
+
+	// Out-of-range turnsOver is rejected.
+	resp, _ = doJSON(t, app, http.MethodGet, "/api/v1/conversations?turnsOver=-1", nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("turnsOver=-1 status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestGetConversationRawTurns(t *testing.T) {
+	app, st := newHistoryAPIApp(t)
+	ctx := context.Background()
+	seedConversation(t, st, "2026-07-10T12:00:00Z", "sess-raw", "web")
+
+	rows := []struct{ sk, role, text, ts string }{
+		{"LOG#sess-raw#000000", "system", "session-start", "2026-07-10T12:00:00Z"},
+		{"LOG#sess-raw#000001", "user", "hello", "2026-07-10T12:00:01Z"},
+		{"LOG#sess-raw#000002", "assistant", "hi!", "2026-07-10T12:00:02Z"},
+	}
+	for _, row := range rows {
+		attrs := map[string]any{"role": row.role, "text": row.text, "ts": row.ts, "engine": "openai-realtime"}
+		if err := st.ConditionalPut(ctx, "USER#u1", row.sk, attrs, 0); err != nil {
+			t.Fatalf("seed turn %s: %v", row.sk, err)
+		}
+	}
+
+	id := url.PathEscape("2026-07-10T12:00:00Z#sess-raw")
+
+	// Default response has no rawTurns.
+	resp, body := doJSON(t, app, http.MethodGet, "/api/v1/conversations/"+id, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("detail status = %d (%v)", resp.StatusCode, body)
+	}
+	if _, present := body["rawTurns"]; present {
+		t.Errorf("rawTurns must be absent without ?raw=1")
+	}
+
+	// ?raw=1 ships every LOG# row verbatim, INCLUDING the system marker.
+	resp, body = doJSON(t, app, http.MethodGet, "/api/v1/conversations/"+id+"?raw=1", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("raw detail status = %d (%v)", resp.StatusCode, body)
+	}
+	rawTurns, _ := body["rawTurns"].([]any)
+	if len(rawTurns) != 3 {
+		t.Fatalf("rawTurns count = %d, want 3 (incl. system)", len(rawTurns))
+	}
+	first, _ := rawTurns[0].(map[string]any)
+	if first["role"] != "system" || first["sk"] != "LOG#sess-raw#000000" || first["seq"] != "000000" {
+		t.Errorf("first raw row = %v", first)
+	}
+	// The merged turns view still skips the system marker.
+	turns, _ := body["turns"].([]any)
+	if len(turns) != 2 {
+		t.Errorf("merged turns = %d, want 2", len(turns))
+	}
+}
+
+func TestCostSummaryRoute(t *testing.T) {
+	app, st := newHistoryAPIApp(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	monthTS := time.Date(now.Year(), now.Month(), 1, 6, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	if err := st.CreateConversation(ctx, "u1", &store.Conversation{
+		SessionID: "cur", TS: monthTS, TurnCount: 4, CostUSD: 0.42,
+	}); err != nil {
+		t.Fatalf("seed current-month conversation: %v", err)
+	}
+	// An old conversation outside the month must not count.
+	if err := st.CreateConversation(ctx, "u1", &store.Conversation{
+		SessionID: "old", TS: "2020-01-05T10:00:00Z", TurnCount: 4, CostUSD: 9.99,
+	}); err != nil {
+		t.Fatalf("seed old conversation: %v", err)
+	}
+
+	resp, body := doJSON(t, app, http.MethodGet, "/api/v1/costs", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("costs status = %d (%v)", resp.StatusCode, body)
+	}
+	if usd, _ := body["totalUsd"].(float64); usd != 0.42 {
+		t.Errorf("totalUsd = %v, want 0.42", body["totalUsd"])
+	}
+	if n, _ := body["conversations"].(float64); n != 1 {
+		t.Errorf("conversations = %v, want 1", body["conversations"])
+	}
+	if n, _ := body["costed"].(float64); n != 1 {
+		t.Errorf("costed = %v, want 1", body["costed"])
 	}
 }

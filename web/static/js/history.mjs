@@ -44,6 +44,10 @@ const selectedTopics = new Set(); // topicIds checked in the filter chips
 let deviceFilter = '';
 let fromDate = ''; // yyyy-mm-dd from the native date input
 let toDate = '';
+// "Long conversations" facet: server-side ?turnsOver=8 (strictly more
+// than 8 turns).
+let longOnly = false;
+const LONG_TURNS_OVER = 8;
 
 let detailConvId = null; // non-null while the detail view is open
 
@@ -54,6 +58,8 @@ let transcriptsOff = false;
 
 // "Show tool calls" toggle state, remembered across visits (default off).
 const SHOW_TOOLS_KEY = 'ln.history.showToolCalls';
+// "Raw transcript" toggle in the detail view (default off, remembered).
+const SHOW_RAW_KEY = 'ln.history.showRawTranscript';
 
 // ---- toast ------------------------------------------------------------
 
@@ -134,7 +140,18 @@ function normalizeConv(c) {
     summary: String(c.summary || c.title || ''),
     topicIds: rawTopics.map((t) => String(typeof t === 'object' && t ? t.topicId || t.id || '' : t)).filter(Boolean),
     turnCount: Number.isFinite(Number(c.turnCount ?? c.turns)) ? Number(c.turnCount ?? c.turns) : null,
+    // Persisted per-session cost estimate; absent (null) on conversations
+    // that predate cost reporting — rendered as "—", never $0.
+    costUsd: Number.isFinite(Number(c.costUsd)) && Number(c.costUsd) > 0 ? Number(c.costUsd) : null,
+    costTextTokens: Number.isFinite(Number(c.costTextTokens)) ? Number(c.costTextTokens) : 0,
+    costAudioTokens: Number.isFinite(Number(c.costAudioTokens)) ? Number(c.costAudioTokens) : 0,
   };
+}
+
+/** Same style as the live cost badge (conversation.mjs formatCostUSD). */
+function fmtCost(usd) {
+  if (!Number.isFinite(usd) || usd <= 0) return '—';
+  return usd >= 1 ? `~$${usd.toFixed(2)}` : `~$${usd.toFixed(3)}`;
 }
 
 const dateFmt = new Intl.DateTimeFormat([], {
@@ -287,7 +304,7 @@ function setHistState(state) {
 }
 
 function hasActiveFilters() {
-  return selectedTopics.size > 0 || !!deviceFilter || !!fromDate || !!toDate;
+  return selectedTopics.size > 0 || !!deviceFilter || !!fromDate || !!toDate || longOnly;
 }
 
 function syncClearButtons() {
@@ -300,6 +317,7 @@ function rangeParams() {
   // Local calendar days → inclusive instant range.
   if (fromDate) params.set('from', new Date(fromDate + 'T00:00:00').toISOString());
   if (toDate) params.set('to', new Date(toDate + 'T23:59:59.999').toISOString());
+  if (longOnly) params.set('turnsOver', String(LONG_TURNS_OVER));
   return params;
 }
 
@@ -473,6 +491,17 @@ function buildConvRow(c) {
   tdTurns.textContent = c.turnCount === null ? '—' : String(c.turnCount);
   tr.appendChild(tdTurns);
 
+  const tdCost = document.createElement('td');
+  tdCost.className = 'hist-num';
+  tdCost.textContent = fmtCost(c.costUsd);
+  if (c.costUsd !== null) {
+    tdCost.title =
+      `Estimated list-price cost\n` +
+      `Text tokens: ${c.costTextTokens.toLocaleString()}\n` +
+      `Audio tokens: ${c.costAudioTokens.toLocaleString()}`;
+  }
+  tr.appendChild(tdCost);
+
   const tdActions = document.createElement('td');
   tdActions.className = 'hist-actions-cell';
   const viewBtn = document.createElement('button');
@@ -497,6 +526,7 @@ const detailError = $('detailError');
 const detailErrorMsg = $('detailErrorMsg');
 const detailEmpty = $('detailEmpty');
 const detailTranscript = $('detailTranscript');
+const detailRaw = $('detailRaw');
 const detailHeading = $('detailHeading');
 
 function setDetailState(state) {
@@ -504,6 +534,7 @@ function setDetailState(state) {
   detailError.hidden = state !== 'error';
   detailEmpty.hidden = state !== 'empty';
   detailTranscript.hidden = state !== 'transcript';
+  detailRaw.hidden = state !== 'raw';
 }
 
 function metaBadge(text) {
@@ -523,6 +554,14 @@ function openDetail(c) {
   detailMeta.appendChild(metaBadge(fmtDate(c.startedAt)));
   detailMeta.appendChild(metaBadge(deviceLabel(c)));
   if (c.engine) detailMeta.appendChild(metaBadge(c.engine));
+  if (c.costUsd !== null) {
+    const b = metaBadge(`Cost ${fmtCost(c.costUsd)}`);
+    b.title =
+      `Estimated list-price cost\n` +
+      `Text tokens: ${c.costTextTokens.toLocaleString()}\n` +
+      `Audio tokens: ${c.costAudioTokens.toLocaleString()}`;
+    detailMeta.appendChild(b);
+  }
   const seen = new Set();
   for (const id of c.topicIds) {
     const t = canonicalTopic(id);
@@ -718,35 +757,86 @@ showToolCalls.addEventListener('change', () => {
   detailTranscript.classList.toggle('show-tools', showToolCalls.checked);
 });
 
+// "Raw transcript" toggle — renders the stored LOG# rows verbatim
+// (system marker, tool audit lines, seq/ts/engine metadata) instead of the
+// merged bubble view. Default off, remembered across visits.
+const showRawTranscript = $('showRawTranscript');
+showRawTranscript.checked = localStorage.getItem(SHOW_RAW_KEY) === '1';
+showRawTranscript.addEventListener('change', () => {
+  localStorage.setItem(SHOW_RAW_KEY, showRawTranscript.checked ? '1' : '0');
+  if (detailConvId) renderDetailBody();
+});
+
+// The open conversation's loaded turns (merged view + raw rows), kept so
+// the raw toggle can flip views without refetching.
+let detailTurns = [];
+let detailRawTurns = [];
+
+function buildRawRow(row) {
+  const wrap = document.createElement('div');
+  wrap.className = 'hist-rawrow';
+  const meta = document.createElement('div');
+  meta.className = 'hist-rawrow__meta';
+  const parts = [String(row.role || '?')];
+  if (row.seq !== undefined && row.seq !== null && row.seq !== '') parts.push(`seq ${row.seq}`);
+  if (row.ts) parts.push(String(row.ts));
+  if (row.engine) parts.push(String(row.engine));
+  if (row.surface) parts.push(String(row.surface));
+  if (row.sk) parts.push(String(row.sk));
+  meta.textContent = parts.join(' · ');
+  wrap.appendChild(meta);
+  const pre = document.createElement('pre');
+  pre.textContent = String(row.text || '');
+  wrap.appendChild(pre);
+  if (row.output) {
+    const out = document.createElement('pre');
+    out.textContent = `output: ${String(row.output)}`;
+    wrap.appendChild(out);
+  }
+  return wrap;
+}
+
+/** Renders the loaded detail into the view the raw toggle selects. */
+function renderDetailBody() {
+  if (showRawTranscript.checked && detailRawTurns.length > 0) {
+    detailRaw.textContent = '';
+    for (const row of detailRawTurns) detailRaw.appendChild(buildRawRow(row));
+    setDetailState('raw');
+    return;
+  }
+  if (detailTurns.length === 0) {
+    setDetailState('empty');
+    return;
+  }
+  detailTranscript.textContent = '';
+  for (const turn of detailTurns) {
+    if (turn.role === 'tool') {
+      detailTranscript.appendChild(buildToolCard(turn));
+      continue;
+    }
+    const bubble = document.createElement('div');
+    bubble.className = `ln-bubble ln-bubble--${turn.role}`;
+    const role = document.createElement('div');
+    role.className = 'ln-bubble__role';
+    role.textContent = turn.role === 'user' ? 'You' : 'Live Ninja';
+    const body = document.createElement('div');
+    body.textContent = turn.text;
+    bubble.appendChild(role);
+    bubble.appendChild(body);
+    detailTranscript.appendChild(bubble);
+  }
+  setDetailState('transcript');
+}
+
 async function loadDetail() {
   const id = detailConvId;
   setDetailState('loading');
   try {
-    const resp = await apiJSON(`/api/v1/conversations/${encodeURIComponent(id)}`);
+    const resp = await apiJSON(`/api/v1/conversations/${encodeURIComponent(id)}?raw=1`);
     if (detailConvId !== id) return; // navigated away meanwhile
-    const turns = extractTurns(resp);
-    if (turns.length === 0) {
-      setDetailState('empty');
-      return;
-    }
-    detailTranscript.textContent = '';
-    for (const turn of turns) {
-      if (turn.role === 'tool') {
-        detailTranscript.appendChild(buildToolCard(turn));
-        continue;
-      }
-      const bubble = document.createElement('div');
-      bubble.className = `ln-bubble ln-bubble--${turn.role}`;
-      const role = document.createElement('div');
-      role.className = 'ln-bubble__role';
-      role.textContent = turn.role === 'user' ? 'You' : 'Live Ninja';
-      const body = document.createElement('div');
-      body.textContent = turn.text;
-      bubble.appendChild(role);
-      bubble.appendChild(body);
-      detailTranscript.appendChild(bubble);
-    }
-    setDetailState('transcript');
+    detailTurns = extractTurns(resp);
+    detailRawTurns = Array.isArray(resp.rawTurns) ? resp.rawTurns.filter((r) => r && typeof r === 'object') : [];
+    renderDetailBody();
   } catch (err) {
     if (detailConvId !== id) return;
     detailErrorMsg.textContent = apiErrorMessage(err, 'Check your connection and try again.');
@@ -1015,6 +1105,13 @@ deviceSelect.addEventListener('change', () => {
   loadConversations();
 });
 
+const longConvFilter = $('longConvFilter');
+longConvFilter.addEventListener('change', () => {
+  longOnly = longConvFilter.checked;
+  syncClearButtons();
+  loadConversations();
+});
+
 $('fromDate').addEventListener('change', (ev) => {
   fromDate = ev.target.value;
   syncClearButtons();
@@ -1031,6 +1128,8 @@ function clearFilters() {
   deviceFilter = '';
   fromDate = '';
   toDate = '';
+  longOnly = false;
+  longConvFilter.checked = false;
   deviceSelect.value = '';
   $('fromDate').value = '';
   $('toDate').value = '';

@@ -1650,3 +1650,24 @@ dialog.conv-drawer[open] {
 }
 .conv-drawer__link:hover { background: var(--ln-surface-2); text-decoration: none; }
 .conv-drawer__link:focus-visible { outline: none; box-shadow: var(--ln-focus); }
+
+/* Month-to-date cost line at the bottom of the Menu drawer (links to
+   /history where the per-conversation costs live). */
+.conv-drawer__cost {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ln-sp-2);
+  flex-wrap: wrap;
+  margin-top: var(--ln-sp-4);
+  padding: var(--ln-sp-3);
+  border-top: 1px solid var(--ln-border);
+  border-radius: 0 0 var(--ln-r-md) var(--ln-r-md);
+  color: var(--ln-text-muted);
+  font-size: var(--ln-fs-sm);
+  text-decoration: none;
+}
+.conv-drawer__cost:hover { background: var(--ln-surface-2); text-decoration: none; }
+.conv-drawer__cost:focus-visible { outline: none; box-shadow: var(--ln-focus); }
+.conv-drawer__cost-label { font-weight: 700; text-transform: uppercase; font-size: var(--ln-fs-xs); letter-spacing: 0.05em; }
+.conv-drawer__cost-value { color: var(--ln-text); font-weight: 700; font-variant-numeric: tabular-nums; }
+.conv-drawer__cost-sub { font-size: var(--ln-fs-xs); color: var(--ln-text-dim); }
