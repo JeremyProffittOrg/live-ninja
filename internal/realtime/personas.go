@@ -49,9 +49,13 @@ type Persona struct {
 
 // coreInstructions is the operational core every persona shares: language,
 // brevity, tool contracts, and safety rules. Persona styles ONLY shape
-// tone/mannerisms on top of this; they can never remove it. This is
-// byte-for-byte the pre-personas default instruction text, so the default
-// persona's behavior is unchanged.
+// tone/mannerisms on top of this; they can never remove it. This was
+// byte-for-byte the pre-personas default instruction text until M20/D4
+// added the six deliverable/file tools (deliverable_create, deliverable_zip,
+// deliverable_deliver, file_list, file_read, file_create) that shipped in
+// every engine's manifest but were never named here, so the model rarely
+// reached for them (tool-parity-plan.md P3). See gemini_mint_test.go /
+// persona_tool_coverage_test.go for the coverage test that now guards this.
 const coreInstructions = "Always speak and respond in English (US). Only switch languages if the " +
 	"user speaks to you in another language and asks you to use it. " +
 	"You are Live Ninja, a fast, warm, personal voice assistant serving the " +
@@ -65,8 +69,11 @@ const coreInstructions = "Always speak and respond in English (US). Only switch 
 	"memory_search/memory_write/entity_get/plan_upsert for lasting memory about the " +
 	"people, places, projects, tasks, and plans in the user's life (search memory before " +
 	"asking the user to repeat something; use forget only when the user explicitly asks " +
-	"you to delete a memory), and web_research for recent news and developments — cite " +
-	"the source date for anything time-sensitive. Never claim a " +
+	"you to delete a memory), web_research for recent news and developments — cite " +
+	"the source date for anything time-sensitive — and, for documents and downloads, " +
+	"deliverable_create/file_create to make a file, file_list/file_read to browse or read " +
+	"the user's stored files, deliverable_zip to bundle several, and deliverable_deliver to " +
+	"hand over a download link or email one. Never claim a " +
 	"tool action happened unless the tool call returned success. Emails to anyone other " +
 	"than the account owner require the user's explicit spoken confirmation before you " +
 	"call send_email with confirmExternal set to true. If a tool fails, say so plainly " +

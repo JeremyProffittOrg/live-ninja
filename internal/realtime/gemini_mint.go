@@ -21,6 +21,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
+	"sort"
+	"strings"
 	"time"
 
 	"google.golang.org/genai"
@@ -112,19 +115,202 @@ func GeminiLiveModelFromEnv() string {
 // Model returns the Gemini Live model this minter binds into sessions.
 func (m *GeminiMinter) Model() string { return m.model }
 
+// geminiSchemaKeywords is the set of JSON-Schema keywords genai.Schema
+// actually models, computed by reflecting on the vendored SDK struct's
+// `json` tags rather than hand-maintaining a list from memory (M20/D1,
+// tool-parity-plan.md P4/Q4). Reflection keeps this in lockstep with
+// whatever genai.Schema version go.mod resolves — if a future SDK bump
+// adds or drops a field, the sanitizer below adjusts automatically instead
+// of silently going stale.
+//
+// Verified 2026-07-20 against google.golang.org/genai v1.64.0
+// (types.go:1846 `type Schema struct`). At that pin the modeled keywords
+// are: anyOf, default, description, enum, example, format, items,
+// maxItems, maxLength, maxProperties, maximum, minItems, minLength,
+// minProperties, minimum, nullable, pattern, properties, propertyOrdering,
+// required, title, type — i.e. every keyword the current
+// internal/tools/registry.go `jsonSchema()` renderer and the hand-written
+// mint.go literal actually use (type, description, properties, required,
+// enum, items, minLength, maxLength, pattern, minimum, maximum) round-trips
+// through genai.Schema intact today. The strip-and-annotate path below
+// exists to protect against a keyword that ISN'T on this list ever landing
+// in the manifest (e.g. additionalProperties, const, multipleOf,
+// uniqueItems) — proven by direct unit test against synthetic schemas in
+// gemini_schema_sanitizer_test.go, since none of the 20 real tools
+// currently exercise it.
+var geminiSchemaKeywords = func() map[string]bool {
+	t := reflect.TypeOf(genai.Schema{})
+	set := make(map[string]bool, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		tag, ok := t.Field(i).Tag.Lookup("json")
+		if !ok || tag == "-" {
+			continue
+		}
+		name, _, _ := strings.Cut(tag, ",")
+		if name != "" {
+			set[name] = true
+		}
+	}
+	return set
+}()
+
+// describeStrippedConstraint renders one stripped JSON-Schema keyword as a
+// plain-English sentence (Q4) so the model still learns the rule instead of
+// being silently rejected by the router for violating a constraint Gemini
+// was never told about. Generated purely from the keyword name and its
+// value — never authored per tool — so it can never drift the way
+// hand-written per-tool prose would.
+func describeStrippedConstraint(keyword string, value any) string {
+	switch keyword {
+	case "minLength":
+		return fmt.Sprintf("Minimum %v characters.", value)
+	case "maxLength":
+		return fmt.Sprintf("Max %v characters.", value)
+	case "pattern":
+		return fmt.Sprintf("Must match the pattern %v.", value)
+	case "minimum":
+		return fmt.Sprintf("Minimum value %v.", value)
+	case "maximum":
+		return fmt.Sprintf("Maximum value %v.", value)
+	case "minItems":
+		return fmt.Sprintf("At least %v item(s).", value)
+	case "maxItems":
+		return fmt.Sprintf("At most %v item(s).", value)
+	case "multipleOf":
+		return fmt.Sprintf("Must be a multiple of %v.", value)
+	case "const":
+		return fmt.Sprintf("Must be exactly %v.", value)
+	case "uniqueItems":
+		return "Items must be unique."
+	case "additionalProperties":
+		return "No additional properties are allowed."
+	case "exclusiveMinimum":
+		return fmt.Sprintf("Must be greater than %v.", value)
+	case "exclusiveMaximum":
+		return fmt.Sprintf("Must be less than %v.", value)
+	default:
+		b, err := json.Marshal(value)
+		if err != nil {
+			return fmt.Sprintf("Constraint %q applies.", keyword)
+		}
+		return fmt.Sprintf("Constraint %q: %s.", keyword, string(b))
+	}
+}
+
+// deepCopyValue recursively copies a JSON-shaped value (the map[string]any /
+// []string / []any / scalar tree produced by encoding/json and by the
+// toolManifest literal). Used so geminiToolDeclarations never hands out a
+// parameters map that aliases toolManifest's — pre-D1 it did, which meant a
+// caller mutating the "sanitized" copy would corrupt every engine's shared
+// manifest.
+func deepCopyValue(v any) any {
+	switch vv := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(vv))
+		for k, val := range vv {
+			out[k] = deepCopyValue(val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(vv))
+		for i, val := range vv {
+			out[i] = deepCopyValue(val)
+		}
+		return out
+	case []string:
+		out := make([]string, len(vv))
+		copy(out, vv)
+		return out
+	default:
+		// Scalars (string, float64/int, bool, nil) are copy-by-value already.
+		return v
+	}
+}
+
+// sanitizeSchemaNode mutates one JSON-Schema node (a `parameters` object, a
+// property schema, or an array's `items` schema) in place: any keyword not
+// in geminiSchemaKeywords is deleted and folded into that same node's own
+// `description` as prose (Q4 — "that parameter's description", not the
+// owning tool's). Recurses into "properties" (object member schemas) and
+// "items" (array element schema) so a constraint nested arbitrarily deep
+// still survives as prose. Deterministic: stripped keywords are sorted
+// before rendering so repeated runs produce byte-identical output.
+func sanitizeSchemaNode(node map[string]any) {
+	if node == nil {
+		return
+	}
+	var stripped []string
+	for key := range node {
+		switch key {
+		case "properties", "items", "description":
+			continue // structural/recursed, never a "constraint" to strip
+		}
+		if !geminiSchemaKeywords[key] {
+			stripped = append(stripped, key)
+		}
+	}
+	if len(stripped) > 0 {
+		sort.Strings(stripped)
+		sentences := make([]string, 0, len(stripped))
+		for _, key := range stripped {
+			sentences = append(sentences, describeStrippedConstraint(key, node[key]))
+			delete(node, key)
+		}
+		desc, _ := node["description"].(string)
+		if desc != "" {
+			desc += " "
+		}
+		node["description"] = desc + strings.Join(sentences, " ")
+	}
+
+	if props, ok := node["properties"].(map[string]any); ok {
+		for _, v := range props {
+			if child, ok := v.(map[string]any); ok {
+				sanitizeSchemaNode(child)
+			}
+		}
+	}
+	if items, ok := node["items"].(map[string]any); ok {
+		sanitizeSchemaNode(items)
+	}
+}
+
+// sanitizeGeminiParameters deep-copies a tool's `parameters` JSON-Schema map
+// and sanitizes the copy in place (sanitizeSchemaNode), so the original
+// toolManifest entry is never mutated or aliased.
+func sanitizeGeminiParameters(params map[string]any) map[string]any {
+	copied, ok := deepCopyValue(params).(map[string]any)
+	if !ok {
+		// Not a schema object (shouldn't happen for any of the 20 tools —
+		// every "parameters" value is a JSON-Schema object) — hand back the
+		// original rather than panic; there is nothing to sanitize.
+		return params
+	}
+	sanitizeSchemaNode(copied)
+	return copied
+}
+
 // geminiToolDeclarations translates the OpenAI-shaped tool manifest entries
 // ({type:"function", name, description, parameters}) into Gemini
-// functionDeclarations (same JSON-Schema parameters, no type field).
-// Execution is identical across engines: the model's toolCall routes to
-// POST /api/v1/tools/invoke and the result returns as toolResponse.
+// functionDeclarations (same JSON-Schema parameters, no type field). The
+// parameters map is deep-copied and sanitized (sanitizeGeminiParameters) so
+// Gemini never receives a keyword genai.Schema can't model and never shares
+// backing storage with toolManifest. Execution is identical across engines:
+// the model's toolCall routes to POST /api/v1/tools/invoke and the result
+// returns as toolResponse.
 func geminiToolDeclarations() []map[string]any {
 	decls := make([]map[string]any, 0, len(toolManifest))
 	for _, t := range toolManifest {
-		decls = append(decls, map[string]any{
+		decl := map[string]any{
 			"name":        t["name"],
 			"description": t["description"],
-			"parameters":  t["parameters"],
-		})
+		}
+		if params, ok := t["parameters"].(map[string]any); ok {
+			decl["parameters"] = sanitizeGeminiParameters(params)
+		} else {
+			decl["parameters"] = t["parameters"]
+		}
+		decls = append(decls, decl)
 	}
 	return decls
 }

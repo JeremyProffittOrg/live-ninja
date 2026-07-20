@@ -49,8 +49,39 @@ func TestGeminiMintBuildsConstrainedTokenAndSetup(t *testing.T) {
 	assert.NotNil(t, cc.ContextWindowCompression.SlidingWindow)
 	assert.NotNil(t, cc.InputAudioTranscription)
 	assert.NotNil(t, cc.OutputAudioTranscription)
+	// D3 (was count-only: len(toolManifest) == len(cc.Tools[0].FunctionDeclarations),
+	// exactly the weak assertion form that let the manifest/registry drift
+	// (P2) survive undetected). Assert content: every manifest tool crosses
+	// the JSON round trip into the SDK-typed declarations in order, and one
+	// representative tool with every string constraint kind (file_create)
+	// carries its minLength/maxLength/pattern/required intact — proving
+	// genai.Schema really does model those keywords (gemini_mint.go
+	// geminiSchemaKeywords) and the D1 sanitizer left them untouched.
 	require.NotEmpty(t, cc.Tools)
-	assert.Equal(t, len(toolManifest), len(cc.Tools[0].FunctionDeclarations))
+	gotDecls := cc.Tools[0].FunctionDeclarations
+	require.Len(t, gotDecls, len(toolManifest))
+	for i, d := range gotDecls {
+		assert.Equal(t, toolManifest[i]["name"], d.Name, "declaration %d name", i)
+	}
+
+	var fileCreate *genai.FunctionDeclaration
+	for _, d := range gotDecls {
+		if d.Name == "file_create" {
+			fileCreate = d
+			break
+		}
+	}
+	require.NotNil(t, fileCreate, "file_create must be present in the SDK-typed declarations")
+	require.NotNil(t, fileCreate.Parameters)
+	nameSchema := fileCreate.Parameters.Properties["name"]
+	require.NotNil(t, nameSchema, "file_create.name schema must survive the SDK round trip")
+	require.NotNil(t, nameSchema.MinLength)
+	assert.EqualValues(t, 1, *nameSchema.MinLength)
+	require.NotNil(t, nameSchema.MaxLength)
+	assert.EqualValues(t, 100, *nameSchema.MaxLength)
+	assert.Equal(t, "^[A-Za-z0-9][A-Za-z0-9._-]*$", nameSchema.Pattern)
+	assert.Contains(t, fileCreate.Parameters.Required, "name")
+	assert.Contains(t, fileCreate.Parameters.Required, "content")
 
 	// SessionConfig echo: raw wire nesting.
 	var setup map[string]any
@@ -73,14 +104,48 @@ func TestGeminiMintBuildsConstrainedTokenAndSetup(t *testing.T) {
 }
 
 // TestGeminiToolDeclarationsMirrorManifest: every OpenAI-manifest tool
-// crosses to Gemini with name/description/parameters intact and the OpenAI
-// "type" discriminator dropped.
+// crosses to Gemini with name intact, description at least prefix-equal
+// (D-c), sanitized-but-equivalent parameters (D1), and the OpenAI "type"
+// discriminator dropped.
+//
+// D-c: this is the ONE sanctioned exception to "a parity test needing
+// edits is a bug" (tool-parity-plan.md B4). Folding stripped constraints
+// into description prose (Q4) means the Gemini description is no longer
+// required to be byte-identical to the manifest's — only to start with it.
+// At today's SDK pin (genai v1.64.0) every keyword the 20 real tools use
+// (minLength/maxLength/pattern/minimum/maximum/enum) IS modeled by
+// genai.Schema (verified by reading types.go's Schema struct, see
+// gemini_mint.go geminiSchemaKeywords), so nothing is actually stripped
+// from any of today's tools and the "begins with" check currently holds as
+// exact equality with an empty suffix. The assertion is written as a
+// prefix check anyway (not reverted to Equal) because that is what stays
+// correct if a future tool's ParamSpec ever needs a keyword genai.Schema
+// doesn't model — see gemini_schema_sanitizer_test.go for the sanitizer
+// exercised against synthetic schemas that DO trigger stripping.
 func TestGeminiToolDeclarationsMirrorManifest(t *testing.T) {
 	decls := geminiToolDeclarations()
 	require.Equal(t, len(toolManifest), len(decls))
 	for i, d := range decls {
+		manifestDesc, _ := toolManifest[i]["description"].(string)
+		geminiDesc, _ := d["description"].(string)
 		assert.Equal(t, toolManifest[i]["name"], d["name"])
-		assert.Equal(t, toolManifest[i]["description"], d["description"])
+		assert.True(t, strings.HasPrefix(geminiDesc, manifestDesc),
+			"tool %v: gemini description %q must begin with manifest description %q",
+			toolManifest[i]["name"], geminiDesc, manifestDesc)
+		if suffix := strings.TrimPrefix(geminiDesc, manifestDesc); suffix != "" {
+			// Any appended text must be sanitizer-generated prose, not a
+			// hand-authored per-tool addition — it always reads as one or
+			// more space-joined sentences ending in '.'.
+			assert.True(t, strings.HasPrefix(suffix, " "), "appended suffix must be space-separated: %q", suffix)
+			assert.True(t, strings.HasSuffix(strings.TrimSpace(suffix), "."), "appended suffix must be sentence(s): %q", suffix)
+		}
+		// Parameters equality is untouched by D-c: at today's SDK pin
+		// nothing is actually stripped from any real tool (see the doc
+		// comment above), so the sanitized copy is still exactly equal in
+		// content to the manifest's — only its identity differs (D1's
+		// deep-copy fix). If this ever fails because a future ParamSpec
+		// keyword needs sanitizing, that is real drift to fix at the
+		// source, per B4 — not license to weaken this assertion too.
 		assert.Equal(t, toolManifest[i]["parameters"], d["parameters"])
 		assert.NotContains(t, d, "type")
 	}
