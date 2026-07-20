@@ -20,7 +20,8 @@ Parameters:
   OpenAIRealtimeModel:
     Type: String
     Default: gpt-realtime
-    Description: OpenAI Realtime model id the realtime broker mints client secrets for.
+    Description: OpenAI Realtime model id the realtime broker mints client 
+      secrets for.
   GeminiLiveModel:
     Type: String
     Default: gemini-3.1-flash-live-preview
@@ -39,7 +40,8 @@ Parameters:
     Default: latest
     Description: >-
       M12: image tag of the nova-bridge container the ECS task definition runs. The
-      deploy workflow pushes both :latest and :<git sha>; default tracks :latest so a
+      deploy workflow pushes both :latest and :<git sha>; default tracks :latest so
+      a
       container-only push is picked up by the next deploy without a template change.
   NovaBridgeDesiredCount:
     Type: Number
@@ -48,7 +50,8 @@ Parameters:
     Description: >-
       M12: desired running task count for the nova-bridge Fargate service. The deploy
       workflow passes 0 on the very first deploy (when the ECR image has not been
-      pushed yet) so the AWS::ECS::Service create does not block waiting for a task to
+      pushed yet) so the AWS::ECS::Service create does not block waiting for a task
+      to
       pull an image that does not exist; the container-bootstrap job then pushes the
       image and scales the service to 1. Every subsequent deploy leaves this at the
       default 1.
@@ -84,11 +87,13 @@ Parameters:
     Type: String
     Default: pl-3b927c52
     Description: >-
-      M12: the AWS-managed "com.amazonaws.global.cloudfront.origin-facing" prefix list
+      M12: the AWS-managed "com.amazonaws.global.cloudfront.origin-facing" prefix
+      list
       id for us-east-1 (stable, documented value). The nova-bridge ALB security group
       allows ingress ONLY from this prefix list so the internet-facing ALB is reachable
       solely through the CloudFront distribution (which fronts it at /nova/*), never
-      directly. This stack is pinned to us-east-1 (samconfig.toml); change this only if
+      directly. This stack is pinned to us-east-1 (samconfig.toml); change this only
+      if
       the region changes.
 
 Globals:
@@ -96,7 +101,7 @@ Globals:
     Runtime: provided.al2023
     Handler: bootstrap
     Architectures:
-      - arm64
+    - arm64
     Timeout: 30
     MemorySize: 256
     Environment:
@@ -133,9 +138,8 @@ Conditions:
   #                            the image-existence check.
   NovaBridgeReady: !Equals [!Ref NovaBridgeEnable, "true"]
   NovaBridgeServiceReady: !And
-    - !Equals [!Ref NovaBridgeEnable, "true"]
-    - !Equals [!Ref NovaBridgeImageReady, "true"]
-
+  - !Equals [!Ref NovaBridgeEnable, "true"]
+  - !Equals [!Ref NovaBridgeImageReady, "true"]
 Resources:
   # ------------------------------------------------------------------
   # HTTP API (no custom domain here - CloudFront fronts it)
@@ -166,7 +170,8 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: live-ninja-web
-      Description: Go Fiber app behind Lambda Web Adapter; serves /healthz and all routes.
+      Description: Go Fiber app behind Lambda Web Adapter; serves /healthz and 
+        all routes.
       CodeUri: .build/web/
       MemorySize: 512
       # M7: stack-managed log group with 30-day retention. Custom-named
@@ -177,7 +182,7 @@ Resources:
       LoggingConfig:
         LogGroup: !Ref WebLogGroup
       Layers:
-        - arn:aws:lambda:us-east-1:753240598075:layer:LambdaAdapterLayerArm64:25
+      - arn:aws:lambda:us-east-1:753240598075:layer:LambdaAdapterLayerArm64:25
       Environment:
         Variables:
           AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
@@ -223,206 +228,206 @@ Resources:
           Properties:
             ApiId: !Ref HttpApi
       Policies:
-        - Version: "2012-10-17"
-          Statement:
-            - Sid: TableCrud
-              Effect: Allow
-              Action:
-                - dynamodb:GetItem
-                - dynamodb:BatchGetItem
-                - dynamodb:Query
-                - dynamodb:PutItem
-                - dynamodb:UpdateItem
-                - dynamodb:DeleteItem
-                - dynamodb:BatchWriteItem
-                - dynamodb:ConditionCheckItem
-                - dynamodb:TransactGetItems
-                - dynamodb:TransactWriteItems
-              Resource:
-                - !GetAtt Table.Arn
-                - !Sub "${Table.Arn}/index/*"
-            - Sid: LwaParams
-              Effect: Allow
-              Action:
-                - ssm:GetParameter
-                - ssm:GetParameters
-              Resource:
-                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/lwa/*"
-            - Sid: SsmSecureStringDecrypt
-              Effect: Allow
-              Action:
-                - kms:Decrypt
-              Resource: "*"
-              Condition:
-                StringEquals:
-                  kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
-            - Sid: JwtSign
-              Effect: Allow
-              Action:
-                - kms:Sign
-                - kms:GetPublicKey
-              Resource:
-                - !GetAtt JwtKey.Arn
-            - Sid: AuthCrypto
-              Effect: Allow
-              Action:
-                - kms:Encrypt
-                - kms:Decrypt
-              Resource:
-                - !GetAtt AuthKey.Arn
-            - Sid: EmailEnqueue
-              Effect: Allow
-              Action:
-                - sqs:SendMessage
-              Resource:
-                - !GetAtt EmailQueue.Arn
-            - Sid: InvokeRealtimeBroker
-              Effect: Allow
-              Action:
-                - lambda:InvokeFunction
-              Resource:
-                - !GetAtt RealtimeBrokerFunction.Arn
-            - Sid: DeviceControlPublish
-              Effect: Allow
-              Action:
-                - iot:Publish
-              Resource:
-                - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:topic/liveninja/*"
-            - Sid: TimerSchedules
-              Effect: Allow
-              Action:
-                - scheduler:CreateSchedule
-              Resource:
-                - !Sub "arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/live-ninja/*"
-            - Sid: PassSchedulerRole
-              Effect: Allow
-              Action:
-                - iam:PassRole
-              Resource:
-                - !GetAtt SchedulerRole.Arn
-              Condition:
-                StringEquals:
-                  iam:PassedToService: scheduler.amazonaws.com
+      - Version: "2012-10-17"
+        Statement:
+        - Sid: TableCrud
+          Effect: Allow
+          Action:
+          - dynamodb:GetItem
+          - dynamodb:BatchGetItem
+          - dynamodb:Query
+          - dynamodb:PutItem
+          - dynamodb:UpdateItem
+          - dynamodb:DeleteItem
+          - dynamodb:BatchWriteItem
+          - dynamodb:ConditionCheckItem
+          - dynamodb:TransactGetItems
+          - dynamodb:TransactWriteItems
+          Resource:
+          - !GetAtt Table.Arn
+          - !Sub "${Table.Arn}/index/*"
+        - Sid: LwaParams
+          Effect: Allow
+          Action:
+          - ssm:GetParameter
+          - ssm:GetParameters
+          Resource:
+          - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/lwa/*"
+        - Sid: SsmSecureStringDecrypt
+          Effect: Allow
+          Action:
+          - kms:Decrypt
+          Resource: "*"
+          Condition:
+            StringEquals:
+              kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
+        - Sid: JwtSign
+          Effect: Allow
+          Action:
+          - kms:Sign
+          - kms:GetPublicKey
+          Resource:
+          - !GetAtt JwtKey.Arn
+        - Sid: AuthCrypto
+          Effect: Allow
+          Action:
+          - kms:Encrypt
+          - kms:Decrypt
+          Resource:
+          - !GetAtt AuthKey.Arn
+        - Sid: EmailEnqueue
+          Effect: Allow
+          Action:
+          - sqs:SendMessage
+          Resource:
+          - !GetAtt EmailQueue.Arn
+        - Sid: InvokeRealtimeBroker
+          Effect: Allow
+          Action:
+          - lambda:InvokeFunction
+          Resource:
+          - !GetAtt RealtimeBrokerFunction.Arn
+        - Sid: DeviceControlPublish
+          Effect: Allow
+          Action:
+          - iot:Publish
+          Resource:
+          - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:topic/liveninja/*"
+        - Sid: TimerSchedules
+          Effect: Allow
+          Action:
+          - scheduler:CreateSchedule
+          Resource:
+          - !Sub "arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/live-ninja/*"
+        - Sid: PassSchedulerRole
+          Effect: Allow
+          Action:
+          - iam:PassRole
+          Resource:
+          - !GetAtt SchedulerRole.Arn
+          Condition:
+            StringEquals:
+              iam:PassedToService: scheduler.amazonaws.com
             # ---- M6: wake-word training (AWS Batch) ----
-            - Sid: WakewordTrainSubmit
-              Effect: Allow
-              Action:
-                - batch:SubmitJob
-              Resource:
+        - Sid: WakewordTrainSubmit
+          Effect: Allow
+          Action:
+          - batch:SubmitJob
+          Resource:
                 # Job-definition ARN without the revision suffix so newer
                 # revisions stay submittable without a policy update.
-                - !Ref WakewordTrainJobQueue
-                - !Sub "arn:${AWS::Partition}:batch:${AWS::Region}:${AWS::AccountId}:job-definition/live-ninja-wakeword-train*"
-            - Sid: WakewordTrainDescribe
-              Effect: Allow
-              Action:
-                - batch:DescribeJobs
+          - !Ref WakewordTrainJobQueue
+          - !Sub "arn:${AWS::Partition}:batch:${AWS::Region}:${AWS::AccountId}:job-definition/live-ninja-wakeword-train*"
+        - Sid: WakewordTrainDescribe
+          Effect: Allow
+          Action:
+          - batch:DescribeJobs
                 # ListJobs is used to count a user's active training jobs for
                 # the concurrency (<=2) / daily (<=3) caps before submitting;
                 # its absence 403'd every "start training" (user-reported).
-                - batch:ListJobs
+          - batch:ListJobs
               # These Batch actions do not support resource-level permissions.
-              Resource: "*"
-            - Sid: WakewordModelsRw
-              Effect: Allow
-              Action:
-                - s3:GetObject
-                - s3:PutObject
-              Resource:
+          Resource: "*"
+        - Sid: WakewordModelsRw
+          Effect: Allow
+          Action:
+          - s3:GetObject
+          - s3:PutObject
+          Resource:
                 # Model layout per contracts/wakeword-manifest.md:
                 # wakewords/<wwId>/<platform>/model.onnx + manifest.json
-                - !Sub "${WakewordsBucket.Arn}/wakewords/*"
-            - Sid: WakewordModelsList
-              Effect: Allow
-              Action:
-                - s3:ListBucket
-              Resource:
-                - !GetAtt WakewordsBucket.Arn
-              Condition:
-                StringLike:
-                  s3:prefix: "wakewords/*"
+          - !Sub "${WakewordsBucket.Arn}/wakewords/*"
+        - Sid: WakewordModelsList
+          Effect: Allow
+          Action:
+          - s3:ListBucket
+          Resource:
+          - !GetAtt WakewordsBucket.Arn
+          Condition:
+            StringLike:
+              s3:prefix: "wakewords/*"
             # ---- M6: settings fan-out to the M5Stack via IoT named shadow
             # "config" (contracts/shadow.md). Shadow actions are resourced on
             # the Thing ARN; the "config" shadow name is enforced in code
             # (there is no reliable IAM condition key for named shadows).
-            - Sid: ConfigShadowRw
-              Effect: Allow
-              Action:
-                - iot:GetThingShadow
-                - iot:UpdateThingShadow
-              Resource:
-                - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:thing/*"
+        - Sid: ConfigShadowRw
+          Effect: Allow
+          Action:
+          - iot:GetThingShadow
+          - iot:UpdateThingShadow
+          Resource:
+          - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:thing/*"
             # Runtime discovery of the account's IoT data-plane (ATS) endpoint;
             # called once per cold start and cached (replaces an IOT_DATA_ENDPOINT
             # env / CFN custom resource). No resource-level support.
-            - Sid: IotEndpointDiscovery
-              Effect: Allow
-              Action:
-                - iot:DescribeEndpoint
-              Resource: "*"
+        - Sid: IotEndpointDiscovery
+          Effect: Allow
+          Action:
+          - iot:DescribeEndpoint
+          Resource: "*"
             # ---- M9: deliverables store ----
-            - Sid: DeliverablesRw
-              Effect: Allow
-              Action:
-                - s3:GetObject
-                - s3:PutObject
-                - s3:DeleteObject
-              Resource:
+        - Sid: DeliverablesRw
+          Effect: Allow
+          Action:
+          - s3:GetObject
+          - s3:PutObject
+          - s3:DeleteObject
+          Resource:
                 # deliverables/<uid>/... — download handlers MUST additionally
                 # prefix-check deliverables/<uid>/ before presigning (api.md).
-                - !Sub "${DeliverablesBucket.Arn}/deliverables/*"
-            - Sid: DeliverablesList
-              Effect: Allow
-              Action:
-                - s3:ListBucket
-              Resource:
-                - !GetAtt DeliverablesBucket.Arn
-              Condition:
-                StringLike:
-                  s3:prefix: "deliverables/*"
-            - Sid: InvokeDeliverablesZipper
-              Effect: Allow
-              Action:
-                - lambda:InvokeFunction
-              Resource:
-                - !GetAtt DeliverablesZipperFunction.Arn
+          - !Sub "${DeliverablesBucket.Arn}/deliverables/*"
+        - Sid: DeliverablesList
+          Effect: Allow
+          Action:
+          - s3:ListBucket
+          Resource:
+          - !GetAtt DeliverablesBucket.Arn
+          Condition:
+            StringLike:
+              s3:prefix: "deliverables/*"
+        - Sid: InvokeDeliverablesZipper
+          Effect: Allow
+          Action:
+          - lambda:InvokeFunction
+          Resource:
+          - !GetAtt DeliverablesZipperFunction.Arn
             # ---- M10: memory-layer embeddings (DynamoDB-native EMB# store;
             # S3 Vectors SDK support not confirmed for the pinned aws-sdk-go-v2
             # version, so the locked fallback is a brute-force cosine scan
             # Query over each user's own EMB# partition - internal/memory).
             # Scoped to the single embedding model id; no other Bedrock models
             # or InvokeModel* actions are granted.
-            - Sid: BedrockEmbedModel
-              Effect: Allow
-              Action:
-                - bedrock:InvokeModel
-              Resource:
-                - !Sub "arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0"
+        - Sid: BedrockEmbedModel
+          Effect: Allow
+          Action:
+          - bedrock:InvokeModel
+          Resource:
+          - !Sub "arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0"
             # ---- M11: post-session topic extraction, direct async invoke
             # from the transcript sink when it sees {final:true}.
-            - Sid: InvokeTopicsExtract
-              Effect: Allow
-              Action:
-                - lambda:InvokeFunction
-              Resource:
-                - !GetAtt TopicsExtractFunction.Arn
+        - Sid: InvokeTopicsExtract
+          Effect: Allow
+          Action:
+          - lambda:InvokeFunction
+          Resource:
+          - !GetAtt TopicsExtractFunction.Arn
             # ---- M7: telemetry lake ingest (batched PutRecordBatch only —
             # single-record PutRecord deliberately not granted; the handler
             # always batches).
-            - Sid: TelemetryFirehosePut
-              Effect: Allow
-              Action:
-                - firehose:PutRecordBatch
-              Resource:
-                - !GetAtt TelemetryDeliveryStream.Arn
+        - Sid: TelemetryFirehosePut
+          Effect: Allow
+          Action:
+          - firehose:PutRecordBatch
+          Resource:
+          - !GetAtt TelemetryDeliveryStream.Arn
             # ---- M7 privacy: DELETE /api/v1/account async-invokes the
             # right-to-delete worker after marking status=deleting.
-            - Sid: InvokeAccountPurge
-              Effect: Allow
-              Action:
-                - lambda:InvokeFunction
-              Resource:
-                - !GetAtt AccountPurgeFunction.Arn
+        - Sid: InvokeAccountPurge
+          Effect: Allow
+          Action:
+          - lambda:InvokeFunction
+          Resource:
+          - !GetAtt AccountPurgeFunction.Arn
 
   AuthorizerFunction:
     Type: AWS::Serverless::Function
@@ -438,14 +443,14 @@ Resources:
         Variables:
           JWKS_URL: !Sub "https://${DomainName}/.well-known/jwks.json"
       Policies:
-        - Version: "2012-10-17"
-          Statement:
-            - Sid: UserReadForTokensValidAfter
-              Effect: Allow
-              Action:
-                - dynamodb:GetItem
-              Resource:
-                - !GetAtt Table.Arn
+      - Version: "2012-10-17"
+        Statement:
+        - Sid: UserReadForTokensValidAfter
+          Effect: Allow
+          Action:
+          - dynamodb:GetItem
+          Resource:
+          - !GetAtt Table.Arn
 
   RealtimeBrokerFunction:
     Type: AWS::Serverless::Function
@@ -480,56 +485,57 @@ Resources:
           # nova_bridge_unavailable even with the bridge healthy.
           JWT_KMS_KEY_ID: !GetAtt JwtKey.Arn
       Policies:
-        - Version: "2012-10-17"
-          Statement:
-            - Sid: NovaBridgeTokenSign
-              Effect: Allow
-              Action:
-                - kms:Sign
-                - kms:GetPublicKey
-              Resource:
-                - !GetAtt JwtKey.Arn
-            - Sid: SuspendAlertEnqueue
-              Effect: Allow
-              Action:
-                - sqs:SendMessage
-              Resource:
-                - !GetAtt EmailQueue.Arn
-            - Sid: TableUsageBucketLog
-              Effect: Allow
-              Action:
-                - dynamodb:GetItem
-                - dynamodb:Query
-                - dynamodb:PutItem
-                - dynamodb:UpdateItem
-              Resource:
-                - !GetAtt Table.Arn
-            - Sid: OpenAiKeyParam
-              Effect: Allow
-              Action:
-                - ssm:GetParameter
-              Resource:
-                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/openai/api_key"
-            - Sid: GeminiKeyParam
-              Effect: Allow
-              Action:
-                - ssm:GetParameter
-              Resource:
-                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/gemini/api_key"
-            - Sid: SsmSecureStringDecrypt
-              Effect: Allow
-              Action:
-                - kms:Decrypt
-              Resource: "*"
-              Condition:
-                StringEquals:
-                  kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
+      - Version: "2012-10-17"
+        Statement:
+        - Sid: NovaBridgeTokenSign
+          Effect: Allow
+          Action:
+          - kms:Sign
+          - kms:GetPublicKey
+          Resource:
+          - !GetAtt JwtKey.Arn
+        - Sid: SuspendAlertEnqueue
+          Effect: Allow
+          Action:
+          - sqs:SendMessage
+          Resource:
+          - !GetAtt EmailQueue.Arn
+        - Sid: TableUsageBucketLog
+          Effect: Allow
+          Action:
+          - dynamodb:GetItem
+          - dynamodb:Query
+          - dynamodb:PutItem
+          - dynamodb:UpdateItem
+          Resource:
+          - !GetAtt Table.Arn
+        - Sid: OpenAiKeyParam
+          Effect: Allow
+          Action:
+          - ssm:GetParameter
+          Resource:
+          - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/openai/api_key"
+        - Sid: GeminiKeyParam
+          Effect: Allow
+          Action:
+          - ssm:GetParameter
+          Resource:
+          - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/gemini/api_key"
+        - Sid: SsmSecureStringDecrypt
+          Effect: Allow
+          Action:
+          - kms:Decrypt
+          Resource: "*"
+          Condition:
+            StringEquals:
+              kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
 
   IotIngestFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: live-ninja-iot-ingest
-      Description: IoT rule target - parses device telemetry and records DEVICE#/TELEM lastSeen.
+      Description: IoT rule target - parses device telemetry and records 
+        DEVICE#/TELEM lastSeen.
       CodeUri: .build/iot-ingest/
       LoggingConfig:
         LogGroup: !Ref IotIngestLogGroup
@@ -540,23 +546,24 @@ Resources:
             AwsIotSqlVersion: "2016-03-23"
             Sql: "SELECT *, topic(2) as deviceId FROM 'liveninja/+/telemetry'"
       Policies:
-        - Version: "2012-10-17"
-          Statement:
-            - Sid: TableWrite
-              Effect: Allow
-              Action:
-                - dynamodb:GetItem
-                - dynamodb:PutItem
-                - dynamodb:UpdateItem
-              Resource:
-                - !GetAtt Table.Arn
+      - Version: "2012-10-17"
+        Statement:
+        - Sid: TableWrite
+          Effect: Allow
+          Action:
+          - dynamodb:GetItem
+          - dynamodb:PutItem
+          - dynamodb:UpdateItem
+          Resource:
+          - !GetAtt Table.Arn
 
   ShadowIngestFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: live-ninja-shadow-ingest
       Description: >-
-        IoT rule target (M6) - consumes named-shadow "config" update/accepted events and
+        IoT rule target (M6) - consumes named-shadow "config" update/accepted events
+        and
         folds device reported state back into DynamoDB (DEVICE# lastSeen/reportedVersion;
         never downgrades the canonical SETTINGS# version - contracts/shadow.md).
       CodeUri: .build/shadow-ingest/
@@ -570,42 +577,43 @@ Resources:
             # topic(3) is <thingName> in $aws/things/<thingName>/shadow/name/config/update/accepted
             Sql: "SELECT topic(3) as thingName, * FROM '$aws/things/+/shadow/name/config/update/accepted'"
       Policies:
-        - Version: "2012-10-17"
-          Statement:
-            - Sid: TableReconcile
-              Effect: Allow
-              Action:
-                - dynamodb:GetItem
-                - dynamodb:Query
-                - dynamodb:PutItem
-                - dynamodb:UpdateItem
-              Resource:
-                - !GetAtt Table.Arn
-                - !Sub "${Table.Arn}/index/*"
+      - Version: "2012-10-17"
+        Statement:
+        - Sid: TableReconcile
+          Effect: Allow
+          Action:
+          - dynamodb:GetItem
+          - dynamodb:Query
+          - dynamodb:PutItem
+          - dynamodb:UpdateItem
+          Resource:
+          - !GetAtt Table.Arn
+          - !Sub "${Table.Arn}/index/*"
             # Re-publish desired when a device reports a stale settingsVersion
             # (self-healing push-down, contracts/shadow.md step 2/4). Named
             # shadow "config" enforced in code; shadow actions resource on the
             # Thing ARN.
-            - Sid: ConfigShadowRepublish
-              Effect: Allow
-              Action:
-                - iot:GetThingShadow
-                - iot:UpdateThingShadow
-              Resource:
-                - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:thing/*"
+        - Sid: ConfigShadowRepublish
+          Effect: Allow
+          Action:
+          - iot:GetThingShadow
+          - iot:UpdateThingShadow
+          Resource:
+          - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:thing/*"
             # Cached cold-start lookup of the IoT data-plane endpoint (no
             # IOT_DATA_ENDPOINT env / custom resource; no resource-level support).
-            - Sid: IotEndpointDiscovery
-              Effect: Allow
-              Action:
-                - iot:DescribeEndpoint
-              Resource: "*"
+        - Sid: IotEndpointDiscovery
+          Effect: Allow
+          Action:
+          - iot:DescribeEndpoint
+          Resource: "*"
 
   UsageRollupFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: live-ninja-usage-rollup
-      Description: Hourly usage rollup - Query-only reads of the USAGE partition, emits EMF metrics.
+      Description: Hourly usage rollup - Query-only reads of the USAGE 
+        partition, emits EMF metrics.
       CodeUri: .build/usage-rollup/
       LoggingConfig:
         LogGroup: !Ref UsageRollupLogGroup
@@ -617,24 +625,25 @@ Resources:
             Schedule: rate(1 hour)
             Description: live-ninja hourly usage rollup
       Policies:
-        - Version: "2012-10-17"
-          Statement:
-            - Sid: TableQuery
-              Effect: Allow
-              Action:
-                - dynamodb:Query
-                - dynamodb:GetItem
-                - dynamodb:PutItem
-                - dynamodb:UpdateItem
-              Resource:
-                - !GetAtt Table.Arn
-                - !Sub "${Table.Arn}/index/*"
+      - Version: "2012-10-17"
+        Statement:
+        - Sid: TableQuery
+          Effect: Allow
+          Action:
+          - dynamodb:Query
+          - dynamodb:GetItem
+          - dynamodb:PutItem
+          - dynamodb:UpdateItem
+          Resource:
+          - !GetAtt Table.Arn
+          - !Sub "${Table.Arn}/index/*"
 
   EmailDispatchFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: live-ninja-email-dispatch
-      Description: SQS consumer - sends templated email via SES with DynamoDB idempotency.
+      Description: SQS consumer - sends templated email via SES with DynamoDB 
+        idempotency.
       CodeUri: .build/email-dispatch/
       LoggingConfig:
         LogGroup: !Ref EmailDispatchLogGroup
@@ -651,32 +660,31 @@ Resources:
             Queue: !GetAtt EmailQueue.Arn
             BatchSize: 10
       Policies:
-        - Version: "2012-10-17"
-          Statement:
-            - Sid: SesSend
-              Effect: Allow
-              Action:
-                - ses:SendEmail
-              Resource:
-                - !Sub "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/jeremy.ninja"
-                - !Sub "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/jeremy@jeremy.ninja"
+      - Version: "2012-10-17"
+        Statement:
+        - Sid: SesSend
+          Effect: Allow
+          Action: []
+          Resource:
+          - !Sub "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/jeremy.ninja"
+          - !Sub "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/jeremy@jeremy.ninja"
                 # Sending with a ConfigurationSetName also authorizes against
                 # the configuration-set ARN (M7 bounce/complaint wiring).
-                - !Sub "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/${SesConfigurationSet}"
-            - Sid: IdempotencyWrite
-              Effect: Allow
-              Action:
-                - dynamodb:PutItem
-              Resource:
-                - !GetAtt Table.Arn
-            - Sid: QueueConsume
-              Effect: Allow
-              Action:
-                - sqs:ReceiveMessage
-                - sqs:DeleteMessage
-                - sqs:GetQueueAttributes
-              Resource:
-                - !GetAtt EmailQueue.Arn
+          - !Sub "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/${SesConfigurationSet}"
+        - Sid: IdempotencyWrite
+          Effect: Allow
+          Action:
+          - dynamodb:PutItem
+          Resource:
+          - !GetAtt Table.Arn
+        - Sid: QueueConsume
+          Effect: Allow
+          Action:
+          - sqs:ReceiveMessage
+          - sqs:DeleteMessage
+          - sqs:GetQueueAttributes
+          Resource:
+          - !GetAtt EmailQueue.Arn
 
   DeliverablesZipperFunction:
     Type: AWS::Serverless::Function
@@ -684,7 +692,8 @@ Resources:
       FunctionName: live-ninja-deliverables-zipper
       Description: >-
         Direct-invoke streaming zipper (M9) - invoked async by the web function's
-        deliverable_zip tool; streams S3 objects through archive/zip + io.Pipe into a
+        deliverable_zip tool; streams S3 objects through archive/zip + io.Pipe into
+        a
         new deliverable object (no /tmp spooling of the full archive).
       CodeUri: .build/deliverables-zipper/
       LoggingConfig:
@@ -695,35 +704,35 @@ Resources:
         Variables:
           DELIVERABLES_BUCKET: !Ref DeliverablesBucket
       Policies:
-        - Version: "2012-10-17"
-          Statement:
-            - Sid: TableDeliverables
-              Effect: Allow
-              Action:
-                - dynamodb:GetItem
-                - dynamodb:Query
-                - dynamodb:PutItem
-                - dynamodb:UpdateItem
-              Resource:
-                - !GetAtt Table.Arn
-                - !Sub "${Table.Arn}/index/*"
-            - Sid: DeliverablesRw
-              Effect: Allow
-              Action:
-                - s3:GetObject
-                - s3:PutObject
-                - s3:AbortMultipartUpload
-              Resource:
-                - !Sub "${DeliverablesBucket.Arn}/deliverables/*"
-            - Sid: DeliverablesList
-              Effect: Allow
-              Action:
-                - s3:ListBucket
-              Resource:
-                - !GetAtt DeliverablesBucket.Arn
-              Condition:
-                StringLike:
-                  s3:prefix: "deliverables/*"
+      - Version: "2012-10-17"
+        Statement:
+        - Sid: TableDeliverables
+          Effect: Allow
+          Action:
+          - dynamodb:GetItem
+          - dynamodb:Query
+          - dynamodb:PutItem
+          - dynamodb:UpdateItem
+          Resource:
+          - !GetAtt Table.Arn
+          - !Sub "${Table.Arn}/index/*"
+        - Sid: DeliverablesRw
+          Effect: Allow
+          Action:
+          - s3:GetObject
+          - s3:PutObject
+          - s3:AbortMultipartUpload
+          Resource:
+          - !Sub "${DeliverablesBucket.Arn}/deliverables/*"
+        - Sid: DeliverablesList
+          Effect: Allow
+          Action:
+          - s3:ListBucket
+          Resource:
+          - !GetAtt DeliverablesBucket.Arn
+          Condition:
+            StringLike:
+              s3:prefix: "deliverables/*"
 
   TopicsExtractFunction:
     Type: AWS::Serverless::Function
@@ -738,23 +747,23 @@ Resources:
         LogGroup: !Ref TopicsExtractLogGroup
       Timeout: 60
       Policies:
-        - Version: "2012-10-17"
-          Statement:
-            - Sid: TableConversationsAndTopics
-              Effect: Allow
-              Action:
-                - dynamodb:GetItem
-                - dynamodb:Query
-                - dynamodb:PutItem
-                - dynamodb:UpdateItem
-              Resource:
-                - !GetAtt Table.Arn
-            - Sid: InvokeRealtimeBrokerExtractTopics
-              Effect: Allow
-              Action:
-                - lambda:InvokeFunction
-              Resource:
-                - !GetAtt RealtimeBrokerFunction.Arn
+      - Version: "2012-10-17"
+        Statement:
+        - Sid: TableConversationsAndTopics
+          Effect: Allow
+          Action:
+          - dynamodb:GetItem
+          - dynamodb:Query
+          - dynamodb:PutItem
+          - dynamodb:UpdateItem
+          Resource:
+          - !GetAtt Table.Arn
+        - Sid: InvokeRealtimeBrokerExtractTopics
+          Effect: Allow
+          Action:
+          - lambda:InvokeFunction
+          Resource:
+          - !GetAtt RealtimeBrokerFunction.Arn
 
   AccountPurgeFunction:
     Type: AWS::Serverless::Function
@@ -779,70 +788,70 @@ Resources:
           WAKEWORDS_BUCKET: !Ref WakewordsBucket
           EMAIL_QUEUE_URL: !Ref EmailQueue
       Policies:
-        - Version: "2012-10-17"
-          Statement:
-            - Sid: TablePurge
-              Effect: Allow
-              Action:
-                - dynamodb:GetItem
-                - dynamodb:Query
-                - dynamodb:PutItem
-                - dynamodb:DeleteItem
-                - dynamodb:BatchWriteItem
-              Resource:
-                - !GetAtt Table.Arn
-                - !Sub "${Table.Arn}/index/*"
-            - Sid: PurgeDeliverablesPrefix
-              Effect: Allow
-              Action:
-                - s3:DeleteObject
-              Resource:
-                - !Sub "${DeliverablesBucket.Arn}/deliverables/*"
-            - Sid: PurgeUserPrefix
-              Effect: Allow
-              Action:
-                - s3:DeleteObject
-              Resource:
-                - !Sub "${UserBucket.Arn}/users/*"
-            - Sid: PurgeWakewordsPrefix
-              Effect: Allow
-              Action:
-                - s3:DeleteObject
-              Resource:
-                - !Sub "${WakewordsBucket.Arn}/wakewords/*"
-            - Sid: PurgeListBuckets
-              Effect: Allow
-              Action:
-                - s3:ListBucket
-              Resource:
-                - !GetAtt DeliverablesBucket.Arn
-                - !GetAtt UserBucket.Arn
-                - !GetAtt WakewordsBucket.Arn
-              Condition:
-                StringLike:
-                  s3:prefix:
-                    - "deliverables/*"
-                    - "users/*"
-                    - "wakewords/*"
+      - Version: "2012-10-17"
+        Statement:
+        - Sid: TablePurge
+          Effect: Allow
+          Action:
+          - dynamodb:GetItem
+          - dynamodb:Query
+          - dynamodb:PutItem
+          - dynamodb:DeleteItem
+          - dynamodb:BatchWriteItem
+          Resource:
+          - !GetAtt Table.Arn
+          - !Sub "${Table.Arn}/index/*"
+        - Sid: PurgeDeliverablesPrefix
+          Effect: Allow
+          Action:
+          - s3:DeleteObject
+          Resource:
+          - !Sub "${DeliverablesBucket.Arn}/deliverables/*"
+        - Sid: PurgeUserPrefix
+          Effect: Allow
+          Action:
+          - s3:DeleteObject
+          Resource:
+          - !Sub "${UserBucket.Arn}/users/*"
+        - Sid: PurgeWakewordsPrefix
+          Effect: Allow
+          Action:
+          - s3:DeleteObject
+          Resource:
+          - !Sub "${WakewordsBucket.Arn}/wakewords/*"
+        - Sid: PurgeListBuckets
+          Effect: Allow
+          Action:
+          - s3:ListBucket
+          Resource:
+          - !GetAtt DeliverablesBucket.Arn
+          - !GetAtt UserBucket.Arn
+          - !GetAtt WakewordsBucket.Arn
+          Condition:
+            StringLike:
+              s3:prefix:
+              - "deliverables/*"
+              - "users/*"
+              - "wakewords/*"
             # IoT teardown for provisioned devices (thing/cert material on
             # DEVICE items). Detach/delete actions; cert + policy actions
             # have partial resource-level support - scoped where possible.
-            - Sid: IotDeviceTeardown
-              Effect: Allow
-              Action:
-                - iot:ListAttachedPolicies
-                - iot:DetachPolicy
-                - iot:DetachThingPrincipal
-                - iot:UpdateCertificate
-                - iot:DeleteCertificate
-                - iot:DeleteThing
-              Resource: "*"
-            - Sid: EmailConfirm
-              Effect: Allow
-              Action:
-                - sqs:SendMessage
-              Resource:
-                - !GetAtt EmailQueue.Arn
+        - Sid: IotDeviceTeardown
+          Effect: Allow
+          Action:
+          - iot:ListAttachedPolicies
+          - iot:DetachPolicy
+          - iot:DetachThingPrincipal
+          - iot:UpdateCertificate
+          - iot:DeleteCertificate
+          - iot:DeleteThing
+          Resource: "*"
+        - Sid: EmailConfirm
+          Effect: Allow
+          Action:
+          - sqs:SendMessage
+          Resource:
+          - !GetAtt EmailQueue.Arn
 
   # ------------------------------------------------------------------
   # M7: explicit stack-managed Lambda log groups, 30-day retention.
@@ -936,40 +945,40 @@ Resources:
       TableName: live-ninja
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
-        - AttributeName: pk
-          AttributeType: S
-        - AttributeName: sk
-          AttributeType: S
-        - AttributeName: gsi1pk
-          AttributeType: S
-        - AttributeName: gsi1sk
-          AttributeType: S
-        - AttributeName: gsi2pk
-          AttributeType: S
-        - AttributeName: gsi2sk
-          AttributeType: S
+      - AttributeName: pk
+        AttributeType: S
+      - AttributeName: sk
+        AttributeType: S
+      - AttributeName: gsi1pk
+        AttributeType: S
+      - AttributeName: gsi1sk
+        AttributeType: S
+      - AttributeName: gsi2pk
+        AttributeType: S
+      - AttributeName: gsi2sk
+        AttributeType: S
       KeySchema:
-        - AttributeName: pk
-          KeyType: HASH
-        - AttributeName: sk
-          KeyType: RANGE
+      - AttributeName: pk
+        KeyType: HASH
+      - AttributeName: sk
+        KeyType: RANGE
       GlobalSecondaryIndexes:
-        - IndexName: GSI1
-          KeySchema:
-            - AttributeName: gsi1pk
-              KeyType: HASH
-            - AttributeName: gsi1sk
-              KeyType: RANGE
-          Projection:
-            ProjectionType: ALL
-        - IndexName: GSI2
-          KeySchema:
-            - AttributeName: gsi2pk
-              KeyType: HASH
-            - AttributeName: gsi2sk
-              KeyType: RANGE
-          Projection:
-            ProjectionType: ALL
+      - IndexName: GSI1
+        KeySchema:
+        - AttributeName: gsi1pk
+          KeyType: HASH
+        - AttributeName: gsi1sk
+          KeyType: RANGE
+        Projection:
+          ProjectionType: ALL
+      - IndexName: GSI2
+        KeySchema:
+        - AttributeName: gsi2pk
+          KeyType: HASH
+        - AttributeName: gsi2sk
+          KeyType: RANGE
+        Projection:
+          ProjectionType: ALL
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
@@ -984,19 +993,20 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      Description: live-ninja auth key - envelope encryption of LWA refresh tokens and auth material.
+      Description: live-ninja auth key - envelope encryption of LWA refresh 
+        tokens and auth material.
       KeySpec: SYMMETRIC_DEFAULT
       KeyUsage: ENCRYPT_DECRYPT
       EnableKeyRotation: true
       KeyPolicy:
         Version: "2012-10-17"
         Statement:
-          - Sid: AccountRootAdmin
-            Effect: Allow
-            Principal:
-              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
-            Action: kms:*
-            Resource: "*"
+        - Sid: AccountRootAdmin
+          Effect: Allow
+          Principal:
+            AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+          Action: kms:*
+          Resource: "*"
 
   AuthKeyAlias:
     Type: AWS::KMS::Alias
@@ -1009,18 +1019,19 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      Description: live-ninja JWT signing key - ES256 (ECC_NIST_P256); private key never leaves KMS.
+      Description: live-ninja JWT signing key - ES256 (ECC_NIST_P256); private 
+        key never leaves KMS.
       KeySpec: ECC_NIST_P256
       KeyUsage: SIGN_VERIFY
       KeyPolicy:
         Version: "2012-10-17"
         Statement:
-          - Sid: AccountRootAdmin
-            Effect: Allow
-            Principal:
-              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
-            Action: kms:*
-            Resource: "*"
+        - Sid: AccountRootAdmin
+          Effect: Allow
+          Principal:
+            AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+          Action: kms:*
+          Resource: "*"
 
   JwtKeyAlias:
     Type: AWS::KMS::Alias
@@ -1044,8 +1055,8 @@ Resources:
         RestrictPublicBuckets: true
       BucketEncryption:
         ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
 
   WakewordsBucket:
     Type: AWS::S3::Bucket
@@ -1059,10 +1070,10 @@ Resources:
       # after the first real model trained).
       CorsConfiguration:
         CorsRules:
-          - AllowedMethods: [GET, HEAD]
-            AllowedOrigins: ["https://live.jeremy.ninja"]
-            AllowedHeaders: ["*"]
-            MaxAge: 3600
+        - AllowedMethods: [GET, HEAD]
+          AllowedOrigins: ["https://live.jeremy.ninja"]
+          AllowedHeaders: ["*"]
+          MaxAge: 3600
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -1070,8 +1081,8 @@ Resources:
         RestrictPublicBuckets: true
       BucketEncryption:
         ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
 
   AssetsBucket:
     Type: AWS::S3::Bucket
@@ -1088,8 +1099,8 @@ Resources:
         RestrictPublicBuckets: true
       BucketEncryption:
         ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
 
   # Oversized static assets (the ~11 MB onnxruntime-web WASM, wake-word ONNX
   # models) cannot be served through the Fiber Lambda — they exceed Lambda's
@@ -1112,15 +1123,15 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Sid: AllowCloudFrontRead
-            Effect: Allow
-            Principal:
-              Service: cloudfront.amazonaws.com
-            Action: s3:GetObject
-            Resource: !Sub "arn:aws:s3:::${AssetsBucket}/static/*"
-            Condition:
-              StringEquals:
-                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}"
+        - Sid: AllowCloudFrontRead
+          Effect: Allow
+          Principal:
+            Service: cloudfront.amazonaws.com
+          Action: s3:GetObject
+          Resource: !Sub "arn:aws:s3:::${AssetsBucket}/static/*"
+          Condition:
+            StringEquals:
+              AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}"
 
   LogsBucket:
     Type: AWS::S3::Bucket
@@ -1135,8 +1146,8 @@ Resources:
         RestrictPublicBuckets: true
       BucketEncryption:
         ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
 
   AnalyticsBucket:
     Type: AWS::S3::Bucket
@@ -1151,8 +1162,8 @@ Resources:
         RestrictPublicBuckets: true
       BucketEncryption:
         ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
 
   # ------------------------------------------------------------------
   # M7: telemetry lake — web fn (POST /api/v1/telemetry, schema-validated,
@@ -1177,40 +1188,41 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       RoleName: live-ninja-telemetry-firehose
-      Description: Assumed by Kinesis Data Firehose to land gzip'd telemetry batches in the analytics bucket.
+      Description: Assumed by Kinesis Data Firehose to land gzip'd telemetry 
+        batches in the analytics bucket.
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Effect: Allow
-            Principal:
-              Service: firehose.amazonaws.com
-            Action: sts:AssumeRole
-            Condition:
-              StringEquals:
-                sts:ExternalId: !Ref AWS::AccountId
+        - Effect: Allow
+          Principal:
+            Service: firehose.amazonaws.com
+          Action: sts:AssumeRole
+          Condition:
+            StringEquals:
+              sts:ExternalId: !Ref AWS::AccountId
       Policies:
-        - PolicyName: telemetry-s3-delivery
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Sid: AnalyticsWrite
-                Effect: Allow
-                Action:
-                  - s3:AbortMultipartUpload
-                  - s3:GetBucketLocation
-                  - s3:GetObject
-                  - s3:ListBucket
-                  - s3:ListBucketMultipartUploads
-                  - s3:PutObject
-                Resource:
-                  - !GetAtt AnalyticsBucket.Arn
-                  - !Sub "${AnalyticsBucket.Arn}/*"
-              - Sid: DeliveryErrorLogs
-                Effect: Allow
-                Action:
-                  - logs:PutLogEvents
-                Resource:
-                  - !Sub "${TelemetryFirehoseLogGroup.Arn}:log-stream:*"
+      - PolicyName: telemetry-s3-delivery
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Sid: AnalyticsWrite
+            Effect: Allow
+            Action:
+            - s3:AbortMultipartUpload
+            - s3:GetBucketLocation
+            - s3:GetObject
+            - s3:ListBucket
+            - s3:ListBucketMultipartUploads
+            - s3:PutObject
+            Resource:
+            - !GetAtt AnalyticsBucket.Arn
+            - !Sub "${AnalyticsBucket.Arn}/*"
+          - Sid: DeliveryErrorLogs
+            Effect: Allow
+            Action:
+            - logs:PutLogEvents
+            Resource:
+            - !Sub "${TelemetryFirehoseLogGroup.Arn}:log-stream:*"
 
   TelemetryDeliveryStream:
     Type: AWS::KinesisFirehose::DeliveryStream
@@ -1238,7 +1250,8 @@ Resources:
       CatalogId: !Ref AWS::AccountId
       DatabaseInput:
         Name: live_ninja
-        Description: live-ninja self-hosted telemetry/analytics lake (Athena over the analytics bucket).
+        Description: live-ninja self-hosted telemetry/analytics lake (Athena 
+          over the analytics bucket).
 
   # Schema mirrors contracts/telemetry.schema.json. attrs stays a raw JSON
   # string (query with json_extract / json_extract_scalar) because its keys
@@ -1252,7 +1265,8 @@ Resources:
       DatabaseName: !Ref AnalyticsGlueDatabase
       TableInput:
         Name: telemetry_events
-        Description: Telemetry event envelopes (contracts/telemetry.schema.json) landed by the live-ninja-telemetry Firehose stream.
+        Description: Telemetry event envelopes (contracts/telemetry.schema.json)
+          landed by the live-ninja-telemetry Firehose stream.
         TableType: EXTERNAL_TABLE
         Parameters:
           classification: json
@@ -1260,32 +1274,34 @@ Resources:
         StorageDescriptor:
           Location: !Sub "s3://${AnalyticsBucket}/telemetry/"
           InputFormat: org.apache.hadoop.mapred.TextInputFormat
-          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          OutputFormat: 
+            org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
           SerdeInfo:
             SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
             Parameters:
               ignore.malformed.json: "true"
           Columns:
-            - Name: event
-              Type: string
-            - Name: deviceid
-              Type: string
-            - Name: surface
-              Type: string
-            - Name: ts
-              Type: string
-            - Name: sessionid
-              Type: string
-            - Name: userid
-              Type: string
-            - Name: attrs
-              Type: string
+          - Name: event
+            Type: string
+          - Name: deviceid
+            Type: string
+          - Name: surface
+            Type: string
+          - Name: ts
+            Type: string
+          - Name: sessionid
+            Type: string
+          - Name: userid
+            Type: string
+          - Name: attrs
+            Type: string
 
   AnalyticsWorkGroup:
     Type: AWS::Athena::WorkGroup
     Properties:
       Name: live-ninja-analytics
-      Description: Athena workgroup for the live-ninja telemetry lake; results land back in the analytics bucket.
+      Description: Athena workgroup for the live-ninja telemetry lake; results 
+        land back in the analytics bucket.
       State: ENABLED
       WorkGroupConfiguration:
         EnforceWorkGroupConfiguration: true
@@ -1308,17 +1324,17 @@ Resources:
         RestrictPublicBuckets: true
       BucketEncryption:
         ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
       LifecycleConfiguration:
         Rules:
           # M9: deliverables are transient work products - expire after 180 days
           # (locked decision) and clean up abandoned multipart zip uploads.
-          - Id: expire-deliverables-180d
-            Status: Enabled
-            ExpirationInDays: 180
-            AbortIncompleteMultipartUpload:
-              DaysAfterInitiation: 7
+        - Id: expire-deliverables-180d
+          Status: Enabled
+          ExpirationInDays: 180
+          AbortIncompleteMultipartUpload:
+            DaysAfterInitiation: 7
 
   # ------------------------------------------------------------------
   # SQS email pipeline
@@ -1362,7 +1378,8 @@ Resources:
       RepositoryName: live-ninja-wakeword-train
       ImageTagMutability: MUTABLE
       LifecyclePolicy:
-        LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"keep last 10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}'
+        LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"keep last
+          10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}'
 
   BatchVpc:
     Type: AWS::EC2::VPC
@@ -1371,15 +1388,15 @@ Resources:
       EnableDnsSupport: true
       EnableDnsHostnames: true
       Tags:
-        - Key: Name
-          Value: live-ninja-batch
+      - Key: Name
+        Value: live-ninja-batch
 
   BatchInternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
       Tags:
-        - Key: Name
-          Value: live-ninja-batch
+      - Key: Name
+        Value: live-ninja-batch
 
   BatchVpcGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -1395,8 +1412,8 @@ Resources:
       AvailabilityZone: !Select [0, !GetAZs ""]
       MapPublicIpOnLaunch: true
       Tags:
-        - Key: Name
-          Value: live-ninja-batch-a
+      - Key: Name
+        Value: live-ninja-batch-a
 
   BatchPublicSubnetB:
     Type: AWS::EC2::Subnet
@@ -1406,16 +1423,16 @@ Resources:
       AvailabilityZone: !Select [1, !GetAZs ""]
       MapPublicIpOnLaunch: true
       Tags:
-        - Key: Name
-          Value: live-ninja-batch-b
+      - Key: Name
+        Value: live-ninja-batch-b
 
   BatchRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref BatchVpc
       Tags:
-        - Key: Name
-          Value: live-ninja-batch
+      - Key: Name
+        Value: live-ninja-batch
 
   BatchDefaultRoute:
     Type: AWS::EC2::Route
@@ -1440,27 +1457,30 @@ Resources:
   BatchSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: live-ninja wakeword-train Fargate tasks - egress only, no ingress.
+      GroupDescription: live-ninja wakeword-train Fargate tasks - egress only, 
+        no ingress.
       VpcId: !Ref BatchVpc
       SecurityGroupEgress:
-        - IpProtocol: "-1"
-          CidrIp: 0.0.0.0/0
-          Description: Allow all egress (ECR pull, S3/DynamoDB/SQS, TTS asset fetch).
+      - IpProtocol: "-1"
+        CidrIp: 0.0.0.0/0
+        Description: Allow all egress (ECR pull, S3/DynamoDB/SQS, TTS asset 
+          fetch).
 
   WakewordTrainExecutionRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: live-ninja-wakeword-train-exec
-      Description: ECS task execution role for wakeword-train Batch jobs (ECR pull + CloudWatch logs).
+      Description: ECS task execution role for wakeword-train Batch jobs (ECR 
+        pull + CloudWatch logs).
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Effect: Allow
-            Principal:
-              Service: ecs-tasks.amazonaws.com
-            Action: sts:AssumeRole
+        - Effect: Allow
+          Principal:
+            Service: ecs-tasks.amazonaws.com
+          Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
 
   WakewordTrainJobRole:
     Type: AWS::IAM::Role
@@ -1473,37 +1493,37 @@ Resources:
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Effect: Allow
-            Principal:
-              Service: ecs-tasks.amazonaws.com
-            Action: sts:AssumeRole
+        - Effect: Allow
+          Principal:
+            Service: ecs-tasks.amazonaws.com
+          Action: sts:AssumeRole
       Policies:
-        - PolicyName: wakeword-train
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Sid: ModelUpload
-                Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:PutObject
-                  - s3:AbortMultipartUpload
-                Resource:
-                  - !Sub "${WakewordsBucket.Arn}/wakewords/*"
-              - Sid: WakewordStatus
-                Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:PutItem
-                Resource:
-                  - !GetAtt Table.Arn
-              - Sid: ReadyEmailEnqueue
-                Effect: Allow
-                Action:
-                  - sqs:SendMessage
-                Resource:
-                  - !GetAtt EmailQueue.Arn
+      - PolicyName: wakeword-train
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Sid: ModelUpload
+            Effect: Allow
+            Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:AbortMultipartUpload
+            Resource:
+            - !Sub "${WakewordsBucket.Arn}/wakewords/*"
+          - Sid: WakewordStatus
+            Effect: Allow
+            Action:
+            - dynamodb:GetItem
+            - dynamodb:UpdateItem
+            - dynamodb:PutItem
+            Resource:
+            - !GetAtt Table.Arn
+          - Sid: ReadyEmailEnqueue
+            Effect: Allow
+            Action:
+            - sqs:SendMessage
+            Resource:
+            - !GetAtt EmailQueue.Arn
 
   WakewordTrainComputeEnv:
     Type: AWS::Batch::ComputeEnvironment
@@ -1516,10 +1536,10 @@ Resources:
         Type: FARGATE
         MaxvCpus: 4
         Subnets:
-          - !Ref BatchPublicSubnetA
-          - !Ref BatchPublicSubnetB
+        - !Ref BatchPublicSubnetA
+        - !Ref BatchPublicSubnetB
         SecurityGroupIds:
-          - !Ref BatchSecurityGroup
+        - !Ref BatchSecurityGroup
 
   WakewordTrainJobQueue:
     Type: AWS::Batch::JobQueue
@@ -1528,8 +1548,8 @@ Resources:
       State: ENABLED
       Priority: 1
       ComputeEnvironmentOrder:
-        - Order: 1
-          ComputeEnvironment: !Ref WakewordTrainComputeEnv
+      - Order: 1
+        ComputeEnvironment: !Ref WakewordTrainComputeEnv
 
   WakewordTrainJobDefinition:
     Type: AWS::Batch::JobDefinition
@@ -1537,7 +1557,7 @@ Resources:
       JobDefinitionName: live-ninja-wakeword-train
       Type: container
       PlatformCapabilities:
-        - FARGATE
+      - FARGATE
       # 20-minute hard timeout (locked decision) - Batch kills the task after this.
       Timeout:
         AttemptDurationSeconds: 1200
@@ -1546,10 +1566,10 @@ Resources:
       ContainerProperties:
         Image: !Sub "${WakewordTrainRepo.RepositoryUri}:${WakewordTrainImageTag}"
         ResourceRequirements:
-          - Type: VCPU
-            Value: "2"
-          - Type: MEMORY
-            Value: "8192"
+        - Type: VCPU
+          Value: "2"
+        - Type: MEMORY
+          Value: "8192"
         RuntimePlatform:
           CpuArchitecture: ARM64
           OperatingSystemFamily: LINUX
@@ -1560,12 +1580,12 @@ Resources:
         # Per-job parameters (wwId, userId, phrase) are passed by SubmitJob
         # containerOverrides.environment from the web function.
         Environment:
-          - Name: TABLE_NAME
-            Value: !Ref Table
-          - Name: WAKEWORDS_BUCKET
-            Value: !Ref WakewordsBucket
-          - Name: EMAIL_QUEUE_URL
-            Value: !Ref EmailQueue
+        - Name: TABLE_NAME
+          Value: !Ref Table
+        - Name: WAKEWORDS_BUCKET
+          Value: !Ref WakewordsBucket
+        - Name: EMAIL_QUEUE_URL
+          Value: !Ref EmailQueue
 
   # ------------------------------------------------------------------
   # M12: Nova Sonic media bridge (FR-VE-01..04)
@@ -1611,7 +1631,8 @@ Resources:
       RepositoryName: live-ninja-nova-bridge
       ImageTagMutability: MUTABLE
       LifecyclePolicy:
-        LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"keep last 10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}'
+        LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"keep last
+          10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}'
 
   NovaBridgeLogGroup:
     Type: AWS::Logs::LogGroup
@@ -1625,16 +1646,17 @@ Resources:
     Condition: NovaBridgeReady
     Properties:
       RoleName: live-ninja-nova-bridge-exec
-      Description: ECS task execution role for the nova-bridge service (ECR pull + CloudWatch Logs).
+      Description: ECS task execution role for the nova-bridge service (ECR pull
+        + CloudWatch Logs).
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Effect: Allow
-            Principal:
-              Service: ecs-tasks.amazonaws.com
-            Action: sts:AssumeRole
+        - Effect: Allow
+          Principal:
+            Service: ecs-tasks.amazonaws.com
+          Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
 
   NovaBridgeTaskRole:
     Type: AWS::IAM::Role
@@ -1649,35 +1671,35 @@ Resources:
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Effect: Allow
-            Principal:
-              Service: ecs-tasks.amazonaws.com
-            Action: sts:AssumeRole
+        - Effect: Allow
+          Principal:
+            Service: ecs-tasks.amazonaws.com
+          Action: sts:AssumeRole
       Policies:
-        - PolicyName: nova-bridge
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
+      - PolicyName: nova-bridge
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
               # Scoped to the single Nova Sonic model id; bidirectional-stream
               # action only (Bedrock's held HTTP/2 session for realtime audio).
-              - Sid: NovaSonicBidirectionalStream
-                Effect: Allow
-                Action:
-                  - bedrock:InvokeModelWithBidirectionalStream
-                Resource:
-                  - !Sub "arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/amazon.nova-sonic-v1:0"
+          - Sid: NovaSonicBidirectionalStream
+            Effect: Allow
+            Action:
+            - bedrock:InvokeModelWithBidirectionalStream
+            Resource:
+            - !Sub "arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/amazon.nova-sonic-v1:0"
               # Realtime quota gate — same USAGE-partition access the broker
               # uses (key lookups / Query only, no Scan).
-              - Sid: RealtimeQuota
-                Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:Query
-                  - dynamodb:PutItem
-                  - dynamodb:UpdateItem
-                Resource:
-                  - !GetAtt Table.Arn
-                  - !Sub "${Table.Arn}/index/*"
+          - Sid: RealtimeQuota
+            Effect: Allow
+            Action:
+            - dynamodb:GetItem
+            - dynamodb:Query
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            Resource:
+            - !GetAtt Table.Arn
+            - !Sub "${Table.Arn}/index/*"
 
   NovaBridgeCluster:
     Type: AWS::ECS::Cluster
@@ -1692,18 +1714,20 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Condition: NovaBridgeReady
     Properties:
-      GroupDescription: live-ninja nova-bridge ALB - ingress from CloudFront origin-facing prefix list only.
+      GroupDescription: live-ninja nova-bridge ALB - ingress from CloudFront 
+        origin-facing prefix list only.
       VpcId: !Ref BatchVpc
       SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          SourcePrefixListId: !Ref CloudFrontPrefixListId
-          Description: HTTP from CloudFront edge only (TLS terminated at CloudFront).
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        SourcePrefixListId: !Ref CloudFrontPrefixListId
+        Description: HTTP from CloudFront edge only (TLS terminated at 
+          CloudFront).
       SecurityGroupEgress:
-        - IpProtocol: "-1"
-          CidrIp: 0.0.0.0/0
-          Description: Allow all egress (to the Fargate service targets).
+      - IpProtocol: "-1"
+        CidrIp: 0.0.0.0/0
+        Description: Allow all egress (to the Fargate service targets).
 
   # Service security group: ingress on the container port from the ALB SG
   # only; egress open (ECR pull, Bedrock, DynamoDB, Logs, public JWKS).
@@ -1711,12 +1735,14 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Condition: NovaBridgeReady
     Properties:
-      GroupDescription: live-ninja nova-bridge Fargate tasks - ingress from the ALB SG only, egress open.
+      GroupDescription: live-ninja nova-bridge Fargate tasks - ingress from the 
+        ALB SG only, egress open.
       VpcId: !Ref BatchVpc
       SecurityGroupEgress:
-        - IpProtocol: "-1"
-          CidrIp: 0.0.0.0/0
-          Description: Allow all egress (ECR pull, Bedrock bidirectional stream, DynamoDB, CloudWatch Logs, public JWKS fetch).
+      - IpProtocol: "-1"
+        CidrIp: 0.0.0.0/0
+        Description: Allow all egress (ECR pull, Bedrock bidirectional stream, 
+          DynamoDB, CloudWatch Logs, public JWKS fetch).
 
   NovaBridgeServiceIngressFromAlb:
     Type: AWS::EC2::SecurityGroupIngress
@@ -1738,14 +1764,14 @@ Resources:
       Scheme: internet-facing
       IpAddressType: ipv4
       Subnets:
-        - !Ref BatchPublicSubnetA
-        - !Ref BatchPublicSubnetB
+      - !Ref BatchPublicSubnetA
+      - !Ref BatchPublicSubnetB
       SecurityGroups:
-        - !Ref NovaBridgeAlbSecurityGroup
+      - !Ref NovaBridgeAlbSecurityGroup
       LoadBalancerAttributes:
         # Long idle timeout so held WebSocket sessions are not reaped mid-turn.
-        - Key: idle_timeout.timeout_seconds
-          Value: "3600"
+      - Key: idle_timeout.timeout_seconds
+        Value: "3600"
 
   NovaBridgeTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
@@ -1766,8 +1792,8 @@ Resources:
       Matcher:
         HttpCode: "200"
       TargetGroupAttributes:
-        - Key: deregistration_delay.timeout_seconds
-          Value: "30"
+      - Key: deregistration_delay.timeout_seconds
+        Value: "30"
 
   NovaBridgeListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -1779,8 +1805,8 @@ Resources:
       Protocol: HTTP
       Port: 80
       DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref NovaBridgeTargetGroup
+      - Type: forward
+        TargetGroupArn: !Ref NovaBridgeTargetGroup
 
   NovaBridgeTaskDefinition:
     Type: AWS::ECS::TaskDefinition
@@ -1790,7 +1816,7 @@ Resources:
     Properties:
       Family: live-ninja-nova-bridge
       RequiresCompatibilities:
-        - FARGATE
+      - FARGATE
       NetworkMode: awsvpc
       Cpu: "256"
       Memory: "512"
@@ -1800,35 +1826,35 @@ Resources:
       ExecutionRoleArn: !GetAtt NovaBridgeExecutionRole.Arn
       TaskRoleArn: !GetAtt NovaBridgeTaskRole.Arn
       ContainerDefinitions:
-        - Name: nova-bridge
-          Image: !Sub "${NovaBridgeRepo.RepositoryUri}:${NovaBridgeImageTag}"
-          Essential: true
-          PortMappings:
-            - ContainerPort: 8080
-              Protocol: tcp
-          Environment:
-            - Name: PORT
-              Value: "8080"
-            - Name: TABLE_NAME
-              Value: !Ref Table
-            - Name: DOMAIN_NAME
-              Value: !Ref DomainName
-            - Name: JWKS_URL
-              Value: !Sub "https://${DomainName}/.well-known/jwks.json"
-            - Name: NOVA_SONIC_MODEL_ID
-              Value: amazon.nova-sonic-v1:0
-            - Name: BEDROCK_REGION
-              Value: us-east-1
-            - Name: API_BASE_URL
-              Value: !Sub "https://${DomainName}"
-            - Name: LOG_LEVEL
-              Value: debug
-          LogConfiguration:
-            LogDriver: awslogs
-            Options:
-              awslogs-group: !Ref NovaBridgeLogGroup
-              awslogs-region: !Ref AWS::Region
-              awslogs-stream-prefix: nova-bridge
+      - Name: nova-bridge
+        Image: !Sub "${NovaBridgeRepo.RepositoryUri}:${NovaBridgeImageTag}"
+        Essential: true
+        PortMappings:
+        - ContainerPort: 8080
+          Protocol: tcp
+        Environment:
+        - Name: PORT
+          Value: "8080"
+        - Name: TABLE_NAME
+          Value: !Ref Table
+        - Name: DOMAIN_NAME
+          Value: !Ref DomainName
+        - Name: JWKS_URL
+          Value: !Sub "https://${DomainName}/.well-known/jwks.json"
+        - Name: NOVA_SONIC_MODEL_ID
+          Value: amazon.nova-sonic-v1:0
+        - Name: BEDROCK_REGION
+          Value: us-east-1
+        - Name: API_BASE_URL
+          Value: !Sub "https://${DomainName}"
+        - Name: LOG_LEVEL
+          Value: debug
+        LogConfiguration:
+          LogDriver: awslogs
+          Options:
+            awslogs-group: !Ref NovaBridgeLogGroup
+            awslogs-region: !Ref AWS::Region
+            awslogs-stream-prefix: nova-bridge
 
   NovaBridgeService:
     Type: AWS::ECS::Service
@@ -1837,7 +1863,7 @@ Resources:
     # The listener must exist before the service registers with the target
     # group (ELB association ordering).
     DependsOn:
-      - NovaBridgeListener
+    - NovaBridgeListener
     Properties:
       ServiceName: live-ninja-nova-bridge
       Cluster: !Ref NovaBridgeCluster
@@ -1859,14 +1885,14 @@ Resources:
           # wakeword-train Fargate design.
           AssignPublicIp: ENABLED
           Subnets:
-            - !Ref BatchPublicSubnetA
-            - !Ref BatchPublicSubnetB
+          - !Ref BatchPublicSubnetA
+          - !Ref BatchPublicSubnetB
           SecurityGroups:
-            - !Ref NovaBridgeServiceSecurityGroup
+          - !Ref NovaBridgeServiceSecurityGroup
       LoadBalancers:
-        - ContainerName: nova-bridge
-          ContainerPort: 8080
-          TargetGroupArn: !Ref NovaBridgeTargetGroup
+      - ContainerName: nova-bridge
+        ContainerPort: 8080
+        TargetGroupArn: !Ref NovaBridgeTargetGroup
 
   # ------------------------------------------------------------------
   # EventBridge Scheduler (set_timer / set_reminder one-shot schedules)
@@ -1880,28 +1906,29 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       RoleName: live-ninja-scheduler
-      Description: Assumed by EventBridge Scheduler to deliver timer/reminder payloads to the email queue.
+      Description: Assumed by EventBridge Scheduler to deliver timer/reminder 
+        payloads to the email queue.
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Effect: Allow
-            Principal:
-              Service: scheduler.amazonaws.com
-            Action: sts:AssumeRole
-            Condition:
-              StringEquals:
-                aws:SourceAccount: !Ref AWS::AccountId
+        - Effect: Allow
+          Principal:
+            Service: scheduler.amazonaws.com
+          Action: sts:AssumeRole
+          Condition:
+            StringEquals:
+              aws:SourceAccount: !Ref AWS::AccountId
       Policies:
-        - PolicyName: email-queue-send
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Sid: EmailEnqueue
-                Effect: Allow
-                Action:
-                  - sqs:SendMessage
-                Resource:
-                  - !GetAtt EmailQueue.Arn
+      - PolicyName: email-queue-send
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Sid: EmailEnqueue
+            Effect: Allow
+            Action:
+            - sqs:SendMessage
+            Resource:
+            - !GetAtt EmailQueue.Arn
 
   # ------------------------------------------------------------------
   # IoT Core baseline
@@ -1923,29 +1950,29 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Effect: Allow
-            Action:
-              - iot:Connect
-            Resource:
-              - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:client/${!iot:Connection.Thing.ThingName}"
-            Condition:
-              Bool:
-                iot:Connection.Thing.IsAttached: "true"
-          - Effect: Allow
-            Action:
-              - iot:Publish
-            Resource:
-              - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:topic/liveninja/${!iot:Connection.Thing.ThingName}/*"
-          - Effect: Allow
-            Action:
-              - iot:Subscribe
-            Resource:
-              - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/liveninja/${!iot:Connection.Thing.ThingName}/*"
-          - Effect: Allow
-            Action:
-              - iot:Receive
-            Resource:
-              - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:topic/liveninja/${!iot:Connection.Thing.ThingName}/*"
+        - Effect: Allow
+          Action:
+          - iot:Connect
+          Resource:
+          - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:client/${!iot:Connection.Thing.ThingName}"
+          Condition:
+            Bool:
+              iot:Connection.Thing.IsAttached: "true"
+        - Effect: Allow
+          Action:
+          - iot:Publish
+          Resource:
+          - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:topic/liveninja/${!iot:Connection.Thing.ThingName}/*"
+        - Effect: Allow
+          Action:
+          - iot:Subscribe
+          Resource:
+          - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/liveninja/${!iot:Connection.Thing.ThingName}/*"
+        - Effect: Allow
+          Action:
+          - iot:Receive
+          Resource:
+          - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:topic/liveninja/${!iot:Connection.Thing.ThingName}/*"
 
   # ------------------------------------------------------------------
   # CloudFront + Route 53 edge
@@ -1955,7 +1982,8 @@ Resources:
     Properties:
       ResponseHeadersPolicyConfig:
         Name: live-ninja-security-headers
-        Comment: HSTS, nosniff, referrer policy, clickjacking protection; CSP left to the app.
+        Comment: HSTS, nosniff, referrer policy, clickjacking protection; CSP 
+          left to the app.
         SecurityHeadersConfig:
           StrictTransportSecurity:
             AccessControlMaxAgeSec: 63072000
@@ -1986,7 +2014,8 @@ Resources:
     Properties:
       Name: live-ninja-edge
       Scope: CLOUDFRONT
-      Description: Rate limiting + AWS managed common rule set in front of the live-ninja CloudFront distribution.
+      Description: Rate limiting + AWS managed common rule set in front of the 
+        live-ninja CloudFront distribution.
       DefaultAction:
         Allow: {}
       VisibilityConfig:
@@ -1994,27 +2023,27 @@ Resources:
         CloudWatchMetricsEnabled: true
         MetricName: live-ninja-edge
       Rules:
-        - Name: RateLimitPerIP
-          Priority: 0
-          Action:
-            Block: {}
-          Statement:
-            RateBasedStatement:
-              Limit: 2000
-              EvaluationWindowSec: 300
-              AggregateKeyType: IP
-          VisibilityConfig:
-            SampledRequestsEnabled: true
-            CloudWatchMetricsEnabled: true
-            MetricName: live-ninja-rate-limit
-        - Name: AWSManagedRulesCommonRuleSet
-          Priority: 1
-          OverrideAction:
-            None: {}
-          Statement:
-            ManagedRuleGroupStatement:
-              VendorName: AWS
-              Name: AWSManagedRulesCommonRuleSet
+      - Name: RateLimitPerIP
+        Priority: 0
+        Action:
+          Block: {}
+        Statement:
+          RateBasedStatement:
+            Limit: 2000
+            EvaluationWindowSec: 300
+            AggregateKeyType: IP
+        VisibilityConfig:
+          SampledRequestsEnabled: true
+          CloudWatchMetricsEnabled: true
+          MetricName: live-ninja-rate-limit
+      - Name: AWSManagedRulesCommonRuleSet
+        Priority: 1
+        OverrideAction:
+          None: {}
+        Statement:
+          ManagedRuleGroupStatement:
+            VendorName: AWS
+            Name: AWSManagedRulesCommonRuleSet
               # SizeRestrictions_BODY defaults to blocking any request body
               # over 8KB. POST /api/v1/fallback/stt accepts a multipart
               # audio upload up to 25MB (internal/webapp/api_routes.go,
@@ -2024,14 +2053,14 @@ Resources:
               # on this API (transcript batches, tool invokes, JSON turns)
               # is well under 8KB, so only this one sub-rule is downgraded
               # to Count instead of excluding the whole managed group.
-              RuleActionOverrides:
-                - Name: SizeRestrictions_BODY
-                  ActionToUse:
-                    Count: {}
-          VisibilityConfig:
-            SampledRequestsEnabled: true
-            CloudWatchMetricsEnabled: true
-            MetricName: live-ninja-common-rules
+            RuleActionOverrides:
+            - Name: SizeRestrictions_BODY
+              ActionToUse:
+                Count: {}
+        VisibilityConfig:
+          SampledRequestsEnabled: true
+          CloudWatchMetricsEnabled: true
+          MetricName: live-ninja-common-rules
 
   CloudFrontDistribution:
     Type: AWS::CloudFront::Distribution
@@ -2040,7 +2069,7 @@ Resources:
         Enabled: true
         Comment: live-ninja edge for live.jeremy.ninja
         Aliases:
-          - !Ref DomainName
+        - !Ref DomainName
         WebACLId: !GetAtt EdgeWebACL.Arn
         HttpVersion: http2and3
         IPV6Enabled: true
@@ -2050,45 +2079,44 @@ Resources:
           SslSupportMethod: sni-only
           MinimumProtocolVersion: TLSv1.2_2021
         Origins:
-          - Id: http-api
-            DomainName: !Sub "${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
-            CustomOriginConfig:
-              OriginProtocolPolicy: https-only
-              OriginSSLProtocols:
-                - TLSv1.2
+        - Id: http-api
+          DomainName: !Sub "${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+          CustomOriginConfig:
+            OriginProtocolPolicy: https-only
+            OriginSSLProtocols:
+            - TLSv1.2
           # M12: the nova-bridge ALB (HTTP; TLS terminated here at CloudFront).
           # WebSocket upgrades to Bedrock Nova Sonic ride this origin under the
           # /nova/* behavior below. OriginReadTimeout is bumped to CloudFront's
           # 60s max so a slow first WS response is not cut short.
-          - !If
-            - NovaBridgeReady
-            - Id: nova-bridge
-              DomainName: !GetAtt NovaBridgeAlb.DNSName
-              CustomOriginConfig:
-                OriginProtocolPolicy: http-only
-                HTTPPort: 80
-                OriginReadTimeout: 60
-            - !Ref "AWS::NoValue"
-          # Oversized static binaries (ORT WASM, wake models) served from S3.
-          - Id: assets-s3
-            DomainName: !Sub "${AssetsBucket}.s3.${AWS::Region}.amazonaws.com"
-            OriginAccessControlId: !GetAtt AssetsOAC.Id
-            S3OriginConfig:
-              OriginAccessIdentity: ""
+        - !If
+          - NovaBridgeReady
+          - Id: nova-bridge
+            DomainName: !GetAtt NovaBridgeAlb.DNSName
+            CustomOriginConfig:
+              OriginProtocolPolicy: http-only
+              HTTPPort: 80
+              OriginReadTimeout: 60
+          - !Ref "AWS::NoValue"
+        - Id: assets-s3
+          DomainName: !Sub "${AssetsBucket}.s3.${AWS::Region}.amazonaws.com"
+          OriginAccessControlId: !GetAtt AssetsOAC.Id
+          S3OriginConfig:
+            OriginAccessIdentity: ""
         DefaultCacheBehavior:
           TargetOriginId: http-api
           ViewerProtocolPolicy: redirect-to-https
           AllowedMethods:
-            - GET
-            - HEAD
-            - OPTIONS
-            - PUT
-            - POST
-            - PATCH
-            - DELETE
+          - GET
+          - HEAD
+          - OPTIONS
+          - PUT
+          - POST
+          - PATCH
+          - DELETE
           CachedMethods:
-            - GET
-            - HEAD
+          - GET
+          - HEAD
           Compress: true
           # Managed policies: CachingDisabled + AllViewerExceptHostHeader
           CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
@@ -2098,35 +2126,35 @@ Resources:
           # More-specific S3-backed patterns MUST precede /static/* (CloudFront
           # uses the first matching behavior in order). These serve the oversized
           # ORT WASM + wake-word models that can't go through Lambda.
-          - PathPattern: /static/vendor/*
-            TargetOriginId: assets-s3
-            ViewerProtocolPolicy: redirect-to-https
-            AllowedMethods: [GET, HEAD]
-            CachedMethods: [GET, HEAD]
-            Compress: true
-            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
-            ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
-          - PathPattern: /static/models/*
-            TargetOriginId: assets-s3
-            ViewerProtocolPolicy: redirect-to-https
-            AllowedMethods: [GET, HEAD]
-            CachedMethods: [GET, HEAD]
-            Compress: true
-            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
-            ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
-          - PathPattern: /static/*
-            TargetOriginId: http-api
-            ViewerProtocolPolicy: redirect-to-https
-            AllowedMethods:
-              - GET
-              - HEAD
-            CachedMethods:
-              - GET
-              - HEAD
-            Compress: true
+        - PathPattern: /static/vendor/*
+          TargetOriginId: assets-s3
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
+        - PathPattern: /static/models/*
+          TargetOriginId: assets-s3
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
+        - PathPattern: /static/*
+          TargetOriginId: http-api
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+          - GET
+          - HEAD
+          CachedMethods:
+          - GET
+          - HEAD
+          Compress: true
             # Managed policy: CachingOptimized
-            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
-            ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
           # M12: WebSocket bridge to Nova Sonic. CloudFront supports WebSocket
           # transparently; the client opens wss://live.jeremy.ninja/nova/session
           # and CloudFront proxies the Upgrade to the ALB origin. No caching
@@ -2134,30 +2162,29 @@ Resources:
           # Upgrade / Connection / Sec-WebSocket-* headers, query string (the JWT
           # is a query param) and everything else are forwarded verbatim. Compress
           # is off — a WebSocket stream must not be content-encoded.
-          - !If
-            - NovaBridgeReady
-            - PathPattern: /nova/*
-              TargetOriginId: nova-bridge
-              ViewerProtocolPolicy: redirect-to-https
-              AllowedMethods:
-                - GET
-                - HEAD
-                - OPTIONS
-                - PUT
-                - POST
-                - PATCH
-                - DELETE
-              CachedMethods:
-                - GET
-                - HEAD
-              Compress: false
+        - !If
+          - NovaBridgeReady
+          - PathPattern: /nova/*
+            TargetOriginId: nova-bridge
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+            - PUT
+            - POST
+            - PATCH
+            - DELETE
+            CachedMethods:
+            - GET
+            - HEAD
+            Compress: false
               # Managed policies: CachingDisabled + AllViewer (forwards all headers
               # incl. the WebSocket upgrade set, all cookies, all query strings).
-              CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
-              OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
-              ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
-            - !Ref "AWS::NoValue"
-
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
+            ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
+          - !Ref "AWS::NoValue"
   DnsRecordA:
     Type: AWS::Route53::RecordSet
     Properties:
@@ -2188,8 +2215,8 @@ Resources:
     Properties:
       TopicName: live-ninja-ops
       Subscription:
-        - Protocol: email
-          Endpoint: proffitt.jeremy@gmail.com
+      - Protocol: email
+        Endpoint: proffitt.jeremy@gmail.com
 
   # M7: explicit topic policy — SES event publishing (bounce/complaint
   # destination below) requires ses.amazonaws.com be granted sns:Publish;
@@ -2199,42 +2226,42 @@ Resources:
     Type: AWS::SNS::TopicPolicy
     Properties:
       Topics:
-        - !Ref OpsTopic
+      - !Ref OpsTopic
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Sid: OwnerAccess
-            Effect: Allow
-            Principal:
-              AWS: "*"
-            Action:
-              - sns:Publish
-              - sns:Subscribe
-              - sns:Receive
-              - sns:GetTopicAttributes
-              - sns:ListSubscriptionsByTopic
-            Resource: !Ref OpsTopic
-            Condition:
-              StringEquals:
-                AWS:SourceOwner: !Ref AWS::AccountId
-          - Sid: CloudWatchAlarmsPublish
-            Effect: Allow
-            Principal:
-              Service: cloudwatch.amazonaws.com
-            Action: sns:Publish
-            Resource: !Ref OpsTopic
-            Condition:
-              StringEquals:
-                aws:SourceAccount: !Ref AWS::AccountId
-          - Sid: SesEventPublish
-            Effect: Allow
-            Principal:
-              Service: ses.amazonaws.com
-            Action: sns:Publish
-            Resource: !Ref OpsTopic
-            Condition:
-              StringEquals:
-                aws:SourceAccount: !Ref AWS::AccountId
+        - Sid: OwnerAccess
+          Effect: Allow
+          Principal:
+            AWS: "*"
+          Action:
+          - sns:Publish
+          - sns:Subscribe
+          - sns:Receive
+          - sns:GetTopicAttributes
+          - sns:ListSubscriptionsByTopic
+          Resource: !Ref OpsTopic
+          Condition:
+            StringEquals:
+              AWS:SourceOwner: !Ref AWS::AccountId
+        - Sid: CloudWatchAlarmsPublish
+          Effect: Allow
+          Principal:
+            Service: cloudwatch.amazonaws.com
+          Action: sns:Publish
+          Resource: !Ref OpsTopic
+          Condition:
+            StringEquals:
+              aws:SourceAccount: !Ref AWS::AccountId
+        - Sid: SesEventPublish
+          Effect: Allow
+          Principal:
+            Service: ses.amazonaws.com
+          Action: sns:Publish
+          Resource: !Ref OpsTopic
+          Condition:
+            StringEquals:
+              aws:SourceAccount: !Ref AWS::AccountId
 
   # M7: SES bounce/complaint visibility via SNS -> ops email ($0 — no
   # Firehose/EventBridge event bus needed). email-dispatch passes
@@ -2252,8 +2279,8 @@ Resources:
         Name: ops-sns-bounces
         Enabled: true
         MatchingEventTypes:
-          - bounce
-          - complaint
+        - bounce
+        - complaint
         SnsDestination:
           TopicARN: !Ref OpsTopic
 
@@ -2261,146 +2288,6 @@ Resources:
   # (internal/observ) so SEARCH expressions are used for them — they match
   # whatever dimension values appear without hardcoding Surface/Tool/Kind
   # value lists.
-  OpsDashboard:
-    Type: AWS::CloudWatch::Dashboard
-    Properties:
-      DashboardName: live-ninja-ops
-      DashboardBody: !Sub |
-        {
-          "widgets": [
-            {
-              "type": "text", "x": 0, "y": 0, "width": 24, "height": 3,
-              "properties": {
-                "markdown": "## live-ninja-ops\nAll times UTC. Custom metrics are EMF from `internal/observ` (namespaces `LiveNinja/*`).\n\n**Budgets (no CloudWatch metric — see AWS Budgets console):** monthly cost budgets at **$20 / $50 / $100**, each emailing proffitt.jeremy@gmail.com at 100% of actual spend, filtered to tag `Project=live-ninja`. For per-service breakdown use Cost Explorer grouped by `USAGE_TYPE` with the same tag filter."
-              }
-            },
-            {
-              "type": "metric", "x": 0, "y": 3, "width": 8, "height": 6,
-              "properties": {
-                "title": "Broker mint latency (ms)",
-                "view": "timeSeries", "stacked": false, "region": "${AWS::Region}", "period": 300,
-                "metrics": [
-                  [ { "expression": "SEARCH('{LiveNinja/RealtimeBroker,Surface} MetricName=\"EphemeralTokenMintLatency\"', 'Average', 300)", "id": "mintAvg", "label": "avg" } ],
-                  [ { "expression": "SEARCH('{LiveNinja/RealtimeBroker,Surface} MetricName=\"EphemeralTokenMintLatency\"', 'p99', 300)", "id": "mintP99", "label": "p99" } ]
-                ]
-              }
-            },
-            {
-              "type": "metric", "x": 8, "y": 3, "width": 8, "height": 6,
-              "properties": {
-                "title": "Broker mint errors + quota/rate rejections",
-                "view": "timeSeries", "stacked": false, "region": "${AWS::Region}", "period": 300,
-                "metrics": [
-                  [ { "expression": "SEARCH('{LiveNinja/RealtimeBroker,Surface} MetricName=\"MintErrors\"', 'Sum', 300)", "id": "mintErr", "label": "MintErrors" } ],
-                  [ { "expression": "SEARCH('{LiveNinja/RealtimeBroker,Kind} MetricName=\"QuotaRejections\"', 'Sum', 300)", "id": "quotaRej", "label": "QuotaRejections" } ]
-                ]
-              }
-            },
-            {
-              "type": "metric", "x": 16, "y": 3, "width": 8, "height": 6,
-              "properties": {
-                "title": "Sessions brokered (by surface)",
-                "view": "timeSeries", "stacked": true, "region": "${AWS::Region}", "period": 300,
-                "metrics": [
-                  [ { "expression": "SEARCH('{LiveNinja/RealtimeBroker,Surface} MetricName=\"SessionsBrokered\"', 'Sum', 300)", "id": "sessions", "label": "SessionsBrokered" } ]
-                ]
-              }
-            },
-            {
-              "type": "metric", "x": 0, "y": 9, "width": 8, "height": 6,
-              "properties": {
-                "title": "Tool invocations (tool/outcome/surface)",
-                "view": "timeSeries", "stacked": true, "region": "${AWS::Region}", "period": 300,
-                "metrics": [
-                  [ { "expression": "SEARCH('{LiveNinja/Tools,Outcome,Surface,Tool} MetricName=\"ToolInvocations\"', 'Sum', 300)", "id": "tools", "label": "ToolInvocations" } ]
-                ]
-              }
-            },
-            {
-              "type": "metric", "x": 8, "y": 9, "width": 8, "height": 6,
-              "properties": {
-                "title": "HTTP API 4xx / 5xx",
-                "view": "timeSeries", "stacked": false, "region": "${AWS::Region}", "period": 300,
-                "metrics": [
-                  [ "AWS/ApiGateway", "4xx", "ApiId", "${HttpApi}", { "stat": "Sum", "label": "4xx" } ],
-                  [ "AWS/ApiGateway", "5xx", "ApiId", "${HttpApi}", { "stat": "Sum", "label": "5xx", "color": "#d62728" } ]
-                ]
-              }
-            },
-            {
-              "type": "metric", "x": 16, "y": 9, "width": 8, "height": 6,
-              "properties": {
-                "title": "DynamoDB consumed capacity (flat reads = no Scan)",
-                "view": "timeSeries", "stacked": false, "region": "${AWS::Region}", "period": 300,
-                "metrics": [
-                  [ "AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "${Table}", { "stat": "Sum", "label": "RCU" } ],
-                  [ "AWS/DynamoDB", "ConsumedWriteCapacityUnits", "TableName", "${Table}", { "stat": "Sum", "label": "WCU" } ]
-                ]
-              }
-            },
-            {
-              "type": "metric", "x": 0, "y": 15, "width": 12, "height": 6,
-              "properties": {
-                "title": "Lambda errors (per function)",
-                "view": "timeSeries", "stacked": false, "region": "${AWS::Region}", "period": 300,
-                "metrics": [
-                  [ "AWS/Lambda", "Errors", "FunctionName", "live-ninja-web", { "stat": "Sum" } ],
-                  [ "AWS/Lambda", "Errors", "FunctionName", "live-ninja-authorizer", { "stat": "Sum" } ],
-                  [ "AWS/Lambda", "Errors", "FunctionName", "live-ninja-realtime-broker", { "stat": "Sum" } ],
-                  [ "AWS/Lambda", "Errors", "FunctionName", "live-ninja-iot-ingest", { "stat": "Sum" } ],
-                  [ "AWS/Lambda", "Errors", "FunctionName", "live-ninja-shadow-ingest", { "stat": "Sum" } ],
-                  [ "AWS/Lambda", "Errors", "FunctionName", "live-ninja-usage-rollup", { "stat": "Sum" } ],
-                  [ "AWS/Lambda", "Errors", "FunctionName", "live-ninja-email-dispatch", { "stat": "Sum" } ],
-                  [ "AWS/Lambda", "Errors", "FunctionName", "live-ninja-deliverables-zipper", { "stat": "Sum" } ],
-                  [ "AWS/Lambda", "Errors", "FunctionName", "live-ninja-topics-extract", { "stat": "Sum" } ],
-                  [ "AWS/Lambda", "Errors", "FunctionName", "live-ninja-account-purge", { "stat": "Sum" } ]
-                ]
-              }
-            },
-            {
-              "type": "metric", "x": 12, "y": 15, "width": 12, "height": 6,
-              "properties": {
-                "title": "Lambda duration p99 (ms, per function)",
-                "view": "timeSeries", "stacked": false, "region": "${AWS::Region}", "period": 300,
-                "metrics": [
-                  [ "AWS/Lambda", "Duration", "FunctionName", "live-ninja-web", { "stat": "p99" } ],
-                  [ "AWS/Lambda", "Duration", "FunctionName", "live-ninja-authorizer", { "stat": "p99" } ],
-                  [ "AWS/Lambda", "Duration", "FunctionName", "live-ninja-realtime-broker", { "stat": "p99" } ],
-                  [ "AWS/Lambda", "Duration", "FunctionName", "live-ninja-iot-ingest", { "stat": "p99" } ],
-                  [ "AWS/Lambda", "Duration", "FunctionName", "live-ninja-shadow-ingest", { "stat": "p99" } ],
-                  [ "AWS/Lambda", "Duration", "FunctionName", "live-ninja-usage-rollup", { "stat": "p99" } ],
-                  [ "AWS/Lambda", "Duration", "FunctionName", "live-ninja-email-dispatch", { "stat": "p99" } ],
-                  [ "AWS/Lambda", "Duration", "FunctionName", "live-ninja-deliverables-zipper", { "stat": "p99" } ],
-                  [ "AWS/Lambda", "Duration", "FunctionName", "live-ninja-topics-extract", { "stat": "p99" } ],
-                  [ "AWS/Lambda", "Duration", "FunctionName", "live-ninja-account-purge", { "stat": "p99" } ]
-                ]
-              }
-            },
-            {
-              "type": "metric", "x": 0, "y": 21, "width": 12, "height": 6,
-              "properties": {
-                "title": "Email queue depth (visible messages)",
-                "view": "timeSeries", "stacked": false, "region": "${AWS::Region}", "period": 300,
-                "metrics": [
-                  [ "AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "live-ninja-email", { "stat": "Maximum", "label": "email" } ],
-                  [ "AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "live-ninja-email-dlq", { "stat": "Maximum", "label": "email-dlq", "color": "#d62728" } ]
-                ]
-              }
-            },
-            {
-              "type": "metric", "x": 12, "y": 21, "width": 12, "height": 6,
-              "properties": {
-                "title": "Telemetry Firehose (records in / delivered to S3)",
-                "view": "timeSeries", "stacked": false, "region": "${AWS::Region}", "period": 300,
-                "metrics": [
-                  [ "AWS/Firehose", "IncomingRecords", "DeliveryStreamName", "live-ninja-telemetry", { "stat": "Sum", "label": "in" } ],
-                  [ "AWS/Firehose", "DeliveryToS3.Records", "DeliveryStreamName", "live-ninja-telemetry", { "stat": "Sum", "label": "to S3" } ]
-                ]
-              }
-            }
-          ]
-        }
-
   Budget20:
     Type: AWS::Budgets::Budget
     Properties:
@@ -2413,16 +2300,16 @@ Resources:
           Unit: USD
         CostFilters:
           TagKeyValue:
-            - user:Project$live-ninja
+          - user:Project$live-ninja
       NotificationsWithSubscribers:
-        - Notification:
-            NotificationType: ACTUAL
-            ComparisonOperator: GREATER_THAN
-            Threshold: 100
-            ThresholdType: PERCENTAGE
-          Subscribers:
-            - SubscriptionType: EMAIL
-              Address: proffitt.jeremy@gmail.com
+      - Notification:
+          NotificationType: ACTUAL
+          ComparisonOperator: GREATER_THAN
+          Threshold: 100
+          ThresholdType: PERCENTAGE
+        Subscribers:
+        - SubscriptionType: EMAIL
+          Address: proffitt.jeremy@gmail.com
 
   Budget50:
     Type: AWS::Budgets::Budget
@@ -2436,16 +2323,16 @@ Resources:
           Unit: USD
         CostFilters:
           TagKeyValue:
-            - user:Project$live-ninja
+          - user:Project$live-ninja
       NotificationsWithSubscribers:
-        - Notification:
-            NotificationType: ACTUAL
-            ComparisonOperator: GREATER_THAN
-            Threshold: 100
-            ThresholdType: PERCENTAGE
-          Subscribers:
-            - SubscriptionType: EMAIL
-              Address: proffitt.jeremy@gmail.com
+      - Notification:
+          NotificationType: ACTUAL
+          ComparisonOperator: GREATER_THAN
+          Threshold: 100
+          ThresholdType: PERCENTAGE
+        Subscribers:
+        - SubscriptionType: EMAIL
+          Address: proffitt.jeremy@gmail.com
 
   Budget100:
     Type: AWS::Budgets::Budget
@@ -2459,16 +2346,16 @@ Resources:
           Unit: USD
         CostFilters:
           TagKeyValue:
-            - user:Project$live-ninja
+          - user:Project$live-ninja
       NotificationsWithSubscribers:
-        - Notification:
-            NotificationType: ACTUAL
-            ComparisonOperator: GREATER_THAN
-            Threshold: 100
-            ThresholdType: PERCENTAGE
-          Subscribers:
-            - SubscriptionType: EMAIL
-              Address: proffitt.jeremy@gmail.com
+      - Notification:
+          NotificationType: ACTUAL
+          ComparisonOperator: GREATER_THAN
+          Threshold: 100
+          ThresholdType: PERCENTAGE
+        Subscribers:
+        - SubscriptionType: EMAIL
+          Address: proffitt.jeremy@gmail.com
 
 Outputs:
   HttpApiEndpoint:
@@ -2487,19 +2374,23 @@ Outputs:
     Description: S3 bucket holding user deliverables (M9, 180-day lifecycle).
     Value: !Ref DeliverablesBucket
   WakewordTrainRepositoryUri:
-    Description: ECR repository URI the deploy workflow pushes the wakeword-train image to.
+    Description: ECR repository URI the deploy workflow pushes the 
+      wakeword-train image to.
     Value: !GetAtt WakewordTrainRepo.RepositoryUri
   WakewordTrainJobQueueArn:
     Description: AWS Batch job queue ARN for wake-word training submissions.
     Value: !Ref WakewordTrainJobQueue
   WakewordTrainJobDefinitionArn:
-    Description: AWS Batch job definition ARN (revision-pinned) for wake-word training.
+    Description: AWS Batch job definition ARN (revision-pinned) for wake-word 
+      training.
     Value: !Ref WakewordTrainJobDefinition
   TelemetryDeliveryStreamName:
-    Description: Direct PUT Firehose stream the web function batches telemetry events into (M7).
+    Description: Direct PUT Firehose stream the web function batches telemetry 
+      events into (M7).
     Value: !Ref TelemetryDeliveryStream
   AnalyticsBucketName:
-    Description: S3 bucket holding the gzip'd telemetry lake + Athena query results (M7).
+    Description: S3 bucket holding the gzip'd telemetry lake + Athena query 
+      results (M7).
     Value: !Ref AnalyticsBucket
   AthenaWorkGroupName:
     Description: Athena workgroup for querying live_ninja.telemetry_events (M7).
@@ -2509,7 +2400,8 @@ Outputs:
     Value: !Ref OpsDashboard
   NovaBridgeRepositoryUri:
     Condition: NovaBridgeReady
-    Description: ECR repository URI the deploy workflow pushes the nova-bridge image to (M12).
+    Description: ECR repository URI the deploy workflow pushes the nova-bridge 
+      image to (M12).
     Value: !GetAtt NovaBridgeRepo.RepositoryUri
   NovaBridgeClusterName:
     Condition: NovaBridgeReady
@@ -2518,13 +2410,16 @@ Outputs:
   NovaBridgeServiceName:
     # References NovaBridgeService, which only exists once the image is ready.
     Condition: NovaBridgeServiceReady
-    Description: nova-bridge ECS service name (used by the container-bootstrap scale-to-1 step) (M12).
+    Description: nova-bridge ECS service name (used by the container-bootstrap 
+      scale-to-1 step) (M12).
     Value: !GetAtt NovaBridgeService.Name
   NovaBridgeAlbDnsName:
     Condition: NovaBridgeReady
-    Description: Internal-only (CloudFront-fronted) ALB DNS name for the nova-bridge service (M12).
+    Description: Internal-only (CloudFront-fronted) ALB DNS name for the 
+      nova-bridge service (M12).
     Value: !GetAtt NovaBridgeAlb.DNSName
   NovaBridgeWsUrl:
     Condition: NovaBridgeReady
-    Description: WebSocket URL the realtime session bootstrap hands to nova-sonic-pinned clients (M12).
+    Description: WebSocket URL the realtime session bootstrap hands to 
+      nova-sonic-pinned clients (M12).
     Value: !Sub "wss://${DomainName}/nova/session"
