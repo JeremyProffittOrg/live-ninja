@@ -9,6 +9,11 @@ plugins {
 
 val porcupineEnabled = (findProperty("liveninja.porcupine") as String?)?.toBoolean() == true
 
+// Gated arm64-only slim build for CI-distributed debug APKs (owner's phone is arm64-v8a).
+// Left OFF by default so local/emulator builds (x86_64 emulator) stay all-ABI and avoid
+// INSTALL_FAILED_NO_MATCHING_ABIS. CI passes -Pliveninja.arm64Only=true.
+val arm64Only = (findProperty("liveninja.arm64Only") as String?)?.toBoolean() == true
+
 android {
     namespace = "ninja.jeremy.liveninja"
     compileSdk = 35
@@ -17,9 +22,15 @@ android {
         applicationId = "ninja.jeremy.liveninja"
         minSdk = 29
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.1.1-lwa-broker"
+        versionCode = 3
+        versionName = "0.2.0-hal"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        if (arm64Only) {
+            ndk {
+                abiFilters += "arm64-v8a"
+            }
+        }
 
         // True only when the optional Porcupine engine source set + dependency are compiled
         // in (-Pliveninja.porcupine=true). Lets the Settings engine picker hide/disable the

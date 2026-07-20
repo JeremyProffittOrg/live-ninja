@@ -1,0 +1,114 @@
+name: Android Release
+
+# Manual-only: builds a debug APK (arm64-only, slim), publishes it to the assets
+# bucket under /static/models/downloads/ (the only /static/* subpaths CloudFront
+# routes to S3 — see template.yaml ~2126-2156), and emails the download link.
+# Dispatch happens in M7, not here.
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "Gradle assemble task to run"
+        required: false
+        default: assembleDebug
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # required for OIDC
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # Debug keystore is gitignored (android/.gitignore) so CI checkout never has it.
+      # Without it AGP would fall back to an auto-generated debug keystore, producing
+      # a signature mismatch against the build already installed on the phone
+      # (INSTALL_FAILED_UPDATE_INCOMPATIBLE). The stored secret is this exact
+      # android/keystores/debug.keystore, base64-encoded (well-known "android"
+      # store/key password — see android/app/build.gradle.kts signingConfigs.debug).
+      - name: Decode debug keystore
+        run: |
+          set -eu
+          mkdir -p android/keystores
+          echo "${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}" | base64 -d > android/keystores/debug.keystore
+
+      # -Pliveninja.arm64Only=true (android/app/build.gradle.kts) slims the APK to
+      # arm64-v8a only (owner's phone is arm64) — 183MB all-ABI down to ~50-60MB.
+      - name: Gradle build
+        working-directory: android
+        run: ./gradlew ${{ inputs.variant }} -Pliveninja.arm64Only=true --no-daemon
+
+      - name: Locate built APK
+        id: apk
+        working-directory: android
+        run: |
+          set -eu
+          APK_PATH="$(find app/build/outputs/apk -name '*.apk' | head -1)"
+          if [ -z "$APK_PATH" ]; then
+            echo "No APK produced by task '${{ inputs.variant }}'" >&2
+            exit 1
+          fi
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          FILENAME="liveninja-${SHORT_SHA}.apk"
+          echo "path=android/${APK_PATH}" >> "$GITHUB_OUTPUT"
+          echo "filename=${FILENAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-live-ninja-android-release-${{ github.run_id }}
+          aws-region: us-east-1
+
+      # CRITICAL: must land under static/models/* — CloudFront only routes
+      # /static/vendor/* and /static/models/* to this S3 bucket (template.yaml
+      # ~2126-2156); a bare /static/* key would 404 through the Lambda's embedded
+      # FS instead. Unique per-sha filename makes cache-control moot.
+      - name: Upload APK to S3
+        run: |
+          set -eu
+          aws s3 cp "${{ steps.apk.outputs.path }}" \
+            "s3://live-ninja-assets-759775734231/static/models/downloads/${{ steps.apk.outputs.filename }}" \
+            --content-type application/vnd.android.package-archive \
+            --cache-control no-cache
+
+      # Best-effort only: the org-wide gha-deploy OIDC role likely lacks
+      # ses:SendEmail (not granted in template.yaml). Primary delivery
+      # confirmation is the orchestrator's local SES send after M7.2 verifies
+      # the link is live — this step must never fail the run.
+      - name: Email download link
+        continue-on-error: true
+        run: |
+          set -eu
+          LINK="https://live.jeremy.ninja/static/models/downloads/${{ steps.apk.outputs.filename }}"
+          aws sesv2 send-email \
+            --region us-east-1 \
+            --from-email-address "Jeremy Proffitt <jeremy@jeremy.ninja>" \
+            --destination "ToAddresses=proffitt.jeremy@gmail.com" \
+            --reply-to-addresses "proffitt.jeremy@gmail.com" \
+            --content "Simple={Subject={Data='Live Ninja Android build ready'},Body={Text={Data='APK download link:\n'$LINK'\n\nVariant: ${{ inputs.variant }}\nCommit: ${{ github.sha }}'}}}"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Live Ninja Android build"
+            echo "- APK: https://live.jeremy.ninja/static/models/downloads/${{ steps.apk.outputs.filename }}"
+            echo "- Variant: ${{ inputs.variant }}"
+            echo "- Commit: ${{ github.sha }}"
+          } >> "$GITHUB_STEP_SUMMARY"
