@@ -2395,9 +2395,6 @@ Outputs:
   AthenaWorkGroupName:
     Description: Athena workgroup for querying live_ninja.telemetry_events (M7).
     Value: !Ref AnalyticsWorkGroup
-  OpsDashboardName:
-    Description: CloudWatch ops dashboard (M7).
-    Value: !Ref OpsDashboard
   NovaBridgeRepositoryUri:
     Condition: NovaBridgeReady
     Description: ECR repository URI the deploy workflow pushes the nova-bridge 
