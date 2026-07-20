@@ -13,6 +13,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -40,6 +41,8 @@ import ninja.jeremy.liveninja.assistant.LiveNinjaSession
 import ninja.jeremy.liveninja.audio.WakeWordEngine
 import ninja.jeremy.liveninja.log.LNLog
 import ninja.jeremy.liveninja.log.LogCategory
+import ninja.jeremy.liveninja.realtime.OpenAiRealtimeTransport
+import ninja.jeremy.liveninja.realtime.RealtimeTransport
 import ninja.jeremy.liveninja.realtime.SessionOrchestrator
 import ninja.jeremy.liveninja.ui.state.SettingsStore
 
@@ -75,15 +78,38 @@ class WakeWordService : Service() {
     /** Voice-session lifecycle toggles (lockedSessions / wakeScreenOnWake). */
     @Inject lateinit var settingsStore: SettingsStore
 
+    /** WebRTC transport, pre-warmed at service start so wake→listening is faster (02-voice §D.3). */
+    @Inject @OpenAiRealtimeTransport lateinit var realtimeTransport: RealtimeTransport
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val constrained = MutableStateFlow(false)
+
+    /**
+     * Duty-cycle posture derived from power/thermal/charging state (02-voice §C).
+     * [PowerPosture.CONTINUOUS] means no gating; the two DUTY_* variants carry
+     * their own on/off timings.
+     */
+    private val posture = MutableStateFlow(PowerPosture.CONTINUOUS)
     private val engineFailure = MutableStateFlow<String?>(null)
     private var controllerStarted = false
     private var thermalListener: PowerManager.OnThermalStatusChangedListener? = null
-    private var powerSaveReceiver: BroadcastReceiver? = null
+    private var powerStateReceiver: BroadcastReceiver? = null
 
     private val powerManager by lazy { getSystemService(Context.POWER_SERVICE) as PowerManager }
     private val keyguardManager by lazy { getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager }
+    private val batteryManager by lazy { getSystemService(Context.BATTERY_SERVICE) as BatteryManager }
+
+    /**
+     * Screen-off/idle listening posture (02-voice §C):
+     * - [CONTINUOUS]: charging, or on battery with no thermal/saver pressure.
+     * - [DUTY_SAVER]: on battery with Battery Saver on (12 s on / 2 s off).
+     * - [DUTY_THERMAL]: SEVERE+ thermal throttling (8 s on / 4 s off), which
+     *   wins over charging — overheating is a safety concern regardless of power.
+     */
+    private enum class PowerPosture(val listenMs: Long, val pauseMs: Long) {
+        CONTINUOUS(0L, 0L),
+        DUTY_SAVER(DUTY_SAVER_LISTEN_MS, DUTY_SAVER_PAUSE_MS),
+        DUTY_THERMAL(DUTY_THERMAL_LISTEN_MS, DUTY_THERMAL_PAUSE_MS),
+    }
 
     private fun activeEngine(): WakeWordEngine =
         engines[prefs.wakeEngine] ?: engines.getValue(WakePreferences.ENGINE_OPENWAKEWORD)
@@ -156,7 +182,7 @@ class WakeWordService : Service() {
 
     override fun onDestroy() {
         stopEngineBlocking()
-        powerSaveReceiver?.let { unregisterReceiver(it) }
+        powerStateReceiver?.let { unregisterReceiver(it) }
         thermalListener?.let { powerManager.removeThermalStatusListener(it) }
         scope.cancel()
         super.onDestroy()
@@ -165,6 +191,9 @@ class WakeWordService : Service() {
     // ---- controller: mute + power state -> engine run mode ----
 
     private fun startController() {
+        // Pre-warm the WebRTC factory + audio device module now so the first
+        // wake→session handoff doesn't pay the native-init cost (02-voice §D.3).
+        realtimeTransport.preWarm()
         // Fan detections out app-wide, and wake the screen per the toggle.
         scope.launch {
             activeEngine().detections.collect {
@@ -183,15 +212,15 @@ class WakeWordService : Service() {
         scope.launch {
             combine(
                 prefs.mutedFlow,
-                constrained,
+                posture,
                 sessionOrchestrator.sessionActive,
-            ) { muted, constrainedNow, sessionActive ->
+            ) { muted, postureNow, sessionActive ->
                 when {
                     // A live realtime session owns the mic (WebRTC/Gemini capture);
                     // the wake engine must pause and resumes the instant it ends.
                     sessionActive -> Mode.SESSION
                     muted -> Mode.MUTED
-                    constrainedNow -> Mode.DUTY_CYCLE
+                    postureNow != PowerPosture.CONTINUOUS -> Mode.DUTY_CYCLE
                     else -> Mode.CONTINUOUS
                 }
             }.collectLatest { mode ->
@@ -229,13 +258,17 @@ class WakeWordService : Service() {
                         }
                     }
                     Mode.DUTY_CYCLE -> {
+                        // Timings from the active posture; a posture change cancels
+                        // this branch (collectLatest) and re-enters with the new one.
+                        val active = posture.value.takeIf { it != PowerPosture.CONTINUOUS }
+                            ?: PowerPosture.DUTY_THERMAL
                         updateNotification()
                         while (true) {
                             if (startEngineReportingFailure()) {
                                 updateNotification()
-                                delay(DUTY_LISTEN_MS)
+                                delay(active.listenMs)
                                 stopEngine()
-                                delay(DUTY_PAUSE_MS)
+                                delay(active.pauseMs)
                             } else {
                                 updateNotification()
                                 delay(ENGINE_RETRY_MS)
@@ -354,16 +387,31 @@ class WakeWordService : Service() {
 
     private fun watchPowerState() {
         fun recompute(thermalStatus: Int = powerManager.currentThermalStatus) {
-            constrained.value =
-                powerManager.isPowerSaveMode || thermalStatus >= PowerManager.THERMAL_STATUS_SEVERE
+            val charging = batteryManager.isCharging
+            // Lower the wake VAD gate while charging (02-voice §C); read per-chunk
+            // by the running engine, so this takes effect without a restart.
+            EnergyVad.chargingActive = charging
+            val thermalSevere = thermalStatus >= PowerManager.THERMAL_STATUS_SEVERE
+            posture.value = when {
+                // Overheating wins over everything, including the charger.
+                thermalSevere -> PowerPosture.DUTY_THERMAL
+                // Charging: always continuous — ignore Battery Saver.
+                charging -> PowerPosture.CONTINUOUS
+                powerManager.isPowerSaveMode -> PowerPosture.DUTY_SAVER
+                else -> PowerPosture.CONTINUOUS
+            }
         }
         recompute()
-        powerSaveReceiver = object : BroadcastReceiver() {
+        powerStateReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) = recompute()
         }
         registerReceiver(
-            powerSaveReceiver,
-            IntentFilter(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED),
+            powerStateReceiver,
+            IntentFilter().apply {
+                addAction(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED)
+                addAction(Intent.ACTION_POWER_CONNECTED)
+                addAction(Intent.ACTION_POWER_DISCONNECTED)
+            },
         )
         thermalListener = PowerManager.OnThermalStatusChangedListener { status ->
             recompute(status)
@@ -441,7 +489,11 @@ class WakeWordService : Service() {
         val text = when {
             muted -> getString(R.string.wake_notification_muted_body)
             failure != null -> getString(R.string.wake_notification_error_body)
-            constrained.value -> getString(R.string.wake_notification_duty_body)
+            // Surface the degraded duty-cycle state explicitly (02-voice §C).
+            posture.value == PowerPosture.DUTY_THERMAL ->
+                "Device is hot — listening in short bursts (8s on / 4s off) to cool down."
+            posture.value == PowerPosture.DUTY_SAVER ->
+                getString(R.string.wake_notification_duty_body)
             else -> getString(R.string.wake_notification_listening_body)
         }
 
@@ -506,9 +558,16 @@ class WakeWordService : Service() {
         const val ACTION_STOP = "ninja.jeremy.liveninja.wake.STOP"
         const val ACTION_END_SESSION = "ninja.jeremy.liveninja.wake.END_SESSION"
 
-        /** Battery-saver / thermal duty cycle: 8 s listening, 4 s paused (~33% mic-off). */
-        const val DUTY_LISTEN_MS = 8_000L
-        const val DUTY_PAUSE_MS = 4_000L
+        /**
+         * Battery-Saver duty cycle (02-voice §C): 12 s listening, 2 s paused — a lighter
+         * mic-off fraction than thermal, since the concern is power, not heat.
+         */
+        const val DUTY_SAVER_LISTEN_MS = 12_000L
+        const val DUTY_SAVER_PAUSE_MS = 2_000L
+
+        /** SEVERE+ thermal duty cycle (02-voice §C): 8 s listening, 4 s paused (~33% mic-off). */
+        const val DUTY_THERMAL_LISTEN_MS = 8_000L
+        const val DUTY_THERMAL_PAUSE_MS = 4_000L
 
         /** Retry cadence when the mic is blocked (background-start restriction, mic busy). */
         const val ENGINE_RETRY_MS = 60_000L

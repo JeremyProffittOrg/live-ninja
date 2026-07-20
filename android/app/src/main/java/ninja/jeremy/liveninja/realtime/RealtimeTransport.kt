@@ -53,9 +53,31 @@ interface RealtimeTransport {
     fun prime(session: RealtimeSession) {}
 
     /**
+     * Latency pre-warm (02-voice §D.3): initialise the native factory + audio
+     * device module ahead of the first session so the wake→listening path does
+     * not pay for it. Idempotent; default no-op for transports that don't need
+     * it. Runs its own background work — returns immediately.
+     */
+    fun preWarm() {}
+
+    /**
+     * Latency parallelization (02-voice §D.2): speculatively run the
+     * credential-independent half of [connect] — factory init, peer connection,
+     * offer, and ICE gathering — so it overlaps the session-bootstrap fetch. A
+     * following [connect] joins the prepared offer and only performs the SDP
+     * POST; [abortPrepare] discards an unused speculative bootstrap. Default
+     * no-op. Idempotent; safe to call before [connect].
+     */
+    fun prepare() {}
+
+    /** Discard a speculative [prepare] whose session ended up on another transport. */
+    suspend fun abortPrepare() {}
+
+    /**
      * Open a session: negotiate SDP with [callsUrl] using [ephemeralToken] and
      * begin bidirectional audio. Returns when the peer connection is CONNECTED
-     * or throws on negotiation failure.
+     * or throws on negotiation failure. Joins a prior [prepare] if one is in
+     * flight, otherwise runs the full bootstrap itself.
      */
     suspend fun connect(ephemeralToken: String, callsUrl: String)
 

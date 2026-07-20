@@ -81,17 +81,36 @@ class RealtimeSessionCoordinator @Inject constructor(
             // attaching mid-session (screen-on) renders only this session.
             transcriptStore.clear()
 
-            val session = sessionApi.fetchSession()
+            // Latency parallelization (02-voice §D.2): speculatively bootstrap
+            // the WebRTC transport — factory + peer connection + offer + ICE
+            // gathering, none of which needs the credential — concurrently with
+            // the session fetch. The dominant openai-direct path joins the
+            // prepared offer at the SDP POST inside connect(); the nova/gemini
+            // paths discard it via abortPrepare(). A fetch failure aborts it too
+            // so the error surface is identical to the serial path (the
+            // speculative bootstrap's own failure is swallowed here and only
+            // surfaces through connect() when the session actually resolves to
+            // WebRTC).
+            webRtcTransport.prepare()
+
+            val session = try {
+                sessionApi.fetchSession()
+            } catch (t: Throwable) {
+                webRtcTransport.abortPrepare()
+                throw t
+            }
 
             // Route by the resolved engine pin. connect()'s two string params
             // are reused engine-agnostically: (credential, endpointUrl).
             val (credential, endpointUrl) = when (session.mode) {
                 RealtimeSession.MODE_NOVA_BRIDGE -> {
+                    webRtcTransport.abortPrepare()
                     transport = novaBridgeTransport
                     session.bridgeToken.orEmpty() to session.wsUrl.orEmpty()
                 }
 
                 RealtimeSession.MODE_GEMINI_DIRECT -> {
+                    webRtcTransport.abortPrepare()
                     transport = geminiLiveTransport
                     session.accessToken?.value.orEmpty() to session.geminiEndpoint.orEmpty()
                 }

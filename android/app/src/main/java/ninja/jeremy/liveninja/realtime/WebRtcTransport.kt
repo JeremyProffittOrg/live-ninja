@@ -16,10 +16,12 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -102,6 +104,14 @@ class WebRtcTransport @Inject constructor(
     private var iceGatheringComplete: CompletableDeferred<Unit>? = null
     private var peerConnected: CompletableDeferred<Unit>? = null
 
+    /**
+     * In-flight (or completed) speculative bootstrap from [prepare]/[connect]:
+     * factory + peer connection + offer + ICE gathering, no credential needed.
+     * [connect] joins it; [abortPrepare] cancels it. Guarded by [bootstrapLock].
+     */
+    private var bootstrapJob: Deferred<Unit>? = null
+    private val bootstrapLock = Any()
+
     @Volatile
     private var assistantSpeaking = false
 
@@ -112,26 +122,88 @@ class WebRtcTransport @Inject constructor(
     private var previousAudioMode = AudioManager.MODE_NORMAL
     private var previousSpeakerphone = false
 
-    override suspend fun connect(ephemeralToken: String, callsUrl: String) {
-        connectMutex.withLock {
-            check(_state.value != TransportState.CONNECTING && _state.value != TransportState.CONNECTED) {
-                "transport already ${_state.value}"
+    override fun preWarm() {
+        // Native factory + ADM init is the fixed cost of the first session
+        // (02-voice §D.3); do it now, off the caller's thread, so wake→listening
+        // doesn't pay for it. ensureFactory() is idempotent.
+        scope.launch(Dispatchers.Default) {
+            connectMutex.withLock {
+                runCatching { ensureFactory() }
+                    .onFailure { LNLog.w(LogCategory.REALTIME, TAG, "pre-warm factory init failed", it) }
+            }
+        }
+    }
+
+    override fun prepare() {
+        // Speculative, credential-independent bootstrap (02-voice §D.2). Kick it
+        // off in the background; connect() joins via [bootstrapJob].
+        synchronized(bootstrapLock) {
+            if (bootstrapJob != null ||
+                _state.value == TransportState.CONNECTING ||
+                _state.value == TransportState.CONNECTED
+            ) {
+                return
             }
             _state.value = TransportState.CONNECTING
+            bootstrapJob = scope.async(Dispatchers.Default) { bootstrapOffer() }
+        }
+    }
+
+    override suspend fun abortPrepare() {
+        val job = synchronized(bootstrapLock) {
+            val j = bootstrapJob
+            bootstrapJob = null
+            j
+        } ?: return
+        job.cancel()
+        runCatching { job.join() }
+        connectMutex.withLock {
+            // Only tear down if we haven't since moved on to a real connect.
+            if (_state.value == TransportState.CONNECTING) {
+                releaseSession()
+                _state.value = TransportState.IDLE
+            }
+        }
+    }
+
+    override suspend fun connect(ephemeralToken: String, callsUrl: String) {
+        // Join a speculative bootstrap if one is in flight; otherwise start one
+        // now — identical work to the original serial path when prepare() was
+        // never called. A concurrent connect on a live session is rejected.
+        val boot = synchronized(bootstrapLock) {
+            if (bootstrapJob == null &&
+                _state.value != TransportState.CONNECTING &&
+                _state.value != TransportState.CONNECTED
+            ) {
+                _state.value = TransportState.CONNECTING
+                bootstrapJob = scope.async(Dispatchers.Default) { bootstrapOffer() }
+            }
+            bootstrapJob
+        }
+        connectMutex.withLock {
+            check(boot != null) { "transport already ${_state.value}" }
             try {
-                withContext(Dispatchers.Default) { doConnect(ephemeralToken, callsUrl) }
+                boot.await() // factory + PC + offer + ICE ready (or its bootstrap error)
+                withContext(Dispatchers.Default) { finishConnect(ephemeralToken, callsUrl) }
                 _state.value = TransportState.CONNECTED
             } catch (t: Throwable) {
                 releaseSession()
                 _state.value = TransportState.FAILED
                 throw t
+            } finally {
+                synchronized(bootstrapLock) { bootstrapJob = null }
             }
         }
     }
 
-    private suspend fun doConnect(ephemeralToken: String, callsUrl: String) {
+    /**
+     * Credential-independent half of the handshake: everything up to the SDP
+     * POST. Side-effect-light on purpose — no audio-mode change here (that lands
+     * in [finishConnect]) so an aborted speculative [prepare] leaves global
+     * audio state untouched.
+     */
+    private suspend fun bootstrapOffer() {
         ensureFactory()
-        configureAudioForCall()
 
         val gathering = CompletableDeferred<Unit>()
         val connected = CompletableDeferred<Unit>()
@@ -179,7 +251,13 @@ class WebRtcTransport @Inject constructor(
         } catch (_: TimeoutCancellationException) {
             LNLog.w(LogCategory.REALTIME, TAG, "ICE gathering incomplete after ${ICE_GATHERING_TIMEOUT_MS}ms; sending offer as-is")
         }
+    }
 
+    /** Credential half: SDP POST → set remote answer → await CONNECTED. */
+    private suspend fun finishConnect(ephemeralToken: String, callsUrl: String) {
+        configureAudioForCall()
+
+        val pc = peerConnection ?: throw IOException("peer connection missing before SDP exchange")
         val localSdp = pc.localDescription?.description
             ?: throw IOException("local description missing after ICE gathering")
         val answerSdp = postSdpOffer(callsUrl, ephemeralToken, localSdp)
@@ -187,6 +265,7 @@ class WebRtcTransport @Inject constructor(
             pc.setRemoteDescription(observer, SessionDescription(SessionDescription.Type.ANSWER, answerSdp))
         }
 
+        val connected = peerConnected ?: throw IOException("peer-connected latch missing")
         try {
             withTimeout(CONNECT_TIMEOUT_MS) { connected.await() }
         } catch (_: TimeoutCancellationException) {
@@ -233,6 +312,13 @@ class WebRtcTransport @Inject constructor(
     }
 
     override suspend fun disconnect() {
+        val boot = synchronized(bootstrapLock) {
+            val j = bootstrapJob
+            bootstrapJob = null
+            j
+        }
+        boot?.cancel()
+        runCatching { boot?.join() }
         connectMutex.withLock {
             releaseSession()
             if (_state.value != TransportState.IDLE) {

@@ -13,13 +13,16 @@ import kotlin.math.sqrt
  *
  * Pure arithmetic, injectable clock — unit-testable.
  *
- * @param thresholdRms RMS amplitude (int16 scale, 0..32767) above which a chunk counts as
- *        voice-ish energy. ~200 is comfortably above electret self-noise and quiet-room HVAC
- *        while far below any spoken wake phrase at conversational distance.
+ * @param thresholdRms Baseline (on-battery) RMS amplitude (int16 scale, 0..32767) above which a
+ *        chunk counts as voice-ish energy. ~200 is comfortably above electret self-noise and
+ *        quiet-room HVAC while far below any spoken wake phrase at conversational distance. While
+ *        [chargingActive] is set the effective gate drops to [THRESHOLD_RMS_CHARGING] (02-voice
+ *        §C: catch quieter / far-field speech when battery cost is irrelevant on the charger),
+ *        read per-chunk so a plug/unplug takes effect on the live capture loop.
  * @param hangoverMs how long the gate stays open after the last energetic chunk.
  */
 class EnergyVad(
-    private val thresholdRms: Double = 200.0,
+    private val thresholdRms: Double = THRESHOLD_RMS_NORMAL,
     private val hangoverMs: Long = 1_500,
 ) {
     private var lastVoiceAtMs = Long.MIN_VALUE
@@ -42,7 +45,9 @@ class EnergyVad(
             sumSq += v * v
         }
         val rms = sqrt(sumSq / chunk.size)
-        if (rms >= thresholdRms) lastVoiceAtMs = nowMs
+        // Two-level threshold: drop to the charging gate while plugged in (02-voice §C).
+        val threshold = if (chargingActive) THRESHOLD_RMS_CHARGING else thresholdRms
+        if (rms >= threshold) lastVoiceAtMs = nowMs
 
         val shouldBeOpen = lastVoiceAtMs != Long.MIN_VALUE && (nowMs - lastVoiceAtMs) <= hangoverMs
         if (shouldBeOpen && !open) gateJustOpened = true
@@ -54,5 +59,24 @@ class EnergyVad(
         lastVoiceAtMs = Long.MIN_VALUE
         open = false
         gateJustOpened = false
+    }
+
+    companion object {
+        /** Normal (on-battery) idle-room RMS gate — above self-noise, below a spoken phrase. */
+        const val THRESHOLD_RMS_NORMAL = 200.0
+
+        /**
+         * Lowered gate while charging (02-voice §C): admit quieter / far-field speech at the
+         * cost of more ONNX runs — the extra inference battery cost is moot on the charger.
+         */
+        const val THRESHOLD_RMS_CHARGING = 120.0
+
+        /**
+         * Process-wide charging state, set by [WakeWordService]'s power watcher and read
+         * per-chunk in [accept] so plug/unplug flips the effective gate on the running capture
+         * loop without restarting the engine (which owns its own fresh [EnergyVad]).
+         */
+        @Volatile
+        var chargingActive: Boolean = false
     }
 }

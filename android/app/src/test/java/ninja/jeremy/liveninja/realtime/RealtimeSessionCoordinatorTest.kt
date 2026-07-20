@@ -44,8 +44,25 @@ class RealtimeSessionCoordinatorTest {
         var disconnects = 0
         var failConnect = false
 
+        // M8.3 latency-parallelization instrumentation.
+        var prepareCalls = 0
+        var abortPrepareCalls = 0
+        var preWarmCalls = 0
+
         override fun prime(session: RealtimeSession) {
             primedSessions += session
+        }
+
+        override fun preWarm() {
+            preWarmCalls++
+        }
+
+        override fun prepare() {
+            prepareCalls++
+        }
+
+        override suspend fun abortPrepare() {
+            abortPrepareCalls++
         }
 
         override suspend fun connect(ephemeralToken: String, callsUrl: String) {
@@ -167,6 +184,62 @@ class RealtimeSessionCoordinatorTest {
         assertTrue(transport.connectCalls.isEmpty())
         assertTrue(novaTransport.connectCalls.isEmpty())
         coord.stop()
+    }
+
+    @Test
+    fun start_openaiDirect_prewarmsWebRtcAndKeepsPreparedBootstrap() = runBlocking {
+        // Latency parallelization (02-voice §D.2): the openai-direct path speculatively
+        // prepares the WebRTC transport and does NOT abort it — connect() joins the offer.
+        val coord = coordinator()
+        coord.start()
+
+        assertEquals(1, transport.prepareCalls)
+        assertEquals(0, transport.abortPrepareCalls)
+        assertEquals(1, transport.connectCalls.size)
+        coord.stop()
+    }
+
+    @Test
+    fun start_geminiDirect_abortsSpeculativeWebRtcBootstrap() = runBlocking {
+        coEvery { sessionApi.fetchSession() } returns RealtimeSession(
+            mode = RealtimeSession.MODE_GEMINI_DIRECT,
+            clientSecret = "",
+            expiresAt = null,
+            model = "gemini-3.1-flash-live-preview",
+            voice = "Kore",
+            sessionId = "rs-2",
+            quotaWarning = null,
+            geminiEndpoint = "wss://example/gemini",
+            accessToken = GeminiAccessToken("auth_tokens/abc", null, null),
+            sessionConfig = JSONObject().put("model", "models/gemini"),
+        )
+        val coord = RealtimeSessionCoordinator(transport, novaTransport, geminiTransport, sessionApi, toolRouter, TranscriptStore())
+
+        coord.start()
+
+        // WebRTC was speculatively prepared, then discarded when the session resolved to Gemini.
+        assertEquals(1, transport.prepareCalls)
+        assertEquals(1, transport.abortPrepareCalls)
+        assertTrue(transport.connectCalls.isEmpty())
+        coord.stop()
+    }
+
+    @Test
+    fun fetchFailure_abortsSpeculativeBootstrapAndPropagates() = runBlocking {
+        // A session-fetch failure must abort the speculative WebRTC bootstrap and
+        // surface the identical error (02-voice §D.2, failure-path parity).
+        coEvery { sessionApi.fetchSession() } throws IOException("session mint failed")
+        val coord = RealtimeSessionCoordinator(transport, novaTransport, geminiTransport, sessionApi, toolRouter, TranscriptStore())
+        try {
+            coord.start()
+            fail("expected fetch failure to propagate")
+        } catch (e: IOException) {
+            // expected
+        }
+        assertEquals(1, transport.prepareCalls)
+        assertEquals(1, transport.abortPrepareCalls)
+        assertTrue(transport.connectCalls.isEmpty())
+        assertFalse(coord.connected.value)
     }
 
     @Test

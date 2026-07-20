@@ -1,5 +1,6 @@
 package ninja.jeremy.liveninja.wake
 
+import org.junit.After
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -7,6 +8,12 @@ import org.junit.Test
 class EnergyVadTest {
 
     private fun chunk(amplitude: Short): ShortArray = ShortArray(1280) { amplitude }
+
+    @After
+    fun resetChargingState() {
+        // Shared process-wide flag: keep tests isolated.
+        EnergyVad.chargingActive = false
+    }
 
     @Test
     fun `silence keeps the gate closed`() {
@@ -46,6 +53,28 @@ class EnergyVadTest {
         assertFalse(vad.accept(chunk(0), 2000))
         assertTrue(vad.accept(chunk(2000), 4000))
         assertTrue(vad.gateJustOpened)
+    }
+
+    @Test
+    fun `charging lowers the gate so mid-level energy opens it`() {
+        // A constant chunk of amplitude A has RMS == A. 150 sits between the charging
+        // gate (120) and the normal gate (200): closed on battery, open while charging.
+        val vad = EnergyVad(hangoverMs = 1500) // defaults to THRESHOLD_RMS_NORMAL
+
+        EnergyVad.chargingActive = false
+        assertFalse(vad.accept(chunk(150), 0))
+
+        EnergyVad.chargingActive = true
+        assertTrue(vad.accept(chunk(150), 80))
+        assertTrue(vad.gateJustOpened)
+    }
+
+    @Test
+    fun `charging gate still rejects true silence`() {
+        val vad = EnergyVad(hangoverMs = 1500)
+        EnergyVad.chargingActive = true
+        assertFalse(vad.accept(chunk(50), 0)) // 50 < 120 charging gate
+        assertFalse(vad.isOpen)
     }
 
     @Test
