@@ -161,6 +161,7 @@ export class MicController extends EventTarget {
   #lastHandledInputAt = 0;
   #errorInfo = null; // {message, retryable, permanent}
   #handsFreeAvailable = true;
+  #permStatus = null; // PermissionStatus watched while in `denied` (auto-recovery)
   #els;
   #createSession;
   #getMicDeviceId;
@@ -178,6 +179,7 @@ export class MicController extends EventTarget {
       status: options.status ?? byId('statusText'),
       wakeToggle: options.wakeToggle ?? byId('wakeToggle'),
       wakeHint: options.wakeHint ?? byId('wakeHint'),
+      micHelp: options.micHelp ?? byId('micHelp'),
       endButtons: options.endButtons ?? Array.from(doc.querySelectorAll('[data-ln-end]')),
     };
     this.#createSession = options.createSession || (() => new RealtimeSession());
@@ -584,6 +586,13 @@ export class MicController extends EventTarget {
         permanent: false,
       };
       this.#setState(MicState.DENIED);
+      // The browser gives one NotAllowedError for two very different
+      // situations — a dismissed prompt (retry WILL re-prompt) and a
+      // standing site-level block (retry silently fails; the browser never
+      // asks again until the user unblocks it themselves). Refine the copy
+      // and, for a standing block, show step-by-step unblock help and watch
+      // the Permissions API so flipping the toggle recovers automatically.
+      void this.#refineDeniedState();
     } else if (name === 'NotFoundError' || name === 'OverconstrainedError') {
       this.#fail({
         code: 'no_mic',
@@ -601,6 +610,146 @@ export class MicController extends EventTarget {
     }
     this.#emit('error', { message: this.#errorInfo.message, code: 'mic_denied', retryable: true });
     this.#render();
+  }
+
+  /** Query the Permissions API to tell a dismissed prompt apart from a
+   * standing block, adjust the denied copy, and arm auto-recovery. Fully
+   * guarded: browsers without {name:'microphone'} support (e.g. older
+   * Firefox throws) keep the generic copy and still get the help panel —
+   * the user's browser demonstrably isn't going to prompt on its own. */
+  async #refineDeniedState() {
+    let status = null;
+    try {
+      status = await navigator.permissions.query({ name: 'microphone' });
+    } catch {
+      /* Permissions API unavailable for microphone — fall through */
+    }
+    if (this.#state !== MicState.DENIED) return; // user already moved on
+
+    if (status && status.state === 'prompt') {
+      // The prompt was dismissed (or auto-dismissed) — a retry re-prompts,
+      // so guidance UI would only be noise.
+      this.#errorInfo = {
+        message: 'The microphone prompt was closed without an answer. Tap the mic and choose Allow when your browser asks.',
+        retryable: true,
+        permanent: false,
+      };
+      this.#render();
+      return;
+    }
+
+    // Standing block (state === 'denied') or unknowable: the browser will
+    // NOT ask again — say so plainly and show the unblock steps.
+    this.#errorInfo = {
+      message: 'Your browser has the microphone blocked for this site, so it won’t ask for permission again. Unblock it with the steps below.',
+      retryable: true,
+      permanent: false,
+    };
+    this.#render();
+    this.#showMicHelp();
+    if (status) this.#watchPermission(status);
+  }
+
+  /** Auto-recovery: the PermissionStatus `change` event fires when the user
+   * flips the site's mic setting in browser UI. granted/prompt while we sit
+   * in `denied` → clear the block state so the next tap just works (no
+   * auto-start: a permission flip is not a user gesture, and Chrome usually
+   * offers its own reload banner anyway). */
+  #watchPermission(status) {
+    this.#unwatchPermission();
+    this.#permStatus = status;
+    status.onchange = () => {
+      if (this.#state !== MicState.DENIED) return;
+      if (status.state === 'granted' || status.state === 'prompt') {
+        this.#unwatchPermission();
+        this.#hideMicHelp();
+        this.#setState(MicState.IDLE);
+        this.#setStatus('Microphone unblocked — tap the mic to talk.');
+        this.#emit('toast', { message: 'Microphone unblocked — tap the mic to talk.' });
+      }
+    };
+  }
+
+  #unwatchPermission() {
+    if (this.#permStatus) {
+      this.#permStatus.onchange = null;
+      this.#permStatus = null;
+    }
+  }
+
+  /** Fill and reveal the #micHelp panel with unblock steps for the user's
+   * browser. Built with DOM APIs (no innerHTML) from static strings. */
+  #showMicHelp() {
+    const el = this.#els.micHelp;
+    if (!el) return;
+
+    const ua = navigator.userAgent || '';
+    const isEdge = ua.includes('Edg/');
+    const isFirefox = ua.includes('Firefox/');
+    const isSafari = !ua.includes('Chrome/') && ua.includes('Safari/');
+
+    let steps;
+    if (isFirefox) {
+      steps = [
+        'Click the microphone icon with a slash through it at the left of the address bar.',
+        'Next to "Use the microphone", click the X to clear "Blocked" (or "Blocked Temporarily").',
+        'Tap the mic below and choose Allow when Firefox asks again.',
+      ];
+    } else if (isSafari) {
+      steps = [
+        'Open the Safari menu → "Settings for This Website…".',
+        'Set Microphone to "Allow".',
+        'Tap the mic below to try again.',
+      ];
+    } else {
+      const settingsUrl = isEdge ? 'edge://settings/content/microphone' : 'chrome://settings/content/microphone';
+      steps = [
+        'Click the tune (or lock) icon at the left of the address bar.',
+        'Turn Microphone ON (or open "Site settings" and set Microphone to "Allow").',
+        'Reload if the browser offers it, then tap the mic below.',
+        `Still blocked? Paste ${settingsUrl} into the address bar and remove this site from the "Not allowed" list.`,
+      ];
+    }
+
+    el.replaceChildren();
+    const title = document.createElement('p');
+    title.className = 'mic-help__title';
+    title.textContent = 'To unblock the microphone:';
+    el.appendChild(title);
+    const ol = document.createElement('ol');
+    ol.className = 'mic-help__steps';
+    for (const s of steps) {
+      const li = document.createElement('li');
+      li.textContent = s;
+      ol.appendChild(li);
+    }
+    el.appendChild(ol);
+    const note = document.createElement('p');
+    note.className = 'mic-help__note';
+    note.textContent =
+      'On Windows, also check Settings → Privacy & security → Microphone → microphone access is on.';
+    el.appendChild(note);
+
+    // Reuse the existing mic-check dialog when the page has it.
+    const testBtn = document.getElementById('micTestBtn');
+    if (testBtn) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ln-btn ln-btn--ghost mic-help__test';
+      b.textContent = 'Run the mic check';
+      b.addEventListener('click', () => testBtn.click());
+      el.appendChild(b);
+    }
+
+    el.hidden = false;
+  }
+
+  #hideMicHelp() {
+    const el = this.#els.micHelp;
+    if (el) {
+      el.hidden = true;
+      el.replaceChildren();
+    }
   }
 
   #handleConnectError(err) {
@@ -676,6 +825,10 @@ export class MicController extends EventTarget {
     }
     this.#state = next;
     if (next !== MicState.ERROR && next !== MicState.DENIED) this.#errorInfo = null;
+    if (next !== MicState.DENIED) {
+      this.#hideMicHelp();
+      this.#unwatchPermission();
+    }
     if (!LIVE_STATES.has(next)) this.#graceWaitingForWake = false;
     this.#render();
     this.#emit('statechange', { state: next, prev });

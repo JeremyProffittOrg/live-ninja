@@ -39,6 +39,12 @@
 
       <p class="conv-status-text" id="statusText"></p>
 
+      {{- /* Mic-blocked help (mic.mjs #showMicHelp): hidden until the mic
+             lands in the `denied` state with a STANDING browser block —
+             the browser won't re-prompt on its own, so this panel carries
+             the per-browser unblock steps and a mic-check shortcut. */}}
+      <div class="mic-help" id="micHelp" role="note" hidden></div>
+
       <div class="ptt-wrap">
         {{- /* One centered row (owner spec 2026-07-18): the mic button with
                the wake-word slider toggle beside it, vertical centers

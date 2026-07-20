@@ -1048,6 +1048,23 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
   min-height: 20px;
   margin: calc(var(--ln-sp-1) - var(--ln-sp-5)) 0 0;
 }
+/* Mic-blocked unblock steps (mic.mjs `denied` state, standing browser block) */
+.mic-help {
+  margin: var(--ln-sp-2) auto 0;
+  max-width: 340px;
+  padding: var(--ln-sp-2) var(--ln-sp-3);
+  border: 1px solid var(--ln-border);
+  border-radius: var(--ln-radius, 10px);
+  background: var(--ln-surface-raised);
+  font-size: var(--ln-fs-sm);
+  color: var(--ln-text-muted);
+  text-align: left;
+}
+.mic-help__title { margin: 0 0 var(--ln-sp-1); color: var(--ln-text); font-weight: 600; }
+.mic-help__steps { margin: 0; padding-left: 1.2em; }
+.mic-help__steps li { margin: 2px 0; }
+.mic-help__note { margin: var(--ln-sp-1) 0 0; }
+.mic-help__test { margin-top: var(--ln-sp-2); }
 .conv-rail__top {
   width: 100%;
   display: flex;
