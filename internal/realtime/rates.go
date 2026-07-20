@@ -34,6 +34,18 @@ var modelRates = map[string]Rates{
 		CachedTextInPer1M:  0.40,
 		CachedAudioInPer1M: 0.40,
 	},
+	// Gemini Live list pricing (ai.google.dev/gemini-api/docs/pricing,
+	// verified 2026-07-19; M13). Gemini Live has no input caching, so the
+	// cached rates equal the uncached ones — a session with cache-shaped
+	// usage numbers prices identically instead of silently discounting.
+	"gemini-3.1-flash-live-preview": {
+		TextInPer1M:        0.75,
+		TextOutPer1M:       4.50,
+		AudioInPer1M:       3.00,
+		AudioOutPer1M:      12.00,
+		CachedTextInPer1M:  0.75,
+		CachedAudioInPer1M: 3.00,
+	},
 }
 
 // defaultRates backstops any model id not (yet) listed in modelRates —

@@ -289,7 +289,16 @@ type brokerResponse struct {
 	WSURL                string `json:"wsUrl,omitempty"`
 	BridgeToken          string `json:"bridgeToken,omitempty"`
 	BridgeTokenExpiresAt string `json:"bridgeTokenExpiresAt,omitempty"`
-	QuotaWarning         string `json:"quotaWarning,omitempty"`
+	// Gemini-direct fields (Mode == "gemini-direct" only, M13). Deliberately
+	// NOT in the wsUrl/bridgeUrl family — legacy firmware detects Nova by
+	// field presence (gemini-plan.md §3.4).
+	GeminiEndpoint string `json:"geminiEndpoint,omitempty"`
+	AccessToken    *struct {
+		Value               string `json:"value"`
+		ExpiresAt           string `json:"expiresAt"`
+		NewSessionExpiresAt string `json:"newSessionExpiresAt"`
+	} `json:"accessToken,omitempty"`
+	QuotaWarning string `json:"quotaWarning,omitempty"`
 
 	// Fallback success shapes: Text for turn/stt; audio for tts.
 	// ToolCalls (tool-capable fallback-turn only) carries the model's
@@ -481,6 +490,23 @@ func handleRealtimeSession(deps *Deps) fiber.Handler {
 				"bridgeTokenExpiresAt": resp.BridgeTokenExpiresAt,
 				"toolManifest":         resp.ToolManifest,
 				"sessionId":            resp.SessionID,
+			})
+		}
+		if mode == "gemini-direct" {
+			// M13 third bootstrap shape (gemini-plan.md §3.4): client-direct
+			// WSS to Gemini Live. Rates ride along like openai-direct so the
+			// cost badge prices at Gemini rates, not the gpt-realtime fallback.
+			return c.JSON(fiber.Map{
+				"mode":           mode,
+				"engine":         resp.Engine,
+				"model":          resp.Model,
+				"voice":          resp.Voice,
+				"geminiEndpoint": resp.GeminiEndpoint,
+				"accessToken":    resp.AccessToken,
+				"sessionConfig":  resp.SessionConfig,
+				"toolManifest":   resp.ToolManifest,
+				"sessionId":      resp.SessionID,
+				"rates":          realtime.RatesFor(resp.Model),
 			})
 		}
 		return c.JSON(fiber.Map{

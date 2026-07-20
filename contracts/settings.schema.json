@@ -88,6 +88,11 @@
       ],
       "default": "cedar"
     },
+    "geminiVoice": {
+      "type": "string",
+      "description": "Account-wide Gemini Live voice for the gemini-flash-live engine (M13, D4), chosen from the enumerated `geminiVoices` catalog on GET /v1/realtime/voices — never free text. The OpenAI `voice`/`personaPrefs` values are meaningless on Gemini, so this is a separate field; at mint the broker resolves geminiVoice = this field ?? the persona's hand-curated Gemini voice ?? Kore. \"\" means unset (fall through the chain). Optional; absent normalizes to \"\". Unrecognized values must be preserved on write-back but fall through the chain at mint (forward-compat, contracts/README.md rule 3).",
+      "default": ""
+    },
     "voiceAccent": {
       "type": "string",
       "description": "Account-wide FALLBACK speech-accent directive id, chosen from the enumerated accent picker (GET /v1/realtime/voices `accents` catalog) — never free text. Per-persona accent lives in `personaPrefs` and wins over this field at mint (accent = personaPrefs[persona].accent ?? this field). Accents are not separate voices: the realtime voice set is fixed, so the broker appends a short speech-style directive (e.g. \"Speak with a light, natural Irish accent.\") to the session instructions at mint. \"\" (also surfaced as catalog id \"none\") means no directive. Optional; absent normalizes to \"\". Unrecognized values must be preserved on write-back but mint without an accent (forward-compat, contracts/README.md rule 3).",
@@ -170,7 +175,8 @@
           "enum": [
             "openai-realtime",
             "openai-realtime-mini",
-            "nova-sonic"
+            "nova-sonic",
+            "gemini-flash-live"
           ],
           "default": "openai-realtime"
         },
@@ -182,7 +188,8 @@
             "enum": [
               "openai-realtime",
               "openai-realtime-mini",
-              "nova-sonic"
+              "nova-sonic",
+              "gemini-flash-live"
             ]
           },
           "default": {}

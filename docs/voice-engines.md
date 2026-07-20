@@ -1,8 +1,8 @@
 # Voice engines (FR-VE-01..04)
 
-Live Ninja speaks to two realtime speech-to-speech backends. Which one a given
+Live Ninja speaks to three realtime speech-to-speech backends. Which one a given
 session uses is decided **per device** by a stored pin, resolved server-side at
-session bootstrap. The two engines have fundamentally different network shapes,
+session bootstrap. The engines have fundamentally different network shapes,
 and that difference is the whole reason this document exists.
 
 | Engine pin value      | Backend                         | Media path                         | Where audio is relayed |
@@ -10,6 +10,7 @@ and that difference is the whole reason this document exists.
 | `openai-realtime`     | OpenAI Realtime (`gpt-realtime`)| **Client-direct** WSS to OpenAI    | Nowhere — client ⇄ OpenAI |
 | `openai-realtime-mini`| OpenAI Realtime mini            | **Client-direct** WSS to OpenAI    | Nowhere — client ⇄ OpenAI |
 | `nova-sonic`          | Amazon Bedrock **Nova Sonic** (`amazon.nova-sonic-v1:0`, `us-east-1`) | **Backend-bridged** WSS to our Nova bridge | client ⇄ Nova bridge ⇄ Bedrock |
+| `gemini-flash-live`   | Google **Gemini Live API** (`gemini-3.1-flash-live-preview`, native audio; M13) | **Client-direct** WSS to Google | Nowhere — client ⇄ Google |
 
 `openai-realtime` is the platform default (`settings.schema.json#/properties/voiceEngine/default`).
 
@@ -62,7 +63,7 @@ The realtime broker resolves the engine for this session as:
 engine = voiceEngine.devices[deviceId]  ??  voiceEngine.default
 ```
 
-and returns **one of two shapes**:
+and returns **one of three shapes**:
 
 **OpenAI-direct** (default) — the client opens a WSS straight to OpenAI:
 
@@ -86,6 +87,31 @@ and returns **one of two shapes**:
   "sessionId": "…"
 }
 ```
+
+**Gemini-direct** (M13) — the client opens a WSS straight to Google's Live API:
+
+```jsonc
+{
+  "mode": "gemini-direct",
+  "engine": "gemini-flash-live",
+  "model": "gemini-3.1-flash-live-preview",
+  "geminiEndpoint": "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained",
+  "accessToken": { "value": "auth_tokens/…", "expiresAt": "…", "newSessionExpiresAt": "…" },
+  "sessionConfig": { /* the exact `setup` frame body the client sends on open */ },
+  "voice": "Kore",
+  "sessionId": "…",
+  "rates": { /* Gemini per-1M-token rates for the cost badge */ }
+}
+```
+
+The token is **single-use** (session resumption reconnects don't count as a
+use), constrained at mint to the exact model/voice/instructions/tools, and
+carried as `?access_token=<url-escaped token>` on the WSS URL (browsers can't
+set upgrade headers). Past `expiresAt` (~30 min) the client re-fetches this
+route for a fresh token and resumes via its stored resumption handle. The
+field names are deliberately outside the `wsUrl`/`bridgeUrl` family: legacy
+clients detect Nova by field *presence*, so the Gemini shape must never trip
+that heuristic.
 
 The bridge token is **single-use and scoped to that one `sessionId`**. WebSocket
 upgrade requests can't reliably carry a `Bearer` header across every client
@@ -133,11 +159,11 @@ Audio format is pcm16 both ways: **16 kHz mono uplink**, **24 kHz mono downlink*
 
 ## Client support matrix
 
-| Surface   | OpenAI-direct | Nova-bridge | Notes |
-|-----------|:-------------:|:-----------:|-------|
-| Web (`realtime.mjs`)        | ✅ | ✅ | Dual path: WebRTC/WSS to OpenAI, or WSS to the bridge. |
-| Android (`RealtimeTransport`)| ✅ | ✅ | Same dual path. |
-| M5Stack Tab5 (`ln_realtime`) | ✅ | ⚠️ **HIL-unverified** | Nova branch implemented; not yet validated on hardware. |
+| Surface   | OpenAI-direct | Nova-bridge | Gemini-direct | Notes |
+|-----------|:-------------:|:-----------:|:-------------:|-------|
+| Web (`realtime.mjs`)        | ✅ | ✅ | ⚠️ per-surface until verified | Triple path: WebRTC/WSS to OpenAI, WSS to the bridge, or WSS to Google. |
+| Android (`RealtimeTransport`)| ✅ | ✅ | ⚠️ per-surface until verified | Same triple path. |
+| M5Stack Tab5 (`ln_realtime`) | ✅ | ⚠️ **HIL-unverified** | ⚠️ **HIL-unverified** | Nova and Gemini branches implemented; not yet validated on hardware. |
 
 ### M5Stack firmware (`firmware/components/ln_realtime`)
 
@@ -173,7 +199,8 @@ response:
 ## How to pin a device to Nova (FR-VE-04)
 
 The per-device engine picker lives in **Settings** on web and Android (a
-segmented control / list: *OpenAI Realtime · OpenAI Realtime Mini · Nova Sonic*,
+segmented control / list: *OpenAI Realtime · OpenAI Realtime Mini · Nova Sonic ·
+Gemini Flash Live*,
 with the cost/tradeoff note below). Picking an engine for a device writes:
 
 ```jsonc
@@ -207,6 +234,13 @@ and that is the honest tradeoff to weigh:
   account — **zero backend media cost**, lowest hop count, lowest latency. You
   pay OpenAI's per-minute realtime rate. `-mini` is the cheaper OpenAI tier for a
   quality tradeoff. This is the default for a reason.
+- **Gemini-direct (`gemini-flash-live`):** audio never touches our AWS account
+  either — same zero-infra shape as OpenAI-direct, at roughly **10× cheaper
+  audio rates than `gpt-realtime`** (and 2–3× cheaper than `-mini`) as of
+  2026-07. Caveats: the model is **Preview** status (opt-in per device for a
+  reason), and Gemini Live has no audio-input caching, which narrows the gap on
+  long sessions. Picker copy angle: *cheapest engine, no infrastructure cost,
+  preview-status model.*
 - **Nova-bridge (`nova-sonic`):** you pay **Bedrock Nova Sonic** per-token
   speech pricing **plus** the always-on cost of the Nova bridge — one tiny
   arm64 Fargate task kept at scale-to-1, its ALB, and cross-service audio egress.
@@ -231,6 +265,7 @@ the loop and the usage is steady enough to amortize the bridge.
 ## References
 
 - `plan.md` → **M12 — Secondary Voice Engine (Nova Sonic)** (DoD + task list).
+- `gemini-plan.md` → **M13 — Tertiary Voice Engine (Gemini Flash Live)** (protocol facts, mint recipe, DoD).
 - PRD → **FR-VE-01..04**.
 - `contracts/api.md` → `GET /v1/realtime/session`, `WSS /v1/realtime/bridge/{sessionId}`.
 - `contracts/settings.schema.json` → `#/properties/voiceEngine`.

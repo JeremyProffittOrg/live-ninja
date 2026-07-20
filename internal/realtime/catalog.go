@@ -45,6 +45,47 @@ var SupportedVoices = []VoiceInfo{
 	{ID: "verse", Name: "Verse", Description: "Versatile and articulate", Gender: "male"},
 }
 
+// SupportedGeminiVoices is the Gemini Live prebuilt-HD voice catalog for the
+// gemini-flash-live engine's voice picker (M13, D4). Every entry was
+// runtime-validated against gemini-3.1-flash-live-preview in the Phase 0
+// spike (2026-07-19): setup accepted + real audio synthesized. Descriptions
+// are Google's published one-word style adjectives; gender tags are
+// best-judgment perception tags like SupportedVoices'. `Kore` is the locked
+// engine default (D4). Served as the `geminiVoices` sibling of `voices` on
+// GET /api/v1/realtime/voices.
+var SupportedGeminiVoices = []VoiceInfo{
+	{ID: "Zephyr", Name: "Zephyr", Description: "Bright", Gender: "female"},
+	{ID: "Puck", Name: "Puck", Description: "Upbeat", Gender: "male"},
+	{ID: "Charon", Name: "Charon", Description: "Informative", Gender: "male"},
+	{ID: "Kore", Name: "Kore", Description: "Firm — default", Gender: "female", Default: true},
+	{ID: "Fenrir", Name: "Fenrir", Description: "Excitable", Gender: "male"},
+	{ID: "Leda", Name: "Leda", Description: "Youthful", Gender: "female"},
+	{ID: "Orus", Name: "Orus", Description: "Firm", Gender: "male"},
+	{ID: "Aoede", Name: "Aoede", Description: "Breezy", Gender: "female"},
+	{ID: "Callirrhoe", Name: "Callirrhoe", Description: "Easy-going", Gender: "female"},
+	{ID: "Autonoe", Name: "Autonoe", Description: "Bright", Gender: "female"},
+	{ID: "Enceladus", Name: "Enceladus", Description: "Breathy", Gender: "male"},
+	{ID: "Iapetus", Name: "Iapetus", Description: "Clear", Gender: "male"},
+	{ID: "Umbriel", Name: "Umbriel", Description: "Easy-going", Gender: "male"},
+	{ID: "Algieba", Name: "Algieba", Description: "Smooth", Gender: "male"},
+	{ID: "Despina", Name: "Despina", Description: "Smooth", Gender: "female"},
+	{ID: "Erinome", Name: "Erinome", Description: "Clear", Gender: "female"},
+	{ID: "Algenib", Name: "Algenib", Description: "Gravelly", Gender: "male"},
+	{ID: "Rasalgethi", Name: "Rasalgethi", Description: "Informative", Gender: "male"},
+	{ID: "Laomedeia", Name: "Laomedeia", Description: "Upbeat", Gender: "female"},
+	{ID: "Achernar", Name: "Achernar", Description: "Soft", Gender: "female"},
+	{ID: "Alnilam", Name: "Alnilam", Description: "Firm", Gender: "male"},
+	{ID: "Schedar", Name: "Schedar", Description: "Even", Gender: "male"},
+	{ID: "Gacrux", Name: "Gacrux", Description: "Mature", Gender: "female"},
+	{ID: "Pulcherrima", Name: "Pulcherrima", Description: "Forward", Gender: "female"},
+	{ID: "Achird", Name: "Achird", Description: "Friendly", Gender: "male"},
+	{ID: "Zubenelgenubi", Name: "Zubenelgenubi", Description: "Casual", Gender: "male"},
+	{ID: "Vindemiatrix", Name: "Vindemiatrix", Description: "Gentle", Gender: "female"},
+	{ID: "Sadachbia", Name: "Sadachbia", Description: "Lively", Gender: "male"},
+	{ID: "Sadaltager", Name: "Sadaltager", Description: "Knowledgeable", Gender: "male"},
+	{ID: "Sulafat", Name: "Sulafat", Description: "Warm", Gender: "female"},
+}
+
 // AccentInfo is one selectable speech accent for the settings "Accent"
 // picker. Accents are NOT separate voices: the realtime voice set is
 // fixed, so an accent is delivered as a short speech-style directive

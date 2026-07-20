@@ -21,6 +21,12 @@ Parameters:
     Type: String
     Default: gpt-realtime
     Description: OpenAI Realtime model id the realtime broker mints client secrets for.
+  GeminiLiveModel:
+    Type: String
+    Default: gemini-3.1-flash-live-preview
+    Description: >-
+      Gemini Live API model id the realtime broker mints ephemeral tokens for
+      (M13, gemini-flash-live engine). Swappable without code change.
   WakewordTrainImageTag:
     Type: String
     Default: latest
@@ -454,6 +460,8 @@ Resources:
       Environment:
         Variables:
           OPENAI_REALTIME_MODEL: !Ref OpenAIRealtimeModel
+          # M13: Gemini Live model for gemini-flash-live-pinned devices.
+          GEMINI_LIVE_MODEL: !Ref GeminiLiveModel
           # M7 cost/quota: hourly-burn auto-suspend owner alert (enqueued to
           # the email queue; cmd/email-dispatch sends via SES) + LOG# ledger
           # TTL override (days; code default is 30).
@@ -502,6 +510,12 @@ Resources:
                 - ssm:GetParameter
               Resource:
                 - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/openai/api_key"
+            - Sid: GeminiKeyParam
+              Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource:
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/gemini/api_key"
             - Sid: SsmSecureStringDecrypt
               Effect: Allow
               Action:

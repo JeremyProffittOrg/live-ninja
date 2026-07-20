@@ -191,9 +191,9 @@ identically to the other engines; sessions survive the 10-min connection recycle
 resumption handles; OpenAI- and Nova-pinned devices are byte-for-byte unchanged.
 _(extends FR-VE-01..04)_
 
-### Phase 0 — Mint spike (gate; nothing else merges until this passes)  `[ ]`
+### Phase 0 — Mint spike (gate; nothing else merges until this passes)  `[x]`
 
-- `[ ]` **F** — **T0: prove ephemeral-token minting from Go.** Try in order:
+- `[x]` **F** — **T0: prove ephemeral-token minting from Go.** Try in order:
   (1) `google.golang.org/genai` Go SDK `AuthTokens.Create` against v1alpha;
   (2) raw REST `POST /v1alpha/auth_tokens` (officially undocumented; community reports
   `ACCESS_TOKEN_TYPE_UNSUPPORTED` friction — capture exact request shape from the JS SDK's
@@ -202,7 +202,7 @@ _(extends FR-VE-01..04)_
   one audio turn → transcript back). **If both fail → `[!]` pause and ask** (genuine
   blocker; options then: pin to JS-SDK-shaped REST replay, or a Vertex pivot).
   _Record the working mint path + exact request/response in §10 before Phase A starts._
-- `[ ]` **S** — **T1: voice-catalog validation (D4).** With a working token, probe the
+- `[x]` **S** — **T1: voice-catalog validation (D4).** With a working token, probe the
   full prebuilt-HD voice name set (Zephyr, Puck, Charon, Kore, Fenrir, Leda, Orus,
   Aoede, Callirrhoe, Autonoe, Enceladus, Iapetus, Umbriel, Algieba, Despina, Erinome,
   Algenib, Rasalgethi, Laomedeia, Achernar, Alnilam, Schedar, Gacrux, Pulcherrima,
@@ -211,15 +211,15 @@ _(extends FR-VE-01..04)_
   an audio turn. The accepted list **is** the shipped Gemini voice catalog. Record the
   validated list in §10; it feeds A7's `SupportedGeminiVoices`.
 
-### Phase A — Server (WS-C + WS-G contracts)  `[ ]`
+### Phase A — Server (WS-C + WS-G contracts)  `[x]`
 
 Ordered tasks:
-- `[ ]` **H** — **A1: engine constants.** `internal/voiceengine/engine.go`: add
+- `[x]` **H** — **A1: engine constants.** `internal/voiceengine/engine.go`: add
   `EngineGeminiFlashLive Engine = "gemini-flash-live"`; include in `Valid()`
   (engine.go:30-37). Verify `IsClientDirect()` (`e != EngineNovaSonic`, engine.go:27)
   correctly returns true. Add to `internal/realtime/mint.go` `validEngine`
   (mint.go:793-802) so the pin resolves instead of falling through to default.
-- `[ ]` **S** — **A2: config plumbing.** `internal/config/config.go`: add
+- `[x]` **S** — **A2: config plumbing.** `internal/config/config.go`: add
   `ParamGeminiAPIKey = "/live-ninja/prod/gemini/api_key"` + `EnvOverrideGeminiAPIKey =
   "GEMINI_API_KEY"` (config.go:25-41 pattern). `template.yaml` RealtimeBrokerFunction:
   add `GEMINI_LIVE_MODEL` env var (default `gemini-3.1-flash-live-preview`) and add the
@@ -228,7 +228,7 @@ Ordered tasks:
   Extend the deploy workflow's GitHub-secret→SSM sync with `GEMINI_API_KEY` (mirror the
   OpenAI key step). **Owner action:** run `./scripts/set-secret.sh GEMINI_API_KEY`
   (agents never see the value).
-- `[ ]` **F** — **A3: Gemini minter.** New `internal/realtime/gemini_mint.go`:
+- `[x]` **F** — **A3: Gemini minter.** New `internal/realtime/gemini_mint.go`:
   `GeminiMinter.Mint(ctx, sessionID, cfg)` using the Phase-0-proven path. Mints
   `uses:1`, `expire_time=+30m`, `new_session_expire_time=+1m`, `liveConnectConstraints`
   = model + full session config (responseModalities AUDIO, voice from the D4b
@@ -238,27 +238,27 @@ Ordered tasks:
   `sessionResumption:{}`, `contextWindowCompression:{slidingWindow:{}}`,
   input/output transcription on, VAD defaults). Returns token + the `sessionConfig`
   echo for the client `setup` frame.
-- `[ ]` **S** — **A4: broker branch.** `cmd/realtime-broker/main.go` `handleMint`:
+- `[x]` **S** — **A4: broker branch.** `cmd/realtime-broker/main.go` `handleMint`:
   add `if engine == voiceengine.EngineGeminiFlashLive { return b.handleGeminiDirect(...) }`
   beside the Nova branch (main.go:304-306). New handler mirrors `handleNovaBridge`
   (main.go:385-431) but calls the GeminiMinter; returns the §3.4 shape (extend
   `Response` struct, main.go:111-165, with `GeminiEndpoint`/`AccessToken` fields —
   **never** reusing `WSURL`). Quota gate + persona/voice/guides resolution reused as-is.
   Wire in `main()`: `GEMINI_LIVE_MODEL` env, minter construction (main.go:660-694).
-- `[ ]` **S** — **A5: web-tier passthrough + rates.** `internal/webapp/api_routes.go`
+- `[x]` **S** — **A5: web-tier passthrough + rates.** `internal/webapp/api_routes.go`
   `handleRealtimeSession` (:466-499): pass the `gemini-direct` mode through (currently
   branches nova-bridge vs default) and attach `"rates": realtime.RatesFor(model)`.
   `internal/realtime/rates.go`: add `gemini-3.1-flash-live-preview` to `modelRates`
   (text in 0.75 / audio in 3.00 / text out 4.50 / audio out 12.00 per 1M) so the cost
   badge doesn't silently fall back to gpt-realtime pricing (rates.go:28-42).
-- `[ ]` **H** — **A6: contracts + settings validation.**
+- `[x]` **H** — **A6: contracts + settings validation.**
   `contracts/settings.schema.json`: add `gemini-flash-live` to **both** `voiceEngine`
   enums (default :170-175, devices :180-187; additive-only per contracts/README rule 3).
   `internal/webapp/settings_routes.go` `validateAndNormalizeSettings`: add to both
   `oneOf` lists (:377-379, :384-388). `contracts/api.md`: document the third shape on
   the `GET /v1/realtime/session` row (:53). Update `docs/voice-engines.md` to a
   three-engine table (client support matrix row starts ⚠ per-surface until verified).
-- `[ ]` **S** — **A7: Gemini voice catalog + persona mapping (D4/D4b).**
+- `[x]` **S** — **A7: Gemini voice catalog + persona mapping (D4/D4b).**
   `internal/realtime/catalog.go`: add `SupportedGeminiVoices` (the T1-validated list,
   same `VoiceInfo` shape) and serve it — extend `GET /api/v1/realtime/voices` with an
   engine-keyed shape (additive: keep the existing array for legacy, add a
@@ -272,7 +272,7 @@ Ordered tasks:
   sibling or an engine parameter — follow existing code shape). _(feeds A3's config;
   A3 may land with `Kore` hardcoded first and pick up the resolver when A7 merges,
   both within Phase A — no cross-phase stub.)_
-- `[ ]` **S** — **A8: server tests.** Broker unit tests: pin→`gemini-direct` shape,
+- `[x]` **S** — **A8: server tests.** Broker unit tests: pin→`gemini-direct` shape,
   no `wsUrl`-named fields in the JSON (regression-guard the §3.4 naming rule),
   OpenAI/Nova responses unchanged; settings PUT accepts the new enum value and a
   valid/invalid `geminiVoice`; mint-branch test with a fake minter; voice-resolution
@@ -435,10 +435,86 @@ tests pass locally; client phases merge per-surface when their smoke passes.
 
 ## 10. Implementation Notes (append-only; RESUME STATE convention per plan.md §8)
 
-> **RESUME STATE — plan authored + question pass completed + all decisions locked
-> 2026-07-19. No implementation started; next action is Phase 0 (T0 mint spike + T1
-> voice validation), which requires the owner to first run
-> `./scripts/set-secret.sh GEMINI_API_KEY` (and provide the key locally as
-> `GEMINI_API_KEY` env for the spike). Working tree clean at HEAD b544db3 plus this file.**
+> **RESUME STATE — Phase 0 PASSED 2026-07-19 (both T0 and T1). GEMINI_API_KEY GitHub
+> secret set by owner. Next action: Phase A (server), then B/C/D in parallel.**
+
+### Phase 0 results (2026-07-19, spike run locally against live Gemini API)
+
+**T0 — mint path PROVEN (D5 ladder rung 1, SDK):** `google.golang.org/genai` v1.64.0
+`client.AuthTokens.Create` works. **Three protocol corrections vs §3.2/§3.4 discovered
+and verified live (the §3.2 endpoint is for API-key auth only):**
+
+1. **Mint client MUST be constructed with `HTTPOptions: genai.HTTPOptions{APIVersion: "v1alpha"}`**
+   (mirrors the JS SDK's documented `httpOptions:{apiVersion:'v1alpha'}` requirement).
+2. **Ephemeral tokens are only honored by a DIFFERENT WSS method:**
+   `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained?access_token=<url-escaped token>`
+   — NOT the v1beta `BidiGenerateContent` endpoint in §3.2 (that one closes with
+   "Method doesn't allow unregistered callers" for token auth; it only accepts `?key=<api-key>`).
+   Verified against the JS SDK source (`@google/genai` 2.12.0 `live.connect`): when
+   `apiKey.startsWith('auth_tokens/')` it switches method to `BidiGenerateContentConstrained`
+   and param name to `access_token`. **The `geminiEndpoint` field in the §3.4 bootstrap
+   shape must carry the Constrained URL.** Token name must be URL-escaped in the query.
+3. **Raw WSS setup frame nesting:** `responseModalities` and `speechConfig` live under
+   `setup.generationConfig.{…}`, not at the top level of `setup` (the SDK's
+   `LiveConnectConfig` flattens them; the wire protocol does not). `systemInstruction`,
+   `inputAudioTranscription`, `outputAudioTranscription`, `sessionResumption` are
+   top-level `setup` fields.
+
+Smoke result (minted token, constrained endpoint, full setup frame sent client-side):
+`setupComplete` ✔ → text turn → **31,682 bytes audio `audio/pcm;rate=24000`**, output
+transcription "Hello.", `sessionResumptionUpdate` handle received ✔, `usageMetadata`
+present (391 total tokens) ✔. Mint config used: `uses:1`, `expireTime:+30m`,
+`newSessionExpireTime:+2m`, `liveConnectConstraints{model, config{AUDIO, Kore voice,
+systemInstruction, sessionResumption, in/out transcription}}`.
+
+REST fallback (rung 2) not needed — never exercised. Production minter (A3) uses the
+genai SDK (adds `google.golang.org/genai` to go.mod).
+
+**T1 — voice catalog: ALL 30 prebuilt-HD voices ACCEPTED** against
+`gemini-3.1-flash-live-preview` (setupComplete + real audio synthesis each): Zephyr,
+Puck, Charon, Kore, Fenrir, Leda, Orus, Aoede, Callirrhoe, Autonoe, Enceladus, Iapetus,
+Umbriel, Algieba, Despina, Erinome, Algenib, Rasalgethi, Laomedeia, Achernar, Alnilam,
+Schedar, Gacrux, Pulcherrima, Achird, Zubenelgenubi, Vindemiatrix, Sadachbia,
+Sadaltager, Sulafat. This full list ships as `SupportedGeminiVoices` (A7).
+
+Spike source: session scratchpad `gemini-spike/main.go` (not committed; recipe fully
+captured above). API key was provided via a local drop file, consumed into process env
+only, and deleted after the run.
+
+### Phase A notes (2026-07-19)
+
+- **A1–A8 complete; `go test ./...` fully green (17 packages).**
+- `google.golang.org/genai` v1.64.0 added to go.mod (the Phase-0-proven mint path).
+- `internal/realtime/gemini_mint.go`: `GeminiMinter` (loader-backed key, v1alpha
+  client, `uses:1`/+30m/+2m token, constraints = full session config, SessionConfig
+  echo in RAW wire shape). `GeminiLiveEndpoint` const carries the **Constrained**
+  endpoint. Test seam: injectable `create` func.
+- Broker: `handleGeminiDirect` mirrors `handleNovaBridge` (gate → voice/guides →
+  mint → bookkeeping → §3.4 shape). Errors: `gemini_unavailable` / `mint_failed`
+  (502, fallback-cascade compatible).
+- Voice identity: `Persona.GeminiVoice` (D4b hand-curated map below),
+  `ResolveGeminiVoiceChain` (setting ?? persona ?? Kore),
+  `ResolveSessionGeminiVoice` (one GetItem: geminiVoice + voiceAccent +
+  personaPrefs; accents reuse the OpenAI directive path).
+- **D4b persona → Gemini voice map:** default→Achird · valley-girl→Leda ·
+  logic-officer→Schedar · deputy-chief→Puck · noir-detective→Algenib ·
+  bard→Enceladus · zen-monk→Vindemiatrix · drill-sergeant→Alnilam ·
+  play-by-play→Laomedeia · butler→Iapetus · surfer→Zubenelgenubi ·
+  worried-grandma→Gacrux · pirate-captain→Algenib · sommelier→Algieba ·
+  heh-heh-duo→Zubenelgenubi · swamp-master→Enceladus · cool-intensity→Fenrir.
+  (Custom/stored personas have no mapping → chain bottoms at Kore.)
+- `SupportedGeminiVoices` = all 30 spike-validated voices; served as additive
+  `geminiVoices` on GET /api/v1/realtime/voices. New settings key `geminiVoice`
+  (lenient, absent→""), schema + validation + tests updated; both voiceEngine
+  enums now include `gemini-flash-live`.
+- rates.go: gemini model keyed at §3.3 prices; cached rates set EQUAL to uncached
+  (Gemini has no input caching) so cache-shaped usage can't underprice the badge.
+- template.yaml: `GeminiLiveModel` param → `GEMINI_LIVE_MODEL` env; `GeminiKeyParam`
+  IAM Sid; deploy.yml syncs `GEMINI_API_KEY` secret → SSM (secret already set by
+  owner 2026-07-19).
+- Tests added: broker shape test incl. **no-wsUrl-family regression guard**, voice
+  resolution table, unavailable/mint-failure, nova-untouched; minter constraint/
+  setup-shape tests; tool-declaration mirror; persona-mapping totality; catalog
+  pin (30 + Kore default); rates; settings validation cases.
 
 _(notes accrue here per task as execution proceeds)_

@@ -283,6 +283,7 @@ jobs:
       - name: Sync secrets to SSM
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           LWA_CLIENT_ID: ${{ vars.LWA_CLIENT_ID }}
           LWA_CLIENT_SECRET: ${{ secrets.LWA_CLIENT_SECRET }}
         run: |
@@ -292,6 +293,12 @@ jobs:
             --name "/live-ninja/prod/openai/api_key" \
             --type SecureString \
             --value "$OPENAI_API_KEY" \
+            --overwrite >/dev/null
+
+          aws ssm put-parameter \
+            --name "/live-ninja/prod/gemini/api_key" \
+            --type SecureString \
+            --value "$GEMINI_API_KEY" \
             --overwrite >/dev/null
 
           aws ssm put-parameter \

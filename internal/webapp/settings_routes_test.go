@@ -53,6 +53,16 @@ func TestValidateAndNormalizeSettings(t *testing.T) {
 		{"bad voiceEngine pin", func(d map[string]any) {
 			d["voiceEngine"] = map[string]any{"default": "openai-realtime", "devices": map[string]any{"dev1": "cassette"}}
 		}, false},
+		{"gemini engine default pin ok", func(d map[string]any) {
+			d["voiceEngine"] = map[string]any{"default": "gemini-flash-live", "devices": map[string]any{}}
+		}, true},
+		{"gemini engine device pin ok", func(d map[string]any) {
+			d["voiceEngine"] = map[string]any{"default": "openai-realtime", "devices": map[string]any{"dev1": "gemini-flash-live"}}
+		}, true},
+		{"geminiVoice catalog value ok", func(d map[string]any) { d["geminiVoice"] = "Kore" }, true},
+		{"geminiVoice forward-compat ok", func(d map[string]any) { d["geminiVoice"] = "future-gemini-voice" }, true},
+		{"geminiVoice number bad", func(d map[string]any) { d["geminiVoice"] = 3.0 }, false},
+		{"geminiVoice too long", func(d map[string]any) { d["geminiVoice"] = strings.Repeat("a", 65) }, false},
 		{"voiceAccent irish ok", func(d map[string]any) { d["voiceAccent"] = "irish" }, true},
 		{"voiceAccent forward-compat ok", func(d map[string]any) { d["voiceAccent"] = "future-accent-x" }, true},
 		{"voiceAccent number bad", func(d map[string]any) { d["voiceAccent"] = 3.0 }, false},
@@ -136,6 +146,17 @@ func TestValidateAndNormalizeSettings(t *testing.T) {
 	}
 	if got := d["voiceAccent"]; got != "" {
 		t.Errorf("voiceAccent \"none\" should normalize to \"\", got %v", got)
+	}
+
+	// geminiVoice normalization: absent -> "" (unset; the broker's Gemini
+	// chain falls through to the persona's voice, then Kore).
+	d = valid()
+	delete(d, "geminiVoice")
+	if msg := validateAndNormalizeSettings(d); msg != "" {
+		t.Fatalf("absent geminiVoice should validate, got %q", msg)
+	}
+	if got := d["geminiVoice"]; got != "" {
+		t.Errorf("absent geminiVoice should normalize to \"\", got %v", got)
 	}
 
 	// personaPrefs normalization: absent -> {}, entry accent "none" -> "".

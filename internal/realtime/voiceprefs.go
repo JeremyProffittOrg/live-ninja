@@ -108,6 +108,59 @@ func ResolveAccentChain(prefAccent *string, suggestedAccent, topAccent string) s
 	return accent
 }
 
+// GeminiSessionVoice is the per-mint resolved voice identity for a
+// gemini-flash-live session (M13).
+type GeminiSessionVoice struct {
+	Voice    string // always a valid Gemini Live prebuilt voice
+	AccentID string // same accents catalog as OpenAI; delivered as an instructions directive
+}
+
+// ResolveSessionGeminiVoice is ResolveSessionVoice's gemini-flash-live
+// sibling (M13 D4/D4b): one GetItem reads the caller's geminiVoice,
+// voiceAccent, and personaPrefs, then applies
+//
+//	voice  = geminiVoice setting ?? persona's GeminiVoice ?? Kore
+//	accent = personaPrefs[persona].accent ?? persona suggested ?? voiceAccent
+//
+// with the same lenient degrade-to-the-chain posture: any read failure or
+// unknown candidate falls through, so the result is always mintable.
+func ResolveSessionGeminiVoice(ctx context.Context, g SettingsGetter, table, userID, personaRef string) GeminiSessionVoice {
+	var doc struct {
+		GeminiVoice  string                      `dynamodbav:"geminiVoice"`
+		VoiceAccent  string                      `dynamodbav:"voiceAccent"`
+		PersonaPrefs map[string]personaPrefEntry `dynamodbav:"personaPrefs"`
+	}
+	if g != nil && userID != "" {
+		out, err := g.GetItem(ctx, &dynamodb.GetItemInput{
+			TableName: aws.String(table),
+			Key: map[string]ddbtypes.AttributeValue{
+				"pk": &ddbtypes.AttributeValueMemberS{Value: "USER#" + userID},
+				"sk": &ddbtypes.AttributeValueMemberS{Value: settingsSK},
+			},
+			ProjectionExpression: aws.String("#g, #a, #p"),
+			ExpressionAttributeNames: map[string]string{
+				"#g": "geminiVoice",
+				"#a": "voiceAccent",
+				"#p": "personaPrefs",
+			},
+		})
+		if err == nil && len(out.Item) > 0 {
+			_ = attributevalue.UnmarshalMap(out.Item, &doc)
+		}
+	}
+
+	var prefAccent *string
+	if pref, ok := doc.PersonaPrefs[PersonaPrefsKey(personaRef)]; ok {
+		prefAccent = pref.Accent
+	}
+
+	persona := ResolvePersona(personaRef)
+	return GeminiSessionVoice{
+		Voice:    ResolveGeminiVoiceChain(doc.GeminiVoice, persona.GeminiVoice),
+		AccentID: ResolveAccentChain(prefAccent, persona.SuggestedAccent, doc.VoiceAccent),
+	}
+}
+
 // ResolveSessionVoice reads the caller's voice/voiceAccent/personaPrefs in
 // one GetItem (same single-read posture as ResolveEngine) and applies the
 // precedence chains above for the persona being minted. personaRef is the

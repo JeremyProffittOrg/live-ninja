@@ -239,6 +239,21 @@ func validateAndNormalizeSettings(doc map[string]any) string {
 	if s, ok := doc["voice"].(string); !ok || strings.TrimSpace(s) == "" || len(s) > 64 {
 		return "voice must be a non-empty voice id"
 	}
+	// geminiVoice: the gemini-flash-live engine's account-wide voice (M13).
+	// Optional for older clients — absent/null normalizes to "" (unset; the
+	// broker's chain falls through to the persona's Gemini voice, then Kore).
+	// Same lenient posture as `voice`: unknown ids are preserved rather than
+	// rejected and simply fall through the chain at mint.
+	switch gv := doc["geminiVoice"].(type) {
+	case nil:
+		doc["geminiVoice"] = ""
+	case string:
+		if len(gv) > 64 {
+			return "geminiVoice must be a voice id of at most 64 characters"
+		}
+	default:
+		return "geminiVoice must be a string"
+	}
 	// voiceAccent: speech-accent directive id from the accents catalog.
 	// Optional for older clients — absent/null normalizes to "" (none), and
 	// the catalog's "none" id normalizes to its stored form "". Like
@@ -374,16 +389,16 @@ func validateAndNormalizeSettings(doc map[string]any) string {
 	if !ok {
 		return "voiceEngine must be an object"
 	}
-	if s, ok := ve["default"].(string); !ok || !oneOf(s, "openai-realtime", "openai-realtime-mini", "nova-sonic") {
-		return "voiceEngine.default must be one of openai-realtime, openai-realtime-mini, nova-sonic"
+	if s, ok := ve["default"].(string); !ok || !oneOf(s, "openai-realtime", "openai-realtime-mini", "nova-sonic", "gemini-flash-live") {
+		return "voiceEngine.default must be one of openai-realtime, openai-realtime-mini, nova-sonic, gemini-flash-live"
 	}
 	devices, ok := ve["devices"].(map[string]any)
 	if !ok {
 		return "voiceEngine.devices must be an object"
 	}
 	for id, pin := range devices {
-		if s, ok := pin.(string); !ok || !oneOf(s, "openai-realtime", "openai-realtime-mini", "nova-sonic") {
-			return "voiceEngine.devices[" + id + "] must be one of openai-realtime, openai-realtime-mini, nova-sonic"
+		if s, ok := pin.(string); !ok || !oneOf(s, "openai-realtime", "openai-realtime-mini", "nova-sonic", "gemini-flash-live") {
+			return "voiceEngine.devices[" + id + "] must be one of openai-realtime, openai-realtime-mini, nova-sonic, gemini-flash-live"
 		}
 	}
 
@@ -455,9 +470,13 @@ func handleListVoices() fiber.Handler {
 		// `accents` rides along in the same response (additive — existing
 		// clients reading only `voices` are unaffected): the enumerated
 		// accent-directive catalog backing the settings Accent picker.
+		// `geminiVoices` rides along the same way (additive, M13): the
+		// spike-validated Gemini Live catalog backing the gemini-flash-live
+		// engine's voice picker.
 		return c.JSON(fiber.Map{
-			"voices":  realtime.SupportedVoices,
-			"accents": realtime.SupportedAccents,
+			"voices":       realtime.SupportedVoices,
+			"accents":      realtime.SupportedAccents,
+			"geminiVoices": realtime.SupportedGeminiVoices,
 		})
 	}
 }

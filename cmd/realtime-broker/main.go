@@ -143,6 +143,12 @@ type Response struct {
 	WSURL                string `json:"wsUrl,omitempty"`
 	BridgeToken          string `json:"bridgeToken,omitempty"`
 	BridgeTokenExpiresAt string `json:"bridgeTokenExpiresAt,omitempty"`
+	// Gemini-direct success fields (Mode == "gemini-direct" only, M13): the
+	// client-direct Gemini Live WSS endpoint and the single-use ephemeral
+	// token. NEVER rename these into the wsUrl/bridgeUrl family — pre-M12
+	// firmware detects Nova by field presence (gemini-plan.md §3.4).
+	GeminiEndpoint string                      `json:"geminiEndpoint,omitempty"`
+	AccessToken    *realtime.GeminiAccessToken `json:"accessToken,omitempty"`
 	// QuotaWarning is the ready-to-emit X-LN-Quota-Warning header value
 	// (e.g. "daily_minutes=83%"); empty when below the 80% threshold.
 	QuotaWarning string `json:"quotaWarning,omitempty"`
@@ -203,6 +209,15 @@ type broker struct {
 	// bridgeBaseURL is the Nova bridge WSS base (NOVA_BRIDGE_URL); empty
 	// falls back to realtime.DefaultBridgeBaseURL.
 	bridgeBaseURL string
+	// geminiMint mints the single-use Gemini Live ephemeral token for
+	// gemini-flash-live-pinned devices (M13). An interface so tests can fake
+	// the Google leg; *realtime.GeminiMinter is the production implementation.
+	geminiMint geminiMintAPI
+}
+
+// geminiMintAPI is the GeminiMinter surface the broker dispatches to.
+type geminiMintAPI interface {
+	Mint(ctx context.Context, voice, instructions string) (*realtime.GeminiMintResult, error)
 }
 
 func (b *broker) Handle(ctx context.Context, req Request) (resp Response, _ error) {
@@ -303,6 +318,12 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 	// path — PRD N-6 exception).
 	if engine == voiceengine.EngineNovaSonic {
 		return b.handleNovaBridge(ctx, l, req, sessionID, warnings)
+	}
+
+	// Gemini-pinned device (M13): client-direct WSS to Gemini Live with a
+	// single-use config-constrained ephemeral token — no bridge, no new infra.
+	if engine == voiceengine.EngineGeminiFlashLive {
+		return b.handleGeminiDirect(ctx, l, req, sessionID, warnings)
 	}
 
 	// Persona-embedded voice identity (personas are the unit of voice
@@ -427,6 +448,82 @@ func (b *broker) handleNovaBridge(ctx context.Context, l *slog.Logger, req Reque
 		ToolManifest:         realtime.ToolManifestJSON(),
 		SessionID:            sessionID,
 		QuotaWarning:         strings.Join(warnings, ","),
+	}
+}
+
+// handleGeminiDirect issues the gemini-direct session bootstrap (M13) for a
+// device pinned to gemini-flash-live: persona/voice/accent/guides resolve
+// exactly like the OpenAI path (voice through the Gemini chain — user
+// geminiVoice setting ?? persona GeminiVoice ?? Kore), then a single-use
+// config-constrained ephemeral token mints against the Gemini API and the
+// client connects DIRECTLY to Google (the API key never leaves this
+// function). The quota gate has already passed (caller).
+func (b *broker) handleGeminiDirect(ctx context.Context, l *slog.Logger, req Request, sessionID string, warnings []string) Response {
+	if b.geminiMint == nil {
+		l.Error("realtime-broker: gemini-flash-live pinned but gemini minter unavailable",
+			slog.String("sessionId", sessionID))
+		observ.EmitMetric(metricsNamespace, "MintErrors", 1, "Count",
+			map[string]string{"Surface": req.Surface, "Engine": string(voiceengine.EngineGeminiFlashLive)})
+		return Response{Error: "gemini_unavailable", Code: http.StatusBadGateway,
+			Message: "The Gemini Live engine is not configured; use the fallback cascade."}
+	}
+
+	// Same one-read voice-identity resolution posture as the OpenAI path,
+	// through the Gemini chain (D4b); the accent directive is voice-agnostic
+	// and composes into the instructions identically.
+	gv := realtime.ResolveSessionGeminiVoice(ctx, b.settings, b.table, req.UserID, req.Persona)
+	accentDirective := realtime.AccentDirective(gv.AccentID)
+
+	guideSuffix := ""
+	if guides, gerr := realtime.LoadEnabledGuides(ctx, b.ddb, b.table, req.UserID); gerr != nil {
+		l.Warn("realtime-broker: guide load failed; minting without guides",
+			slog.String("error", gerr.Error()))
+	} else {
+		guideSuffix = realtime.GuideInstructions(guides)
+	}
+	persona := realtime.ResolvePersona(req.Persona)
+	instructions := persona.Instructions + accentDirective + guideSuffix
+
+	start := time.Now()
+	res, err := b.geminiMint.Mint(ctx, gv.Voice, instructions)
+	observ.EmitMetric(metricsNamespace, "EphemeralTokenMintLatency",
+		float64(time.Since(start).Milliseconds()), "Milliseconds",
+		map[string]string{"Surface": req.Surface})
+	if err != nil {
+		l.Error("realtime-broker: gemini token mint failed", slog.String("error", err.Error()),
+			slog.String("sessionId", sessionID))
+		observ.EmitMetric(metricsNamespace, "MintErrors", 1, "Count",
+			map[string]string{"Surface": req.Surface, "Engine": string(voiceengine.EngineGeminiFlashLive)})
+		return Response{Error: "mint_failed", Code: http.StatusBadGateway,
+			Message: "Could not mint a Gemini Live session token; use the fallback cascade."}
+	}
+
+	// Post-spend bookkeeping (same ledger marker + dayMints bump as the other
+	// engines). Best-effort: the token is already minted.
+	if err := b.gate.RecordMint(ctx, req.UserID, sessionID, req.Surface); err != nil {
+		l.Warn("realtime-broker: gemini mint bookkeeping failed", slog.String("error", err.Error()),
+			slog.String("sessionId", sessionID))
+	}
+
+	observ.EmitMetric(metricsNamespace, "SessionsBrokered", 1, "Count",
+		map[string]string{"Surface": req.Surface, "Engine": string(voiceengine.EngineGeminiFlashLive)})
+	l.Info("realtime-broker: gemini session minted",
+		slog.String("sessionId", sessionID),
+		slog.String("engine", string(voiceengine.EngineGeminiFlashLive)),
+		slog.String("model", res.Model),
+		slog.String("voice", res.Voice))
+
+	return Response{
+		Mode:           "gemini-direct",
+		Engine:         string(voiceengine.EngineGeminiFlashLive),
+		Model:          res.Model,
+		Voice:          res.Voice,
+		GeminiEndpoint: realtime.GeminiLiveEndpoint,
+		AccessToken:    &res.AccessToken,
+		SessionConfig:  res.SessionConfig,
+		ToolManifest:   res.ToolManifest,
+		SessionID:      sessionID,
+		QuotaWarning:   strings.Join(warnings, ","),
 	}
 }
 
@@ -683,6 +780,7 @@ func main() {
 		log:           logger,
 		gate:          gate,
 		minter:        realtime.NewMinter(loader, model),
+		geminiMint:    realtime.NewGeminiMinter(loader, realtime.GeminiLiveModelFromEnv()),
 		fallback:      realtime.NewFallbackClient(loader),
 		ddb:           ddb,
 		table:         appCfg.TableName,

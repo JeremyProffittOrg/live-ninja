@@ -794,7 +794,8 @@ func validEngine(s string) (voiceengine.Engine, bool) {
 	switch voiceengine.Engine(s) {
 	case voiceengine.EngineOpenAIRealtime,
 		voiceengine.EngineOpenAIRealtimeMini,
-		voiceengine.EngineNovaSonic:
+		voiceengine.EngineNovaSonic,
+		voiceengine.EngineGeminiFlashLive:
 		return voiceengine.Engine(s), true
 	default:
 		return "", false

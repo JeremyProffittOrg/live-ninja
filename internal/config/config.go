@@ -24,6 +24,7 @@ import (
 // GitHub secrets/variables — never by application code.
 const (
 	ParamOpenAIAPIKey     = "/live-ninja/prod/openai/api_key"
+	ParamGeminiAPIKey     = "/live-ninja/prod/gemini/api_key"
 	ParamLWAClientID      = "/live-ninja/prod/lwa/client_id"
 	ParamLWAClientSecret  = "/live-ninja/prod/lwa/client_secret"
 	ParamDeviceCredPepper = "/live-ninja/prod/device/cred_pepper"
@@ -35,6 +36,7 @@ const (
 // credentials or a deployed stack.
 const (
 	EnvOverrideOpenAIAPIKey     = "OPENAI_API_KEY"
+	EnvOverrideGeminiAPIKey     = "GEMINI_API_KEY"
 	EnvOverrideLWAClientID      = "LWA_CLIENT_ID"
 	EnvOverrideLWAClientSecret  = "LWA_CLIENT_SECRET"
 	EnvOverrideDeviceCredPepper = "DEVICE_CRED_PEPPER"

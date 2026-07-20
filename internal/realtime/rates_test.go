@@ -18,6 +18,18 @@ func TestRatesForKnownModel(t *testing.T) {
 	}
 }
 
+func TestRatesForGeminiLiveModel(t *testing.T) {
+	r := RatesFor("gemini-3.1-flash-live-preview")
+	if r.AudioInPer1M != 3.00 || r.AudioOutPer1M != 12.00 || r.TextInPer1M != 0.75 || r.TextOutPer1M != 4.50 {
+		t.Fatalf("gemini rates wrong: %+v", r)
+	}
+	// Gemini Live has no input caching — cached rates must equal uncached so
+	// a cache-shaped usage report can't silently under-price the badge.
+	if r.CachedTextInPer1M != r.TextInPer1M || r.CachedAudioInPer1M != r.AudioInPer1M {
+		t.Fatalf("gemini cached rates must equal uncached: %+v", r)
+	}
+}
+
 func TestRatesForUnknownModelFallsBack(t *testing.T) {
 	got := RatesFor("some-future-realtime-model")
 	want := RatesFor("gpt-realtime")

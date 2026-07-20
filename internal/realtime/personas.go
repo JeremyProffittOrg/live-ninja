@@ -14,6 +14,11 @@ import "sort"
 // (plan decision: "default voice cedar").
 const DefaultVoice = "cedar"
 
+// DefaultGeminiVoice is the locked default voice for gemini-flash-live
+// sessions (M13 D4). The Gemini resolution chain mirrors OpenAI's:
+// user geminiVoice setting ?? persona GeminiVoice ?? this.
+const DefaultGeminiVoice = "Kore"
+
 // Persona is a server-resolved system-instruction bundle. Clients only
 // ever reference personas by ID; the instructions text never round-trips
 // through a client, so a compromised client cannot inject instructions.
@@ -27,6 +32,13 @@ type Persona struct {
 	Name        string
 	Description string
 	Voice       string
+	// GeminiVoice is the hand-curated nearest-match Gemini Live voice for
+	// this persona (M13, D4b) — the OpenAI Voice suggestion is meaningless on
+	// Gemini, so each built-in carries its own. Curation heuristic: match the
+	// gender-register + energy of the OpenAI suggestion (mapping table in
+	// gemini-plan.md §10). Resolution mirrors OpenAI: user's geminiVoice
+	// setting ?? this field ?? DefaultGeminiVoice.
+	GeminiVoice string
 	// SuggestedAccent is the built-in's baseline accents-catalog id ("" =
 	// none). It seeds the accent when the user hasn't set one for this
 	// persona (ResolveAccentChain); a personaPrefs accent always overrides.
@@ -90,7 +102,7 @@ func ComposeCustomInstructions(style string) string {
 
 // builtinDef is one seed row for the built-in registry below.
 type builtinDef struct {
-	id, name, description, voice, accent, style string
+	id, name, description, voice, geminiVoice, accent, style string
 }
 
 // builtinDefs seeds the built-in persona registry. Style blocks are
@@ -101,6 +113,7 @@ var builtinDefs = []builtinDef{
 		name:        "Live Ninja",
 		description: "Fast, warm, and practical — the standard Live Ninja personality.",
 		voice:       DefaultVoice,
+		geminiVoice: "Achird",
 		style:       "", // the operational core IS the default personality
 	},
 	{
@@ -108,6 +121,7 @@ var builtinDefs = []builtinDef{
 		name:        "Valley Girl",
 		description: "Like, totally upbeat — bubbly mall-era SoCal energy.",
 		voice:       "coral",
+		geminiVoice: "Leda",
 		style: "You are a sunny Southern-California valley girl. Sprinkle in \"like\", " +
 			"\"totally\", \"oh my gosh\", and \"literally the best\"; end some statements with " +
 			"a little upward lilt, as if asking. Everything is either super cute or SO not it. " +
@@ -119,6 +133,7 @@ var builtinDefs = []builtinDef{
 		name:        "Logic Officer",
 		description: "Rigorously logical science officer — precise, calm, fascinated.",
 		voice:       "alloy",
+		geminiVoice: "Schedar",
 		style: "You are a coolly logical starship science officer from a culture that prizes " +
 			"reason over emotion — half-alien restraint, one eyebrow perpetually ready to " +
 			"rise. Speak with precise, formal diction and measured calm; never use slang or " +
@@ -134,6 +149,7 @@ var builtinDefs = []builtinDef{
 		name:        "Josh Lyman",
 		description: "West Wing deputy chief of staff — wonky, driven, walk-and-talk energy.",
 		voice:       "ash",
+		geminiVoice: "Puck",
 		style: "You are a brilliant, cocky-but-lovable deputy White House chief of staff " +
 			"perpetually mid walk-and-talk. Talk fast, in confident bursts, with policy-wonk " +
 			"detail and rapid-fire rhetorical questions you immediately answer yourself. " +
@@ -151,6 +167,7 @@ var builtinDefs = []builtinDef{
 		name:        "Noir Detective",
 		description: "World-weary gumshoe narration — rain, shadows, short sentences.",
 		voice:       "ash",
+		geminiVoice: "Algenib",
 		accent:      "new-york",
 		style: "You are a world-weary private detective narrating from a rain-streaked office " +
 			"at 2 a.m. Speak in short, hard-boiled sentences. Facts are \"leads\", problems are " +
@@ -163,6 +180,7 @@ var builtinDefs = []builtinDef{
 		name:        "The Bard",
 		description: "Elizabethan flourish — thee, thou, and iambic swagger.",
 		voice:       "ballad",
+		geminiVoice: "Enceladus",
 		accent:      "british",
 		style: "You are a theatrical Elizabethan playwright-poet. Address the user as \"good " +
 			"my friend\" or \"gentle user\", favor \"thee\", \"thou\", \"'tis\", and \"anon\", " +
@@ -175,6 +193,7 @@ var builtinDefs = []builtinDef{
 		name:        "Zen Monk",
 		description: "Serene and spare — koan-calm guidance, one breath at a time.",
 		voice:       "sage",
+		geminiVoice: "Vindemiatrix",
 		style: "You are a serene zen monk. Speak slowly, simply, and with warmth; prefer one " +
 			"short sentence where three would do. Frame answers with gentle imagery from " +
 			"nature — rivers, stones, seasons — and occasionally open with a brief, calming " +
@@ -186,6 +205,7 @@ var builtinDefs = []builtinDef{
 		name:        "Drill Sergeant",
 		description: "Loud, disciplined motivator — zero excuses, maximum effort.",
 		voice:       "echo",
+		geminiVoice: "Alnilam",
 		style: "You are a barking-but-benevolent drill instructor. Speak in short, punchy " +
 			"commands with plenty of \"LISTEN UP\", \"MOVE\", and \"OUTSTANDING\". Address the " +
 			"user as \"recruit\". Everything is a mission; every answer ends with a push toward " +
@@ -197,6 +217,7 @@ var builtinDefs = []builtinDef{
 		name:        "Play-by-Play Announcer",
 		description: "Breathless sports-booth commentary on absolutely everything.",
 		voice:       "shimmer",
+		geminiVoice: "Laomedeia",
 		style: "You are an excitable sports play-by-play announcer calling everyday life like " +
 			"a championship final. Narrate answers as unfolding action — \"and HERE comes the " +
 			"forecast, oh you will NOT believe this\" — with color-commentary asides and the " +
@@ -208,6 +229,7 @@ var builtinDefs = []builtinDef{
 		name:        "The Butler",
 		description: "Impeccably proper British butler — discreet, dry, unflappable.",
 		voice:       "verse",
+		geminiVoice: "Iapetus",
 		accent:      "british",
 		style: "You are an impeccably mannered English butler of long service. Address the " +
 			"user as \"sir or madam\" (or their name, once known), favor understatement — " +
@@ -220,6 +242,7 @@ var builtinDefs = []builtinDef{
 		name:        "Surfer Dude",
 		description: "Mellow beach-bro vibes — no worries, all stoke.",
 		voice:       "cedar",
+		geminiVoice: "Zubenelgenubi",
 		style: "You are a mellow, sun-bleached surfer. Everything is \"dude\", \"gnarly\", " +
 			"\"stoked\", or \"no worries\"; good news is \"epic\" and problems are just " +
 			"\"chop — we'll paddle around it\". Keep the vibe unhurried and endlessly " +
@@ -231,6 +254,7 @@ var builtinDefs = []builtinDef{
 		name:        "Grandma",
 		description: "Loving, slightly worried grandma — eat something, wear a jacket.",
 		voice:       "sage",
+		geminiVoice: "Gacrux",
 		style: "You are a doting grandmother who worries just a little about everything. Call " +
 			"the user \"sweetheart\" or \"dear\", fold gentle concern into answers (\"are you " +
 			"drinking enough water?\"), and offer a small extra kindness with each reply — a " +
@@ -242,6 +266,7 @@ var builtinDefs = []builtinDef{
 		name:        "Pirate Captain",
 		description: "Salty high-seas swagger — arrr, treasure, and tall tales.",
 		voice:       "ash",
+		geminiVoice: "Algenib",
 		style: "You are a boisterous pirate captain. Pepper speech with \"arrr\", \"aye\", " +
 			"\"me hearty\", and \"shiver me timbers\"; information is \"treasure\", tasks are " +
 			"\"voyages\", and problems are \"squalls to sail through\". Spin a little nautical " +
@@ -253,6 +278,7 @@ var builtinDefs = []builtinDef{
 		name:        "The Sommelier",
 		description: "Haute wine-and-cheese steward — tasting notes, pairings, and a gentle upsell.",
 		voice:       "verse",
+		geminiVoice: "Algieba",
 		accent:      "french",
 		style: "You are an impeccably refined sommelier and fromager at an exclusive cellar. " +
 			"Describe everything in lush tasting notes — structure, terroir, finish — and find " +
@@ -266,6 +292,7 @@ var builtinDefs = []builtinDef{
 		name:        "Beavis & Butt-Head",
 		description: "Two snickering couch critics — heh-heh, this answer rules.",
 		voice:       "ash",
+		geminiVoice: "Zubenelgenubi",
 		style: "You are a pair of dim, perpetually amused teenage couch critics trading off " +
 			"mid-sentence — one snickers \"heh-heh\" (excitable, slightly dumber), the other " +
 			"\"huh-huh\" (deadpan, slightly meaner). Call good things \"cool\" and boring " +
@@ -281,6 +308,7 @@ var builtinDefs = []builtinDef{
 		name:        "Yoda",
 		description: "Nine hundred years of wisdom — inverted the syntax is, hmm.",
 		voice:       "sage",
+		geminiVoice: "Enceladus",
 		style: "You are a tiny, ancient, immensely wise master who speaks with object-subject-" +
 			"verb inversion (\"Strong with you, the answer is\"). Be patient, cryptic-but-kind, " +
 			"and fond of short aphorisms about patience and fear. Hmm and chuckle softly " +
@@ -296,6 +324,7 @@ var builtinDefs = []builtinDef{
 		name:        "Samuel L. Jackson",
 		description: "Maximum-intensity cool — emphatic, zero patience for nonsense.",
 		voice:       "ballad",
+		geminiVoice: "Fenrir",
 		style: "You speak with the emphatic, rhythmic intensity of the coolest man in any room — " +
 			"a style homage, strictly family-friendly. Hit key words HARD, use dramatic " +
 			"pauses, ask rhetorical questions and answer them yourself, and have absolutely " +
@@ -320,6 +349,7 @@ var personas = func() map[string]Persona {
 			Name:            d.name,
 			Description:     d.description,
 			Voice:           d.voice,
+			GeminiVoice:     d.geminiVoice,
 			SuggestedAccent: d.accent,
 			Style:           d.style,
 			Instructions:    composeStyle(d.style),
@@ -408,6 +438,34 @@ var allowedRealtimeVoices = map[string]bool{
 // (used by the webapp's persona CRUD to validate suggested voices without
 // duplicating the set).
 func IsRealtimeVoice(id string) bool { return allowedRealtimeVoices[id] }
+
+// allowedGeminiVoices is the Gemini Live voice set, derived from the
+// spike-validated SupportedGeminiVoices catalog (catalog.go) so the two can
+// never drift.
+var allowedGeminiVoices = func() map[string]bool {
+	m := make(map[string]bool, len(SupportedGeminiVoices))
+	for _, v := range SupportedGeminiVoices {
+		m[v.ID] = true
+	}
+	return m
+}()
+
+// IsGeminiVoice reports whether id is a known Gemini Live prebuilt voice.
+func IsGeminiVoice(id string) bool { return allowedGeminiVoices[id] }
+
+// ResolveGeminiVoiceChain applies the gemini-flash-live voice precedence
+// rule (M13 D4/D4b), mirroring ResolveVoiceChain's lenient posture: the
+// user's stored geminiVoice setting, then the persona's hand-curated
+// GeminiVoice, the first that names a known Gemini voice winning; anything
+// unknown/empty falls through, bottoming out at DefaultGeminiVoice (Kore).
+func ResolveGeminiVoiceChain(settingVoice, personaVoice string) string {
+	for _, c := range []string{settingVoice, personaVoice} {
+		if allowedGeminiVoices[c] {
+			return c
+		}
+	}
+	return DefaultGeminiVoice
+}
 
 // ResolveVoice applies the voice-selection rule for a mint: an empty
 // override resolves to DefaultVoice (per-user/per-device settings arrive
