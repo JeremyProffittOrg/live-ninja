@@ -22,8 +22,8 @@ android {
         applicationId = "ninja.jeremy.liveninja"
         minSdk = 29
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.2.0-hal"
+        versionCode = 4
+        versionName = "0.2.1-hal"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         if (arm64Only) {
