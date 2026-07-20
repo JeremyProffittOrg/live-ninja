@@ -11,10 +11,16 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import ninja.jeremy.liveninja.ui.state.DiagnosticsConfig
+import ninja.jeremy.liveninja.ui.state.SettingsStore
 
 /** Priority ordering mirrors [android.util.Log]'s int constants (VERBOSE=2 .. ASSERT=7). */
 enum class LogLevel(val priority: Int) {
@@ -69,25 +75,34 @@ class LogSinkCore(
     private val fileMutex = Mutex()
     private val ioDispatcher = ioDispatcher
     private val writerScope = CoroutineScope(SupervisorJob() + ioDispatcher)
+    private val _entriesFlow = MutableStateFlow<List<LogEntry>>(emptyList())
 
     val ringSnapshot: List<LogEntry> get() = synchronized(ringLock) { ring.toList() }
+
+    /** Live ring-buffer snapshot, newest-last — for [LogViewerScreen] to `collectAsState()`. */
+    val entriesFlow: StateFlow<List<LogEntry>> = _entriesFlow.asStateFlow()
 
     fun log(entry: LogEntry) {
         if (!enabled) return
         if (entry.level.priority < minLevel.priority) return
         if (categoryEnabled[entry.category] == false) return
         val redacted = entry.copy(message = Redactor.redact(entry.message))
-        synchronized(ringLock) {
+        val snapshot = synchronized(ringLock) {
             ring.addLast(redacted)
             while (ring.size > ringCapacity) ring.removeFirst()
+            ring.toList()
         }
+        _entriesFlow.value = snapshot
         writerScope.launch { writeToFile(redacted) }
     }
 
     /** Suspends until every write queued before this call has landed on disk. */
     suspend fun awaitIdle() = withContext(ioDispatcher) { }
 
-    fun clear() = synchronized(ringLock) { ring.clear() }
+    fun clear() {
+        synchronized(ringLock) { ring.clear() }
+        _entriesFlow.value = emptyList()
+    }
 
     fun currentFile(): File = File(logDir, CURRENT_FILE_NAME)
 
@@ -138,18 +153,36 @@ class LogSinkCore(
  * triggers construction on demand), buffered/file logging comes online.
  * Before that, [LNLog] runs logcat-passthrough only.
  *
- * M3.2 wires [enabled]/[minLevel]/[categoryEnabled] to the `SettingsStore`
- * diagnostics flow (collector added once `DiagnosticsConfig` lands from
- * M1.2); the setters below are the seam that collector writes through.
+ * M3.2: observes `SettingsStore.document` for its nested `diagnostics`
+ * config (owner defaults: enabled=true, minLevel=VERBOSE, all 8 categories
+ * on — troubleshooting phase, 04-logging §A4) and applies it live to
+ * [enabled]/[minLevel]/[categoryEnabled] on every emission, so a Settings
+ * change (M6.2 Diagnostics section) takes effect on the next log call with
+ * no restart. [enabled]/[minLevel]/[categoryEnabled] remain directly
+ * settable too (used by tests, and available as an escape hatch) — the
+ * collector below simply re-asserts them whenever the document changes.
  */
 @Singleton
 class LogSink @Inject constructor(
     @ApplicationContext context: Context,
+    settingsStore: SettingsStore,
 ) {
     private val core = LogSinkCore(logDir = File(context.filesDir, "logs"))
+    private val configScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     init {
         LNLog.sink = this
+        configScope.launch {
+            settingsStore.document.collect { document -> applyDiagnostics(document.diagnostics) }
+        }
+    }
+
+    private fun applyDiagnostics(config: DiagnosticsConfig) {
+        core.enabled = config.enabled
+        core.minLevel = LogLevel.entries.firstOrNull { it.name == config.minLevel } ?: LogLevel.VERBOSE
+        core.categoryEnabled = LogCategory.entries.associateWith { category ->
+            config.categories[category.name] ?: true
+        }
     }
 
     var enabled: Boolean
@@ -166,6 +199,9 @@ class LogSink @Inject constructor(
 
     /** Live snapshot of the ring buffer, newest-last. Read by [LogViewerScreen]. */
     val entries: List<LogEntry> get() = core.ringSnapshot
+
+    /** Live ring-buffer flow, newest-last — [LogViewerScreen] collects this for reactive updates. */
+    val entriesFlow: StateFlow<List<LogEntry>> get() = core.entriesFlow
 
     fun log(level: LogLevel, category: LogCategory, tag: String, message: String, throwable: Throwable? = null) {
         core.log(LogEntry(System.currentTimeMillis(), level, category, tag, message, throwable))

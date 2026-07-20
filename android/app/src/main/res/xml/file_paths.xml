@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider path spec for the LogExporter share flow (04-logging §A7).
+  <files-path> maps to Context.getFilesDir(); "logs/" covers both
+  filesDir/logs/liveninja-current.log + rotated *.log.gz files and the
+  filesDir/logs/exports/ zip output directory.
+
+  The <provider android:authorities="ninja.jeremy.liveninja.fileprovider">
+  manifest entry that references this resource is added in M6.1
+  (AndroidManifest.xml owner) — see log/LogExporter.kt's class doc.
+-->
+<paths xmlns:android="http://schemas.android.com/apk/res-auto">
+    <files-path name="logs" path="logs/" />
+</paths>
