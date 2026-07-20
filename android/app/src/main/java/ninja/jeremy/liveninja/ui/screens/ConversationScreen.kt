@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -42,11 +43,14 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -59,6 +63,8 @@ import ninja.jeremy.liveninja.ui.conversation.ConversationViewModel
 import ninja.jeremy.liveninja.ui.conversation.MicUiState
 import ninja.jeremy.liveninja.ui.conversation.TranscriptTurn
 import ninja.jeremy.liveninja.ui.state.TranscriptRole
+import ninja.jeremy.liveninja.ui.theme.HalOrb
+import ninja.jeremy.liveninja.ui.theme.OrbState
 
 /**
  * Conversation tab (mockups/android/05-home-idle + 06-conversation): live
@@ -100,12 +106,27 @@ fun ConversationScreen(modifier: Modifier = Modifier) {
                 modifier = Modifier.weight(1f),
             )
         } else {
-            TranscriptList(
-                turns = state.transcript,
+            Column(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
-            )
+            ) {
+                // Session-live orb: shrinks to a compact indicator pinned above
+                // the transcript (mockup 06 pattern).
+                HalOrb(
+                    state = micToOrbState(state.micState),
+                    modifier = Modifier
+                        .padding(top = 12.dp, bottom = 4.dp)
+                        .size(104.dp)
+                        .align(Alignment.CenterHorizontally),
+                )
+                TranscriptList(
+                    turns = state.transcript,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                )
+            }
         }
 
         if (state.bargeInFlash) {
@@ -129,6 +150,21 @@ fun ConversationScreen(modifier: Modifier = Modifier) {
 
 private fun sessionLive(micState: MicUiState): Boolean =
     micState in setOf(MicUiState.CONNECTING, MicUiState.LISTENING, MicUiState.SPEAKING, MicUiState.ENDING)
+
+/**
+ * Map the conversation mic state onto a HAL orb visual state (03-theme
+ * Placement). This mapping intentionally lives in the screen, not the view
+ * model, so the theme's presentation concerns stay out of the domain layer.
+ */
+private fun micToOrbState(micState: MicUiState): OrbState = when (micState) {
+    MicUiState.IDLE -> OrbState.IDLE
+    MicUiState.REQUESTING_MIC -> OrbState.IDLE
+    MicUiState.CONNECTING -> OrbState.THINKING
+    MicUiState.LISTENING -> OrbState.LISTENING
+    MicUiState.SPEAKING -> OrbState.SPEAKING
+    MicUiState.ENDING -> OrbState.IDLE
+    MicUiState.ERROR -> OrbState.ERROR
+}
 
 @Composable
 private fun MicStateBanner(state: ConversationUiState) {
@@ -232,21 +268,24 @@ private fun IdleHero(
             }
 
             else -> {
-                FilledIconButton(
-                    onClick = onTapToTalk,
+                // Persistent HAL orb (200dp) as the idle tap-to-talk affordance;
+                // the eye is decorative, the whole 200dp circle is the tap target
+                // (well over the 48dp minimum) and the caption below labels it.
+                HalOrb(
+                    state = micToOrbState(state.micState),
                     modifier = Modifier
-                        .size(96.dp)
+                        .size(200.dp)
+                        .clip(CircleShape)
+                        .clickable(
+                            onClickLabel = "Start a live voice conversation",
+                            role = Role.Button,
+                            onClick = onTapToTalk,
+                        )
                         .semantics {
                             contentDescription = "Tap to talk. Starts a live voice conversation."
+                            role = Role.Button
                         },
-                    shape = CircleShape,
-                ) {
-                    Icon(
-                        Icons.Filled.Mic,
-                        contentDescription = null,
-                        modifier = Modifier.size(44.dp),
-                    )
-                }
+                )
                 Text(
                     stringResource(R.string.conversation_tap_to_talk),
                     style = MaterialTheme.typography.headlineSmall,

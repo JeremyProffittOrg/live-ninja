@@ -1,20 +1,45 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Microphone glyph centered in the adaptive-icon safe zone. -->
+<!-- Live Ninja launcher glyph: a HAL 9000 style glowing red eye on a dark
+     ninja hood. Ported flat-fill-for-flat-fill from web/static/icons/ninja.svg
+     (03-theme §C). The 512-unit viewport is scaled to a 108dp canvas by the
+     platform (512 -> 108, ÷4.74), so path coordinates stay in source space.
+     The outer #060d18 background rect from the SVG is dropped — the adaptive
+     background layer supplies #050507. Circles/rounded-rects are expressed as
+     <path> (vector drawables have no primitive shapes). -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
-    <group
-        android:scaleX="1.4"
-        android:scaleY="1.4"
-        android:pivotX="54"
-        android:pivotY="54">
-        <path
-            android:fillColor="#D0BCFF"
-            android:pathData="M54,30c-3.31,0 -6,2.69 -6,6v14c0,3.31 2.69,6 6,6s6,-2.69 6,-6V36c0,-3.31 -2.69,-6 -6,-6z" />
-        <path
-            android:fillColor="#D0BCFF"
-            android:pathData="M66,50c0,6.63 -5.37,12 -12,12s-12,-5.37 -12,-12h-4c0,7.93 5.79,14.5 13.37,15.76V72h-6v4h17.26v-4h-6.63v-6.24C63.21,64.5 70,57.93 70,50h-4z" />
-    </group>
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+    <!-- Hood -->
+    <path
+        android:fillColor="#16294a"
+        android:pathData="M60,256 a196,196 0 1,0 392,0 a196,196 0 1,0 -392,0 Z" />
+    <!-- Eye band -->
+    <path
+        android:fillColor="#0a1424"
+        android:pathData="M150,206 H362 A52,52 0 0 1 414,258 A52,52 0 0 1 362,310 H150 A52,52 0 0 1 98,258 A52,52 0 0 1 150,206 Z" />
+    <!-- Outer glow -->
+    <path
+        android:fillColor="#ff5a4a"
+        android:fillAlpha="0.18"
+        android:pathData="M126,258 a130,130 0 1,0 260,0 a130,130 0 1,0 -260,0 Z" />
+    <!-- Inner glow -->
+    <path
+        android:fillColor="#ff5a4a"
+        android:fillAlpha="0.35"
+        android:pathData="M161,258 a95,95 0 1,0 190,0 a95,95 0 1,0 -190,0 Z" />
+    <!-- Iris -->
+    <path
+        android:fillColor="#e3432b"
+        android:pathData="M188,258 a68,68 0 1,0 136,0 a68,68 0 1,0 -136,0 Z" />
+    <!-- Core -->
+    <path
+        android:fillColor="#ffb199"
+        android:pathData="M226,258 a30,30 0 1,0 60,0 a30,30 0 1,0 -60,0 Z" />
+    <!-- Specular highlight -->
+    <path
+        android:fillColor="#fff8f2"
+        android:fillAlpha="0.9"
+        android:pathData="M232,244 a10,10 0 1,0 20,0 a10,10 0 1,0 -20,0 Z" />
 </vector>
