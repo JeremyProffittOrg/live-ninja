@@ -175,7 +175,7 @@ work, just verify the build ships the full bundle (`CONFIG_MBEDTLS_CERTIFICATE_B
 
 ---
 
-## 4. M13 — Tertiary Voice Engine (Gemini Flash Live)  `[ ]`  (WS-C lead, WS-D/E/F/G support)
+## 4. M13 — Tertiary Voice Engine (Gemini Flash Live)  `[~]`  (code-complete + deployed; E1/E2 live-audio verification = owner handoff)
 
 > **Client-direct — no new infra.** Requires only a Gemini API key (AI Studio) set as
 > a secret. No Fargate, no ALB, no new Lambda. Model is **Preview** on the Gemini API;
@@ -278,12 +278,12 @@ Ordered tasks:
   valid/invalid `geminiVoice`; mint-branch test with a fake minter; voice-resolution
   chain test (setting ?? persona ?? Kore).
 
-### Phase B — Web (WS-D; parallel with C/D after A4)  `[ ]`
+### Phase B — Web (WS-D; parallel with C/D after A4)  `[x]`
 
-- `[ ]` **H** — **B1: CSP.** `internal/webapp/pages_routes.go:47`: add
+- `[x]` **H** — **B1: CSP.** `internal/webapp/pages_routes.go:47`: add
   `wss://generativelanguage.googleapis.com` to `connect-src`; update the assertion in
   `internal/webapp/render_test.go:129`.
-- `[ ]` **F** — **B2: `#connectGemini` transport.** `web/static/js/realtime.mjs`:
+- `[x]` **F** — **B2: `#connectGemini` transport.** `web/static/js/realtime.mjs`:
   extend `mintOnce` shape validation (:182-211) for `gemini-direct`
   (require `geminiEndpoint` + `accessToken.value` + `sessionConfig`); add the mode
   dispatch branch (:536-542). New `#connectGemini` forked from `#connectNovaBridge`
@@ -293,7 +293,7 @@ Ordered tasks:
   (NOVA_DEFAULT_*_RATE constants :103-106, `#startNovaCapture` :991, `#novaEnqueueAudio`
   :934) — but frame uplink as JSON `realtimeInput.audio` base64 (not raw binary), and
   decode downlink from `serverContent.modelTurn.parts[].inlineData`.
-- `[ ]` **F** — **B3: event translation + lifecycle.** Map Gemini events to the same
+- `[x]` **F** — **B3: event translation + lifecycle.** Map Gemini events to the same
   CustomEvents the other paths emit: `inputTranscription`/`outputTranscription` →
   userdelta/userfinal/assistantdelta/assistantfinal (parity with `#onNovaMessage`
   :898-913); `interrupted` → local playback flush (the existing `bargeIn()` flush path,
@@ -303,7 +303,7 @@ Ordered tasks:
   reconnect with handle, re-fetch a fresh session (new token) past `expiresAt` —
   mirroring the Nova reconnect-re-mints pattern. Transcript turns POST to
   `/api/v1/transcript` with `engine: "gemini-flash-live"`.
-- `[ ]` **S** — **B4: picker radio + Gemini voice picker.**
+- `[x]` **S** — **B4: picker radio + Gemini voice picker.**
   `web/templates/pages/conversation.html` (:329-353, inside the `voice-engine-section`
   markers): add the `gemini-flash-live` radio with the §3.3 cost note ("cheapest, no
   infra, preview model"). Wiring in `settings.mjs` (:1116-1132) is value-generic —
@@ -312,18 +312,18 @@ Ordered tasks:
   when the engine selection is `gemini-flash-live` (existing voice picker stays
   OpenAI-scoped); writes the `geminiVoice` settings key.
 
-### Phase C — Android (WS-E; parallel with B/D)  `[ ]`
+### Phase C — Android (WS-E; parallel with B/D)  `[x]`
 
-- `[ ]` **S** — **C1: bootstrap parsing + DI.** `RealtimeSessionApi.kt`: add
+- `[x]` **S** — **C1: bootstrap parsing + DI.** `RealtimeSessionApi.kt`: add
   `MODE_GEMINI_DIRECT = "gemini-direct"` (:44-45) + parse `geminiEndpoint`/`accessToken`/
   `sessionConfig` fields (:97-113). `RealtimeModule.kt`: new `@GeminiTransport` qualifier
   bound to `GeminiLiveTransport` (:31-37).
-- `[ ]` **F** — **C2: `GeminiLiveTransport`.** Fork `NovaBridgeTransport.kt` (OkHttp
+- `[x]` **F** — **C2: `GeminiLiveTransport`.** Fork `NovaBridgeTransport.kt` (OkHttp
   WSS, 16k AudioRecord / 24k AudioTrack plumbing, :118-169, :360-418): auth via
   `?access_token=` query param (keep URL-auth parity with web even though OkHttp could
   set headers); send `setup` on open, ready-gate on `setupComplete`; JSON+base64 uplink
   framing; event translation + goAway/resumption lifecycle identical in design to B3.
-- `[ ]` **S** — **C3: coordinator + picker.** `RealtimeSessionCoordinator.kt` (:80-86):
+- `[x]` **S** — **C3: coordinator + picker.** `RealtimeSessionCoordinator.kt` (:80-86):
   third branch selecting the Gemini transport (`connect(token, endpoint)` is already
   engine-agnostic). `SettingsScreen.kt` (:481-505): add the radio option (+
   `settings_engine_gemini_*` string resources); `SettingsStore` path is value-generic.
@@ -331,21 +331,21 @@ Ordered tasks:
   engine selection is `gemini-flash-live`; writes the `geminiVoice` settings key via
   `SettingsStore` (same preserve-the-rest spread as `setVoiceEngineDefault`).
 
-### Phase D — Firmware (WS-F; parallel with B/C; may ship HIL-unverified per D1)  `[ ]`
+### Phase D — Firmware (WS-F; parallel with B/C; may ship HIL-unverified per D1)  `[x]`  (HIL-unverified)
 
-- `[ ]` **S** — **D1: enum + bootstrap parse.** `ln_rt_internal.h`: add
+- `[x]` **S** — **D1: enum + bootstrap parse.** `ln_rt_internal.h`: add
   `LN_RT_ENGINE_GEMINI_DIRECT` (:24-27); extend `ln_rt_session_info_t` (:30-39) —
   check `ws_url[640]`/`token[512]` capacities against the Gemini endpoint+token lengths.
   `ln_rt_session.c` `parse_session_body` (:94-193): branch on `mode=="gemini-direct"`
   **before** the Nova `wsUrl`-presence heuristic; fill endpoint + access token + stash
   the `sessionConfig` setup frame (respect the PSRAM buffer discipline —
   ln_realtime.c:21-24).
-- `[ ]` **F** — **D2: `ws_open` branch + setup frame.** `ln_realtime.c` `ws_open`
+- `[x]` **F** — **D2: `ws_open` branch + setup frame.** `ln_realtime.c` `ws_open`
   (:532-566): third branch — URL = endpoint + `?access_token=` (no headers, like Nova);
   verify `s_ws_url[1280]` headroom (:103). Send the `setup` frame in
   `WEBSOCKET_EVENT_CONNECTED` (:480-496) gated on mode (where the OpenAI
   `session.update` used to live); gate readiness on `setupComplete`.
-- `[ ]` **F** — **D3: audio path + resampler gate.** **Gate `r32_process` off for
+- `[x]` **F** — **D3: audio path + resampler gate.** **Gate `r32_process` off for
   Gemini** in `ln_realtime_send_audio` (:263-283 — the 16k→24k uplink resample at :275
   is currently unconditional; Gemini takes the AFE's native 16 kHz directly, mimeType
   `audio/pcm;rate=16000`). Downlink stays 24 kHz — existing decode/playback unchanged.
@@ -353,25 +353,25 @@ Ordered tasks:
   flush, `goAway` → reconnect (the existing reconnect already re-fetches a fresh
   session, which re-mints the token — resumption handle carriage added on top).
   Tool calls: same `POST /api/v1/tools/invoke` flow as the other modes.
-- `[ ]` **H** — **D4: TLS sanity.** Confirm the build ships the full ESP-IDF cert
+- `[x]` **H** — **D4: TLS sanity.** Confirm the build ships the full ESP-IDF cert
   bundle (GTS roots for `generativelanguage.googleapis.com`); no per-host pinning
   exists (`esp_crt_bundle_attach` global — ln_realtime.c:560, ln_rt_session.c:226).
 
-### Phase E — Verification (WS-G; after B/C/D)  `[ ]`
+### Phase E — Verification (WS-G; after B/C/D)  `[~]`  (automated done; live-audio items = owner handoff)
 
-- `[ ]` **S** — **E1: cross-engine parity test.** Pin one device to
+- `[!]` **S** — **E1: cross-engine parity test.** Pin one device to
   `gemini-flash-live`, one to `openai-realtime`: transcripts land in the same sink with
   correct `engine` tags; tools invoke identically; topics/memory extraction runs;
   conversation cost populates from Gemini `usageMetadata` at Gemini rates; barge-in
   interrupts playback on both; a persona switch audibly changes the Gemini voice per
   the D4b mapping and a user `geminiVoice` setting overrides it.
-- `[ ]` **S** — **E2: lifecycle test.** A >10-min web session survives the goAway
+- `[!]` **S** — **E2: lifecycle test.** A >10-min web session survives the goAway
   recycle via resumption handle; a >30-min session re-fetches a fresh token and
   resumes; quota gate still fires pre-mint.
-- `[ ]` **H** — **E3: regression.** OpenAI-pinned and (disabled) Nova paths
+- `[x]` **H** — **E3: regression.** OpenAI-pinned and (disabled) Nova paths
   byte-identical: broker tests, `render_test.go` CSP, settings round-trip, firmware
   OpenAI smoke.
-- `[ ]` **H** — **E4: docs close-out.** `docs/voice-engines.md` three-engine final,
+- `[x]` **H** — **E4: docs close-out.** `docs/voice-engines.md` three-engine final,
   plan.md cross-reference (M13 row in roadmap + this file), §10 notes complete.
 
 ---
@@ -435,8 +435,12 @@ tests pass locally; client phases merge per-surface when their smoke passes.
 
 ## 10. Implementation Notes (append-only; RESUME STATE convention per plan.md §8)
 
-> **RESUME STATE — Phase 0 PASSED 2026-07-19 (both T0 and T1). GEMINI_API_KEY GitHub
-> secret set by owner. Next action: Phase A (server), then B/C/D in parallel.**
+> **RESUME STATE — M13 CODE-COMPLETE + DEPLOYED 2026-07-19.** Phases 0/A/B/C/D done;
+> E3/E4 done; **E1/E2 (live audio parity + lifecycle) are the OWNER HANDOFF** — see the
+> Phase E notes below. Commits: 8f32d1b (server), 6efa476 (web), 35b89aa (Android,
+> compile-unverified — no JDK/Android CI; owner's next Studio build is the gate),
+> 968d373 (firmware, HIL-unverified per D1). All deploys green; GEMINI_API_KEY synced
+> to SSM (verified present). `go test ./...` green; JS syntax-checked.**
 
 ### Phase 0 results (2026-07-19, spike run locally against live Gemini API)
 
@@ -516,5 +520,57 @@ only, and deleted after the run.
   resolution table, unavailable/mint-failure, nova-untouched; minter constraint/
   setup-shape tests; tool-declaration mirror; persona-mapping totality; catalog
   pin (30 + Kore default); rates; settings validation cases.
+
+### Phase B/C/D notes (2026-07-19)
+
+- **Web (6efa476):** `#connectGemini` forked from the Nova WSS skeleton; binary-frame
+  JSON handled via TextDecoder (Google sends JSON in binary frames); per-utterance
+  synthetic itemIds (`g-user-N`/`g-asst-N`); goAway reconnects defer to the turn
+  boundary while speaking (accepted edge: a close before turnComplete degrades to the
+  normal connectionlost path); usage mapped into the OpenAI-shaped payload the cost
+  badge prices (per-turn latest-wins — WATCH in E1: if Google ever streams cumulative
+  counts the badge overcounts). Transcript engine tag: gemini sessions tag
+  `gemini-flash-live`; OpenAI/Nova keep their model-id tags byte-for-byte (coordinator
+  corrected the subagent's broader change). `commitTurn()` is a no-op (auto-VAD owns
+  turn boundaries).
+- **Android (35b89aa):** `GeminiLiveTransport` (~820 lines) forked from
+  NovaBridgeTransport; new no-op `prime(session)` transport seam carries the setup
+  frame without downcasts; parse extracted into pure `parseSession()` + regression
+  tests. **Compile-unverified** (no JDK/Android SDK on the build machine; repo has no
+  Android CI) — statically cross-checked against the broker contract.
+- **Firmware (968d373, HIL-unverified):** implemented against the post-rebase
+  decoupled-uplink refactor (upstream moved under us mid-flight; re-based cleanly).
+  Gemini uplink bypasses `r32_process` (AFE-native 16 kHz). Binary WS frames parsed as
+  JSON on the Gemini engine only. **Plan correction discovered:** firmware has NO
+  tool-invoke plumbing on ANY engine (OpenAI function_calls are intentionally ignored
+  on-device) — §4-D3's "same flow as the other modes" did not exist. Decision: every
+  Gemini functionCall is answered immediately with a structured
+  `{"error":"tool execution is not available on this device"}` toolResponse so turns
+  never stall (strictly better than the OpenAI path's silent ignore); full on-device
+  invocation is a **backlog item**. TLS: full IDF cert bundle already ships — no change.
+- **Coordination event:** owner pushed 8 commits mid-execution (Tab5 SDIO/mbedTLS/
+  uplink refactor + Android LWA broker auth); rebased before any agent had written,
+  firmware agent re-read the refactored files from scratch.
+
+### Phase E status (2026-07-19)
+
+- **E3 (regression) `[x]`:** full `go test ./...` green post-everything (0 failures),
+  `go vet` clean, `node --check` clean on all touched .mjs, render_test CSP updated,
+  broker shape tests include the no-wsUrl-family guard, settings round-trip covered.
+  OpenAI/Nova code paths verified byte-identical by review + tests.
+- **E4 (docs) `[x]`:** docs/voice-engines.md three-engine, contracts/api.md third
+  shape, plan.md M13 rows, this file.
+- **E1/E2 `[!]` OWNER HANDOFF (live audio required — automation profile mic is
+  hard-blocked, same constraint as M12's Nova verification):**
+  1. Settings → Voice engine → pin a device (or the default) to **Gemini Flash Live**;
+     optionally pick a Gemini voice (else persona mapping ?? Kore).
+  2. Speak a few turns: expect audio replies, live captions, transcript in History
+     tagged `gemini-flash-live`, cost column priced at Gemini rates.
+  3. Ask it to use a tool (e.g. weather) — web/Android should execute it; the Tab5
+     should say tool execution isn't available on-device.
+  4. Barge-in mid-reply — playback should cut instantly.
+  5. Keep one session past ~10 min (goAway recycle should be seamless) and past
+     ~30 min (token re-mint + resume should be seamless).
+  6. Switch personas and confirm the Gemini voice changes per the D4b mapping.
 
 _(notes accrue here per task as execution proceeds)_
