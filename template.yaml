@@ -664,7 +664,8 @@ Resources:
         Statement:
         - Sid: SesSend
           Effect: Allow
-          Action: []
+          Action:
+          - ses:SendEmail
           Resource:
           - !Sub "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/jeremy.ninja"
           - !Sub "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/jeremy@jeremy.ninja"

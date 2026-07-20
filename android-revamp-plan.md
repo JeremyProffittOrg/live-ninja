@@ -53,7 +53,7 @@ Serial:  M6 (integration + first shippable build) → M7 (SHIP v1) → M8 (picke
 
 ---
 
-## M1 — Stability: crash-on-load fixes + settings schema `[ ]`
+## M1 — Stability: crash-on-load fixes + settings schema `[~]` (launched 08:10 ET)
 
 **Agent:** Stability agent. **DoD:** app cannot die from credential-store corruption; all new settings keys exist with owner defaults and round-trip tests pass; `testDebugUnitTest` + `assembleDebug` green; committed & pushed.
 
@@ -86,7 +86,7 @@ _(placeholder)_
 
 ---
 
-## M3 — Logging core `[ ]`
+## M3 — Logging core `[~]` (launched 08:10 ET)
 
 **Agent:** Logging agent. **DoD:** `LNLog`/`LogSink` operational with redaction proven by tests; export zip + viewer composable built (manifest/nav hookup deferred to M6); tests + build green; committed & pushed.
 
@@ -117,7 +117,7 @@ _(placeholder)_
 
 ---
 
-## M5 — CI delivery pipeline prep `[ ]`
+## M5 — CI delivery pipeline prep `[~]` (launched 08:10 ET)
 
 **Agent:** Delivery agent. **DoD:** `android-release.yml` merged; debug keystore stored as GH secret; APK slimmed to arm64; SES-permission path resolved with fallback; ready for one-click dispatch at M7.
 
@@ -209,13 +209,12 @@ _(placeholder)_
 
 ---
 
-## M12 — OPTIONAL emulator provisioning `[ ]` (parallel from t=0, non-blocking, may fail)
+## M12 — OPTIONAL emulator provisioning `[x]` (done 08:35 ET)
 
-- `[ ]` **M12.1** (Sonnet) `sdkmanager "system-images;android-35;google_apis;x86_64"` → `avdmanager create avd` → boot with WHPX (Windows 11 Home — WHPX may be unavailable; try AEHD next; if neither, mark `[!]` failed and drop, zero impact on ship path).
-- `[ ]` **M12.2** (Sonnet) If booted: becomes gate M7.0 — install APK, cold-launch smoke, HAL-theme screenshots (attach to EOD email).
+- `[x]` **M12.1** SUCCESS: AVD `liveninja-test` (pixel profile, API 35 google_apis/x86_64), WHPX acceleration, ~35s cold boot. Relaunch: `%LOCALAPPDATA%\Android\Sdk\emulator\emulator.exe -avd liveninja-test -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect`; poll `adb shell getprop sys.boot_completed`; kill via `adb emu kill`. Gotcha: `avdmanager create avd` prompts interactively — pipe `echo "no" |`.
+- `[x]` **M12.2** M7.0 smoke gate is now ENABLED (install all-ABI local APK — emulator is x86_64, do NOT use the arm64-only CI flag for the smoke build). Details in scratchpad notes-M12.md.
 
-**Implementation notes:**
-_(placeholder)_
+**Implementation notes:** emulator verified working end-to-end; shut down cleanly, AVD retained.
 
 ---
 
