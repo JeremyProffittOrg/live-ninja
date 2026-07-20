@@ -320,6 +320,18 @@ func validateAndNormalizeSettings(doc map[string]any) string {
 	if s, ok := doc["turnDetection"].(string); !ok || !oneOf(s, "semantic_vad", "server_vad") {
 		return "turnDetection must be semantic_vad or server_vad"
 	}
+	// keepListeningSeconds: client-side post-reply session lifetime. 0 (the
+	// default, and the normalization for absent) means no client timeout —
+	// the mic listens until the user or the voice provider ends the session.
+	switch v := doc["keepListeningSeconds"].(type) {
+	case nil:
+		doc["keepListeningSeconds"] = float64(0)
+	default:
+		n, ok := numberVal(v)
+		if !ok || (n != 0 && n != 10 && n != 30 && n != 60 && n != 300) {
+			return "keepListeningSeconds must be one of 0, 10, 30, 60, 300"
+		}
+	}
 	// micEagerness: how quickly semantic VAD decides the user finished a
 	// turn. Optional for older clients — absent normalizes to auto.
 	switch e := doc["micEagerness"].(type) {

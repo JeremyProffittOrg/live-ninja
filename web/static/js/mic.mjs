@@ -44,6 +44,10 @@ export const MicState = Object.freeze({
 
 const LIVE_STATES = new Set([MicState.LISTENING, MicState.THINKING, MicState.SPEAKING]);
 
+// Legacy keep-warm grace, used only when the keepListeningSeconds setting is
+// unavailable (options.getKeepListeningSeconds not wired). The setting's 0
+// default means "no client timeout — listen until the user or the provider
+// ends the session" (owner decision 2026-07-19).
 const GRACE_MS = { ptt: 10_000, handsFree: 60_000 };
 const HOLD_MS = 400; // press shorter than this is a tap, longer is a hold
 const HANDSFREE_STORAGE_KEY = 'ln.handsFree';
@@ -166,6 +170,7 @@ export class MicController extends EventTarget {
   #createSession;
   #getMicDeviceId;
   #getWakePhrase;
+  #getKeepListeningSeconds;
   #prefetch;
 
   constructor(options = {}) {
@@ -185,6 +190,7 @@ export class MicController extends EventTarget {
     this.#createSession = options.createSession || (() => new RealtimeSession());
     this.#getMicDeviceId = options.getMicDeviceId || (() => null);
     this.#getWakePhrase = options.getWakePhrase || (() => '');
+    this.#getKeepListeningSeconds = options.getKeepListeningSeconds || null;
     this.#prefetch = options.prefetchSession || prefetchSession;
 
     this.#bindUI(doc);
@@ -544,7 +550,7 @@ export class MicController extends EventTarget {
   #armGrace() {
     this.#clearGrace();
     const handsFree = this.handsFree;
-    const ms = handsFree ? GRACE_MS.handsFree : GRACE_MS.ptt;
+    const ms = this.#graceMs(handsFree);
     if (handsFree && this.#session) {
       // Hands-free: mute the session mic so only the wake word resumes the
       // conversation; the wake engine keeps its own audio pipeline.
@@ -552,10 +558,26 @@ export class MicController extends EventTarget {
       this.#graceWaitingForWake = true;
       this.#setStatus(this.#idleHint(true));
     }
-    this.#graceTimer = setTimeout(() => {
-      this.#graceTimer = null;
-      this.end();
-    }, ms);
+    // ms === 0 → no client-side timeout: the session stays live (mic
+    // listening, or muted-awaiting-wake in hands-free) until the user ends
+    // it or the provider closes the session server-side.
+    if (ms > 0) {
+      this.#graceTimer = setTimeout(() => {
+        this.#graceTimer = null;
+        this.end();
+      }, ms);
+    }
+  }
+
+  /** Post-reply session lifetime: the keepListeningSeconds setting when the
+   * page wires it (0 = listen until the session ends — the default), else
+   * the legacy per-mode constants. */
+  #graceMs(handsFree) {
+    if (this.#getKeepListeningSeconds) {
+      const s = Number(this.#getKeepListeningSeconds());
+      if (Number.isFinite(s) && s >= 0) return s * 1000;
+    }
+    return handsFree ? GRACE_MS.handsFree : GRACE_MS.ptt;
   }
 
   #clearGrace() {

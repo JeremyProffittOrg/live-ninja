@@ -482,7 +482,7 @@ func (b *broker) handleGeminiDirect(ctx context.Context, l *slog.Logger, req Req
 		guideSuffix = realtime.GuideInstructions(guides)
 	}
 	persona := realtime.ResolvePersona(req.Persona)
-	instructions := persona.Instructions + accentDirective + guideSuffix
+	instructions := persona.Instructions + realtime.SessionDirectives + accentDirective + guideSuffix
 
 	start := time.Now()
 	res, err := b.geminiMint.Mint(ctx, gv.Voice, instructions)

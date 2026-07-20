@@ -446,6 +446,53 @@
           </label>
         </div>
       </fieldset>
+
+      {{- /* keepListeningSeconds (owner 2026-07-19): how long the mic keeps
+             listening after a reply before the CLIENT ends the session.
+             0 = never — the provider (or the user) ends it. This is a
+             client-side lifetime, not a VAD knob; wired in settings.mjs,
+             consumed by mic.mjs #armGrace via conversation.mjs. */}}
+      <fieldset class="ln-fieldset">
+        <legend class="ln-sr-only">Keep listening after replies</legend>
+        <p class="ln-muted" style="margin-top:16px">Keep listening — how long the mic stays open after each reply before the conversation ends on its own.</p>
+        <div class="ln-choices">
+          <label class="ln-choice">
+            <input type="radio" name="keepListening" value="0">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Until I end it</span>
+              <span class="ln-choice__desc">The mic keeps listening for your next question until you (or the voice service) end the session (recommended).</span>
+            </span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="keepListening" value="300">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">5 minutes</span>
+              <span class="ln-choice__desc">Ends the conversation after 5 quiet minutes.</span>
+            </span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="keepListening" value="60">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">1 minute</span>
+              <span class="ln-choice__desc">Ends the conversation after a quiet minute.</span>
+            </span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="keepListening" value="30">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">30 seconds</span>
+              <span class="ln-choice__desc">A short follow-up window.</span>
+            </span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="keepListening" value="10">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">10 seconds</span>
+              <span class="ln-choice__desc">The old snappy behavior — ends quickly after each reply.</span>
+            </span>
+          </label>
+        </div>
+      </fieldset>
     </section>
 
     <!-- ============ Appearance ============ -->

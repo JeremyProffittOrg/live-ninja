@@ -63,6 +63,10 @@ func DefaultSettings() map[string]any {
 		"personaPrefs":  map[string]any{},
 		"turnDetection": "semantic_vad",
 		"micEagerness":  "auto",
+		// keepListeningSeconds: post-reply client session lifetime. 0 = the
+		// mic keeps listening until the user or the voice provider ends the
+		// session (owner decision 2026-07-19 — no client-side timeout).
+		"keepListeningSeconds": 0,
 		// Two style zones (owner-locked defaults): the conversation page's
 		// live panel (orb/mic rail) runs hal9000 (red glowing eye), while the
 		// rest of the app runs the original ninja navy-and-teal look.

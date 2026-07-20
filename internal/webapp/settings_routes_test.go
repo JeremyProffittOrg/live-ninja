@@ -53,6 +53,10 @@ func TestValidateAndNormalizeSettings(t *testing.T) {
 		{"bad voiceEngine pin", func(d map[string]any) {
 			d["voiceEngine"] = map[string]any{"default": "openai-realtime", "devices": map[string]any{"dev1": "cassette"}}
 		}, false},
+		{"keepListening 0 ok", func(d map[string]any) { d["keepListeningSeconds"] = float64(0) }, true},
+		{"keepListening 300 ok", func(d map[string]any) { d["keepListeningSeconds"] = float64(300) }, true},
+		{"keepListening off-menu value bad", func(d map[string]any) { d["keepListeningSeconds"] = float64(45) }, false},
+		{"keepListening string bad", func(d map[string]any) { d["keepListeningSeconds"] = "forever" }, false},
 		{"gemini engine default pin ok", func(d map[string]any) {
 			d["voiceEngine"] = map[string]any{"default": "gemini-flash-live", "devices": map[string]any{}}
 		}, true},
@@ -146,6 +150,17 @@ func TestValidateAndNormalizeSettings(t *testing.T) {
 	}
 	if got := d["voiceAccent"]; got != "" {
 		t.Errorf("voiceAccent \"none\" should normalize to \"\", got %v", got)
+	}
+
+	// keepListeningSeconds normalization: absent -> 0 (no client timeout —
+	// listen until the user or the provider ends the session).
+	d = valid()
+	delete(d, "keepListeningSeconds")
+	if msg := validateAndNormalizeSettings(d); msg != "" {
+		t.Fatalf("absent keepListeningSeconds should validate, got %q", msg)
+	}
+	if got, _ := d["keepListeningSeconds"].(float64); got != 0 {
+		t.Errorf("absent keepListeningSeconds should normalize to 0, got %v", d["keepListeningSeconds"])
 	}
 
 	// geminiVoice normalization: absent -> "" (unset; the broker's Gemini

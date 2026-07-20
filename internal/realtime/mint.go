@@ -49,6 +49,24 @@ const memoryUsageDirective = "\n\nYou have persistent long-term memory from prev
 	"a personal fact without having searched. Use memory_write to save new lasting facts the user " +
 	"shares."
 
+// silenceDirective follows memoryUsageDirective in every session's
+// instructions. The session's mic keeps streaming through the keep-warm
+// window after a reply, so VAD regularly commits turns that are just room
+// noise or silence — without this the model "checks in" on every one
+// ("did you need anything?"), which in prod turned a quiet room into a
+// chatty loop (owner report 2026-07-19).
+const silenceDirective = "\n\nIf a turn contains no clear speech directed at you — silence, " +
+	"background noise, a side conversation, TV audio, or an unintelligible fragment — do not " +
+	"respond: say nothing at all and keep waiting. Never check in unprompted (no \"are you still " +
+	"there?\", no \"did you need anything else?\"). Speak only when the user has clearly said " +
+	"something meant for you."
+
+// SessionDirectives is the platform-level instruction block appended to
+// every persona's instructions at mint, on every engine (the OpenAI Minter
+// appends it itself; the broker's Gemini branch passes it explicitly since
+// GeminiMinter receives fully-composed instructions).
+const SessionDirectives = memoryUsageDirective + silenceDirective
+
 // ─── Accent directive (voiceAccent setting) ──────────────────────────────────
 //
 // The realtime voice set is fixed — "nationality" voices cannot be created —
@@ -617,7 +635,7 @@ func (m *Minter) Mint(ctx context.Context, personaID, voice, eagerness, instruct
 			// "Unknown parameter" (broke every mint in prod 2026-07-18).
 			"input": buildAudioInput(eagerness),
 		},
-		"instructions": persona.Instructions + memoryUsageDirective + instructionsSuffix,
+		"instructions": persona.Instructions + SessionDirectives + instructionsSuffix,
 		"tools":        toolManifest,
 	}
 	body, err := json.Marshal(map[string]any{

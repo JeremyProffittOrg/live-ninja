@@ -310,6 +310,12 @@ function renderField(key) {
       if (r) r.checked = true;
       break;
     }
+    case 'keepListeningSeconds': {
+      const v = Number.isFinite(Number(doc.keepListeningSeconds)) ? Number(doc.keepListeningSeconds) : 0;
+      const r = document.querySelector(`input[name="keepListening"][value="${v}"]`);
+      if (r) r.checked = true;
+      break;
+    }
     case 'micEagerness': {
       const r = document.querySelector(`input[name="micEagerness"][value="${CSS.escape(doc.micEagerness || 'auto')}"]`);
       if (r) r.checked = true;
@@ -1044,6 +1050,18 @@ for (const r of document.querySelectorAll('input[name="micEagerness"]')) {
   });
 }
 
+// ---- keep listening after replies ---------------------------------------
+// 0 = no client timeout: the mic listens until the user or the voice
+// provider ends the session (default; owner decision 2026-07-19).
+
+for (const r of document.querySelectorAll('input[name="keepListening"]')) {
+  r.addEventListener('change', () => {
+    if (!r.checked) return;
+    doc.keepListeningSeconds = Number(r.value);
+    markChanged('keepListeningSeconds');
+  });
+}
+
 // ---- appearance: two style zones + accent color -------------------------
 // appStyle themes everything outside the live panel (<html>); liveStyle
 // themes the conversation page's orb/mic rail (#livePanel). The server
@@ -1384,6 +1402,7 @@ renderField('wakeEngine');
 renderField('sensitivity');
 renderField('turnDetection');
 renderField('micEagerness');
+renderField('keepListeningSeconds');
 renderField('theme'); // also applies the theme attribute + localStorage
 renderField('privacy');
 renderField('appearance');

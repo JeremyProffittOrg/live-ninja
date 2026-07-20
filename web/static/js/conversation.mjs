@@ -986,6 +986,12 @@ let wakeStarting = false;
 const mic = new MicController({
   getMicDeviceId: () => (settingsDoc && typeof settingsDoc.micDeviceId === 'string' ? settingsDoc.micDeviceId : null),
   getWakePhrase: () => wakePhraseText(),
+  // Post-reply session lifetime (0 = keep listening until the user or the
+  // provider ends the session — the default; owner decision 2026-07-19).
+  getKeepListeningSeconds: () => {
+    const v = settingsDoc && Number(settingsDoc.keepListeningSeconds);
+    return Number.isFinite(v) && v >= 0 ? v : 0;
+  },
 });
 
 // onBeforeFinal: right before the sink sends a session's one-and-only
