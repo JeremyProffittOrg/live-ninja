@@ -154,7 +154,7 @@ _(placeholder)_
 
 ---
 
-## M7 — SHIP v1 (APK link emailed) `[ ]`
+## M7 — SHIP v1 (APK link emailed) `[x]` (SHIPPED 09:12 ET — smoke PASS commit b318a33, CI run 29744831564 after gradlew exec-bit fix, URL verified 200: liveninja-3055b3a.apk 92.5MB arm64, link email sent via local SES)
 
 **Agent:** Delivery agent. **DoD: owner has a working APK download link in his inbox.** *Deps:* M6 (and M12 smoke gate ONLY if the emulator provisioned successfully).
 
@@ -204,7 +204,7 @@ _(placeholder)_
 
 ---
 
-## M11 — Owner-assist: "Hey Live Ninja" training kickoff `[ ]` (parallel, non-blocking)
+## M11 — Owner-assist: "Hey Live Ninja" training kickoff `[~]` (owner triggered this morning; model auto-downloads on completion)
 
 - `[~]` **M11.1** (owner-assist) Owner confirmed 2026-07-20: kicking off "Hey Live Ninja" training NOW from their phone via live.jeremy.ninja (signed-in session → wake words → create custom phrase). Android `ModelManager.sync` fetches + hot-swaps the model when ready — zero Android code needed. Do NOT relabel to "Hey Jarvis" (owner decision).
 
