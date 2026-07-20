@@ -7,13 +7,14 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import ninja.jeremy.liveninja.MainActivity
 import ninja.jeremy.liveninja.R
+import ninja.jeremy.liveninja.log.LNLog
+import ninja.jeremy.liveninja.log.LogCategory
 
 /**
  * Restarts [WakeWordService] after reboot / app update when the user had it enabled
@@ -40,11 +41,11 @@ class WakeBootReceiver : BroadcastReceiver() {
 
         try {
             WakeWordService.start(context)
-            Log.i(TAG, "wake service restarted after ${intent.action}")
+            LNLog.i(LogCategory.WAKE, TAG, "wake service restarted after ${intent.action}")
         } catch (e: Exception) {
             val expected = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
                 e is ForegroundServiceStartNotAllowedException
-            if (!expected) Log.w(TAG, "boot restart failed", e)
+            if (!expected) LNLog.w(LogCategory.WAKE, TAG, "boot restart failed", e)
             postResumeNotification(context)
         }
     }
@@ -79,7 +80,7 @@ class WakeBootReceiver : BroadcastReceiver() {
             .build()
         ContextCompat.getSystemService(context, NotificationManager::class.java)
             ?.notify(WakeWordService.NOTIFICATION_ID + 1, notification)
-        Log.i(TAG, "posted tap-to-resume notification (mic FGS not allowed from boot)")
+        LNLog.i(LogCategory.WAKE, TAG, "posted tap-to-resume notification (mic FGS not allowed from boot)")
     }
 
     companion object {

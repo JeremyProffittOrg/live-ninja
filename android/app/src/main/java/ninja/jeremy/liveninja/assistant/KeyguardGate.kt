@@ -7,13 +7,14 @@ import android.hardware.biometrics.BiometricManager
 import android.hardware.biometrics.BiometricPrompt
 import android.os.Build
 import android.os.CancellationSignal
-import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.concurrent.Executor
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
+import ninja.jeremy.liveninja.log.LNLog
+import ninja.jeremy.liveninja.log.LogCategory
 
 /**
  * Keyguard + biometric gating for assistant sessions launched over the lock
@@ -62,12 +63,12 @@ class KeyguardGate @Inject constructor(
                     }
 
                     override fun onDismissCancelled() {
-                        Log.i(TAG, "Keyguard dismiss cancelled by user")
+                        LNLog.i(LogCategory.GENERAL, TAG, "Keyguard dismiss cancelled by user")
                         if (cont.isActive) cont.resume(false)
                     }
 
                     override fun onDismissError() {
-                        Log.w(TAG, "Keyguard dismiss error")
+                        LNLog.w(LogCategory.GENERAL, TAG, "Keyguard dismiss error")
                         if (cont.isActive) cont.resume(false)
                     }
                 },
@@ -111,7 +112,7 @@ class KeyguardGate @Inject constructor(
                 }
 
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence?) {
-                    Log.i(TAG, "Biometric gate declined ($errorCode): $errString")
+                    LNLog.i(LogCategory.GENERAL, TAG, "Biometric gate declined ($errorCode): $errString")
                     if (cont.isActive) cont.resume(false)
                 }
                 // onAuthenticationFailed = one bad attempt; the prompt stays up,

@@ -4,8 +4,9 @@ import android.content.Context
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
-import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
+import ninja.jeremy.liveninja.log.LNLog
+import ninja.jeremy.liveninja.log.LogCategory
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
@@ -176,7 +177,7 @@ class WebRtcTransport @Inject constructor(
         try {
             withTimeout(ICE_GATHERING_TIMEOUT_MS) { gathering.await() }
         } catch (_: TimeoutCancellationException) {
-            Log.w(TAG, "ICE gathering incomplete after ${ICE_GATHERING_TIMEOUT_MS}ms; sending offer as-is")
+            LNLog.w(LogCategory.REALTIME, TAG, "ICE gathering incomplete after ${ICE_GATHERING_TIMEOUT_MS}ms; sending offer as-is")
         }
 
         val localSdp = pc.localDescription?.description
@@ -219,7 +220,7 @@ class WebRtcTransport @Inject constructor(
                 val bytes = event.toString().toByteArray(StandardCharsets.UTF_8)
                 dc.send(DataChannel.Buffer(ByteBuffer.wrap(bytes), false))
             }
-        }.onFailure { Log.w(TAG, "sendEvent failed", it) }
+        }.onFailure { LNLog.w(LogCategory.REALTIME, TAG, "sendEvent failed", it) }
     }
 
     override fun setMicMuted(muted: Boolean) {
@@ -301,7 +302,7 @@ class WebRtcTransport @Inject constructor(
             else -> Unit
         }
         if (!_events.tryEmit(event)) {
-            Log.w(TAG, "event buffer full; dropped ${event::class.simpleName}")
+            LNLog.w(LogCategory.REALTIME, TAG, "event buffer full; dropped ${event::class.simpleName}")
         }
     }
 
@@ -451,7 +452,7 @@ class WebRtcTransport @Inject constructor(
         }
 
         override fun onStateChange() {
-            Log.d(TAG, "oai-events channel state: ${runCatching { channel.state() }.getOrNull()}")
+            LNLog.d(LogCategory.REALTIME, TAG, "oai-events channel state: ${runCatching { channel.state() }.getOrNull()}")
         }
 
         override fun onBufferedAmountChange(previousAmount: Long) {}

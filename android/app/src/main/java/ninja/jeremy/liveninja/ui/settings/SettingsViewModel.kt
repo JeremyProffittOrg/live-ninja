@@ -1,9 +1,13 @@
 package ninja.jeremy.liveninja.ui.settings
 
 import android.content.Context
+import android.content.Intent
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -18,9 +22,12 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import ninja.jeremy.liveninja.log.LogExporter
+import ninja.jeremy.liveninja.log.LogSink
 import ninja.jeremy.liveninja.net.LiveNinjaApi
 import ninja.jeremy.liveninja.net.WakeWordCreateRequest
 import ninja.jeremy.liveninja.ui.state.AccountActions
+import ninja.jeremy.liveninja.ui.state.DiagnosticsConfig
 import ninja.jeremy.liveninja.ui.state.SettingsDocument
 import ninja.jeremy.liveninja.ui.state.SettingsStore
 import ninja.jeremy.liveninja.ui.state.SignInLauncher
@@ -81,6 +88,8 @@ data class SettingsUiState(
     val customPhrase: String = "",
     val customJob: CustomWakeJob? = null,
     val customRequestInProgress: Boolean = false,
+    /** True when Live Ninja is exempt from Doze battery optimization (01-platform §C). */
+    val batteryOptimizationIgnored: Boolean = false,
 ) {
     val customPhraseValid: Boolean
         get() = SettingsViewModel.isValidWakePhrase(customPhrase)
@@ -95,6 +104,8 @@ class SettingsViewModel @Inject constructor(
     private val modelManager: ModelManager,
     private val wakePrefs: WakePreferences,
     private val customStore: CustomWakeWordStore,
+    private val logSink: LogSink,
+    private val logExporter: LogExporter,
     private val accountActions: Optional<AccountActions>,
     signInLauncher: Optional<SignInLauncher>,
 ) : ViewModel() {
@@ -107,6 +118,7 @@ class SettingsViewModel @Inject constructor(
             porcupineAvailable = ninja.jeremy.liveninja.BuildConfig.PORCUPINE_ENABLED,
             accountActionsAvailable = accountActions.isPresent,
             customJob = customStore.load(),
+            batteryOptimizationIgnored = isIgnoringBatteryOptimizations(),
         ),
     )
     val state: StateFlow<SettingsUiState> = _state
@@ -366,6 +378,54 @@ class SettingsViewModel @Inject constructor(
             _state.update { it.copy(geminiVoices = options) }
         }
     }
+
+    // ---- Voice & Screen (01-platform §B-iv) ----
+    fun setLockedSessions(enabled: Boolean) = settingsStore.setLockedSessions(enabled)
+    fun setWakeScreenOnWake(enabled: Boolean) = settingsStore.setWakeScreenOnWake(enabled)
+    fun setKeepScreenOn(enabled: Boolean) = settingsStore.setKeepScreenOn(enabled)
+
+    // ---- Battery optimization health (01-platform §C) ----
+
+    /** Re-read the Doze exemption state (call when returning from the system prompt). */
+    fun refreshBatteryStatus() =
+        _state.update { it.copy(batteryOptimizationIgnored = isIgnoringBatteryOptimizations()) }
+
+    /**
+     * Intent that opens the per-app "ignore battery optimizations" system
+     * prompt. Requires the REQUEST_IGNORE_BATTERY_OPTIMIZATIONS permission
+     * (declared in the manifest). Launched from the screen so the result can be
+     * observed on ON_RESUME via [refreshBatteryStatus].
+     */
+    fun batteryExemptionIntent(): Intent =
+        Intent(
+            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+            Uri.parse("package:${context.packageName}"),
+        )
+
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        return pm.isIgnoringBatteryOptimizations(context.packageName)
+    }
+
+    // ---- Diagnostics / verbose logging (04-logging §A5) ----
+    fun setDiagnosticsEnabled(enabled: Boolean) = settingsStore.setDiagnosticsEnabled(enabled)
+    fun setDiagnosticsMinLevel(level: String) = settingsStore.setDiagnosticsMinLevel(level)
+    fun setDiagnosticsCategory(category: String, enabled: Boolean) =
+        settingsStore.setDiagnosticsCategory(category, enabled)
+
+    /** Select-all / select-none for the eight capture categories, preserving enabled + minLevel. */
+    fun setAllDiagnosticsCategories(enabled: Boolean) {
+        val current = _state.value.doc.diagnostics
+        settingsStore.setDiagnostics(
+            current.copy(categories = DiagnosticsConfig.CATEGORY_KEYS.associateWith { enabled }),
+        )
+    }
+
+    /** Flush + zip the logs and return an ACTION_SEND share Intent (null = nothing to export). */
+    suspend fun exportLogs(): Intent? = logExporter.exportZip()
+
+    /** Clear the in-app ring buffer (rotated files on disk are unaffected). */
+    fun clearLogs() = logSink.clear()
 
     // ---- Audio ----
     fun setMicDevice(id: String?) = settingsStore.setMicDeviceId(id)

@@ -7,7 +7,6 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.provider.Settings
-import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -17,6 +16,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
+import ninja.jeremy.liveninja.log.LNLog
+import ninja.jeremy.liveninja.log.LogCategory
 
 /**
  * `ROLE_ASSISTANT` acquisition flow (plan.md M4, Android §2).
@@ -68,7 +69,7 @@ class AssistantRoleController @Inject constructor(
     fun requestRoleIntent(): Intent? {
         val rm = roleManager ?: return null
         if (!rm.isRoleAvailable(RoleManager.ROLE_ASSISTANT)) {
-            Log.w(TAG, "ROLE_ASSISTANT unavailable on this device")
+            LNLog.w(LogCategory.GENERAL, TAG, "ROLE_ASSISTANT unavailable on this device")
             return null
         }
         return rm.createRequestRoleIntent(RoleManager.ROLE_ASSISTANT)
@@ -136,18 +137,18 @@ class AssistantRoleController @Inject constructor(
             if (candidate.resolveActivity(context.packageManager) == null) continue
             return try {
                 activityContext.startActivity(candidate)
-                Log.i(TAG, "Opened assistant settings via ${candidate.component ?: candidate.action}")
+                LNLog.i(LogCategory.GENERAL, TAG, "Opened assistant settings via ${candidate.component ?: candidate.action}")
                 candidate
             } catch (e: ActivityNotFoundException) {
                 // Resolved but launch-blocked (OEM lockdown) — try the next one.
-                Log.w(TAG, "Assistant settings candidate refused to launch: $candidate", e)
+                LNLog.w(LogCategory.GENERAL, TAG, "Assistant settings candidate refused to launch: $candidate", e)
                 continue
             } catch (e: SecurityException) {
-                Log.w(TAG, "Assistant settings candidate not launchable: $candidate", e)
+                LNLog.w(LogCategory.GENERAL, TAG, "Assistant settings candidate not launchable: $candidate", e)
                 continue
             }
         }
-        Log.e(TAG, "No assistant settings screen resolvable on this device")
+        LNLog.e(LogCategory.GENERAL, TAG, "No assistant settings screen resolvable on this device")
         return null
     }
 

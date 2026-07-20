@@ -52,6 +52,7 @@ import ninja.jeremy.liveninja.ui.onboarding.OnboardingScreen
 import ninja.jeremy.liveninja.ui.screens.ConversationScreen
 import ninja.jeremy.liveninja.ui.screens.FilesScreen
 import ninja.jeremy.liveninja.ui.screens.HistoryScreen
+import ninja.jeremy.liveninja.ui.screens.LogViewerScreen
 import ninja.jeremy.liveninja.ui.screens.MemoryScreen
 import ninja.jeremy.liveninja.ui.screens.SettingsScreen
 
@@ -93,6 +94,9 @@ enum class TopLevelDestination(
         unselectedIcon = Icons.Outlined.Settings,
     ),
 }
+
+/** Internal, non-tab nav route for the diagnostics log viewer (M6.4). */
+private const val ROUTE_LOG_VIEWER = "logviewer"
 
 /**
  * @param assistTriggers assistant activations ([ninja.jeremy.liveninja.assistant.AssistantEvents.triggers]);
@@ -203,7 +207,16 @@ fun LiveNinjaRoot(assistTriggers: SharedFlow<AssistTrigger> = MutableSharedFlow(
             composable(TopLevelDestination.HISTORY.route) { HistoryScreen() }
             composable(TopLevelDestination.MEMORY.route) { MemoryScreen() }
             composable(TopLevelDestination.FILES.route) { FilesScreen() }
-            composable(TopLevelDestination.SETTINGS.route) { SettingsScreen() }
+            composable(TopLevelDestination.SETTINGS.route) {
+                SettingsScreen(
+                    onOpenLogViewer = { navController.navigate(ROUTE_LOG_VIEWER) },
+                )
+            }
+            // Internal (non-tab) route reached from Settings › Diagnostics ›
+            // View logs (M6.4). Not a TopLevelDestination — no bottom-nav entry.
+            composable(ROUTE_LOG_VIEWER) {
+                LogViewerScreen(onBack = { navController.popBackStack() })
+            }
         }
     }
 }

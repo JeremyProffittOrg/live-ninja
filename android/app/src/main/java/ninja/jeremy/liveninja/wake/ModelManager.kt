@@ -1,8 +1,9 @@
 package ninja.jeremy.liveninja.wake
 
 import android.content.Context
-import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
+import ninja.jeremy.liveninja.log.LNLog
+import ninja.jeremy.liveninja.log.LogCategory
 import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
@@ -129,7 +130,7 @@ class ModelManager @Inject constructor(
             val manifest = try {
                 fetchManifest(wakeWordId, token)
             } catch (e: IOException) {
-                Log.w(TAG, "manifest fetch failed for $wakeWordId", e)
+                LNLog.w(LogCategory.WAKE, TAG, "manifest fetch failed for $wakeWordId", e)
                 return@withLock ModelSyncResult.Failed(e.message ?: "manifest fetch failed")
             } ?: return@withLock ModelSyncResult.Failed("manifest unavailable (training/404)")
 
@@ -137,7 +138,8 @@ class ModelManager @Inject constructor(
                 UNDERSTOOD_FORMATS[engine]?.contains(manifest.format) != true
             ) {
                 // Contract: unsupported format -> do not swap, keep previous, report.
-                Log.w(
+                LNLog.w(
+                    LogCategory.WAKE,
                     TAG,
                     "telemetry wakeword_model_unsupported_format id=$wakeWordId " +
                         "engine=${manifest.engine} format=${manifest.format}",
@@ -163,12 +165,13 @@ class ModelManager @Inject constructor(
                     downloadHashing(manifest.url, manifest.sizeBytes, part)
                 } catch (e: IOException) {
                     part.delete()
-                    Log.w(TAG, "model download failed for $wakeWordId", e)
+                    LNLog.w(LogCategory.WAKE, TAG, "model download failed for $wakeWordId", e)
                     return@withLock ModelSyncResult.Failed(e.message ?: "download failed")
                 }
                 if (!computed.equals(manifest.sha256, ignoreCase = true)) {
                     part.delete()
-                    Log.w(
+                    LNLog.w(
+                        LogCategory.WAKE,
                         TAG,
                         "telemetry wakeword_model_verify_failed id=$wakeWordId " +
                             "expected=${manifest.sha256} got=$computed",
@@ -185,7 +188,7 @@ class ModelManager @Inject constructor(
             storeActive(engine, ref, manifest.format)
             if (engine == WakePreferences.ENGINE_OPENWAKEWORD) _headModel.value = ref
             pruneStale(engineDir, keep = target.name)
-            Log.i(TAG, "wake model active: $wakeWordId sha=${manifest.sha256.take(12)} ($engine)")
+            LNLog.i(LogCategory.WAKE, TAG, "wake model active: $wakeWordId sha=${manifest.sha256.take(12)} ($engine)")
             ModelSyncResult.Active(ref)
         }
     }
@@ -272,7 +275,7 @@ class ModelManager @Inject constructor(
                 sha256 = json.getString("sha256"),
             )
         } catch (e: Exception) {
-            Log.w(TAG, "corrupt active-model state for $engine; falling back", e)
+            LNLog.w(LogCategory.WAKE, TAG, "corrupt active-model state for $engine; falling back", e)
             null
         }
     }

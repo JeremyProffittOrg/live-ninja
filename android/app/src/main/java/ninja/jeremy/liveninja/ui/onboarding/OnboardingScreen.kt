@@ -23,6 +23,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Assistant
+import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mic
@@ -105,6 +106,10 @@ fun OnboardingScreen(
     val overlayLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { viewModel.onOverlayReturned() }
+
+    val batteryLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { viewModel.refreshStatuses() }
 
     val stepIndex = OnboardingStep.entries.indexOf(state.step)
     val stepCount = OnboardingStep.entries.size
@@ -212,6 +217,12 @@ fun OnboardingScreen(
                         },
                         onNext = viewModel::next,
                         onSkip = viewModel::onRoleSkipped,
+                    )
+
+                    OnboardingStep.BATTERY -> BatteryStep(
+                        ignored = state.batteryOptimizationIgnored,
+                        onExempt = { batteryLauncher.launch(viewModel.batteryExemptionIntent()) },
+                        onNext = viewModel::next,
                     )
 
                     OnboardingStep.WAKE_WORD -> WakeWordStep(
@@ -357,6 +368,20 @@ private fun MicPermissionStep(
             Text(
                 stringResource(R.string.onboarding_mic_disclosure_body),
                 style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+    }
+    // Persistent green-mic-indicator expectation-setting (01-platform §C).
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                stringResource(R.string.onboarding_mic_indicator_title),
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                stringResource(R.string.onboarding_mic_indicator_body),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
@@ -525,6 +550,39 @@ private fun AssistantRoleStep(
             onClick = onSkip,
             modifier = Modifier.heightIn(min = 48.dp),
         ) { Text(stringResource(R.string.onboarding_role_skip)) }
+    }
+}
+
+@Composable
+private fun BatteryStep(
+    ignored: Boolean,
+    onExempt: () -> Unit,
+    onNext: () -> Unit,
+) {
+    StepHeader(
+        icon = Icons.Filled.BatteryFull,
+        title = stringResource(R.string.onboarding_battery_title),
+        body = stringResource(R.string.onboarding_battery_body),
+    )
+    if (ignored) {
+        StatusCard(text = stringResource(R.string.onboarding_battery_done))
+        Button(
+            onClick = onNext,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp),
+        ) { Text(stringResource(R.string.onboarding_continue)) }
+    } else {
+        Button(
+            onClick = onExempt,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp),
+        ) { Text(stringResource(R.string.onboarding_battery_grant)) }
+        TextButton(
+            onClick = onNext,
+            modifier = Modifier.heightIn(min = 48.dp),
+        ) { Text(stringResource(R.string.onboarding_skip_for_now)) }
     }
 }
 

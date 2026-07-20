@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.CleaningServices
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Share
@@ -89,7 +90,7 @@ class LogViewerViewModel @Inject constructor(
 private val TIME_FORMAT = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
 @Composable
-fun LogViewerScreen(modifier: Modifier = Modifier) {
+fun LogViewerScreen(modifier: Modifier = Modifier, onBack: () -> Unit = {}) {
     val viewModel: LogViewerViewModel = hiltViewModel()
     val allEntries by viewModel.entries.collectAsState()
     val context = LocalContext.current
@@ -119,6 +120,7 @@ fun LogViewerScreen(modifier: Modifier = Modifier) {
                 totalCount = allEntries.size,
                 shownCount = filtered.size,
                 exporting = exporting,
+                onBack = onBack,
                 onCopyAll = {
                     val text = filtered.asReversed().joinToString("\n") { formatLine(it) }
                     clipboard.setText(AnnotatedString(text))
@@ -191,6 +193,7 @@ private fun HeaderBar(
     totalCount: Int,
     shownCount: Int,
     exporting: Boolean,
+    onBack: () -> Unit,
     onCopyAll: () -> Unit,
     onExport: () -> Unit,
     onClearRequested: () -> Unit,
@@ -199,6 +202,12 @@ private fun HeaderBar(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        IconButton(onClick = onBack) {
+            Icon(
+                Icons.AutoMirrored.Outlined.ArrowBack,
+                contentDescription = "Back",
+            )
+        }
         Column(Modifier.weight(1f)) {
             Text("Diagnostics Log", style = MaterialTheme.typography.titleMedium)
             Text(

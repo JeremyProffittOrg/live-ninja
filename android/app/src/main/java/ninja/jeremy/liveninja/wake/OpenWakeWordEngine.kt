@@ -11,8 +11,9 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Process
 import android.os.SystemClock
-import android.util.Log
 import androidx.core.content.ContextCompat
+import ninja.jeremy.liveninja.log.LNLog
+import ninja.jeremy.liveninja.log.LogCategory
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.nio.FloatBuffer
 import java.util.concurrent.Executors
@@ -139,13 +140,13 @@ class OpenWakeWordEngine @Inject constructor(
                 if (ref != activeModelRef) swapHead(ref)
             }
         }
-        Log.i(TAG, "started (model=${modelManager.headModel.value.wakeWordId})")
+        LNLog.i(LogCategory.WAKE, TAG, "started (model=${modelManager.headModel.value.wakeWordId})")
     }
 
     override suspend fun stop(): Unit = lifecycleMutex.withLock {
         if (!isRunning && captureJob == null) return
         cleanupLocked()
-        Log.i(TAG, "stopped")
+        LNLog.i(LogCategory.WAKE, TAG, "stopped")
     }
 
     /** Tear down jobs, mic, and sessions. Caller must hold [lifecycleMutex]. */
@@ -180,7 +181,7 @@ class OpenWakeWordEngine @Inject constructor(
             while (offset < chunk.size && isRunning) {
                 val n = record.read(chunk, offset, chunk.size - offset, AudioRecord.READ_BLOCKING)
                 if (n < 0) {
-                    Log.w(TAG, "AudioRecord.read error $n; capture loop dead")
+                    LNLog.w(LogCategory.WAKE, TAG, "AudioRecord.read error $n; capture loop dead")
                     // Mark not-running so the service supervisor notices and restarts us.
                     isRunning = false
                     return
@@ -209,7 +210,7 @@ class OpenWakeWordEngine @Inject constructor(
             val score = try {
                 pipeline.process(chunk)
             } catch (e: Exception) {
-                Log.e(TAG, "inference failure; resetting pipeline", e)
+                LNLog.e(LogCategory.WAKE, TAG, "inference failure; resetting pipeline", e)
                 pipeline.reset()
                 continue
             }
@@ -218,7 +219,7 @@ class OpenWakeWordEngine @Inject constructor(
             if (score >= threshold) {
                 val phrase = (activeModelRef?.wakeWordId ?: ModelManager.DEFAULT_ASSET_WAKE_WORD_ID)
                     .replace('-', ' ')
-                Log.i(TAG, "wake detected: \"$phrase\" score=%.3f thr=%.2f".format(score, threshold))
+                LNLog.i(LogCategory.WAKE, TAG, "wake detected: \"$phrase\" score=%.3f thr=%.2f".format(score, threshold))
                 _detections.tryEmit(WakeWordDetection(phrase, score, now))
                 refractoryUntil = now + REFRACTORY_MS
                 pipeline.reset()
@@ -259,10 +260,10 @@ class OpenWakeWordEngine @Inject constructor(
             headSession = fresh
             activeModelRef = ref
             old?.close()
-            Log.i(TAG, "hot-swapped head model -> ${ref.wakeWordId}")
+            LNLog.i(LogCategory.WAKE, TAG, "hot-swapped head model -> ${ref.wakeWordId}")
         } catch (e: Exception) {
             // Contract: a bad new model never takes down the active one.
-            Log.e(TAG, "head model swap failed; keeping previous model", e)
+            LNLog.e(LogCategory.WAKE, TAG, "head model swap failed; keeping previous model", e)
         }
     }
 

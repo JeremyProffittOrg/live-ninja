@@ -1,8 +1,9 @@
 package ninja.jeremy.liveninja.realtime
 
-import android.util.Log
 import javax.inject.Inject
 import javax.inject.Singleton
+import ninja.jeremy.liveninja.log.LNLog
+import ninja.jeremy.liveninja.log.LogCategory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -188,7 +189,7 @@ class RealtimeSessionCoordinator @Inject constructor(
                 // In-band server errors (e.g. a cancel racing a finished
                 // response) are usually benign; a fatal one also drops the
                 // peer connection, which the state watcher reports.
-                Log.w(TAG, "realtime server error ${event.code}: ${event.message}")
+                LNLog.w(LogCategory.REALTIME, TAG, "realtime server error ${event.code}: ${event.message}")
 
             is RealtimeEvent.SessionCreated,
             is RealtimeEvent.SessionUpdated,
@@ -252,7 +253,7 @@ class RealtimeSessionCoordinator @Inject constructor(
 
     private fun emit(event: SessionUiEvent) {
         if (!_events.tryEmit(event)) {
-            Log.w(TAG, "session event buffer full; dropped ${event::class.simpleName}")
+            LNLog.w(LogCategory.REALTIME, TAG, "session event buffer full; dropped ${event::class.simpleName}")
         }
     }
 

@@ -2,6 +2,10 @@
 
 package ninja.jeremy.liveninja.ui.screens
 
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,12 +20,18 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.filled.PlayCircleOutline
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -46,16 +56,19 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -63,11 +76,16 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 import ninja.jeremy.liveninja.R
 import ninja.jeremy.liveninja.ui.settings.SettingsNotice
 import ninja.jeremy.liveninja.ui.settings.SettingsViewModel
+import ninja.jeremy.liveninja.ui.state.DiagnosticsConfig
 import ninja.jeremy.liveninja.ui.state.SettingsDocument
+import ninja.jeremy.liveninja.ui.theme.LocalLiveNinjaColors
 
 /**
  * Settings tab — schema-driven form over contracts/settings.schema.json
@@ -76,12 +94,33 @@ import ninja.jeremy.liveninja.ui.state.SettingsDocument
  * is the custom-persona system instructions, the schema's one justified case.
  */
 @Composable
-fun SettingsScreen(modifier: Modifier = Modifier) {
+fun SettingsScreen(
+    modifier: Modifier = Modifier,
+    onOpenLogViewer: () -> Unit = {},
+) {
     val viewModel: SettingsViewModel = hiltViewModel()
     val state by viewModel.state.collectAsState()
     val doc = state.doc
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    // Re-check the battery-optimization exemption whenever the user returns from
+    // the system prompt (the result arrives out-of-band on ON_RESUME).
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshBatteryStatus()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val batteryLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { viewModel.refreshBatteryStatus() }
+
+    var exportingLogs by remember { mutableStateOf(false) }
+    var confirmClearLogs by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         viewModel.notices.collect { notice ->
@@ -627,6 +666,36 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
 
+            // ---------- Voice & Screen (01-platform §B-iv) ----------
+            SectionHeader(stringResource(R.string.settings_section_voice_screen))
+            LabeledSwitchRow(
+                label = stringResource(R.string.settings_locked_sessions_label),
+                description = stringResource(R.string.settings_locked_sessions_desc),
+                checked = doc.lockedSessions,
+                onCheckedChange = viewModel::setLockedSessions,
+            )
+            LabeledSwitchRow(
+                label = stringResource(R.string.settings_wake_screen_label),
+                description = stringResource(R.string.settings_wake_screen_desc),
+                checked = doc.wakeScreenOnWake,
+                onCheckedChange = viewModel::setWakeScreenOnWake,
+            )
+            LabeledSwitchRow(
+                label = stringResource(R.string.settings_keep_screen_on_label),
+                description = stringResource(R.string.settings_keep_screen_on_desc),
+                checked = doc.keepScreenOn,
+                onCheckedChange = viewModel::setKeepScreenOn,
+            )
+
+            // Battery-optimization health card + action row (01-platform §C).
+            BatteryHealthCard(
+                ignored = state.batteryOptimizationIgnored,
+                onExempt = { batteryLauncher.launch(viewModel.batteryExemptionIntent()) },
+                onRecheck = viewModel::refreshBatteryStatus,
+            )
+
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+
             // ---------- Appearance ----------
             SectionHeader(stringResource(R.string.settings_section_appearance))
             val themeChoices = listOf(
@@ -680,6 +749,135 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 selected = doc.retentionDays.toString(),
                 onSelect = { viewModel.setRetentionDays(it.toInt()) },
             )
+
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+
+            // ---------- Diagnostics (04-logging §A5) ----------
+            SectionHeader(stringResource(R.string.settings_section_diagnostics))
+            val diagnostics = doc.diagnostics
+            LabeledSwitchRow(
+                label = stringResource(R.string.settings_diagnostics_master_label),
+                description = stringResource(R.string.settings_diagnostics_master_desc),
+                checked = diagnostics.enabled,
+                onCheckedChange = viewModel::setDiagnosticsEnabled,
+            )
+            // Everything below only affects capture while logging is enabled.
+            if (diagnostics.enabled) {
+                LabeledRadioGroup(
+                    label = stringResource(R.string.settings_diagnostics_level_label),
+                    options = listOf(
+                        RadioOption("VERBOSE", stringResource(R.string.settings_diagnostics_level_verbose), null, true),
+                        RadioOption("DEBUG", stringResource(R.string.settings_diagnostics_level_debug), null, true),
+                        RadioOption("INFO", stringResource(R.string.settings_diagnostics_level_info), null, true),
+                        RadioOption("WARN", stringResource(R.string.settings_diagnostics_level_warn), null, true),
+                        RadioOption("ERROR", stringResource(R.string.settings_diagnostics_level_error), null, true),
+                    ),
+                    selected = diagnostics.minLevel,
+                    onSelect = viewModel::setDiagnosticsMinLevel,
+                )
+
+                // Category checkbox group (8) with select all / none.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        stringResource(R.string.settings_diagnostics_categories_label),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        onClick = { viewModel.setAllDiagnosticsCategories(true) },
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    ) { Text(stringResource(R.string.settings_diagnostics_select_all)) }
+                    TextButton(
+                        onClick = { viewModel.setAllDiagnosticsCategories(false) },
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    ) { Text(stringResource(R.string.settings_diagnostics_select_none)) }
+                }
+                DiagnosticsCategories(
+                    categories = diagnostics.categories,
+                    onToggle = viewModel::setDiagnosticsCategory,
+                )
+            }
+
+            // View logs (internal route), Export, Clear — available regardless of
+            // capture toggle so the user can always inspect/export/clear history.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .clickable(onClick = onOpenLogViewer)
+                    .padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Outlined.Description,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    stringResource(R.string.settings_diagnostics_view),
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 12.dp),
+                )
+                Icon(
+                    Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        if (!exportingLogs) {
+                            exportingLogs = true
+                            coroutineScope.launch {
+                                val intent = viewModel.exportLogs()
+                                exportingLogs = false
+                                if (intent != null) {
+                                    context.startActivity(
+                                        Intent.createChooser(
+                                            intent,
+                                            context.getString(R.string.settings_diagnostics_share_title),
+                                        ),
+                                    )
+                                } else {
+                                    snackbarHostState.showSnackbar(
+                                        context.getString(R.string.settings_diagnostics_export_empty),
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    enabled = !exportingLogs,
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp),
+                ) {
+                    if (exportingLogs) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Text(stringResource(R.string.settings_diagnostics_export))
+                    }
+                }
+                OutlinedButton(
+                    onClick = { confirmClearLogs = true },
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp),
+                ) { Text(stringResource(R.string.settings_diagnostics_clear)) }
+            }
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
 
@@ -749,6 +947,117 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             onDismiss = { confirmSignOutEverywhere = false },
         )
     }
+    if (confirmClearLogs) {
+        ConfirmDialog(
+            title = stringResource(R.string.settings_diagnostics_clear_confirm_title),
+            body = stringResource(R.string.settings_diagnostics_clear_confirm_body),
+            confirmLabel = stringResource(R.string.settings_diagnostics_clear),
+            onConfirm = {
+                confirmClearLogs = false
+                viewModel.clearLogs()
+            },
+            onDismiss = { confirmClearLogs = false },
+        )
+    }
+}
+
+/**
+ * Battery-optimization health card (01-platform §C). Signals state with an
+ * explicit label + an icon + a non-red status color (warn amber / success
+ * green), never color alone — HAL red is reserved for decoration (§D).
+ */
+@Composable
+private fun BatteryHealthCard(
+    ignored: Boolean,
+    onExempt: () -> Unit,
+    onRecheck: () -> Unit,
+) {
+    val colors = LocalLiveNinjaColors.current
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    if (ignored) Icons.Outlined.CheckCircle else Icons.Outlined.WarningAmber,
+                    contentDescription = null,
+                    tint = if (ignored) colors.success else colors.warn,
+                )
+                Text(
+                    stringResource(R.string.settings_battery_title),
+                    style = MaterialTheme.typography.titleSmall,
+                )
+            }
+            Text(
+                stringResource(
+                    if (ignored) R.string.settings_battery_ok else R.string.settings_battery_warn,
+                ),
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (ignored) colors.success else colors.warn,
+            )
+            if (ignored) {
+                OutlinedButton(
+                    onClick = onRecheck,
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) { Text(stringResource(R.string.settings_battery_recheck)) }
+            } else {
+                Button(
+                    onClick = onExempt,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp),
+                ) { Text(stringResource(R.string.settings_battery_action)) }
+            }
+        }
+    }
+}
+
+/** The eight log-category checkboxes (04-logging §A5), each a real toggleable row. */
+@Composable
+private fun DiagnosticsCategories(
+    categories: Map<String, Boolean>,
+    onToggle: (String, Boolean) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth()) {
+        DiagnosticsConfig.CATEGORY_KEYS.forEach { key ->
+            val checked = categories[key] ?: true
+            val label = stringResource(diagnosticsCategoryLabel(key))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .toggleable(
+                        value = checked,
+                        role = Role.Checkbox,
+                        onValueChange = { onToggle(key, it) },
+                    ),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Checkbox(checked = checked, onCheckedChange = null)
+                Text(
+                    label,
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+        }
+    }
+}
+
+@androidx.annotation.StringRes
+private fun diagnosticsCategoryLabel(key: String): Int = when (key) {
+    "WAKE" -> R.string.settings_diagnostics_cat_wake
+    "AUDIO" -> R.string.settings_diagnostics_cat_audio
+    "REALTIME" -> R.string.settings_diagnostics_cat_realtime
+    "AUTH" -> R.string.settings_diagnostics_cat_auth
+    "TOOLS" -> R.string.settings_diagnostics_cat_tools
+    "UI" -> R.string.settings_diagnostics_cat_ui
+    "NET" -> R.string.settings_diagnostics_cat_net
+    else -> R.string.settings_diagnostics_cat_general
 }
 
 private data class RadioOption(

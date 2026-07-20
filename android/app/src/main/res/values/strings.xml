@@ -303,4 +303,61 @@
     <string name="settings_signed_out_everywhere">Signed out on all devices.</string>
     <string name="settings_sign_out_failed">Sign-out failed. Check your connection and try again.</string>
     <string name="settings_version_caption">Settings synced locally · v%1$d</string>
+
+    <!-- ===== Voice &amp; Screen (M6.2 / 01-platform §B-iv) ===== -->
+    <string name="settings_section_voice_screen">Voice &amp; Screen</string>
+    <string name="settings_locked_sessions_label">Allow voice while locked/screen off</string>
+    <string name="settings_locked_sessions_desc">Let the wake word start a full conversation even when the phone is asleep or locked. Turn off to require an unlocked, awake screen.</string>
+    <string name="settings_wake_screen_label">Wake screen on wake word</string>
+    <string name="settings_wake_screen_desc">Turn the display on and show Live Ninja over the lock screen when it hears the wake word. Off keeps the screen dark for audio-only replies.</string>
+    <string name="settings_keep_screen_on_label">Keep screen awake while open</string>
+    <string name="settings_keep_screen_on_desc">Prevent the display from sleeping while Live Ninja is open in the foreground.</string>
+
+    <!-- ===== Battery optimization health (01-platform §C) ===== -->
+    <string name="settings_battery_title">Background reliability</string>
+    <string name="settings_battery_ok">Battery optimization is off for Live Ninja — background listening is reliable.</string>
+    <string name="settings_battery_warn">Battery optimization is ON. Android may kill the wake-word service in the background. Exempt Live Ninja for reliable always-listening.</string>
+    <string name="settings_battery_action">Exempt from battery optimization</string>
+    <string name="settings_battery_recheck">Re-check</string>
+
+    <!-- ===== Diagnostics / verbose logging (04-logging §A5) ===== -->
+    <string name="settings_section_diagnostics">Diagnostics</string>
+    <string name="settings_diagnostics_master_label">Verbose logging</string>
+    <string name="settings_diagnostics_master_desc">Capture detailed troubleshooting logs on-device. Sensitive values (tokens, keys) are always redacted.</string>
+    <string name="settings_diagnostics_level_label">Minimum level</string>
+    <string name="settings_diagnostics_level_verbose">Verbose — everything</string>
+    <string name="settings_diagnostics_level_debug">Debug</string>
+    <string name="settings_diagnostics_level_info">Info</string>
+    <string name="settings_diagnostics_level_warn">Warnings</string>
+    <string name="settings_diagnostics_level_error">Errors only</string>
+    <string name="settings_diagnostics_categories_label">Categories</string>
+    <string name="settings_diagnostics_select_all">All</string>
+    <string name="settings_diagnostics_select_none">None</string>
+    <string name="settings_diagnostics_cat_wake">Wake word</string>
+    <string name="settings_diagnostics_cat_audio">Audio</string>
+    <string name="settings_diagnostics_cat_realtime">Realtime session</string>
+    <string name="settings_diagnostics_cat_auth">Authentication</string>
+    <string name="settings_diagnostics_cat_tools">Tools</string>
+    <string name="settings_diagnostics_cat_ui">Interface</string>
+    <string name="settings_diagnostics_cat_net">Network</string>
+    <string name="settings_diagnostics_cat_general">General</string>
+    <string name="settings_diagnostics_view">View logs</string>
+    <string name="settings_diagnostics_export">Export logs</string>
+    <string name="settings_diagnostics_export_empty">No log data to export yet.</string>
+    <string name="settings_diagnostics_clear">Clear logs</string>
+    <string name="settings_diagnostics_clear_confirm_title">Clear logs?</string>
+    <string name="settings_diagnostics_clear_confirm_body">This clears the in-app log buffer. Exported and rotated files already on disk are unaffected.</string>
+    <string name="settings_diagnostics_share_title">Share Live Ninja logs</string>
+
+    <!-- ===== Log viewer (M6.4 internal route) ===== -->
+    <string name="log_viewer_title">Diagnostics log</string>
+    <string name="log_viewer_back">Back</string>
+
+    <!-- ===== Onboarding: battery exemption step (M6.3) ===== -->
+    <string name="onboarding_battery_title">Keep listening reliably</string>
+    <string name="onboarding_battery_body">Android can put background apps to sleep, which stops the wake word from hearing you. Exempt Live Ninja from battery optimization so it keeps listening.</string>
+    <string name="onboarding_battery_grant">Exempt from battery optimization</string>
+    <string name="onboarding_battery_done">Battery optimization is off — background listening is reliable.</string>
+    <string name="onboarding_mic_indicator_title">About the green mic dot</string>
+    <string name="onboarding_mic_indicator_body">Because Live Ninja listens for the wake word continuously, Android shows a persistent green microphone indicator in the status bar. That is normal — audio stays on-device until the wake word triggers a conversation.</string>
 </resources>

@@ -16,7 +16,6 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -176,8 +175,8 @@ class WakeWordService : Service() {
         // Best-effort model sync at service start (no-ops when signed out / offline).
         scope.launch {
             when (val r = modelManager.sync(prefs.wakeWordId, prefs.wakeEngine)) {
-                is ModelSyncResult.Active -> Log.i(TAG, "model sync: active ${r.ref.wakeWordId}")
-                else -> Log.i(TAG, "model sync: $r (packaged/cached model serves)")
+                is ModelSyncResult.Active -> LNLog.i(LogCategory.WAKE, TAG, "model sync: active ${r.ref.wakeWordId}")
+                else -> LNLog.i(LogCategory.WAKE, TAG, "model sync: $r (packaged/cached model serves)")
             }
         }
         // Run-mode state machine. collectLatest cancels the previous mode's loop on change.
@@ -196,7 +195,7 @@ class WakeWordService : Service() {
                     else -> Mode.CONTINUOUS
                 }
             }.collectLatest { mode ->
-                Log.i(TAG, "run mode -> $mode")
+                LNLog.i(LogCategory.WAKE, TAG, "run mode -> $mode")
                 when (mode) {
                     Mode.SESSION -> {
                         // Stop wake capture and expand the FGS type so the session's
@@ -221,7 +220,7 @@ class WakeWordService : Service() {
                                 // Supervise: if the capture loop dies (mic stolen by another
                                 // app, read error), clean up and restart it.
                                 while (activeEngine().isRunning) delay(SUPERVISE_POLL_MS)
-                                Log.w(TAG, "engine capture died; restarting")
+                                LNLog.w(LogCategory.WAKE, TAG, "engine capture died; restarting")
                                 stopEngine()
                             } else {
                                 updateNotification()
@@ -337,14 +336,14 @@ class WakeWordService : Service() {
             engineFailure.value = null
             true
         } catch (e: Exception) {
-            Log.w(TAG, "engine start failed: ${e.message}")
+            LNLog.w(LogCategory.WAKE, TAG, "engine start failed: ${e.message}")
             engineFailure.value = e.message ?: "microphone unavailable"
             false
         }
 
     private suspend fun stopEngine() {
         runCatching { activeEngine().stop() }
-            .onFailure { Log.w(TAG, "engine stop failed", it) }
+            .onFailure { LNLog.w(LogCategory.WAKE, TAG, "engine stop failed", it) }
     }
 
     private fun stopEngineBlocking() {

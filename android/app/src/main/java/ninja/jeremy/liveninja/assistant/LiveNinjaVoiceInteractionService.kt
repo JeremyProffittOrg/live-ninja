@@ -3,7 +3,8 @@ package ninja.jeremy.liveninja.assistant
 import android.content.ComponentName
 import android.content.Context
 import android.service.voice.VoiceInteractionService
-import android.util.Log
+import ninja.jeremy.liveninja.log.LNLog
+import ninja.jeremy.liveninja.log.LogCategory
 
 /**
  * Live Ninja's [VoiceInteractionService] — the anchor component for
@@ -26,11 +27,11 @@ class LiveNinjaVoiceInteractionService : VoiceInteractionService() {
 
     override fun onReady() {
         super.onReady()
-        Log.i(TAG, "Voice interaction service ready (assistant role active)")
+        LNLog.i(LogCategory.GENERAL, TAG, "Voice interaction service ready (assistant role active)")
     }
 
     override fun onShutdown() {
-        Log.i(TAG, "Voice interaction service shut down (assistant role released)")
+        LNLog.i(LogCategory.GENERAL, TAG, "Voice interaction service shut down (assistant role released)")
         super.onShutdown()
     }
 

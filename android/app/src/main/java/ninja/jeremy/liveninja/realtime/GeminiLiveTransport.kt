@@ -9,8 +9,9 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.os.Build
-import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
+import ninja.jeremy.liveninja.log.LNLog
+import ninja.jeremy.liveninja.log.LogCategory
 import java.io.IOException
 import java.net.URLEncoder
 import java.time.Instant
@@ -238,7 +239,7 @@ class GeminiLiveTransport @Inject constructor(
         val ws = webSocket ?: return
         val translated = translateOutbound(event) ?: return
         runCatching { ws.send(translated.toString()) }
-            .onFailure { Log.w(TAG, "gemini sendEvent failed", it) }
+            .onFailure { LNLog.w(LogCategory.REALTIME, TAG, "gemini sendEvent failed", it) }
     }
 
     /**
@@ -257,7 +258,7 @@ class GeminiLiveTransport @Inject constructor(
                     "function_call_output" -> {
                         val callId = item.optString("call_id")
                         if (cancelledToolCalls.remove(callId)) {
-                            Log.d(TAG, "dropping tool response for cancelled call $callId")
+                            LNLog.d(LogCategory.REALTIME, TAG, "dropping tool response for cancelled call $callId")
                             return null
                         }
                         val name = pendingToolNames.remove(callId).orEmpty()
@@ -385,7 +386,7 @@ class GeminiLiveTransport @Inject constructor(
         if (json.has("goAway")) {
             // Server recycles the connection (~10 min). Reconnect proactively
             // with the stored resumption handle; the session continues.
-            Log.i(TAG, "gemini goAway (timeLeft=${json.optJSONObject("goAway")?.optString("timeLeft")})")
+            LNLog.i(LogCategory.REALTIME, TAG, "gemini goAway (timeLeft=${json.optJSONObject("goAway")?.optString("timeLeft")})")
             scheduleReconnect()
         }
 
@@ -517,9 +518,9 @@ class GeminiLiveTransport @Inject constructor(
         reconnectJob = scope.launch {
             try {
                 reconnect()
-                Log.i(TAG, "gemini session resumed (handle=${resumptionHandle != null})")
+                LNLog.i(LogCategory.REALTIME, TAG, "gemini session resumed (handle=${resumptionHandle != null})")
             } catch (t: Throwable) {
-                Log.w(TAG, "gemini resumption reconnect failed", t)
+                LNLog.w(LogCategory.REALTIME, TAG, "gemini resumption reconnect failed", t)
                 if (_state.value == TransportState.CONNECTED) {
                     _state.value = TransportState.FAILED
                 }
@@ -736,7 +737,7 @@ class GeminiLiveTransport @Inject constructor(
 
     private fun emit(event: RealtimeEvent) {
         if (!_events.tryEmit(event)) {
-            Log.w(TAG, "event buffer full; dropped ${event::class.simpleName}")
+            LNLog.w(LogCategory.REALTIME, TAG, "event buffer full; dropped ${event::class.simpleName}")
         }
     }
 

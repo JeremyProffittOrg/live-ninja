@@ -9,8 +9,9 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.os.Build
-import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
+import ninja.jeremy.liveninja.log.LNLog
+import ninja.jeremy.liveninja.log.LogCategory
 import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -174,7 +175,7 @@ class NovaBridgeTransport @Inject constructor(
         val ws = webSocket ?: return
         val translated = translateOutbound(event) ?: return
         runCatching { ws.send(translated.toString()) }
-            .onFailure { Log.w(TAG, "nova sendEvent failed", it) }
+            .onFailure { LNLog.w(LogCategory.REALTIME, TAG, "nova sendEvent failed", it) }
     }
 
     /**
@@ -500,7 +501,7 @@ class NovaBridgeTransport @Inject constructor(
 
     private fun emit(event: RealtimeEvent) {
         if (!_events.tryEmit(event)) {
-            Log.w(TAG, "event buffer full; dropped ${event::class.simpleName}")
+            LNLog.w(LogCategory.REALTIME, TAG, "event buffer full; dropped ${event::class.simpleName}")
         }
     }
 

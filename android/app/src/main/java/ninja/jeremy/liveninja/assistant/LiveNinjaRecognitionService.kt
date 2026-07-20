@@ -4,7 +4,8 @@ import android.content.Intent
 import android.os.RemoteException
 import android.speech.RecognitionService
 import android.speech.SpeechRecognizer
-import android.util.Log
+import ninja.jeremy.liveninja.log.LNLog
+import ninja.jeremy.liveninja.log.LogCategory
 
 /**
  * Minimal-but-complete [RecognitionService] (plan.md M4, Android §2).
@@ -22,7 +23,7 @@ import android.util.Log
 class LiveNinjaRecognitionService : RecognitionService() {
 
     override fun onStartListening(recognizerIntent: Intent?, listener: Callback?) {
-        Log.i(TAG, "Declining external recognition request (realtime-session-only recognizer)")
+        LNLog.i(LogCategory.GENERAL, TAG, "Declining external recognition request (realtime-session-only recognizer)")
         listener?.safeError(SpeechRecognizer.ERROR_CLIENT)
     }
 
@@ -40,7 +41,7 @@ class LiveNinjaRecognitionService : RecognitionService() {
         try {
             error(code)
         } catch (e: RemoteException) {
-            Log.w(TAG, "Caller died before recognition error could be delivered", e)
+            LNLog.w(LogCategory.GENERAL, TAG, "Caller died before recognition error could be delivered", e)
         }
     }
 

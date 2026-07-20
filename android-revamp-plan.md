@@ -139,19 +139,18 @@ _(placeholder)_
 
 ---
 
-## M6 — Integration + first shippable build `[ ]`
+## M6 — Integration + first shippable build `[x]` (done 2026-07-20; lint 0-err/83-warn, unit tests green, assembleDebug OK, APK 177M all-ABI; commit see git log)
 
 **Single integration agent, serialized (this milestone owns every shared file).** **DoD:** all wave-1 work merged coherently; Settings UI complete (minus style picker); logging wired app-wide; `lintDebug` + `testDebugUnitTest` + `assembleDebug` green; ONE commit pushed = the shippable tree. *Deps:* M1–M5 complete.
 
-- `[ ]` **M6.1** (Sonnet) Manifest consolidation: add FileProvider `<provider>` (authority `ninja.jeremy.liveninja.fileprovider`, `res/xml/file_paths.xml`); verify M2.2 entries; single coherent manifest. *Files:* `AndroidManifest.xml`.
-- `[ ]` **M6.2** (Sonnet) Settings UI (sole SettingsScreen owner): voice section (lockedSessions / wakeScreenOnWake / keepScreenOn toggles), Diagnostics section (master toggle, 5-level radio, 8 category checkboxes + all/none, Export logs → LogExporter, Clear logs w/ confirm), battery-optimization health card + action row (`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` after `isIgnoringBatteryOptimizations` check). *Files:* `ui/screens/SettingsScreen.kt`, `ui/settings/SettingsViewModel.kt`.
-- `[ ]` **M6.3** (Sonnet) Onboarding: one-time battery-exemption prompt step + persistent-green-mic-indicator copy. *Files:* `ui/onboarding/OnboardingScreen.kt`, `ui/onboarding/OnboardingViewModel.kt`, `ui/state/OnboardingStore.kt`. **PRE-AUTHORIZED CUT #2: if deadline pressure, demote to M8 (the M6.2 Settings health card covers the function).**
-- `[ ]` **M6.4** (Haiku) Mechanical: import-swap all 66 `android.util.Log` call sites (14 files) → `LNLog` with per-file category; add LogViewer nav route to `ui/LiveNinjaRoot.kt` (entry from Diagnostics section); eager LogSink instantiation (`@Inject lateinit var logSink: LogSink` in `LiveNinjaApplication.kt` — M6 owns it now) so file logging runs from process start.
+- `[x]` **M6.1** Manifest consolidation: added FileProvider `<provider>` (authority `ninja.jeremy.liveninja.fileprovider` → `@xml/file_paths`, exported=false, grantUriPermissions=true). M2.2 entries verified coherent. *Files:* `AndroidManifest.xml`.
+- `[x]` **M6.2** Settings UI: Voice & Screen section (3 toggles), Diagnostics section (master switch, 5-level radio, 8 category checkboxes + all/none, View logs row, Export → LogExporter chooser, Clear w/ confirm), BatteryHealthCard + action row (`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, resume re-check). All ≥48dp, no small-text-on-red, success/warn colors for state. *Files:* `ui/screens/SettingsScreen.kt`, `ui/settings/SettingsViewModel.kt`.
+- `[x]` **M6.3** Onboarding (IMPLEMENTED, cut #2 NOT taken — ahead of schedule): `BATTERY` step (after ASSISTANT_ROLE) + persistent-green-mic-indicator card on mic step. *Files:* `ui/onboarding/OnboardingScreen.kt`, `ui/onboarding/OnboardingViewModel.kt` (OnboardingStore unchanged — not needed).
+- `[x]` **M6.4** Mechanical: 66 `android.util.Log` calls swapped → `LNLog` across 16 files (wake→WAKE, realtime→REALTIME, auth→AUTH, assistant→GENERAL) via 3 parallel subagents; internal `logviewer` nav route added to `LiveNinjaRoot` (entry from Diagnostics, NOT a bottom tab); eager `@Inject lateinit var logSink: LogSink` in `LiveNinjaApplication`. LogViewerScreen got an `onBack` param.
 - **Scheduling note:** M6.1 may start as soon as M2+M3 are done (doesn't need M4/M5).
-- `[ ]` **M6.5** (Sonnet) Full gate: `./gradlew lintDebug testDebugUnitTest assembleDebug`; fix all fallout; sanity-check APK size (arm64-only); commit "android: integrate voice/theme/logging revamp — shippable v1" + push.
+- `[x]` **M6.5** Full gate green. Fixed only fallout: `res/xml/file_paths.xml` bogus `xmlns:android=...res-auto` → lint NamespaceTypo error; removed the xmlns. APK sanity-checked. ONE commit + push.
 
-**Implementation notes:**
-_(placeholder)_
+**Implementation notes:** Full detail in scratchpad `notes-M6.md`. No lost work found (all M1–M5 symbols verified at HEAD). Only build fallout was the M3-authored file_paths.xml namespace typo. Deviations: LogViewerScreen gained a small `onBack` param + back button (nav usability, not a redesign); OnboardingStore.kt was in M6.3's listed file set but needed no change (completion flag already sufficient).
 
 ---
 

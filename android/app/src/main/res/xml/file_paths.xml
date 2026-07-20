@@ -9,6 +9,6 @@
   manifest entry that references this resource is added in M6.1
   (AndroidManifest.xml owner) — see log/LogExporter.kt's class doc.
 -->
-<paths xmlns:android="http://schemas.android.com/apk/res-auto">
+<paths>
     <files-path name="logs" path="logs/" />
 </paths>

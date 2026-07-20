@@ -110,6 +110,20 @@
             android:exported="false"
             android:foregroundServiceType="microphone|mediaPlayback" />
 
+        <!-- Log export share flow (04-logging §A7): grants read access to the
+             zipped log bundle in filesDir/logs/ via a content:// URI. Paths in
+             res/xml/file_paths.xml (authority ninja.jeremy.liveninja.fileprovider,
+             matching LogExporter.FILE_PROVIDER_AUTHORITY). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="ninja.jeremy.liveninja.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <!-- Restart the wake service after reboot / app update when enabled. Only the system
              can send these protected broadcasts, so exported is safe and required for
              delivery on all OEMs. -->

@@ -2,7 +2,6 @@ package ninja.jeremy.liveninja.auth
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Log
 import androidx.core.content.edit
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
@@ -14,6 +13,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import ninja.jeremy.liveninja.log.LNLog
+import ninja.jeremy.liveninja.log.LogCategory
 
 /**
  * The persisted session credentials, as returned by the backend's
@@ -94,16 +95,16 @@ class TokenStore @Inject constructor(
 
     /** Wipe the corrupt store, flag the reset, and retry the open exactly once. */
     private fun healAndRetry(cause: Exception): SharedPreferences? {
-        Log.w(TAG, "Encrypted credential store unusable; wiping and retrying once", cause)
+        LNLog.w(LogCategory.AUTH, TAG, "Encrypted credential store unusable; wiping and retrying once", cause)
         wipeCorruptStore()
         _storeReset.value = true
         return try {
             prefsFactory(context)
         } catch (e: GeneralSecurityException) {
-            Log.e(TAG, "Credential store still unusable after wipe; entering null mode", e)
+            LNLog.e(LogCategory.AUTH, TAG, "Credential store still unusable after wipe; entering null mode", e)
             null
         } catch (e: IOException) {
-            Log.e(TAG, "Credential store still unusable after wipe; entering null mode", e)
+            LNLog.e(LogCategory.AUTH, TAG, "Credential store still unusable after wipe; entering null mode", e)
             null
         }
     }
@@ -111,11 +112,11 @@ class TokenStore @Inject constructor(
     /** Delete the corrupt prefs file and the (possibly unusable) master key. */
     private fun wipeCorruptStore() {
         runCatching { context.deleteSharedPreferences(PREFS_NAME) }
-            .onFailure { Log.w(TAG, "Failed to delete corrupt prefs file", it) }
+            .onFailure { LNLog.w(LogCategory.AUTH, TAG, "Failed to delete corrupt prefs file", it) }
         runCatching {
             val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
             if (keyStore.containsAlias(MASTER_KEY_ALIAS)) keyStore.deleteEntry(MASTER_KEY_ALIAS)
-        }.onFailure { Log.w(TAG, "Failed to delete corrupt master key", it) }
+        }.onFailure { LNLog.w(LogCategory.AUTH, TAG, "Failed to delete corrupt master key", it) }
     }
 
     private fun createEncryptedPrefs(context: Context): SharedPreferences {

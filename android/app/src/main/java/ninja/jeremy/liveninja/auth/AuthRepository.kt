@@ -1,7 +1,6 @@
 package ninja.jeremy.liveninja.auth
 
 import android.net.Uri
-import android.util.Log
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
@@ -19,6 +18,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import ninja.jeremy.liveninja.config.BackendConfig
+import ninja.jeremy.liveninja.log.LNLog
+import ninja.jeremy.liveninja.log.LogCategory
 import ninja.jeremy.liveninja.net.LiveNinjaApi
 import ninja.jeremy.liveninja.net.LwaAppClaimRequest
 import ninja.jeremy.liveninja.net.RefreshOutcome
@@ -47,7 +48,7 @@ class AuthRepository @Inject constructor(
      * kill it on load. The SupervisorJob keeps sibling coroutines alive.
      */
     private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
-        Log.e(TAG, "Unhandled auth coroutine failure; signing out defensively", throwable)
+        LNLog.e(LogCategory.AUTH, TAG, "Unhandled auth coroutine failure; signing out defensively", throwable)
         _state.value = AuthState.SignedOut()
     }
 
@@ -144,14 +145,14 @@ class AuthRepository @Inject constructor(
             val pending = tokenStore.consumePendingLogin()
 
             if (error != null) {
-                Log.w(TAG, "LWA returned error=$error")
+                LNLog.w(LogCategory.AUTH, TAG, "LWA returned error=$error")
                 _state.value = AuthState.SignedOut(AuthError.LWA_DENIED)
                 return@launch
             }
             if (pending == null || code.isNullOrEmpty() || returnedState != pending.state ||
                 nowSeconds() - pending.createdAt > PENDING_LOGIN_TTL_SECONDS
             ) {
-                Log.w(TAG, "LWA redirect state validation failed")
+                LNLog.w(LogCategory.AUTH, TAG, "LWA redirect state validation failed")
                 _state.value = AuthState.SignedOut(AuthError.STATE_MISMATCH)
                 return@launch
             }
@@ -175,12 +176,12 @@ class AuthRepository @Inject constructor(
                 )
                 _state.value = AuthState.SignedIn(grant.sessionId.orEmpty())
             } catch (e: HttpException) {
-                Log.w(TAG, "Code exchange rejected: HTTP ${e.code()}")
+                LNLog.w(LogCategory.AUTH, TAG, "Code exchange rejected: HTTP ${e.code()}")
                 _state.value = AuthState.SignedOut(
                     if (e.code() == 403) AuthError.NOT_ALLOWED else AuthError.EXCHANGE_FAILED,
                 )
             } catch (e: IOException) {
-                Log.w(TAG, "Code exchange network failure", e)
+                LNLog.w(LogCategory.AUTH, TAG, "Code exchange network failure", e)
                 _state.value = AuthState.SignedOut(AuthError.NETWORK)
             }
         }
@@ -231,9 +232,9 @@ class AuthRepository @Inject constructor(
         try {
             api.logout()
         } catch (e: HttpException) {
-            Log.w(TAG, "Server-side logout rejected: HTTP ${e.code()} (clearing locally anyway)")
+            LNLog.w(LogCategory.AUTH, TAG, "Server-side logout rejected: HTTP ${e.code()} (clearing locally anyway)")
         } catch (e: IOException) {
-            Log.w(TAG, "Server-side logout unreachable (clearing locally anyway)", e)
+            LNLog.w(LogCategory.AUTH, TAG, "Server-side logout unreachable (clearing locally anyway)", e)
         }
         tokenStore.clearSession()
         _state.value = AuthState.SignedOut()
@@ -252,10 +253,10 @@ class AuthRepository @Inject constructor(
             api.logoutAll()
             true
         } catch (e: HttpException) {
-            Log.w(TAG, "logout-all rejected: HTTP ${e.code()}")
+            LNLog.w(LogCategory.AUTH, TAG, "logout-all rejected: HTTP ${e.code()}")
             false
         } catch (e: IOException) {
-            Log.w(TAG, "logout-all unreachable", e)
+            LNLog.w(LogCategory.AUTH, TAG, "logout-all unreachable", e)
             false
         }
         if (ok) {

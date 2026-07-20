@@ -3,8 +3,11 @@ package ninja.jeremy.liveninja.ui.onboarding
 import android.Manifest
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
@@ -27,13 +30,14 @@ import ninja.jeremy.liveninja.ui.state.SignInLauncher
 import ninja.jeremy.liveninja.ui.state.WakeWordCatalogRepository
 import ninja.jeremy.liveninja.ui.state.WakeWordOption
 
-/** Ordered wizard steps (mockups/android/01..04 + wake-word pick). */
+/** Ordered wizard steps (mockups/android/01..04 + battery + wake-word pick). */
 enum class OnboardingStep {
     WELCOME,
     SIGN_IN,
     MIC_PERMISSION,
     NOTIFICATIONS,
     ASSISTANT_ROLE,
+    BATTERY,
     WAKE_WORD,
 }
 
@@ -48,6 +52,8 @@ data class OnboardingUiState(
     val roleHeld: Boolean = false,
     val roleRequestAttempted: Boolean = false,
     val overlayGranted: Boolean = false,
+    /** Doze battery-optimization exemption held (reliable background listening). */
+    val batteryOptimizationIgnored: Boolean = false,
     val wakeWordOptions: List<WakeWordOption> = emptyList(),
     val selectedWakeWordId: String = "hey-live-ninja",
 )
@@ -109,8 +115,26 @@ class OnboardingViewModel @Inject constructor(
                 notificationsRequestable = notifRequestable,
                 roleHeld = isAssistantRoleHeld(),
                 overlayGranted = Settings.canDrawOverlays(context),
+                batteryOptimizationIgnored = isIgnoringBatteryOptimizations(),
             )
         }
+    }
+
+    /**
+     * Intent that opens the per-app "ignore battery optimizations" system
+     * prompt (REQUEST_IGNORE_BATTERY_OPTIMIZATIONS permission, declared in the
+     * manifest). Launched from the composable; result observed on ON_RESUME via
+     * [refreshStatuses] (01-platform §C).
+     */
+    fun batteryExemptionIntent(): Intent =
+        Intent(
+            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+            Uri.parse("package:${context.packageName}"),
+        )
+
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        return pm.isIgnoringBatteryOptimizations(context.packageName)
     }
 
     fun goTo(step: OnboardingStep) = _state.update { it.copy(step = step) }

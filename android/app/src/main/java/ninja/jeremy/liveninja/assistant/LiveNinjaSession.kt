@@ -5,8 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.service.voice.VoiceInteractionSession
-import android.util.Log
 import ninja.jeremy.liveninja.MainActivity
+import ninja.jeremy.liveninja.log.LNLog
+import ninja.jeremy.liveninja.log.LogCategory
 
 /**
  * Live Ninja's assistant session (plan.md M4, Android §2).
@@ -37,7 +38,7 @@ class LiveNinjaSession(context: Context) : VoiceInteractionSession(context) {
         super.onShow(args, showFlags)
         val keyguard = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
         val locked = keyguard.isKeyguardLocked
-        Log.i(TAG, "Assist session shown (flags=$showFlags, locked=$locked) — launching conversation UI")
+        LNLog.i(LogCategory.GENERAL, TAG, "Assist session shown (flags=$showFlags, locked=$locked) — launching conversation UI")
         val intent = Intent(context, MainActivity::class.java).apply {
             action = ACTION_ASSIST
             putExtra(EXTRA_LAUNCHED_WHILE_LOCKED, locked)
@@ -49,7 +50,7 @@ class LiveNinjaSession(context: Context) : VoiceInteractionSession(context) {
         } catch (e: RuntimeException) {
             // Extremely rare (session torn down mid-show); nothing sane to do
             // beyond logging — the user can relaunch via icon or wake word.
-            Log.e(TAG, "Failed to start assistant activity", e)
+            LNLog.e(LogCategory.GENERAL, TAG, "Failed to start assistant activity", e)
         }
         finish()
     }
