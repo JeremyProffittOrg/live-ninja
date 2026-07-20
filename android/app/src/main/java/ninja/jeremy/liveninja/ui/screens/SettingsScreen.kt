@@ -3,6 +3,9 @@
 package ninja.jeremy.liveninja.ui.screens
 
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -117,6 +120,11 @@ fun SettingsScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     val batteryLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { viewModel.refreshBatteryStatus() }
+    // The system App Info page also exposes its own battery toggle (and, on
+    // Samsung, the "Sleeping apps" list) — re-check on return same as above.
+    val appInfoLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { viewModel.refreshBatteryStatus() }
 
@@ -695,6 +703,17 @@ fun SettingsScreen(
                 onRecheck = viewModel::refreshBatteryStatus,
             )
 
+            // Per-OEM guidance (M8.4): OEM battery/sleep layers on top of Android's
+            // own Doze exemption above — Samsung (the owner's phone) gets concrete
+            // steps, every other manufacturer gets a generic pointer at the card above.
+            OemGuidanceCard(
+                onOpenAppInfo = {
+                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                        .setData(Uri.fromParts("package", context.packageName, null))
+                    appInfoLauncher.launch(intent)
+                },
+            )
+
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
 
             // ---------- Appearance ----------
@@ -1066,6 +1085,58 @@ private fun BatteryHealthCard(
                         .heightIn(min = 48.dp),
                 ) { Text(stringResource(R.string.settings_battery_action)) }
             }
+        }
+    }
+}
+
+/**
+ * Per-OEM battery guidance (M8.4): [Build.MANUFACTURER]-gated instructions
+ * beyond the Android-standard Doze exemption in [BatteryHealthCard] above —
+ * Samsung's One UI (the owner's phone) layers its own "Sleeping apps" /
+ * "Never sleeping apps" background-usage limits on top of stock Android's
+ * battery optimization, so the exemption alone doesn't guarantee the
+ * wake-word FGS survives. Other manufacturers get a generic pointer back at
+ * the exemption card instead of invented per-OEM steps this app can't verify.
+ */
+@Composable
+private fun OemGuidanceCard(onOpenAppInfo: () -> Unit) {
+    val isSamsung = Build.MANUFACTURER.equals("samsung", ignoreCase = true)
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    Icons.Outlined.WarningAmber,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    stringResource(R.string.settings_oem_title),
+                    style = MaterialTheme.typography.titleSmall,
+                )
+            }
+            Text(
+                stringResource(
+                    if (isSamsung) R.string.settings_oem_samsung_intro else R.string.settings_oem_generic_intro,
+                ),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            if (isSamsung) {
+                Text(stringResource(R.string.settings_oem_samsung_step1), style = MaterialTheme.typography.bodyMedium)
+                Text(stringResource(R.string.settings_oem_samsung_step2), style = MaterialTheme.typography.bodyMedium)
+                Text(stringResource(R.string.settings_oem_samsung_step3), style = MaterialTheme.typography.bodyMedium)
+            }
+            OutlinedButton(
+                onClick = onOpenAppInfo,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp),
+            ) { Text(stringResource(R.string.settings_oem_app_info_action)) }
         }
     }
 }

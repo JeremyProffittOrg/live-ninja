@@ -174,12 +174,42 @@ _(placeholder)_
 - `[x]` **M8.1** (Sonnet) Port ninja/minimal/terminal token sets from `web/static/css/app.css` style blocks into the Theme.kt registry; these styles follow light/dark axis; HAL pins dark. *Files:* `ui/theme/Theme.kt`.
 - `[x]` **M8.2** (Sonnet) Style picker in SettingsScreen (4 options, `appStyle` key); gray out light/dark control with caption "HAL 9000 is always dark" while HAL selected. *Files:* `ui/screens/SettingsScreen.kt`, `ui/settings/SettingsViewModel.kt`. *Deps:* M8.1.
 - `[ ]` **M8.3** (Opus) Latency: parallelize `RealtimeSessionCoordinator.start()` (fetchSession ∥ ensureFactory+PC+offer+ICE, join at SDP POST); pre-warm `ensureFactory()` + ADM at WakeWordService start; earcon-at-detection confirmed from M2. Target ~0.9-1.6s to listening. *Files:* `realtime/RealtimeSessionCoordinator.kt`, `realtime/WebRtcTransport.kt`, `wake/WakeWordService.kt`.
-- `[ ]` **M8.4** (Sonnet) Reliability: 15-min WorkManager watchdog (serviceEnabled && dead → tap-to-resume notification, never FGS-from-background) — new `wake/WakeWatchdogWorker.kt` + WorkManager dep in `build.gradle.kts`; per-OEM guidance card in Settings. **Owner's phone = Samsung Galaxy (One UI): guidance must cover Settings → Battery → Never sleeping apps + 'Unrestricted' battery for Live Ninja + disable 'Put unused apps to sleep'.** *Deps:* M8.2.
+- `[x]` **M8.4** (Sonnet) Reliability: 15-min WorkManager watchdog (serviceEnabled && dead → tap-to-resume notification, never FGS-from-background) — new `wake/WakeWatchdogWorker.kt` + WorkManager dep in `build.gradle.kts`; per-OEM guidance card in Settings. **Owner's phone = Samsung Galaxy (One UI): guidance must cover Settings → Battery → Never sleeping apps + 'Unrestricted' battery for Live Ninja + disable 'Put unused apps to sleep'.** *Deps:* M8.2.
 - `[ ]` **M8.5** (Sonnet) Duty-cycle policy (charging always-continuous; saver 12s/2s; thermal SEVERE 8s/4s) + surface degraded state in notification; EnergyVad adaptive/lower threshold while charging. *Files:* `wake/WakeWordService.kt`, `wake/EnergyVad.kt`.
 - `[ ]` **M8.6** (Haiku) Gate: lint + tests + assembleDebug; commit + push.
 
 **Implementation notes:**
-_(placeholder — M8.3/M8.4/M8.5 voice-side)_
+_(placeholder — M8.3/M8.5 voice-side)_
+
+**M8.4 (reliability, done):** Full detail in scratchpad `notes-M8-reliability.md`. Summary:
+- WorkManager watchdog: `androidx.work:work-runtime-ktx` + `androidx.hilt:hilt-work`/`hilt-compiler`
+  added (new `workManager`/`androidxHilt` version keys). New `wake/WakeWatchdogWorker.kt`
+  (`@HiltWorker` `CoroutineWorker`, 15-min unique periodic work) checks
+  `WakePreferences.serviceEnabled && !WakeWordService.isRunning` and, if the
+  service is dead while still supposed to be enabled, posts a tap-to-resume
+  notification (same channel/notification-id `WakeBootReceiver` already uses,
+  so the two paths coalesce) — never attempts to start the mic FGS itself
+  (Android 12+ background-start crash). `WakeWordService.kt` gained a
+  `companion @Volatile var isRunning` (set in `onCreate`/`onDestroy`) and
+  enqueue/cancel calls at the single `serviceEnabled` choke point in
+  `onStartCommand`. `LiveNinjaApplication` implements `Configuration.Provider`
+  + injects `HiltWorkerFactory` (WorkManager auto-detects this, no manifest edit).
+  `WakePreferences.kt`/`AndroidManifest.xml` deliberately untouched (out of scope).
+- Per-OEM Settings card: new `OemGuidanceCard` in `SettingsScreen.kt` right after
+  `BatteryHealthCard`, gated on `Build.MANUFACTURER == "samsung"` — 3 concrete
+  steps (Background usage limits → remove from Sleeping apps/add to Never
+  sleeping apps; App info → Battery → Unrestricted; turn off "Put unused apps
+  to sleep") for Samsung, a generic pointer at the exemption button above for
+  everyone else. Shared `ACTION_APPLICATION_DETAILS_SETTINGS` deep-link button.
+- Deflaked `SessionOrchestratorTest`: root cause was real-wall-clock
+  `delay()`/polling assertions racing `Dispatchers.Default` under CPU
+  contention — reproduced on unmodified code (1/3 full-suite runs failed,
+  confirmed via `git stash`), and a second latent instance of the same pattern
+  (`transportClose_tearsDown_resumesEngine`) also flaked once under load.
+  Rewrote the whole file onto `runTest` + `StandardTestDispatcher(testScheduler)`
+  + `advanceUntilIdle()` — fully deterministic, no wall clock. Verified: class
+  alone 5x clean, full 107-test suite 5x clean, `testDebugUnitTest assembleDebug`
+  green.
 
 **M8.1/M8.2 (theme-side, done):** Full detail in scratchpad `notes-M8-theme.md`. Summary:
 - Read `app.css` directly (not just spec 03): ninja/minimal share identical

@@ -211,6 +211,8 @@
     <string name="wake_notification_action_stop">Turn off</string>
     <string name="wake_notification_resume_title">Resume wake word?</string>
     <string name="wake_notification_resume_body">Android paused listening after restart. Tap to open Live Ninja and resume.</string>
+    <string name="wake_notification_watchdog_title">Live Ninja stopped listening</string>
+    <string name="wake_notification_watchdog_body">Wake-word listening was enabled but the service isn\'t running (likely stopped by Android or the OEM). Tap to open Live Ninja and resume.</string>
 
     <string name="dialog_cancel">Cancel</string>
 
@@ -330,6 +332,15 @@
     <string name="settings_battery_warn">Battery optimization is ON. Android may kill the wake-word service in the background. Exempt Live Ninja for reliable always-listening.</string>
     <string name="settings_battery_action">Exempt from battery optimization</string>
     <string name="settings_battery_recheck">Re-check</string>
+
+    <!-- ===== Per-OEM battery guidance (M8.4 reliability) ===== -->
+    <string name="settings_oem_title">Extra steps for this phone</string>
+    <string name="settings_oem_samsung_intro">Samsung (One UI) has its own sleep/hibernation layer on top of Android\'s battery optimization — the exemption above isn\'t always enough. For reliable always-listening:</string>
+    <string name="settings_oem_samsung_step1">1. Settings → Battery → Background usage limits → remove Live Ninja from Sleeping apps (or add it to Never sleeping apps).</string>
+    <string name="settings_oem_samsung_step2">2. App info → Battery → set to Unrestricted.</string>
+    <string name="settings_oem_samsung_step3">3. Settings → Battery → Background usage limits → turn off \"Put unused apps to sleep\" so this and other settings don\'t get reset automatically.</string>
+    <string name="settings_oem_generic_intro">Some phone makers add their own background-app limits on top of Android\'s. If wake-word listening keeps stopping, check your phone\'s battery settings for Live Ninja and exempt it from any \"sleeping apps\" / background-limit list, using the button above.</string>
+    <string name="settings_oem_app_info_action">Open Live Ninja app info</string>
 
     <!-- ===== Diagnostics / verbose logging (04-logging §A5) ===== -->
     <string name="settings_section_diagnostics">Diagnostics</string>

@@ -137,6 +137,13 @@ dependencies {
     implementation(libs.androidx.security.crypto)
     implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.lifecycle.runtime.compose)
+    // WorkManager watchdog for the wake-word service (M8.4 reliability): a 15-min
+    // periodic worker that posts a tap-to-resume notification if listening is
+    // enabled in prefs but the FGS died. hilt-work/hilt-compiler wire the worker
+    // through Hilt (HiltWorkerFactory, see LiveNinjaApplication).
+    implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.androidx.hilt.work)
+    ksp(libs.androidx.hilt.compiler)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)

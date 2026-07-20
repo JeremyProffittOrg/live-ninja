@@ -3,31 +3,44 @@ package ninja.jeremy.liveninja.realtime
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runTest
 import ninja.jeremy.liveninja.assistant.AssistSource
 import ninja.jeremy.liveninja.assistant.AssistTrigger
 import ninja.jeremy.liveninja.audio.WakeWordDetection
-import ninja.jeremy.liveninja.ui.state.SessionUiEvent
 import ninja.jeremy.liveninja.ui.state.RealtimeSessionController
+import ninja.jeremy.liveninja.ui.state.SessionUiEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
 import org.junit.Test
-import kotlinx.coroutines.flow.Flow
 
 /**
  * [SessionOrchestratorCore] state machine — wake/assist → session handoff, the
  * duplicate guard (the zero-collector fix), AssistantEvents replay dedupe, the
  * locked/asleep gate, and teardown on stop / transport close. Fake flows,
  * controller, effects, lock-state, and clock; no Android.
+ *
+ * All tests run on a [StandardTestDispatcher] backing both the test coroutine
+ * and [SessionOrchestratorCore]'s internal `scope` (same [kotlinx.coroutines.test.TestCoroutineScheduler]
+ * in both, via [core]'s `scope` param). `advanceUntilIdle()` deterministically
+ * drains every launched/queued coroutine — collectors starting up, the
+ * beginSession/launchStart/teardown chain, dedupe checks — before each
+ * assertion. This replaces an earlier design that polled real wall-clock time
+ * with `delay()` inside fixed-timeout loops: correct in principle, but flaky
+ * under CI/parallel-test-run CPU contention where `Dispatchers.Default`
+ * scheduling could lag behind the real-time margins the assertions raced
+ * against (both `assistReplay_sameTimestamp_isDeduped` and, occasionally under
+ * heavy load, `transportClose_tearsDown_resumesEngine` were observed to time
+ * out this way when the full suite ran in parallel). A virtual scheduler has
+ * no wall clock to race.
  */
 class SessionOrchestratorTest {
 
@@ -82,7 +95,15 @@ class SessionOrchestratorTest {
 
     private var clockValue = 1_000L
 
+    /**
+     * Builds a [SessionOrchestratorCore] and [SessionOrchestratorCore.bind]s it to the
+     * shared [detections]/[triggers] flows. `scope` must be backed by the same
+     * [kotlinx.coroutines.test.TestCoroutineScheduler] as the caller's `runTest` block
+     * so `advanceUntilIdle()` drives both the test body and the core's internal
+     * coroutines deterministically.
+     */
     private fun core(
+        scope: CoroutineScope,
         controller: RealtimeSessionController? = FakeController(),
         effects: FakeEffects = FakeEffects(),
         lock: FakeLock = FakeLock(),
@@ -94,133 +115,154 @@ class SessionOrchestratorTest {
         emitAssistTrigger = { emittedTriggers += it },
         lockedSessionsAllowed = { lockedSessionsAllowed },
         clock = { clockValue },
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+        scope = scope,
     ).also { it.bind(detections, triggers) }
 
-    private suspend fun emitDetection() {
-        awaitSubscribers()
-        detections.emit(WakeWordDetection("hey live ninja", 0.9f, clockValue))
-    }
-
-    private suspend fun emitAssist(ts: Long, source: AssistSource = AssistSource.MANUAL) {
-        awaitSubscribers()
-        triggers.emit(AssistTrigger(source, launchedWhileLocked = false, timestampMillis = ts))
-    }
-
-    private suspend fun awaitSubscribers() = withTimeout(2_000) {
-        while (detections.subscriptionCount.value == 0 || triggers.subscriptionCount.value == 0) delay(5)
-    }
-
-    private suspend fun awaitUntil(message: String, predicate: () -> Boolean) {
-        try {
-            withTimeout(3_000) { while (!predicate()) delay(10) }
-        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-            fail("timed out waiting: $message")
-        }
-    }
-
+    @OptIn(ExperimentalCoroutinesApi::class)
     @Test
-    fun wakeDetection_startsSession_firesEffects_andEmitsUiTrigger() = runBlocking {
+    fun wakeDetection_startsSession_firesEffects_andEmitsUiTrigger() = runTest {
+        val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
         val controller = FakeController()
         val effects = FakeEffects()
-        val core = core(controller = controller, effects = effects)
+        val core = core(scope, controller = controller, effects = effects)
+        advanceUntilIdle() // let bind()'s collectors start and park
 
-        emitDetection()
+        detections.emit(WakeWordDetection("hey live ninja", 0.9f, clockValue))
+        advanceUntilIdle()
 
-        awaitUntil("session active") { core.sessionActive.value }
-        awaitUntil("controller started") { controller.startCount == 1 }
+        assertTrue(core.sessionActive.value)
+        assertEquals(1, controller.startCount)
         assertEquals(1, effects.wakeLockAcquired.get())
         assertEquals(1, effects.focusRequested.get())
         assertEquals(1, effects.earcons.get())
         // A WAKE_WORD assist trigger is surfaced for the UI (navigation + KeyguardGate).
-        awaitUntil("ui trigger emitted") { emittedTriggers.any { it.source == AssistSource.WAKE_WORD } }
+        assertTrue(emittedTriggers.any { it.source == AssistSource.WAKE_WORD })
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     @Test
-    fun secondTriggerWhileActive_isIgnored_duplicateGuard() = runBlocking {
+    fun secondTriggerWhileActive_isIgnored_duplicateGuard() = runTest {
+        val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
         val controller = FakeController()
-        val core = core(controller = controller)
+        val core = core(scope, controller = controller)
+        advanceUntilIdle()
 
-        emitDetection()
-        awaitUntil("first session active") { core.sessionActive.value && controller.startCount == 1 }
+        detections.emit(WakeWordDetection("hey live ninja", 0.9f, clockValue))
+        advanceUntilIdle()
+        assertTrue(core.sessionActive.value)
+        assertEquals(1, controller.startCount)
 
         // Any further trigger — wake OR assist — must be swallowed while active.
-        emitAssist(ts = 5_000L)
-        delay(150)
+        triggers.emit(AssistTrigger(AssistSource.MANUAL, launchedWhileLocked = false, timestampMillis = 5_000L))
+        advanceUntilIdle()
         assertEquals(1, controller.startCount)
     }
 
+    /**
+     * Previously asserted "no restart" via a fixed real-time `delay(150)` margin after
+     * the replayed trigger — flaky under CI/thread-pool contention because it raced
+     * real wall-clock time against `Dispatchers.Default` scheduling instead of proving
+     * the dedupe path had actually finished processing. See the class doc for the
+     * deterministic replacement used across this whole file.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
     @Test
-    fun assistReplay_sameTimestamp_isDeduped() = runBlocking {
+    fun assistReplay_sameTimestamp_isDeduped() = runTest {
+        val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
         val controller = FakeController()
-        val core = core(controller = controller)
+        val core = core(scope, controller = controller)
+        advanceUntilIdle()
 
-        emitAssist(ts = 4_242L)
-        awaitUntil("session active") { core.sessionActive.value && controller.startCount == 1 }
+        triggers.emit(AssistTrigger(AssistSource.MANUAL, launchedWhileLocked = false, timestampMillis = 4_242L))
+        advanceUntilIdle()
+        assertTrue(core.sessionActive.value)
+        assertEquals(1, controller.startCount)
+
         // End the session so the phase guard would otherwise allow a restart.
         controller.dropConnection()
-        awaitUntil("session ended") { !core.sessionActive.value }
+        advanceUntilIdle()
+        assertFalse(core.sessionActive.value)
 
         // replay=1 re-delivers the SAME trigger (same timestamp) — must not restart.
-        emitAssist(ts = 4_242L)
-        delay(150)
+        triggers.emit(AssistTrigger(AssistSource.MANUAL, launchedWhileLocked = false, timestampMillis = 4_242L))
+        advanceUntilIdle()
         assertEquals(1, controller.startCount)
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     @Test
-    fun wakeIgnored_whenLockedSessionsDisabled_andLocked() = runBlocking {
+    fun wakeIgnored_whenLockedSessionsDisabled_andLocked() = runTest {
+        val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
         val controller = FakeController()
         val core = core(
+            scope,
             controller = controller,
             lock = FakeLock(isInteractive = false, isKeyguardLocked = true),
             lockedSessionsAllowed = false,
         )
+        advanceUntilIdle()
 
-        emitDetection()
-        delay(200)
+        detections.emit(WakeWordDetection("hey live ninja", 0.9f, clockValue))
+        advanceUntilIdle()
+
         assertFalse(core.sessionActive.value)
         assertEquals(0, controller.startCount)
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     @Test
-    fun transportClose_tearsDown_resumesEngine() = runBlocking {
+    fun transportClose_tearsDown_resumesEngine() = runTest {
+        val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
         val controller = FakeController()
         val effects = FakeEffects()
-        val core = core(controller = controller, effects = effects)
+        val core = core(scope, controller = controller, effects = effects)
+        advanceUntilIdle()
 
-        emitDetection()
-        awaitUntil("session active") { core.sessionActive.value }
+        detections.emit(WakeWordDetection("hey live ninja", 0.9f, clockValue))
+        advanceUntilIdle()
+        assertTrue(core.sessionActive.value)
 
         controller.dropConnection()
+        advanceUntilIdle()
 
-        awaitUntil("session inactive") { !core.sessionActive.value }
+        assertFalse(core.sessionActive.value)
         assertEquals(1, effects.wakeLockReleased.get())
         assertEquals(1, effects.focusAbandoned.get())
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     @Test
-    fun stop_endsSession_andCallsControllerStop() = runBlocking {
+    fun stop_endsSession_andCallsControllerStop() = runTest {
+        val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
         val controller = FakeController()
-        val core = core(controller = controller)
+        val core = core(scope, controller = controller)
+        advanceUntilIdle()
 
-        emitDetection()
-        awaitUntil("session active") { core.sessionActive.value }
+        detections.emit(WakeWordDetection("hey live ninja", 0.9f, clockValue))
+        advanceUntilIdle()
+        assertTrue(core.sessionActive.value)
 
         core.stop()
+        advanceUntilIdle()
 
         assertFalse(core.sessionActive.value)
         assertEquals(1, controller.stopCount)
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     @Test
-    fun startFailure_tearsDown_leavesIdle() = runBlocking {
+    fun startFailure_tearsDown_leavesIdle() = runTest {
+        val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
         val controller = FakeController(failStart = true)
         val effects = FakeEffects()
-        val core = core(controller = controller, effects = effects)
+        val core = core(scope, controller = controller, effects = effects)
+        advanceUntilIdle()
 
-        emitDetection()
+        detections.emit(WakeWordDetection("hey live ninja", 0.9f, clockValue))
+        advanceUntilIdle()
 
-        awaitUntil("teardown after failure") { !core.sessionActive.value && effects.wakeLockReleased.get() == 1 }
+        assertFalse(core.sessionActive.value)
+        assertEquals(1, effects.wakeLockReleased.get())
         assertEquals(1, effects.focusAbandoned.get())
     }
 }

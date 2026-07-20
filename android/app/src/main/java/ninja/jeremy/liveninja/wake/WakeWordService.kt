@@ -118,6 +118,7 @@ class WakeWordService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        isRunning = true
         createChannel()
         watchPowerState()
     }
@@ -129,6 +130,7 @@ class WakeWordService : Service() {
             ACTION_END_SESSION -> scope.launch { runCatching { sessionOrchestrator.stop() } }
             ACTION_STOP -> {
                 prefs.serviceEnabled = false
+                WakeWatchdogWorker.cancel(applicationContext)
                 scope.launch { runCatching { sessionOrchestrator.stop() } }
                 stopEngineBlocking()
                 stopSelf()
@@ -149,6 +151,10 @@ class WakeWordService : Service() {
         }
 
         prefs.serviceEnabled = true
+        // Reliability watchdog (M8.4): if this FGS dies without a clean ACTION_STOP
+        // (OEM task-kill, crash, mic yanked), the 15-min periodic worker notices
+        // serviceEnabled=true + isRunning=false and posts a tap-to-resume notification.
+        WakeWatchdogWorker.enqueue(applicationContext)
         if (!startForegroundGuarded(ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)) {
             postTapToResumeNotification()
             stopSelf()
@@ -181,6 +187,7 @@ class WakeWordService : Service() {
         }
 
     override fun onDestroy() {
+        isRunning = false
         stopEngineBlocking()
         powerStateReceiver?.let { unregisterReceiver(it) }
         thermalListener?.let { powerManager.removeThermalStatusListener(it) }
@@ -551,6 +558,14 @@ class WakeWordService : Service() {
         const val CHANNEL_ID_ALERT = "wakeword_alert"
         const val NOTIFICATION_ID = 1001
         const val NOTIFICATION_ID_WAKE_SCREEN = 1002
+
+        /**
+         * True while an instance of this service is alive (set in [onCreate]/[onDestroy]).
+         * [WakeWatchdogWorker] reads this — process-static, so it correctly defaults back
+         * to `false` on a fresh process (the only way this flag could otherwise go stale
+         * is a hard process kill, which also resets it).
+         */
+        @Volatile var isRunning: Boolean = false
 
         const val ACTION_START = "ninja.jeremy.liveninja.wake.START"
         const val ACTION_MUTE = "ninja.jeremy.liveninja.wake.MUTE"

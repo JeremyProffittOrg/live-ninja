@@ -1,6 +1,8 @@
 package ninja.jeremy.liveninja
 
 import android.app.Application
+import androidx.hilt.work.HiltWorkerFactory
+import androidx.work.Configuration
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 import ninja.jeremy.liveninja.auth.AuthRepository
@@ -9,7 +11,7 @@ import ninja.jeremy.liveninja.log.LogCategory
 import ninja.jeremy.liveninja.log.LogSink
 
 @HiltAndroidApp
-class LiveNinjaApplication : Application() {
+class LiveNinjaApplication : Application(), Configuration.Provider {
 
     @Inject lateinit var authRepository: AuthRepository
 
@@ -21,6 +23,19 @@ class LiveNinjaApplication : Application() {
      * (before this, [LNLog] is logcat-passthrough only).
      */
     @Inject lateinit var logSink: LogSink
+
+    /** Lets `@HiltWorker`-annotated workers (M8.4 [ninja.jeremy.liveninja.wake.WakeWatchdogWorker]) receive injected deps. */
+    @Inject lateinit var hiltWorkerFactory: HiltWorkerFactory
+
+    /**
+     * WorkManager detects that [Application] implements [Configuration.Provider]
+     * and switches from its default eager `androidx.startup` init to on-demand
+     * init using this configuration (WorkManager 2.6+, no manifest edit needed).
+     */
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder()
+            .setWorkerFactory(hiltWorkerFactory)
+            .build()
 
     override fun onCreate() {
         super.onCreate()
