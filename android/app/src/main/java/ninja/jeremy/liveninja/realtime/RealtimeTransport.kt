@@ -44,6 +44,15 @@ interface RealtimeTransport {
     var halfDuplex: Boolean
 
     /**
+     * Hands the full session bootstrap to the transport before [connect], for
+     * engines that need more than the (credential, endpoint) pair — e.g. the
+     * Gemini transport's `setup` frame body and token expiry
+     * ([GeminiLiveTransport], M13). Default: no-op; the coordinator calls it
+     * uniformly for every engine.
+     */
+    fun prime(session: RealtimeSession) {}
+
+    /**
      * Open a session: negotiate SDP with [callsUrl] using [ephemeralToken] and
      * begin bidirectional audio. Returns when the peer connection is CONNECTED
      * or throws on negotiation failure.

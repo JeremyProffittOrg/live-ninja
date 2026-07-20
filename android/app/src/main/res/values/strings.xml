@@ -265,6 +265,10 @@
     <string name="settings_engine_openai_mini_desc">Cheaper and faster, slightly less nuance — also device-direct</string>
     <string name="settings_engine_nova">Amazon Nova Sonic</string>
     <string name="settings_engine_nova_desc">Lowest cost — audio is relayed through Live Ninja\'s servers, which can add a little latency</string>
+    <string name="settings_engine_gemini">Gemini Flash Live</string>
+    <string name="settings_engine_gemini_desc">Cheapest engine — no infrastructure cost. Preview-status model.</string>
+    <string name="settings_gemini_voice_label">Gemini voice</string>
+    <string name="settings_gemini_voice_offline">Voice catalog unavailable — the default voice will be used</string>
 
     <string name="settings_section_audio">Audio</string>
     <string name="settings_mic_label">Microphone</string>

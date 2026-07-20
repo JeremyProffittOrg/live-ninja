@@ -499,10 +499,89 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                         description = stringResource(R.string.settings_engine_nova_desc),
                         enabled = true,
                     ),
+                    RadioOption(
+                        value = SettingsViewModel.GEMINI_ENGINE,
+                        label = stringResource(R.string.settings_engine_gemini),
+                        description = stringResource(R.string.settings_engine_gemini_desc),
+                        enabled = true,
+                    ),
                 ),
                 selected = doc.voiceEngineDefault,
                 onSelect = viewModel::setVoiceEngine,
             )
+
+            // Gemini voice picker (M13, D4) — progressive disclosure: only
+            // when the Gemini engine is selected. Populated from the
+            // `geminiVoices` catalog (GET /api/v1/realtime/voices); writes the
+            // top-level `geminiVoice` settings key.
+            if (doc.voiceEngineDefault == SettingsViewModel.GEMINI_ENGINE) {
+                var geminiVoiceExpanded by remember { mutableStateOf(false) }
+                val selectedGeminiVoice = doc.geminiVoice
+                    .ifEmpty { SettingsDocument.DEFAULT_GEMINI_VOICE }
+                val selectedGeminiOption =
+                    state.geminiVoices.firstOrNull { it.id == selectedGeminiVoice }
+                ExposedDropdownMenuBox(
+                    expanded = geminiVoiceExpanded,
+                    onExpandedChange = { geminiVoiceExpanded = it },
+                ) {
+                    OutlinedTextField(
+                        value = selectedGeminiOption?.label ?: selectedGeminiVoice,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text(stringResource(R.string.settings_gemini_voice_label)) },
+                        supportingText = {
+                            Text(
+                                if (state.geminiVoices.isEmpty()) {
+                                    stringResource(R.string.settings_gemini_voice_offline)
+                                } else {
+                                    selectedGeminiOption?.description.orEmpty()
+                                },
+                            )
+                        },
+                        trailingIcon = {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = geminiVoiceExpanded)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                    )
+                    ExposedDropdownMenu(
+                        expanded = geminiVoiceExpanded,
+                        onDismissRequest = { geminiVoiceExpanded = false },
+                    ) {
+                        state.geminiVoices.forEach { option ->
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(option.label)
+                                            if (option.default) {
+                                                Text(
+                                                    stringResource(R.string.settings_voice_default_badge),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.padding(start = 8.dp),
+                                                )
+                                            }
+                                        }
+                                        if (option.description.isNotBlank()) {
+                                            Text(
+                                                option.description,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    }
+                                },
+                                onClick = {
+                                    viewModel.setGeminiVoice(option.id)
+                                    geminiVoiceExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+            }
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
 

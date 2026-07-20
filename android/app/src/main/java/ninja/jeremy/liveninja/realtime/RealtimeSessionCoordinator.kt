@@ -37,6 +37,7 @@ import org.json.JSONObject
 class RealtimeSessionCoordinator @Inject constructor(
     @OpenAiRealtimeTransport private val webRtcTransport: RealtimeTransport,
     @NovaSonicTransport private val novaBridgeTransport: RealtimeTransport,
+    @GeminiTransport private val geminiLiveTransport: RealtimeTransport,
     private val sessionApi: RealtimeSessionApi,
     private val toolRouter: ToolCallRouter,
 ) : RealtimeSessionController {
@@ -44,8 +45,9 @@ class RealtimeSessionCoordinator @Inject constructor(
     /**
      * The transport for the *current* session, selected per the resolved
      * `voiceEngine` pin (FR-VE-03): WebRTC-to-OpenAI for `openai-direct`, the
-     * Nova Sonic bridge for `nova-bridge`. Both satisfy [RealtimeTransport],
-     * so every method below is engine-agnostic.
+     * Nova Sonic bridge for `nova-bridge`, client-direct Gemini Live for
+     * `gemini-direct` (M13). All satisfy [RealtimeTransport], so every method
+     * below is engine-agnostic.
      */
     @Volatile
     private var transport: RealtimeTransport = webRtcTransport
@@ -77,13 +79,26 @@ class RealtimeSessionCoordinator @Inject constructor(
 
             // Route by the resolved engine pin. connect()'s two string params
             // are reused engine-agnostically: (credential, endpointUrl).
-            val (credential, endpointUrl) = if (session.mode == RealtimeSession.MODE_NOVA_BRIDGE) {
-                transport = novaBridgeTransport
-                session.bridgeToken.orEmpty() to session.wsUrl.orEmpty()
-            } else {
-                transport = webRtcTransport
-                session.clientSecret to session.callsUrl
+            val (credential, endpointUrl) = when (session.mode) {
+                RealtimeSession.MODE_NOVA_BRIDGE -> {
+                    transport = novaBridgeTransport
+                    session.bridgeToken.orEmpty() to session.wsUrl.orEmpty()
+                }
+
+                RealtimeSession.MODE_GEMINI_DIRECT -> {
+                    transport = geminiLiveTransport
+                    session.accessToken?.value.orEmpty() to session.geminiEndpoint.orEmpty()
+                }
+
+                else -> {
+                    transport = webRtcTransport
+                    session.clientSecret to session.callsUrl
+                }
             }
+            // Engines needing more than (credential, endpoint) — e.g. the
+            // Gemini setup frame — take it from the full bootstrap (no-op
+            // for the others).
+            transport.prime(session)
 
             emittedChars.clear()
             eventsJob?.cancel()

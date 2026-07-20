@@ -39,9 +39,14 @@ class RealtimeSessionCoordinatorTest {
         override var halfDuplex: Boolean = false
 
         val connectCalls = mutableListOf<Pair<String, String>>()
+        val primedSessions = mutableListOf<RealtimeSession>()
         val sentEvents = mutableListOf<JSONObject>()
         var disconnects = 0
         var failConnect = false
+
+        override fun prime(session: RealtimeSession) {
+            primedSessions += session
+        }
 
         override suspend fun connect(ephemeralToken: String, callsUrl: String) {
             connectCalls += ephemeralToken to callsUrl
@@ -76,9 +81,10 @@ class RealtimeSessionCoordinatorTest {
     }
 
     private val transport = FakeTransport()
-    // Nova transport for the second (qualified) constructor slot; the default
+    // Nova/Gemini transports for the qualified constructor slots; the default
     // session below is openai-direct, so the coordinator selects [transport].
     private val novaTransport = FakeTransport()
+    private val geminiTransport = FakeTransport()
     private val sessionApi = mockk<RealtimeSessionApi>()
     private val toolRouter = mockk<ToolCallRouter>()
 
@@ -91,7 +97,7 @@ class RealtimeSessionCoordinatorTest {
             sessionId = "rs-1",
             quotaWarning = null,
         )
-        return RealtimeSessionCoordinator(transport, novaTransport, sessionApi, toolRouter)
+        return RealtimeSessionCoordinator(transport, novaTransport, geminiTransport, sessionApi, toolRouter)
     }
 
     /** Collect coordinator UI events into [sink] and wait until [predicate] matches one. */
@@ -122,6 +128,44 @@ class RealtimeSessionCoordinatorTest {
             listOf("ephemeral-token" to ninja.jeremy.liveninja.config.BackendConfig.OPENAI_REALTIME_CALLS_URL),
             transport.connectCalls,
         )
+        coord.stop()
+    }
+
+    @Test
+    fun start_geminiDirect_routesToGeminiTransportAndPrimes() = runBlocking {
+        val endpoint = "wss://generativelanguage.googleapis.com/ws/" +
+            "google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained"
+        coEvery { sessionApi.fetchSession() } returns RealtimeSession(
+            mode = RealtimeSession.MODE_GEMINI_DIRECT,
+            clientSecret = "",
+            expiresAt = null,
+            model = "gemini-3.1-flash-live-preview",
+            voice = "Kore",
+            sessionId = "rs-2",
+            quotaWarning = null,
+            geminiEndpoint = endpoint,
+            accessToken = GeminiAccessToken(
+                value = "auth_tokens/abc123",
+                expiresAt = "2026-07-19T12:30:00Z",
+                newSessionExpiresAt = "2026-07-19T12:02:00Z",
+            ),
+            sessionConfig = JSONObject().put("model", "models/gemini-3.1-flash-live-preview"),
+        )
+        val coord = RealtimeSessionCoordinator(transport, novaTransport, geminiTransport, sessionApi, toolRouter)
+
+        coord.start()
+
+        assertTrue(coord.connected.value)
+        // The Gemini transport gets (accessToken.value, geminiEndpoint) and
+        // the full bootstrap via prime(); the other transports stay idle.
+        assertEquals(listOf("auth_tokens/abc123" to endpoint), geminiTransport.connectCalls)
+        assertEquals(1, geminiTransport.primedSessions.size)
+        assertEquals(
+            RealtimeSession.MODE_GEMINI_DIRECT,
+            geminiTransport.primedSessions.single().mode,
+        )
+        assertTrue(transport.connectCalls.isEmpty())
+        assertTrue(novaTransport.connectCalls.isEmpty())
         coord.stop()
     }
 

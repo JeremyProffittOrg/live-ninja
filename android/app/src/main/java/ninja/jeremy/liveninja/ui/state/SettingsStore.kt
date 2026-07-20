@@ -22,6 +22,12 @@ data class SettingsDocument(
     val personaPresetId: String,
     val personaSystemInstructions: String?,
     val voice: String,
+    /**
+     * Gemini Live voice for the gemini-flash-live engine (M13, D4).
+     * Lenient/additive per the schema: "" = unset → the server resolves
+     * persona mapping ?? [DEFAULT_GEMINI_VOICE].
+     */
+    val geminiVoice: String,
     val turnDetection: String,
     val theme: String,
     val micDeviceId: String?,
@@ -38,6 +44,9 @@ data class SettingsDocument(
             "echo", "marin", "sage", "shimmer", "verse",
         )
         const val DEFAULT_VOICE = "cedar"
+
+        /** Locked Gemini engine default voice (gemini-plan.md D4). */
+        const val DEFAULT_GEMINI_VOICE = "Kore"
         val RETENTION_CHOICES = listOf(0, 7, 30, 90)
     }
 
@@ -81,6 +90,12 @@ class SettingsStore @Inject constructor(
     fun setWakeEngine(engine: String) = update { it.put("wakeEngine", engine) }
     fun setSensitivity(value: Float) = update { it.put("sensitivity", value.toDouble()) }
     fun setVoice(voice: String) = update { it.put("voice", voice) }
+
+    /**
+     * Set the Gemini Live voice (M13, D4) — a top-level additive key,
+     * preserved-the-rest through [update] like every other write.
+     */
+    fun setGeminiVoice(voice: String) = update { it.put("geminiVoice", voice) }
     fun setTurnDetection(value: String) = update { it.put("turnDetection", value) }
 
     /** Set the default voice engine (M12 FR-VE-04), preserving the per-device pin map. */
@@ -139,6 +154,7 @@ class SettingsStore @Inject constructor(
                 if (it.isNull("systemInstructions")) null else it.optString("systemInstructions")
             },
             voice = raw.optString("voice", SettingsDocument.DEFAULT_VOICE),
+            geminiVoice = raw.optString("geminiVoice", ""),
             turnDetection = raw.optString("turnDetection", "semantic_vad"),
             theme = raw.optString("theme", "system"),
             micDeviceId = if (raw.isNull("micDeviceId")) null else raw.optString("micDeviceId"),

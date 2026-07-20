@@ -18,13 +18,18 @@ annotation class OpenAiRealtimeTransport
 @Retention(AnnotationRetention.BINARY)
 annotation class NovaSonicTransport
 
+/** The client-direct Gemini Live WSS transport (gemini-flash-live, M13). */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class GeminiTransport
+
 /** Hilt bindings for the realtime package (owned by the WebRTC workstream). */
 @Module
 @InstallIn(SingletonComponent::class)
 abstract class RealtimeModule {
 
-    // Both transports are bound as [RealtimeTransport] under distinct
-    // qualifiers; [RealtimeSessionCoordinator] injects both and selects one
+    // All transports are bound as [RealtimeTransport] under distinct
+    // qualifiers; [RealtimeSessionCoordinator] injects them and selects one
     // per session from the resolved `voiceEngine` pin (M12 FR-VE-03).
     @Binds
     @Singleton
@@ -35,6 +40,11 @@ abstract class RealtimeModule {
     @Singleton
     @NovaSonicTransport
     abstract fun bindNovaTransport(impl: NovaBridgeTransport): RealtimeTransport
+
+    @Binds
+    @Singleton
+    @GeminiTransport
+    abstract fun bindGeminiTransport(impl: GeminiLiveTransport): RealtimeTransport
 
     /**
      * Fills the UI layer's `@BindsOptionalOf` seam (ui/state/UiSeams.kt) —

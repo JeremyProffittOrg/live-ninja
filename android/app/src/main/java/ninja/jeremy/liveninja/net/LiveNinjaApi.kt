@@ -129,6 +129,16 @@ interface LiveNinjaApi {
     @PUT("api/v1/guides/{id}")
     suspend fun putGuide(@Path("id") id: String, @Body body: GuidePutRequest): GuideDto
 
+    // ---- Voice catalogs (M13, D4) ----
+
+    /**
+     * Static voice catalogs for the Settings pickers. Additive shape:
+     * `voices` (OpenAI Realtime) + `accents` + `geminiVoices` (the Gemini
+     * Live catalog backing the gemini-flash-live engine's voice picker).
+     */
+    @GET("api/v1/realtime/voices")
+    suspend fun listVoices(): VoiceCatalogResponse
+
     // ---- Conversation history + topics (M11, FR-TOP-04/05) ----
 
     /**

@@ -34,6 +34,17 @@ import retrofit2.HttpException
 /** One persona catalog entry (server resolves the actual instructions by ID). */
 data class PersonaPreset(val id: String, val label: String, val description: String)
 
+/**
+ * One selectable Gemini Live voice (M13, D4) — populated from the
+ * `geminiVoices` catalog on `GET /api/v1/realtime/voices`, never typed.
+ */
+data class GeminiVoiceOption(
+    val id: String,
+    val label: String,
+    val description: String,
+    val default: Boolean,
+)
+
 /** One selectable input device (populated picker — never a typed ID). */
 data class MicDeviceOption(val id: String?, val label: String)
 
@@ -60,6 +71,8 @@ data class SettingsUiState(
     val wakeCatalogOffline: Boolean = false,
     val micDevices: List<MicDeviceOption> = emptyList(),
     val personaPresets: List<PersonaPreset> = SettingsViewModel.PERSONA_PRESETS,
+    /** Gemini Live voice catalog; empty until fetched (or when the fetch failed offline). */
+    val geminiVoices: List<GeminiVoiceOption> = emptyList(),
     val porcupineAvailable: Boolean = false,
     val accountActionsAvailable: Boolean = false,
     val signedIn: Boolean = false,
@@ -122,6 +135,7 @@ class SettingsViewModel @Inject constructor(
                 launcher.isSignedIn.collect { signed -> _state.update { it.copy(signedIn = signed) } }
             }
         }
+        refreshGeminiVoices()
         // Resume polling a training job that outlived the previous process
         // (Batch jobs run up to 20 min; the SES "ready" email is the backstop).
         startPollingCustomJob()
@@ -317,7 +331,41 @@ class SettingsViewModel @Inject constructor(
     fun setTurnDetection(value: String) = settingsStore.setTurnDetection(value)
 
     /** Voice engine picker (M12 FR-VE-04): sets voiceEngine.default. */
-    fun setVoiceEngine(engine: String) = settingsStore.setVoiceEngineDefault(engine)
+    fun setVoiceEngine(engine: String) {
+        settingsStore.setVoiceEngineDefault(engine)
+        // The Gemini voice picker appears with this selection; retry the
+        // catalog fetch if the init-time attempt failed (e.g. offline).
+        if (engine == GEMINI_ENGINE && _state.value.geminiVoices.isEmpty()) {
+            refreshGeminiVoices()
+        }
+    }
+
+    /** Gemini voice picker (M13, D4): sets the top-level `geminiVoice` key. */
+    fun setGeminiVoice(voiceId: String) = settingsStore.setGeminiVoice(voiceId)
+
+    /**
+     * Fetch the Gemini Live voice catalog (`geminiVoices` on
+     * GET /api/v1/realtime/voices). Failure leaves the current list — the
+     * picker shows its offline note instead of an empty combobox.
+     */
+    private fun refreshGeminiVoices() {
+        viewModelScope.launch {
+            val catalog = try {
+                api.listVoices()
+            } catch (_: Exception) {
+                return@launch // transient — retried when the engine is selected
+            }
+            val options = catalog.geminiVoices.map { dto ->
+                GeminiVoiceOption(
+                    id = dto.id,
+                    label = dto.name ?: dto.id,
+                    description = dto.description.orEmpty(),
+                    default = dto.default,
+                )
+            }
+            _state.update { it.copy(geminiVoices = options) }
+        }
+    }
 
     // ---- Audio ----
     fun setMicDevice(id: String?) = settingsStore.setMicDeviceId(id)
@@ -403,6 +451,9 @@ class SettingsViewModel @Inject constructor(
 
     companion object {
         const val CUSTOM_INSTRUCTIONS_MAX = 4000
+
+        /** Engine value whose selection reveals the Gemini voice picker (M13). */
+        const val GEMINI_ENGINE = "gemini-flash-live"
 
         /** Client-side pre-check mirror of the backend phrase validation. */
         const val MAX_PHRASE_LENGTH = 40
