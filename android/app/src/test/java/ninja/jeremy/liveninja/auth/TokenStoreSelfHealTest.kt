@@ -55,7 +55,6 @@ class TokenStoreSelfHealTest {
             }
         }
 
-        // First access triggers the corruption → wipe → retry path.
         store.saveSession(sample)
 
         assertEquals(2, calls)
@@ -71,7 +70,6 @@ class TokenStoreSelfHealTest {
             prefsFactory = { throw GeneralSecurityException("still corrupt after wipe") }
         }
 
-        // Reads return null, writes no-op — no exception escapes.
         assertNull(store.session())
         assertNull(store.accessToken())
         store.saveSession(sample)
