@@ -174,7 +174,7 @@ type ParamSpec struct {
 	SafeName bool
 
 	// Unadvertised, when true, keeps this param out of the rendered JSON
-	// schema (Manifest / the future CatalogManifest) while validateArgs
+	// schema (Manifest / CatalogManifest) while validateArgs
 	// still accepts, coerces, and enforces it. This is for back-compat
 	// aliases a model must never be *taught* — advertising two spellings
 	// for the same argument just re-introduces the ambiguity — but that
@@ -318,7 +318,20 @@ func NewRegistry(deps *Deps) (*Registry, error) {
 	}
 
 	r := &Registry{deps: deps, tools: make(map[string]*Definition)}
-	for _, def := range []*Definition{
+	for _, def := range definitions() {
+		if err := r.register(def); err != nil {
+			return nil, err
+		}
+	}
+	return r, nil
+}
+
+// definitions builds the full tool catalog in its canonical order. The
+// Definition constructors take no dependencies, so this slice can be
+// rendered (CatalogManifest) without a live Deps; NewRegistry registers
+// exactly this set.
+func definitions() []*Definition {
+	return []*Definition{
 		sendEmailDefinition(),
 		setTimerDefinition(),
 		setReminderDefinition(),
@@ -339,12 +352,7 @@ func NewRegistry(deps *Deps) (*Registry, error) {
 		planUpsertDefinition(),
 		forgetDefinition(),
 		webResearchDefinition(),
-	} {
-		if err := r.register(def); err != nil {
-			return nil, err
-		}
 	}
-	return r, nil
 }
 
 func (r *Registry) register(def *Definition) error {
@@ -359,13 +367,34 @@ func (r *Registry) register(def *Definition) error {
 	return nil
 }
 
-// Manifest renders the catalog as OpenAI Realtime function-tool
-// definitions — the `tools` array the broker binds into every session
-// config, and the exact schema Invoke later enforces.
+// CatalogManifest renders the full tool catalog as OpenAI Realtime
+// function-tool definitions — the `tools` array the realtime broker binds
+// into every session config (internal/realtime derives its manifest from
+// this function), and the exact schema Invoke later enforces. It needs no
+// live Deps: the Definition constructors are dependency-free.
+func CatalogManifest() []map[string]any {
+	return renderManifest(definitions())
+}
+
+// Manifest renders this registry's catalog as OpenAI Realtime
+// function-tool definitions — the same rendering as CatalogManifest
+// (both go through renderManifest), scoped to what this Registry has
+// registered.
 func (r *Registry) Manifest() []map[string]any {
-	out := make([]map[string]any, 0, len(r.order))
+	defs := make([]*Definition, 0, len(r.order))
 	for _, name := range r.order {
-		def := r.tools[name]
+		defs = append(defs, r.tools[name])
+	}
+	return renderManifest(defs)
+}
+
+// renderManifest is the single manifest renderer behind both
+// CatalogManifest and (*Registry).Manifest, so the advertised schema can
+// never diverge between them. Unadvertised params are excluded from the
+// rendered schema (they remain validated and enforced by Invoke).
+func renderManifest(defs []*Definition) []map[string]any {
+	out := make([]map[string]any, 0, len(defs))
+	for _, def := range defs {
 		props := make(map[string]any, len(def.Params))
 		var required []string
 		for _, p := range def.Params {
@@ -450,15 +479,13 @@ func (r *Registry) Invoke(ctx context.Context, inv Invocation) (res *Result) {
 	// Single egress point: stamps Error.TxID, writes the audit line, emits
 	// the EMF metric, and logs "invoke done" with outcome + latency — for
 	// every return path below.
-	var def *Definition
-	defer func() { r.finish(ctx, l, def, inv, res, start) }()
+	defer func() { r.finish(ctx, l, inv, res, start) }()
 
-	d, ok := r.tools[inv.Tool]
+	def, ok := r.tools[inv.Tool]
 	if !ok {
 		res.Error = toolErrf(CodeUnknownTool, "unknown tool %q", inv.Tool)
 		return res
 	}
-	def = d
 	if inv.UserID == "" {
 		res.Error = toolErrf(CodeForbidden, "missing authenticated user context")
 		return res
@@ -515,7 +542,7 @@ func (r *Registry) Invoke(ctx context.Context, inv Invocation) (res *Result) {
 // finish stamps the transaction id onto any error, emits the audit LOG#
 // line (best effort) and the EMF metric, and logs the verbose "invoke done"
 // line with outcome + latency for every invocation, success or failure.
-func (r *Registry) finish(ctx context.Context, l *slog.Logger, def *Definition, inv Invocation, res *Result, start time.Time) {
+func (r *Registry) finish(ctx context.Context, l *slog.Logger, inv Invocation, res *Result, start time.Time) {
 	outcome := "ok"
 	switch {
 	case res.Duplicate:
@@ -557,7 +584,6 @@ func (r *Registry) finish(ctx context.Context, l *slog.Logger, def *Definition, 
 			slog.String("message", res.Error.Message),
 			slog.Int64("latencyMs", latencyMs))
 	}
-	_ = def
 }
 
 // writeAudit persists a role=tool transcript line at

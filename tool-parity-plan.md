@@ -1,8 +1,10 @@
 # Live Ninja — Tool Manifest Parity & Correctness
 
-> **Status:** IN PROGRESS — M18 `[x]` and M20 `[x]` complete 2026-07-20 (see notes, incl.
-> the recorded A2 deviations); M19 `[ ]` remains. **Do not push/deploy until M19 (B3)
-> lands** — see the A2 deviation note. · **Owner:** jeremy · 2026-07-20
+> **Status:** COMPLETE — M18 `[x]`, M19 `[x]`, and M20 `[x]` all complete 2026-07-20 (see
+> notes, incl. the recorded A2 deviations). The A2 deploy constraint ("do not push/deploy
+> until M19 (B3) lands") is **satisfied**: B3 landed, so M18+M19 ship in the same push as
+> required. Only the post-M19 manual live-audio smoke (Verification section) remains, and
+> it is owner-only/post-deploy by design. · **Owner:** jeremy · 2026-07-20
 > Extends plan.md with three milestones (M18–M20). Written after the voice tool-surface
 > audit of 2026-07-20; every finding below cites the real seam.
 >
@@ -192,7 +194,9 @@ alias-equivalence (`TestResolveFireTimeSecondsAliasMatchesInSeconds`,
 > target is executable even pre-M19; (3) per repo policy nothing deploys until
 > pushed. **Deploy constraint: do not push M18 standalone — land B3 (M19) in
 > the same push so the advertised handoff target exists when the cap becomes
-> user-visible.**
+> user-visible.** *(SATISFIED 2026-07-20: B3 landed in the same working tree
+> as M18 — both go out in one commit/push, so the constraint holds by
+> construction.)*
 
 > **A2 ADDENDUM (review fix, 2026-07-20): `set_reminder.seconds` is also
 > `Unadvertised` now.** A2's letter scoped Q2 to `set_timer`, but the M19 flip
@@ -234,7 +238,7 @@ multi-byte content.
 
 ---
 
-## M19 — Single-source manifest  `[ ]`
+## M19 — Single-source manifest  `[x]`
 
 **Definition of Done:** `internal/realtime/mint.go` contains **no** hand-written tool
 literal; `toolManifest` is derived from `internal/tools`; a parity test makes silent
@@ -243,15 +247,15 @@ byte-identical to the schema `Invoke` enforces; `go test ./...` and `go vet` gre
 
 Ordered tasks:
 
-- `[ ]` **B1 — Extract the definition slice** (WS-B). Lift the 20-entry literal out of
+- `[x]` **B1 — Extract the definition slice** (WS-B). Lift the 20-entry literal out of
   `NewRegistry` (registry.go:303-328) into `func definitions() []*Definition`. `NewRegistry`
   then ranges over `definitions()`. Pure refactor, no behaviour change.
-- `[ ]` **B2 — Package-level `CatalogManifest()`** (WS-B). Add
+- `[x]` **B2 — Package-level `CatalogManifest()`** (WS-B). Add
   `func CatalogManifest() []map[string]any` rendering from `definitions()` with **no
   `Deps` required**. Refactor the existing `(*Registry).Manifest()` and the new function
   onto one shared renderer so they can never diverge — a single `renderManifest([]*Definition)`.
   Fix the now-true doc comment at registry.go:344-346.
-- `[ ]` **B3 — Flip the binding** (WS-B). Replace `var toolManifest = []map[string]any{…}`
+- `[x]` **B3 — Flip the binding** (WS-B). Replace `var toolManifest = []map[string]any{…}`
   (mint.go:117-500, ~383 lines) with `var toolManifest = tools.CatalogManifest()`.
   Everything downstream derives automatically: `toolManifestJSON` (mint.go:503),
   `ToolManifestJSON()` (mint.go:514), `geminiToolDeclarations()` (gemini_mint.go:121),
@@ -259,7 +263,7 @@ Ordered tasks:
   is a package-level `func()` var initialised from `toolManifest`; Go resolves
   package-level dependency order automatically, but confirm with a test that
   `ToolManifestJSON()` is non-empty and parses to 20 entries.
-- `[ ]` **B4 — Verify the two existing parity tests still pass unmodified** (WS-C).
+- `[x]` **B4 — Verify the two existing parity tests still pass unmodified** (WS-C).
   `fallback_tools_test.go:19` and `gemini_mint_test.go:78` assert per-index equality of
   `name`/`description`/`parameters` against `toolManifest`. They should pass untouched —
   if either needs editing to go green, the flip changed a derived path and that is a bug,
@@ -267,23 +271,106 @@ Ordered tasks:
   `description` assertion is expected to need updating once D1 lands, because the Gemini
   sanitizer intentionally augments descriptions. That exception covers that one assertion
   and nothing else.
-- `[ ]` **C1 — THE missing parity test** (WS-C). New test asserting whatever the broker
+- `[x]` **C1 — THE missing parity test** (WS-C). New test asserting whatever the broker
   binds equals what the router enforces. Must be **deep, not a name/count check** — the
   `gemini_mint_test.go:53` count-only assertion is exactly the weak form that let this
   drift survive. Assert, per tool: name set equality both directions, and for each tool a
   full `reflect.DeepEqual` of the rendered `parameters` against a freshly rendered
   `CatalogManifest()` entry. Place it in `internal/realtime` (the consumer side) so it
   fails when someone reintroduces a literal.
-- `[ ]` **C2 — Drift-resistance test** (WS-C). Add a test that constructs a `Definition`
+- `[x]` **C2 — Drift-resistance test** (WS-C). Add a test that constructs a `Definition`
   with every `ParamSpec` field populated and asserts `renderManifest` surfaces all six
   constraint kinds (`enum`, `minLength`, `maxLength`, `pattern`, `minimum`, `maximum`).
   Guards against a future `jsonSchema()` edit silently dropping a constraint kind.
-- `[ ]` **B5 — Delete `_ = def`** (WS-B). `finish()` (registry.go:539) takes a
+- `[x]` **B5 — Delete `_ = def`** (WS-B). `finish()` (registry.go:539) takes a
   `*Definition` it never reads, ending in a bare `_ = def`. Drop the parameter. Trivial,
   but it is the kind of dead seam that invites a future reader to wire something to it.
 
 **Implementation notes (append as work proceeds):**
-_(empty — WS-B/WS-C to fill)_
+
+**B1 notes.** `registry.go`: the 20-entry constructor literal moved out of
+`NewRegistry` into `func definitions() []*Definition` (registry.go:333),
+which documents that the constructors are dependency-free so the slice can
+be rendered without a live `Deps`. `NewRegistry` now ranges over
+`definitions()` and `register()`s each one. Canonical catalog order is
+unchanged (send_email … web_research). Pure refactor, no behaviour change.
+
+**B2 notes.** `registry.go`: added `func CatalogManifest() []map[string]any`
+(registry.go:375) = `renderManifest(definitions())`, no `Deps` needed.
+`(*Registry).Manifest()` was refactored onto the same shared renderer — it
+collects its registered `*Definition`s in `r.order` and calls
+`renderManifest(defs)` — so the two can never diverge; the single renderer
+is `renderManifest([]*Definition)` (registry.go:395), which owns the
+`{type,name,description,parameters}` wire shape, the sorted `required`
+list, and the `Unadvertised` exclusion. The previously-false doc comment
+(registry.go:344-346, "the tools array the broker binds…") now lives on
+`CatalogManifest` where it is true by construction; `Manifest`'s comment
+points at the shared renderer. A stale "the future CatalogManifest"
+reference in the `ParamSpec.Unadvertised` doc comment was updated on the
+review pass.
+
+**B3 notes.** `mint.go`: the entire hand-written `var toolManifest =
+[]map[string]any{…}` literal (~383 lines, the P1/P2 root cause) is deleted
+and replaced by `var toolManifest = tools.CatalogManifest()` (mint.go:120)
+with a doc comment stating the advertised schema and the enforced schema
+are now the same object by construction. `internal/realtime` now imports
+`internal/tools` (no cycle — `tools` never imports `realtime`).
+Everything downstream (`toolManifestJSON`, `ToolManifestJSON()`,
+`geminiToolDeclarations()`, `chatCompletionTools`) derives automatically;
+none of those seams changed. Init order: `toolManifestJSON` is still a
+package-level `func()` var initialised from `toolManifest`; Go's
+package-level dependency ordering handles the cross-package init, and
+`TestToolManifestJSONInitOrder` (internal/realtime/tool_manifest_test.go)
+pins it — ToolManifestJSON() non-empty, parses to exactly 20 entries, each
+a complete `{type:function,name,description,parameters:{type:object}}`
+declaration.
+
+**B4 notes.** Verified: `fallback_tools_test.go` and `gemini_mint_test.go`
+are byte-untouched by M19 (git diff shows only mint.go + registry.go
+modified, plus the two new test files) and the full suite is green — the
+derived paths survived the flip with zero edits. The one sanctioned D-c
+exception (gemini description-prefix assertion) had already been consumed
+by D1 in M20, which landed before the flip; no further edit was needed or
+made.
+
+**C1 notes.** `internal/realtime/tool_manifest_test.go`
+`TestBrokerBoundManifestMatchesRouterCatalog` — deliberately on the
+CONSUMER side so a reintroduced mint.go literal fails it regardless of how
+plausible the literal looks. Compares the actual bound bytes
+(`ToolManifestJSON()`, unmarshaled) against a freshly rendered
+`tools.CatalogManifest()` JSON-normalized to wire form. Asserts: name-set
+equality in BOTH directions, no duplicate declarations on either side,
+identical catalog order, and per tool — wire `type`, exact `description`
+equality, and a full `reflect.DeepEqual` of the `parameters` schema (the
+deep form C1 mandates; never a name/count check). Plus a consumer-visible
+spot check of the A2/Unadvertised contract: `set_timer` and `set_reminder`
+both advertise `inSeconds` and never the `seconds` compat alias.
+
+**C2 notes.** `internal/tools/manifest_render_test.go`
+`TestRenderManifestSurfacesEveryConstraintKind` — a synthetic Definition
+populating every `ParamSpec` field proves `renderManifest` surfaces all six
+renderable constraint kinds (enum, minLength, maxLength, pattern, minimum,
+maximum — string/integer/number/string_array/boolean param types all
+covered) and excludes the `Unadvertised` param from both `properties` and
+`required` (the synthetic `legacy` alias is marked `Required: true` +
+`Unadvertised: true`, proving Unadvertised wins — added on the review pass
+to make the required-list assertion's comment literally true).
+`TestRenderManifestConstraintTestCoversEveryParamSpecField` reflects over
+`ParamSpec` and fails on any added/removed field, forcing the constraint
+test and the known-fields list to be updated together.
+`TestCatalogManifestEqualsRegistryManifest` closes the render loop:
+package-level `CatalogManifest()` deep-equals a live registry's
+`Manifest()`.
+
+**B5 notes.** `finish()` (registry.go:545) dropped the unused
+`*Definition` parameter and its trailing `_ = def`; the sole call site
+(the `defer` in `Invoke`, registry.go:482) updated. Signature is now
+`finish(ctx, l, inv, res, start)`.
+
+**Verification.** `go build ./... && go vet ./... && go test ./... -count=1`
+all green after the flip and again after the review fixes. The manual
+live-audio smoke (steps 1–5 above) is post-deploy/owner-only and remains
+outstanding by design.
 
 ---
 
