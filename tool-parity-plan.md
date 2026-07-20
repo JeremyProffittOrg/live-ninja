@@ -1,6 +1,8 @@
 # Live Ninja — Tool Manifest Parity & Correctness
 
-> **Status:** READY TO EXECUTE — all open questions answered 2026-07-20 · **Owner:** jeremy · 2026-07-20
+> **Status:** IN PROGRESS — M18 `[x]` and M20 `[x]` complete 2026-07-20 (see notes, incl.
+> the recorded A2 deviations); M19 `[ ]` remains. **Do not push/deploy until M19 (B3)
+> lands** — see the A2 deviation note. · **Owner:** jeremy · 2026-07-20
 > Extends plan.md with three milestones (M18–M20). Written after the voice tool-surface
 > audit of 2026-07-20; every finding below cites the real seam.
 >
@@ -88,7 +90,7 @@ WS-D is fully independent and should be launched **concurrently** with WS-A.
 
 ---
 
-## M18 — Registry becomes prompt-ready  `[ ]`
+## M18 — Registry becomes prompt-ready  `[x]`
 
 **Why this comes first:** M19 flips every engine onto the registry's descriptions. If the
 registry's wording is worse than the hand-tuned manifest copy, flipping ships a
@@ -102,22 +104,22 @@ behaviour has changed yet** (nothing binds `Manifest()` until M19).
 
 Ordered tasks:
 
-- `[ ]` **A1 — Description reconciliation** (WS-A). For each of the 20 tools, compare the
+- `[x]` **A1 — Description reconciliation** (WS-A). For each of the 20 tools, compare the
   `mint.go` manifest description against the registry `Description` and land the better
   wording in the registry. The manifest copy is voice-tuned and often terser; the registry
   copy is more precise about failure modes. Per **Q1**, keep whichever is stronger. Record
   the chosen wording per tool in the notes block below so the diff is reviewable.
-- `[ ]` **A2 — `set_timer` param surface** (WS-A). Per **Q2**: drop `seconds` from the
+- `[x]` **A2 — `set_timer` param surface** (WS-A). Per **Q2**: drop `seconds` from the
   advertised `Params` while `resolveFireTime` (scheduler.go) keeps accepting **both**
   spellings — that alias is load-bearing prod-compat and removing it re-breaks the tool.
   Per **Q3**: set `inSeconds` `Max` to 86400. Per **D-a**: the `Description` must tell the
   model to use `set_reminder` beyond 24h, and the out-of-range `invalid_args` message must
   name `set_reminder` so the model can self-correct. Add a test asserting `inSeconds` and
   `seconds` resolve to an identical fire time.
-- `[ ]` **A3 — `get_weather` description fix** (WS-A). `days` description currently says
+- `[x]` **A3 — `get_weather` description fix** (WS-A). `days` description currently says
   "(default 1)" in the manifest and "(default 3)" in the registry; the code defaults to 3.
   Make the registry say 3. Confirm `units` enum + default are described.
-- `[ ]` **A4 — Audit every `ParamSpec` for advertise-ability** (WS-A). Walk all 20 tools ×
+- `[x]` **A4 — Audit every `ParamSpec` for advertise-ability** (WS-A). Walk all 20 tools ×
   all params: any constraint the router enforces (`MinLen`/`MaxLen`/`Min`/`Max`/`Enum`/
   `SafeName`) must be present on the `ParamSpec` so `jsonSchema()` renders it. This is
   mostly verification — `jsonSchema()` (registry.go:374) already renders all six — but
@@ -127,13 +129,108 @@ Ordered tasks:
   `plan_upsert.steps` (≤30, each ≤500), `deliverable_zip.deliverableIds` (1..MaxZipSources).
   These are array-element rules `jsonSchema()` cannot express today — decide per tool
   whether to fold them into the description prose instead.
-- `[ ]` **A5 — Byte-length caveat** (WS-A). `MinLen`/`MaxLen` are measured in **bytes**
+- `[x]` **A5 — Byte-length caveat** (WS-A). `MinLen`/`MaxLen` are measured in **bytes**
   (`len(s)`), not runes, so multi-byte content hits the cap earlier than a user expects.
   Either switch to `utf8.RuneCountInString` or state the unit in the rendered description.
   Prefer the former; it is a two-line change in `validateArgs` and strictly less surprising.
 
 **Implementation notes (append as work proceeds):**
-_(empty — WS-A to fill)_
+
+**A1 — per-tool description reconciliation record (Q1: stronger wording wins).**
+"Registry kept" = the registry `Description` was judged stronger (or the two were
+already equivalent) and the registry file is unchanged for that tool's top-level
+description; "manifest ported" / "merged" = the registry was edited. Param-level
+prose added under A4 is listed with A4 below, not here.
+
+| # | Tool | Winner | Rationale |
+|---|---|---|---|
+| 1 | `send_email` | registry kept | Both state the confirmExternal contract; registry adds the owner-inbox default phrasing and matches the enforced surface. |
+| 2 | `set_timer` | **merged (rewritten)** | Manifest's terser "one-shot timer that notifies the user when it fires" + new Q3 24h cap sentence + D-a `set_reminder` handoff sentence (scheduler.go:45). |
+| 3 | `set_reminder` | registry kept | Manifest copy was the P2 drift itself (absolute `at` only, `at`+`message` both required); registry documents `at` xor `inSeconds` and email delivery. |
+| 4 | `device_control` | **merged** | Manifest's "Send a control action to one of the user's own registered … devices (e.g. the M5Stack terminal)" + its ownership sentence, keeping the registry's full action list incl. ping/identify/reboot (devicecontrol.go:36). |
+| 5 | `get_weather` | registry kept | Registry already says "(default 3)" — matches the code default; `units` enum + imperial default described. See A3. |
+| 6 | `web_lookup` | **merged** | Manifest's "factual topic (encyclopedia-style summary)" framing + registry's "on Wikipedia … with a source link" (weblookup.go:25). |
+| 7 | `deliverable_create` | registry kept | Registry already carries the already_exists / never-overwritten contract the manifest copy was cribbed from. |
+| 8 | `deliverable_zip` | registry kept | Equivalent; registry adds background-build detail. (Param prose added under A4.) |
+| 9 | `deliverable_deliver` | registry kept | Equivalent; registry names link-TTL and email-to-own-inbox behavior. |
+| 10 | `file_list` | registry kept | Byte-identical intent — the manifest copy was authored from the registry (M9); no edit. |
+| 11 | `file_read` | registry kept | Same as file_list: copies already matched; no edit. |
+| 12 | `file_create` | registry kept | Same: already_exists / never-overwrite contract identical in both; no edit. |
+| 13 | `remember_note` | registry kept | Manifest's one-liner ("Save a note for the user to recall later.") is strictly weaker. (Tags prose added under A4.) |
+| 14 | `recall_note` | registry kept | Manifest copy was the P2 drift (required `query`, no `tag`/`limit`); registry describes optional query, tag filter, recent-notes listing. |
+| 15 | `memory_search` | **manifest ported** | The manifest's "ALWAYS call this before answering any question about the user's personal facts … and before saying you don't know such a fact" directive is the stronger prompt; ported into memory.go:101. |
+| 16 | `memory_write` | registry kept | Equivalent top-level wording; registry lists the six entity types in prose. (attrs/relations prose added under A4.) |
+| 17 | `entity_get` | registry kept | Equivalent; registry names memory_search *and* memory_write as ID sources. |
+| 18 | `plan_upsert` | **merged** | Registry wording + manifest's "The steps list replaces any previous steps — it is not appended to." appended (memory.go:162). |
+| 19 | `forget` | registry kept | Both carry the explicit-request-only guard; registry adds the search-index-entry detail. |
+| 20 | `web_research` | registry kept | Registry names the recency-directive default and the URL allow-list precisely. |
+
+**A2 notes.** `scheduler.go`: added `maxTimerLead = 24h` and `timerOverflowHint`
+(names `set_reminder (with inSeconds)`, per D-a); `set_timer.inSeconds` Max →
+86400, `seconds` alias kept in `resolveFireTime` but marked `Unadvertised`.
+`registry.go`: new `ParamSpec.Unadvertised` (skipped by `Manifest()` rendering,
+still validated/coerced) and `ParamSpec.OutOfRangeHint` (appended to the
+router's min/max `invalid_args` message). Tests: `scheduler_test.go` —
+alias-equivalence (`TestResolveFireTimeSecondsAliasMatchesInSeconds`,
+`TestSetTimerAcceptsUnadvertisedSecondsAlias`), Q2 manifest surface
+(`TestSetTimerManifestAdvertisesOnlyInSeconds`), D-a hint
+(`TestSetTimerOverflowNamesSetReminder`), and cap-scope
+(`TestSetReminderStillAllowsBeyondTimerCap`).
+
+> **A2 DEVIATION (recorded on review, 2026-07-20): the 24h cap enforces
+> immediately, not at M19.** `ParamSpec.Max` is shared between advertisement
+> and enforcement, so narrowing both spellings' Max to 86400 makes the cap
+> live the moment this change deploys — before B3 flips the binding. Strictly,
+> M18's "no production behaviour has changed yet" DoD and D-a's "A2 is
+> behaviour-neutral until B3" premise do not hold for one sliver: an
+> *off-schema* `set_timer` call with 86400 < value ≤ 31 622 400 previously
+> succeeded and now returns `invalid_args`. Mitigations, why this is accepted:
+> (1) the currently-bound mint.go literal already advertises `seconds` max
+> 86400, so schema-compliant models never hit the window; (2) the error hint
+> names `set_reminder (with inSeconds)` and the router *already accepts*
+> `set_reminder.inSeconds` (registered, just unadvertised), so the handoff
+> target is executable even pre-M19; (3) per repo policy nothing deploys until
+> pushed. **Deploy constraint: do not push M18 standalone — land B3 (M19) in
+> the same push so the advertised handoff target exists when the cap becomes
+> user-visible.**
+
+> **A2 ADDENDUM (review fix, 2026-07-20): `set_reminder.seconds` is also
+> `Unadvertised` now.** A2's letter scoped Q2 to `set_timer`, but the M19 flip
+> advertises `set_reminder.inSeconds` for the first time (D-a) — leaving its
+> `seconds` alias advertised would have taught the model the exact
+> inSeconds/seconds synonym pair Q2 was locked to eliminate, one tool over.
+> The alias remains accepted by `resolveFireTime` forever. Guarded by
+> `TestSetReminderManifestAdvertisesOnlyInSeconds`.
+
+**A3 notes.** Verification only — the registry already read "(default 3)"
+(weather.go:36), matching the code default of 3, and `units`
+(imperial|metric, default imperial) was already enumerated and described. No
+edit needed; the wrong "(default 1)" lives only in the mint.go literal, which
+M19 deletes.
+
+**A4 notes.** All six renderable constraint kinds were confirmed present on
+`ParamSpec`s wherever the router enforces them. The four known handler-only
+array-element rules were **folded into description prose** (the per-tool
+decision the task allows), since `jsonSchema()` cannot express them:
+`memory_write.attrs` (≤20 entries, key ≤50 / value ≤500 chars),
+`memory_write.relations` (≤20 entries, relationType ≤50 / targetEntityId ≤100
+chars), `plan_upsert.steps` (≤30 steps, each ≤500 chars),
+`remember_note.tags` (≤10 kept, each ≤50 chars, extras dropped silently — the
+prose says so), `deliverable_zip.deliverableIds` (1..`deliv.MaxZipSources`,
+rendered via `fmt.Sprintf` so it can't drift from the constant).
+**Review fix (2026-07-20):** the handler checks those sentences document were
+still measuring **bytes** (`len(s)`) while the new prose promises
+"characters" and A5 made the router measure runes — so the handler-side
+element checks in `parseAttrPairs`/`parseRelationPairs`, `handlePlanUpsert`'s
+step check (memory.go) and `handleRememberNote`'s tag filter (notes.go) now
+use `utf8.RuneCountInString` too. Handler and router errors now agree that
+"characters" means runes. Regression: `TestMemoryWriteElementLimitsAreRunes`
+(400-rune / 1200-byte Japanese attr value accepted; 501 runes rejected).
+
+**A5 notes.** `ParamSpec.coerce()` (registry.go) now measures `MinLen`/`MaxLen`
+in runes via `utf8.RuneCountInString`, per the task's preferred option. The
+error copy ("at least/at most N characters") is now literally true for
+multi-byte content.
 
 ---
 
@@ -190,7 +287,7 @@ _(empty — WS-B/WS-C to fill)_
 
 ---
 
-## M20 — Engine hardening & tool discoverability  `[ ]`
+## M20 — Engine hardening & tool discoverability  `[x]`
 
 Independent of M18/M19 — launch WS-D concurrently at the start.
 
@@ -200,7 +297,7 @@ no information lost to the model; all 20 tools are discoverable from the persona
 
 Ordered tasks:
 
-- `[ ]` **D1 — Gemini schema sanitizer** (WS-D). In `geminiToolDeclarations()`, deep-copy
+- `[x]` **D1 — Gemini schema sanitizer** (WS-D). In `geminiToolDeclarations()`, deep-copy
   each `parameters` map (it is currently shared **by reference** with `toolManifest` —
   fixing that alone removes an aliasing footgun) and strip keywords `genai.Schema` does not
   model. **Verify the supported set against the vendored `genai.Schema` struct definition,
@@ -210,24 +307,71 @@ Ordered tasks:
   can comply rather than being rejected by the router. Generate that prose from the
   `ParamSpec` — never hand-write it per tool, or it becomes the next thing to drift.
   See **D-c**: this deliberately breaks an existing test assertion.
-- `[ ]` **D2 — Setup/constraints equivalence test** (WS-D). Assert the raw wire `setup`
+- `[x]` **D2 — Setup/constraints equivalence test** (WS-D). Assert the raw wire `setup`
   frame (`buildGeminiSetup`) and the SDK-typed constraints (`buildGeminiConstraints`)
   declare the **same** tool schemas post-sanitization. This is the gap that lets the minted
   token and the client's setup frame disagree today.
-- `[ ]` **D3 — Upgrade the count-only assertion** (WS-D).
+- `[x]` **D3 — Upgrade the count-only assertion** (WS-D).
   `gemini_mint_test.go:53` asserts only `len(toolManifest) == len(cc.Tools[0].FunctionDeclarations)`.
   Make it assert content.
-- `[ ]` **D4 — Persona tool coverage** (WS-D). Add the six missing tools to
+- `[x]` **D4 — Persona tool coverage** (WS-D). Add the six missing tools to
   `coreInstructions` (personas.go:55-70): `deliverable_create`, `deliverable_zip`,
   `deliverable_deliver`, `file_list`, `file_read`, `file_create`. Keep it terse — this
   string is on every session's token budget for every engine. Group them as one
   "documents and downloads" clause rather than six separate sentences.
-- `[ ]` **D5 — Persona/manifest coverage test** (WS-D). Assert every tool name in the
+- `[x]` **D5 — Persona/manifest coverage test** (WS-D). Assert every tool name in the
   manifest appears in `coreInstructions` (or sits on an explicit, named allow-list of
   deliberately-unmentioned tools). Prevents P3 from silently recurring when tool 21 lands.
 
 **Implementation notes (append as work proceeds):**
-_(empty — WS-D to fill)_
+
+**D1 notes.** `gemini_mint.go`: `geminiSchemaKeywords` is computed by
+**reflecting over the vendored `genai.Schema` struct's `json` tags** (not a
+hand list) and was verified 2026-07-20 against google.golang.org/genai
+v1.64.0 `types.go` `type Schema struct` — the modeled set is anyOf, default,
+description, enum, example, format, items, maxItems, maxLength,
+maxProperties, maximum, minItems, minLength, minProperties, minimum,
+nullable, pattern, properties, propertyOrdering, required, title, type.
+Every keyword today's 20 real tools use IS modeled, so on real data nothing
+is stripped yet; the mechanism is proven against synthetic schemas
+(additionalProperties, const, multipleOf, uniqueItems) in
+`gemini_schema_sanitizer_test.go`. `sanitizeGeminiParameters` deep-copies
+(`deepCopyValue`) so declarations never alias `toolManifest` (the P4
+by-reference footgun), then `sanitizeSchemaNode` strips unmodeled keywords
+depth-first (recursing `properties`/`items`) and folds each into **that
+parameter's own** description via `describeStrippedConstraint` — prose is
+generated from keyword+value, never hand-written per tool (Q4), and stripped
+keys are sorted so output is deterministic.
+
+**D2 notes.** `TestGeminiSetupAndConstraintsDeclareSameToolSchemas`
+(gemini_schema_sanitizer_test.go) asserts the raw wire `setup` frame and the
+SDK-typed constraints declare the same post-sanitization tool schemas —
+closing the minted-token-vs-setup-frame gap P4 described.
+
+**D3 notes.** `gemini_mint_test.go` `TestGeminiMintBuildsConstrainedTokenAndSetup`:
+the `len()==len()` assertion now checks per-index name equality across all 20
+declarations plus a deep representative check that `file_create.name`'s
+minLength/maxLength/pattern and required survive the SDK round trip.
+
+**D4 notes.** `personas.go` `coreInstructions` gained one terse "documents and
+downloads" clause naming all six previously-unmentioned tools
+(`deliverable_create`/`file_create`, `file_list`/`file_read`,
+`deliverable_zip`, `deliverable_deliver`) — one clause, not six sentences,
+per the token-budget instruction. The "byte-for-byte pre-personas text"
+doc-comment claim was updated since it no longer holds.
+
+**D5 notes.** `persona_tool_coverage_test.go`
+`TestEveryManifestToolIsDiscoverableFromPersonaPrompt` asserts every manifest
+tool name appears verbatim in `coreInstructions`, with an explicit named
+allow-list (`deliberatelyUnmentionedTools`) that is **empty today**;
+`TestDeliberatelyUnmentionedToolsStaysNearEmpty` keeps the escape hatch from
+silently growing.
+
+**D-c honored.** `TestGeminiToolDeclarationsMirrorManifest`'s `description`
+assertion — the one sanctioned exception — now asserts prefix equality plus
+sanitizer-shaped suffix; the `parameters` equality assertion was left fully
+intact (nothing is stripped from real tools at the current SDK pin, so it
+still holds exactly).
 
 ---
 

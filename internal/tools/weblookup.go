@@ -22,8 +22,8 @@ var (
 func webLookupDefinition() *Definition {
 	return &Definition{
 		Name: "web_lookup",
-		Description: "Look up a topic, person, place, or thing on Wikipedia and return a concise " +
-			"factual summary with a source link. Use for general-knowledge questions.",
+		Description: "Look up a factual topic (encyclopedia-style summary) on Wikipedia and return a " +
+			"concise summary with a source link. Use for people, places, things, and definitions.",
 		Params: []ParamSpec{
 			{Name: "query", Type: "string", Required: true, MinLen: 1, MaxLen: 200,
 				Description: "The topic to look up, e.g. 'Grace Hopper' or 'transit method astronomy'."},

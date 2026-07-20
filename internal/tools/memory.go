@@ -15,6 +15,7 @@ package tools
 import (
 	"context"
 	"strings"
+	"unicode/utf8"
 )
 
 // MemoryEntityTypes is the closed entity-type set (locked M10 decision:
@@ -23,16 +24,16 @@ var MemoryEntityTypes = []string{"person", "place", "info", "project", "task", "
 
 // Bounds on the flat attr/relation encodings accepted by memory_write.
 const (
-	maxMemoryAttrs      = 20
-	maxMemoryRelations  = 20
-	maxAttrKeyLen       = 50
-	maxAttrValueLen     = 500
-	maxRelationTypeLen  = 50
-	maxEntityIDLen      = 100
-	maxPlanSteps        = 30
-	maxPlanStepLen      = 500
-	defaultSearchLimit  = 5
-	maxSearchLimit      = 20
+	maxMemoryAttrs     = 20
+	maxMemoryRelations = 20
+	maxAttrKeyLen      = 50
+	maxAttrValueLen    = 500
+	maxRelationTypeLen = 50
+	maxEntityIDLen     = 100
+	maxPlanSteps       = 30
+	maxPlanStepLen     = 500
+	defaultSearchLimit = 5
+	maxSearchLimit     = 20
 )
 
 // EntityRelation is one typed edge from an entity to another entity in the
@@ -99,8 +100,10 @@ func memorySearchDefinition() *Definition {
 	return &Definition{
 		Name: "memory_search",
 		Description: "Search the user's long-term memory (people, places, information, projects, " +
-			"tasks, and plans) by meaning, not exact words. Use this before asking the user to " +
-			"repeat something they may have told you in an earlier conversation.",
+			"tasks, and plans) by meaning, not exact words. ALWAYS call this before answering any " +
+			"question about the user's personal facts — their home or work address, names, " +
+			"birthdays, preferences, plans, or anything they may have told you in a past " +
+			"conversation — and before saying you don't know such a fact.",
 		Params: []ParamSpec{
 			{Name: "query", Type: "string", Required: true, MinLen: 1, MaxLen: 300,
 				Description: "What to look for, phrased naturally, e.g. 'sister's birthday' or 'the kitchen remodel project'."},
@@ -126,9 +129,14 @@ func memoryWriteDefinition() *Definition {
 			{Name: "name", Type: "string", Required: true, MinLen: 1, MaxLen: 200,
 				Description: "Short display name for the entity, e.g. 'Sarah (sister)' or 'Kitchen remodel'."},
 			{Name: "attrs", Type: "string_array",
-				Description: "Facts about the entity as \"key=value\" entries, e.g. [\"birthday=March 3\", \"city=Austin\"]."},
+				Description: "Facts about the entity as \"key=value\" entries, e.g. [\"birthday=March 3\", " +
+					"\"city=Austin\"]. At most 20 entries; each key up to 50 characters and each value up " +
+					"to 500 characters — exceeding either limit fails with invalid_args."},
 			{Name: "relations", Type: "string_array",
-				Description: "Edges to other entities as \"relationType:targetEntityId\" entries, e.g. [\"sibling:ent-01\"]. Target IDs come from earlier memory_search/memory_write results."},
+				Description: "Edges to other entities as \"relationType:targetEntityId\" entries, e.g. " +
+					"[\"sibling:ent-01\"]. Target IDs come from earlier memory_search/memory_write results. " +
+					"At most 20 entries; each relationType up to 50 characters and each targetEntityId up " +
+					"to 100 characters — exceeding either limit fails with invalid_args."},
 			{Name: "entityId", Type: "string", MaxLen: maxEntityIDLen,
 				Description: "Existing entity ID to update. Omit to create a new entity."},
 		},
@@ -154,7 +162,8 @@ func planUpsertDefinition() *Definition {
 		Name: "plan_upsert",
 		Description: "Create or update a multi-step plan in the user's long-term memory (a 'plan' " +
 			"entity with ordered steps). Use for anything the user wants tracked over time, like " +
-			"a trip itinerary or a project checklist.",
+			"a trip itinerary or a project checklist. The steps list replaces any previous steps — " +
+			"it is not appended to.",
 		SideEffecting: true,
 		Params: []ParamSpec{
 			{Name: "planId", Type: "string", MaxLen: maxEntityIDLen,
@@ -162,7 +171,8 @@ func planUpsertDefinition() *Definition {
 			{Name: "title", Type: "string", Required: true, MinLen: 1, MaxLen: 200,
 				Description: "The plan's title, e.g. 'Spring garden overhaul'."},
 			{Name: "steps", Type: "string_array", Required: true,
-				Description: "The full ordered list of steps (this replaces any previous steps)."},
+				Description: "The full ordered list of steps (this replaces any previous steps). At most " +
+					"30 steps, each up to 500 characters — exceeding either limit fails with invalid_args."},
 		},
 		Handler: handlePlanUpsert,
 	}
@@ -272,7 +282,9 @@ func handlePlanUpsert(ctx context.Context, deps *Deps, inv Invocation, args map[
 		if s == "" {
 			continue
 		}
-		if len(s) > maxPlanStepLen {
+		// Runes, not bytes — the advertised description says "characters",
+		// and the router's own MinLen/MaxLen path measures runes (A5).
+		if utf8.RuneCountInString(s) > maxPlanStepLen {
 			return nil, toolErrf(CodeInvalidArgs, "each step must be at most %d characters", maxPlanStepLen)
 		}
 		steps = append(steps, s)
@@ -359,10 +371,12 @@ func parseAttrPairs(pairs []string) (map[string]string, *ToolError) {
 		if !ok || k == "" || v == "" {
 			return nil, toolErrf(CodeInvalidArgs, "each attrs entry must be \"key=value\", got %q", p)
 		}
-		if len(k) > maxAttrKeyLen {
+		// Runes, not bytes — the advertised description says "characters",
+		// and the router's own MinLen/MaxLen path measures runes (A5).
+		if utf8.RuneCountInString(k) > maxAttrKeyLen {
 			return nil, toolErrf(CodeInvalidArgs, "attr key %q exceeds %d characters", k, maxAttrKeyLen)
 		}
-		if len(v) > maxAttrValueLen {
+		if utf8.RuneCountInString(v) > maxAttrValueLen {
 			return nil, toolErrf(CodeInvalidArgs, "attr value for %q exceeds %d characters", k, maxAttrValueLen)
 		}
 		out[k] = v
@@ -386,10 +400,11 @@ func parseRelationPairs(pairs []string) ([]EntityRelation, *ToolError) {
 		if !ok || t == "" || target == "" {
 			return nil, toolErrf(CodeInvalidArgs, "each relations entry must be \"relationType:targetEntityId\", got %q", p)
 		}
-		if len(t) > maxRelationTypeLen {
+		// Runes, not bytes — see parseAttrPairs.
+		if utf8.RuneCountInString(t) > maxRelationTypeLen {
 			return nil, toolErrf(CodeInvalidArgs, "relation type %q exceeds %d characters", t, maxRelationTypeLen)
 		}
-		if len(target) > maxEntityIDLen {
+		if utf8.RuneCountInString(target) > maxEntityIDLen {
 			return nil, toolErrf(CodeInvalidArgs, "relation target ID exceeds %d characters", maxEntityIDLen)
 		}
 		out = append(out, EntityRelation{Type: t, TargetID: target})

@@ -25,24 +25,42 @@ const (
 	emailTemplateReminder = "tool-reminder"
 
 	minLeadSeconds = 5                    // schedule must be at least this far out
-	maxLead        = 366 * 24 * time.Hour // and at most ~1 year
+	maxLead        = 366 * 24 * time.Hour // and at most ~1 year (set_reminder's ceiling)
+
+	// maxTimerLead is set_timer's own, tighter ceiling (Q3, locked decision):
+	// 24h. Anything longer is set_reminder's job — timerOverflowHint below
+	// is what tells the model that when it hits this bound.
+	maxTimerLead = 24 * time.Hour
 )
+
+// timerOverflowHint is appended to set_timer's out-of-range invalid_args
+// error (D-a, second-pass decision): it must name set_reminder by name so
+// the model can self-correct conversationally — e.g. "set a timer for 3
+// days" — instead of just apologising that the call failed.
+const timerOverflowHint = "For durations longer than 24 hours, use set_reminder (with inSeconds) instead."
 
 func setTimerDefinition() *Definition {
 	return &Definition{
 		Name: "set_timer",
-		Description: "Set a timer that notifies the user when it goes off. " +
-			"Provide the duration in seconds (e.g. 600 for 10 minutes).",
+		Description: "Set a short one-shot timer that notifies the user when it fires. Provide the " +
+			"duration in seconds (e.g. 600 for 10 minutes). Capped at 24 hours (86400 seconds) — " +
+			"for anything longer, use set_reminder instead.",
 		SideEffecting: true,
 		Params: []ParamSpec{
+			{Name: "inSeconds", Type: "integer", Min: floatPtr(minLeadSeconds), Max: floatPtr(maxTimerLead.Seconds()),
+				OutOfRangeHint: timerOverflowHint,
+				Description:    "How many seconds from now the timer should fire (max 86400 = 24h)."},
 			// "seconds" is an accepted alias: models routinely send it
 			// despite the schema naming "inSeconds" (observed in prod —
-			// every set_timer call failed invalid_args). Exactly one of the
-			// two is required, enforced in resolveFireTime.
-			{Name: "inSeconds", Type: "integer", Min: floatPtr(minLeadSeconds), Max: floatPtr(maxLead.Seconds()),
-				Description: "How many seconds from now the timer should fire."},
-			{Name: "seconds", Type: "integer", Min: floatPtr(minLeadSeconds), Max: floatPtr(maxLead.Seconds()),
-				Description: "Alias for inSeconds."},
+			// every set_timer call failed invalid_args). Per Q2 (locked
+			// decision) it is deliberately NOT advertised — no synonym pair
+			// taught to the model — but resolveFireTime below still accepts
+			// it, so a model that sends it anyway (or a client still tuned
+			// to the old manifest wording) keeps working exactly as before.
+			{Name: "seconds", Type: "integer", Min: floatPtr(minLeadSeconds), Max: floatPtr(maxTimerLead.Seconds()),
+				Unadvertised:   true,
+				OutOfRangeHint: timerOverflowHint,
+				Description:    "Alias for inSeconds."},
 			{Name: "label", Type: "string", MaxLen: 200,
 				Description: "Short label for what the timer is for, e.g. 'pasta on the stove'."},
 		},
@@ -65,8 +83,14 @@ func setReminderDefinition() *Definition {
 				Description: "Absolute fire time, RFC3339 with offset, e.g. 2026-07-18T09:00:00-04:00."},
 			{Name: "inSeconds", Type: "integer", Min: floatPtr(minLeadSeconds), Max: floatPtr(maxLead.Seconds()),
 				Description: "Relative fire time: seconds from now. Use instead of 'at', not together."},
+			// Same Q2 rationale as set_timer's alias above: "seconds" stays
+			// accepted by resolveFireTime forever, but is never advertised —
+			// otherwise the M19 manifest flip would teach the model the
+			// exact inSeconds/seconds synonym pair Q2 was locked to
+			// eliminate, just on the sibling tool.
 			{Name: "seconds", Type: "integer", Min: floatPtr(minLeadSeconds), Max: floatPtr(maxLead.Seconds()),
-				Description: "Alias for inSeconds."},
+				Unadvertised: true,
+				Description:  "Alias for inSeconds."},
 		},
 		Handler: func(ctx context.Context, deps *Deps, inv Invocation, args map[string]any) (map[string]any, *ToolError) {
 			return handleSchedule(ctx, deps, inv, args, "Reminder")

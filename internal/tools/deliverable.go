@@ -10,6 +10,7 @@ package tools
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -73,7 +74,9 @@ func deliverableZipDefinition() *Definition {
 		SideEffecting: true,
 		Params: []ParamSpec{
 			{Name: "deliverableIds", Type: "string_array", Required: true,
-				Description: "IDs of the deliverables to bundle (from deliverable_create results or the user's list)."},
+				Description: fmt.Sprintf("IDs of the deliverables to bundle (from deliverable_create "+
+					"results or the user's list). Provide between 1 and %d ids — outside that range "+
+					"fails with invalid_args.", deliv.MaxZipSources)},
 			{Name: "name", Type: "string", MaxLen: 100,
 				Description: "Optional archive name, e.g. \"vacation-docs\". \".zip\" is appended automatically."},
 		},

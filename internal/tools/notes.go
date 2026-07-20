@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
@@ -38,7 +39,9 @@ func rememberNoteDefinition() *Definition {
 			{Name: "text", Type: "string", Required: true, MinLen: 1, MaxLen: 2000,
 				Description: "The note content to remember."},
 			{Name: "tags", Type: "string_array",
-				Description: "Optional short tags categorizing the note, e.g. [\"shopping\",\"gift-ideas\"]."},
+				Description: "Optional short tags categorizing the note, e.g. [\"shopping\",\"gift-ideas\"]. " +
+					"At most 10 tags are kept, each up to 50 characters; any beyond these limits are " +
+					"dropped silently rather than rejected."},
 		},
 		Handler: handleRememberNote,
 	}
@@ -69,7 +72,9 @@ func handleRememberNote(ctx context.Context, deps *Deps, inv Invocation, args ma
 	cleanTags := make([]string, 0, len(tags))
 	for _, t := range tags {
 		t = strings.ToLower(strings.TrimSpace(t))
-		if t == "" || len(t) > 50 || seen[t] {
+		// Runes, not bytes — the advertised description says "characters",
+		// and the router's own MinLen/MaxLen path measures runes (A5).
+		if t == "" || utf8.RuneCountInString(t) > 50 || seen[t] {
 			continue
 		}
 		seen[t] = true

@@ -33,8 +33,9 @@ var deviceControlActions = []string{
 func deviceControlDefinition() *Definition {
 	return &Definition{
 		Name: "device_control",
-		Description: "Control one of the user's own Live Ninja devices (e.g. the M5Stack): " +
-			"ping/identify it, reboot it, mute/unmute, adjust volume, or turn the screen on/off.",
+		Description: "Send a control action to one of the user's own registered Live Ninja devices " +
+			"(e.g. the M5Stack terminal): ping/identify it, reboot it, mute/unmute, adjust volume, " +
+			"or turn the screen on/off. Only devices belonging to the user can be controlled.",
 		SideEffecting: true,
 		Params: []ParamSpec{
 			{Name: "deviceId", Type: "string", Required: true, MinLen: 1, MaxLen: 128,

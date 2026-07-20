@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -191,6 +192,40 @@ func TestMemoryWriteRejectsMalformedEncodings(t *testing.T) {
 			assert.Equal(t, CodeInvalidArgs, res.Error.Code)
 		})
 	}
+}
+
+// TestMemoryWriteElementLimitsAreRunes pins the A4/A5 unit: the advertised
+// descriptions promise element limits in *characters*, so the handler-side
+// checks must count runes, not bytes. A 400-rune Japanese attr value is
+// 1200 bytes — under a byte count it would be rejected against the
+// 500-"character" cap the schema promises; a 501-rune value must still
+// fail. Same rule for plan steps (500) and everything else parse*Pairs
+// bounds.
+func TestMemoryWriteElementLimitsAreRunes(t *testing.T) {
+	fake := &fakeMemory{}
+	r := newTestRegistry(t, newMemoryDeps(fake))
+
+	multibyte := strings.Repeat("あ", 400) // 400 runes, 1200 bytes
+	inv := invocation("memory_write", map[string]any{
+		"type":  "info",
+		"name":  "multibyte attr",
+		"attrs": []any{"summary=" + multibyte},
+	})
+	inv.IdempotencyKey = "k-runes-ok"
+	res := r.Invoke(context.Background(), inv)
+	require.True(t, res.OK, "400 runes (1200 bytes) must fit the 500-character cap: %+v", res.Error)
+	assert.Equal(t, multibyte, fake.lastWrite.Attrs["summary"])
+
+	tooLong := strings.Repeat("あ", 501) // 501 runes — over the cap
+	inv2 := invocation("memory_write", map[string]any{
+		"type":  "info",
+		"name":  "multibyte attr too long",
+		"attrs": []any{"summary=" + tooLong},
+	})
+	inv2.IdempotencyKey = "k-runes-over"
+	res2 := r.Invoke(context.Background(), inv2)
+	require.False(t, res2.OK, "501 runes must exceed the 500-character cap")
+	assert.Equal(t, CodeInvalidArgs, res2.Error.Code)
 }
 
 func TestMemoryWriteUnknownEntityIDNotFound(t *testing.T) {

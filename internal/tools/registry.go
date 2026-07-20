@@ -35,6 +35,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/iotdataplane"
@@ -171,6 +172,23 @@ type ParamSpec struct {
 	// separators, control characters, and hidden-file names are rejected
 	// at the schema gate before any handler runs.
 	SafeName bool
+
+	// Unadvertised, when true, keeps this param out of the rendered JSON
+	// schema (Manifest / the future CatalogManifest) while validateArgs
+	// still accepts, coerces, and enforces it. This is for back-compat
+	// aliases a model must never be *taught* — advertising two spellings
+	// for the same argument just re-introduces the ambiguity — but that
+	// real callers may still send and that must keep working regardless
+	// (e.g. set_timer's legacy "seconds" spelling; see scheduler.go).
+	Unadvertised bool
+
+	// OutOfRangeHint, when non-empty, is appended to the standard
+	// "must be >= / <= ..." error message the router returns when this
+	// param's Min/Max bound is violated. Used to redirect the model to a
+	// different tool that can serve the value it actually wants (e.g.
+	// set_timer's overflow pointing at set_reminder) so it can self-correct
+	// conversationally instead of dead-ending on a bare rejection.
+	OutOfRangeHint string
 }
 
 // safeFileNamePattern is the advertised (and enforced) filename shape for
@@ -351,6 +369,9 @@ func (r *Registry) Manifest() []map[string]any {
 		props := make(map[string]any, len(def.Params))
 		var required []string
 		for _, p := range def.Params {
+			if p.Unadvertised {
+				continue
+			}
 			props[p.Name] = p.jsonSchema()
 			if p.Required {
 				required = append(required, p.Name)
@@ -642,10 +663,14 @@ func (p ParamSpec) coerce(v any) (any, *ToolError) {
 		if p.Required && s == "" {
 			return nil, toolErrf(CodeInvalidArgs, "argument %q must not be empty", p.Name)
 		}
-		if p.MinLen > 0 && len(s) < p.MinLen {
+		// Length bounds are measured in runes (utf8.RuneCountInString), not
+		// bytes: a byte count would cap multi-byte content earlier than a
+		// user typing in, say, Japanese or with emoji would expect.
+		n := utf8.RuneCountInString(s)
+		if p.MinLen > 0 && n < p.MinLen {
 			return nil, toolErrf(CodeInvalidArgs, "argument %q must be at least %d characters", p.Name, p.MinLen)
 		}
-		if p.MaxLen > 0 && len(s) > p.MaxLen {
+		if p.MaxLen > 0 && n > p.MaxLen {
 			return nil, toolErrf(CodeInvalidArgs, "argument %q must be at most %d characters", p.Name, p.MaxLen)
 		}
 		if p.SafeName && !isSafeFileName(s) {
@@ -730,10 +755,18 @@ func (p ParamSpec) coerce(v any) (any, *ToolError) {
 
 func (p ParamSpec) checkRange(f float64) *ToolError {
 	if p.Min != nil && f < *p.Min {
-		return toolErrf(CodeInvalidArgs, "argument %q must be >= %v", p.Name, *p.Min)
+		msg := fmt.Sprintf("argument %q must be >= %v", p.Name, *p.Min)
+		if p.OutOfRangeHint != "" {
+			msg += " " + p.OutOfRangeHint
+		}
+		return toolErrf(CodeInvalidArgs, "%s", msg)
 	}
 	if p.Max != nil && f > *p.Max {
-		return toolErrf(CodeInvalidArgs, "argument %q must be <= %v", p.Name, *p.Max)
+		msg := fmt.Sprintf("argument %q must be <= %v", p.Name, *p.Max)
+		if p.OutOfRangeHint != "" {
+			msg += " " + p.OutOfRangeHint
+		}
+		return toolErrf(CodeInvalidArgs, "%s", msg)
 	}
 	return nil
 }
