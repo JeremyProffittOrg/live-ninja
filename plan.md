@@ -118,6 +118,7 @@ gantt
 | **M10** Memory Layer + Guide Entities | ○ | ○ | ● | ○ | ○ | ○ | ● |
 | **M11** Topics & history filtering | ○ | | ● | ○ | ○ | ○ | ● |
 | **M12** Secondary voice engine (Nova Sonic) · optional | ○ | ○ | ● | ○ | ○ | ○ | ○ |
+| **M13** Tertiary voice engine (Gemini Flash Live) · [gemini-plan.md](gemini-plan.md) | ○ | ○ | ● | ○ | ○ | ○ | ○ |
 
 ● = lead workstream · ○ = contributing · M9–M10 are v1.1 capability additions layered on the core platform.
 
@@ -514,6 +515,7 @@ Ordered tasks:
 | **M10** | Memory: entity-graph CRUD by keys/GSI (no Scan); S3 Vectors recall eval; `memory.*`/`plan.upsert` tools; session-bootstrap injects guides on all surfaces; forget propagates to Dynamo+vectors; local-RAG on/off fallback. |
 | **M11** | Extraction + tagging on session end; filter-by-topic/device/date (and combos) via GSI queries proves no Scan; taxonomy rename/merge keeps existing tags stable. |
 | **M12** | Per-device engine pin routes correctly (Nova→bridge path, OpenAI→direct); Nova bridge round-trip audio + barge-in; cross-engine tool/transcript parity. |
+| **M13** | Gemini pin → `gemini-direct` bootstrap (never `wsUrl`-family fields); client-direct WSS via constrained ephemeral token; ≥10-min session survives goAway via resumption; cross-engine tool/transcript/cost parity. Full plan + verification: [gemini-plan.md](gemini-plan.md). |
 
 Cross-cutting gates (all milestones): `golangci-lint` + `go vet` clean; unit tests `testify` table-driven; JSON-schema/contract validation in CI; deploy job gated on tests; every new UI form runs the **mandatory multi-persona design pass** before code.
 

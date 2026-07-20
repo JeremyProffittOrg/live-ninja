@@ -348,9 +348,34 @@
                  (NovaBridgeEnable=false — owner declined the ALB + Fargate
                  standing cost). The M12 code stays gated in the repo; restore
                  this option when re-enabling. */}}
+          {{- /* M13 (gemini-plan.md B4): Gemini Flash Live — client-direct
+                 WSS like OpenAI, no bridge/infra; §3.3 cost angle in the
+                 description. */}}
+          <label class="ln-choice">
+            <input type="radio" name="voiceEngine" value="gemini-flash-live">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Gemini Flash Live</span>
+              <span class="ln-choice__desc">Cheapest engine — no infrastructure cost. Preview-status model. Also runs directly from your device.</span>
+            </span>
+          </label>
         </div>
         <p class="ln-hint">All engines share the same tools, memory, and transcripts — only cost, latency, and voice quality differ.</p>
       </fieldset>
+
+      {{- /* M13 Gemini voice picker (D4): fed client-side by the additive
+             `geminiVoices` catalog on GET /api/v1/realtime/voices; only
+             visible while gemini-flash-live is selected (settings.mjs's
+             marked block). Writes the top-level `geminiVoice` settings key
+             ("" = unset → persona geminiVoice ?? Kore resolves at mint).
+             The OpenAI voice picker is untouched — it lives per persona in
+             the persona editor. */}}
+      <div class="ln-field" id="geminiVoiceField" hidden>
+        <label for="geminiVoice">Gemini voice</label>
+        <select class="ln-select" id="geminiVoice">
+          <option value="" selected>Persona default (Kore fallback)</option>
+        </select>
+        <p class="ln-hint">Only used with Gemini Flash Live. "Persona default" follows each persona's own Gemini voice; picking a voice here overrides it for every persona.</p>
+      </div>
     </section>
     <!-- ==================== voice-engine-section:END ==================== -->
 

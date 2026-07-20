@@ -37,8 +37,8 @@
 //   await session.connect({ stream });
 //
 // ---- M12 Nova Sonic bridge (FR-VE-01..03) --------------------------------
-// `GET /api/v1/realtime/session` returns one of two shapes, resolved from the
-// device's `voiceEngine` pin (contracts/settings.schema.json):
+// `GET /api/v1/realtime/session` returns one of three shapes, resolved from
+// the device's `voiceEngine` pin (contracts/settings.schema.json):
 //   { mode:"openai-direct", clientSecret, model, voice, ... }  ← default path,
 //     the WebRTC-to-OpenAI transport below (unchanged).
 //   { mode:"nova-bridge",  wsUrl, token, model?, voice?, sessionId }  ← a
@@ -46,9 +46,17 @@
 //     Sonic. Bedrock's bidirectional stream is server-held (SigV4 + HTTP/2),
 //     so it can't be client-direct — the browser instead opens a WebSocket to
 //     the bridge and streams raw PCM16 frames both ways.
+//   { mode:"gemini-direct", geminiEndpoint, accessToken:{value, expiresAt,
+//     newSessionExpiresAt}, sessionConfig, model, voice, sessionId, rates }
+//     ← a gemini-flash-live-pinned device (M13, gemini-plan.md §3.4): the
+//     browser opens a WSS DIRECTLY to Google's Live API with the single-use
+//     ephemeral token in the URL and sends {"setup": sessionConfig} verbatim
+//     on open. Structurally a hybrid: the Nova WSS/PCM skeleton (16 kHz in,
+//     24 kHz out) with client-direct auth like OpenAI — but uplink audio is
+//     JSON+base64 frames, never raw binary (see #connectGemini).
 //
 // This class exposes ONE public surface (the same events, same methods) for
-// both modes, so mic.mjs / the conversation page don't branch. A response
+// all modes, so mic.mjs / the conversation page don't branch. A response
 // with no `mode` (the pre-M12 shape) is treated as openai-direct.
 //
 // Nova bridge wire protocol (bridge ⇄ client; the bridge normalizes Nova
@@ -76,7 +84,9 @@
 // subdomain — the session bootstrap hands back a same-origin wss URL
 // (wss://<page-origin>/nova/session; the bridge ALB is a /nova/* behavior on
 // the same CloudFront distribution), so it is already covered by `connect-src
-// 'self'` and needs no extra allowlist entry.
+// 'self'` and needs no extra allowlist entry. gemini-direct reaches
+// wss://generativelanguage.googleapis.com, also named explicitly in
+// `connect-src` (internal/webapp/pages_routes.go).
 
 import { authFetch, createToolDispatcher, ApiError } from './toolclient.mjs';
 
@@ -98,12 +108,24 @@ const PENDING_DUCK_LEVEL = 0.15;
 
 // Nova bridge: how long to wait for the bridge's `session.start` after the
 // WebSocket opens, and the PCM sample rates Nova Sonic uses when the bridge
-// doesn't override them in `session.start` (16 kHz in, 24 kHz out).
+// doesn't override them in `session.start` (16 kHz in, 24 kHz out). The
+// Gemini Live transport (M13) runs the exact same rates and shares this
+// capture/playback plumbing.
 const NOVA_START_TIMEOUT_MS = 12_000;
 const NOVA_DEFAULT_IN_RATE = 16_000;
 const NOVA_DEFAULT_OUT_RATE = 24_000;
 // ScriptProcessor block size for mic capture (frames per PCM chunk sent).
 const NOVA_CAPTURE_FRAMES = 2048;
+
+// Gemini Live (M13): how long to wait for `setupComplete` after the socket
+// opens, and how close to the ephemeral token's expiresAt a goAway
+// reconnect still reuses the same token — inside the skew the client
+// re-fetches the session bootstrap (fresh token) before resuming.
+const GEMINI_SETUP_TIMEOUT_MS = 12_000;
+const GEMINI_TOKEN_EXPIRY_SKEW_MS = 60_000;
+// Gemini frames arrive as binary (ArrayBuffer) JSON — audio rides base64
+// INSIDE the JSON, so every frame decodes through here (never raw PCM).
+const GEMINI_TEXT_DECODER = new TextDecoder();
 
 /** Typed error for session bootstrap / connection failures. `code` is the
  * server envelope's `error` (quota_exceeded, rate_limited,
@@ -197,12 +219,24 @@ async function mintOnce(sessionPath) {
   if (!resp.ok) {
     throw new ApiError(resp.status, body, undefined, resp.headers.get('X-LN-Txn') || '');
   }
-  // Two valid success shapes (FR-VE-03). A missing `mode` is the pre-M12
-  // openai-direct shape.
+  // Three valid success shapes (FR-VE-03 + M13). A missing `mode` is the
+  // pre-M12 openai-direct shape.
   const mode = body && body.mode ? body.mode : 'openai-direct';
   if (mode === 'nova-bridge') {
     if (!body || !body.wsUrl) {
       throw new RealtimeError('mint_failed', 'The voice service returned an invalid Nova session.');
+    }
+  } else if (mode === 'gemini-direct') {
+    // gemini-plan.md §3.4: the endpoint, the URL token, and the exact
+    // `setup` frame body are all load-bearing — refuse a partial shape.
+    if (
+      !body ||
+      !body.geminiEndpoint ||
+      !body.accessToken ||
+      !body.accessToken.value ||
+      !body.sessionConfig
+    ) {
+      throw new RealtimeError('mint_failed', 'The voice service returned an invalid Gemini session.');
     }
   } else if (!body || !body.clientSecret || !body.clientSecret.value) {
     throw new RealtimeError('mint_failed', 'The voice service returned an invalid session.');
@@ -301,10 +335,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  *   speakingended  {}                        — assistant audio finished
  *   responsedone   {}                        — full response turn complete
  *   usage          {usage, responseId}      — token usage for a completed
- *                                              response (openai-direct only;
- *                                              evt.response.usage verbatim —
+ *                                              response (openai-direct:
+ *                                              evt.response.usage verbatim;
+ *                                              gemini-direct: usageMetadata
+ *                                              mapped to the same shape —
  *                                              input/output, text/audio,
- *                                              cached breakdowns)
+ *                                              cached breakdowns; never on
+ *                                              nova-bridge)
  *   bargein        {}                        — barge-in executed
  *   assistantdelta {itemId, delta, text}     — streaming assistant transcript
  *   assistantfinal {itemId, text}
@@ -340,6 +377,7 @@ export class RealtimeSession extends EventTarget {
   #sessionId = '';
   #model = '';
   #voice = '';
+  #engine = ''; // resolved voiceEngine pin from the bootstrap ("" pre-M12)
   #rates = null; // per-1M-token rate table from the mint response (rates.go); null on nova-bridge
   #tools = null;
   #assistantText = new Map(); // itemId -> accumulated transcript
@@ -366,6 +404,20 @@ export class RealtimeSession extends EventTarget {
   #playbackGain = null;
   #playbackCursor = 0;
   #novaSources = new Set();
+
+  // ---- M13 Gemini Live state (only populated in mode==='gemini-direct') --
+  #geminiWs = null;
+  #geminiMinted = null; // {endpoint, token, expiresAtMs, sessionConfig}
+  #geminiResumeHandle = ''; // latest sessionResumptionUpdate handle
+  #geminiReconnecting = false; // a goAway/expiry reconnect is in flight
+  #geminiReconnectPending = false; // goAway mid-speech: reconnect at turn end
+  #geminiTurn = 0; // itemId counter (g-user-N / g-asst-N)
+  #geminiUserItem = ''; // open user transcription itemId ('' = none)
+  #geminiAsstItem = ''; // open assistant transcription itemId
+  #geminiThinking = false; // 'thinking' emitted for the current turn
+  #geminiCallNames = new Map(); // toolCall id → function name (toolResponse needs it)
+  #geminiCancelled = new Set(); // toolCallCancellation ids: suppress late results
+  #geminiUsage = null; // latest usageMetadata, surfaced at turnComplete
 
   constructor({ sessionPath = SESSION_PATH, callsUrl = OPENAI_CALLS_URL } = {}) {
     super();
@@ -396,6 +448,11 @@ export class RealtimeSession extends EventTarget {
   }
   get voice() {
     return this.#voice;
+  }
+  /** Resolved voiceEngine pin from the session bootstrap ("" on a pre-M12
+   * shape) — e.g. "openai-realtime", "nova-sonic", "gemini-flash-live". */
+  get engine() {
+    return this.#engine;
   }
   /** Per-1M-token USD rate table for this session's model (session bootstrap,
    * internal/realtime/rates.go) — null on nova-bridge sessions. */
@@ -478,7 +535,7 @@ export class RealtimeSession extends EventTarget {
    * `connectTiming` and a console.debug line.
    */
   async connect({ stream = null, micDeviceId = null } = {}) {
-    if (this.#pc || this.#novaWs) {
+    if (this.#pc || this.#novaWs || this.#geminiWs) {
       throw new RealtimeError('already_connected', 'Session is already connected.');
     }
     this.#closing = false;
@@ -515,6 +572,7 @@ export class RealtimeSession extends EventTarget {
     this.#sessionId = minted.sessionId || 'web-' + Date.now().toString(36);
     this.#model = minted.model || '';
     this.#voice = minted.voice || '';
+    this.#engine = minted.engine || '';
     this.#rates = minted.rates || null;
     // Barge-in policy comes from the minted (server-authored) session
     // config — single source of truth, never a separate client setting.
@@ -536,6 +594,10 @@ export class RealtimeSession extends EventTarget {
     if (this.#mode === 'nova-bridge') {
       this.#abortRtc(rtc); // Nova is WS+PCM — the speculative pc is unused
       await this.#connectNovaBridge(minted);
+      this.#finishTiming(t0, bootstrapMs, 0, 0);
+    } else if (this.#mode === 'gemini-direct') {
+      this.#abortRtc(rtc); // Gemini is WS+PCM too — the speculative pc is unused
+      await this.#connectGemini(minted);
       this.#finishTiming(t0, bootstrapMs, 0, 0);
     } else {
       await this.#connectOpenAI(minted, rtc, t0, bootstrapMs);
@@ -706,6 +768,7 @@ export class RealtimeSession extends EventTarget {
       sessionId: this.#sessionId,
       model: this.#model,
       voice: this.#voice,
+      engine: this.#engine,
     });
   }
 
@@ -782,6 +845,7 @@ export class RealtimeSession extends EventTarget {
       sessionId: this.#sessionId,
       model: this.#model,
       voice: this.#voice,
+      engine: this.#engine,
     });
   }
 
@@ -988,6 +1052,10 @@ export class RealtimeSession extends EventTarget {
     if (emit) this.#emit('bargein');
   }
 
+  // Shared 16 kHz mic capture for the WSS transports (Nova bridge + Gemini
+  // Live): one ScriptProcessor tap; only the uplink FRAMING branches per
+  // mode — Nova sends raw binary PCM16, Gemini wraps the same PCM16 as
+  // base64 inside a JSON realtimeInput frame.
   #startNovaCapture() {
     if (!this.#localStream) return;
     let ctx;
@@ -1004,12 +1072,18 @@ export class RealtimeSession extends EventTarget {
     const source = ctx.createMediaStreamSource(this.#localStream);
     const proc = ctx.createScriptProcessor(NOVA_CAPTURE_FRAMES, 1, 1);
     proc.onaudioprocess = (ev) => {
-      const ws = this.#novaWs;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
       // Respect the mic gate (setMicEnabled / keep-warm) and user mute.
       const tracks = this.#localStream ? this.#localStream.getAudioTracks() : [];
       if (tracks.length && !tracks[0].enabled) return;
 
+      if (this.#mode === 'gemini-direct') {
+        const pcm = this.#floatToPcm16(ev.inputBuffer.getChannelData(0), ratio);
+        if (pcm.length > 0) this.#geminiSendAudio(pcm);
+        return;
+      }
+
+      const ws = this.#novaWs;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
       const input = ev.inputBuffer.getChannelData(0);
       const pcm = this.#floatToPcm16(input, ratio);
       if (pcm.byteLength > 0) {
@@ -1084,6 +1158,497 @@ export class RealtimeSession extends EventTarget {
     }
   }
 
+  // ---- gemini-direct: WSS + JSON/base64 PCM to Gemini Live (M13) ----------
+  //
+  // Fork of the Nova WSS skeleton (gemini-plan.md §3.5): the same 16 kHz
+  // ScriptProcessor capture and 24 kHz scheduled playback
+  // (#startNovaCapture / #novaEnqueueAudio), but client-direct to Google
+  // with an ephemeral token in the URL, JSON+base64 uplink frames, and
+  // Gemini's event vocabulary translated to the shared CustomEvents.
+  // Lifecycle: Google recycles the connection ~every 10 minutes (goAway) —
+  // the client reconnects with the latest sessionResumptionUpdate handle,
+  // re-fetching a fresh bootstrap (new token) once the current token nears
+  // expiresAt (the Nova-style per-reconnect re-mint, gemini-plan.md §3.2).
+
+  /** Stash the parts of a gemini-direct bootstrap that reconnects need. */
+  #adoptGeminiMint(minted) {
+    this.#geminiMinted = {
+      endpoint: minted.geminiEndpoint,
+      token: minted.accessToken.value,
+      expiresAtMs: Date.parse(minted.accessToken.expiresAt || '') || 0,
+      sessionConfig: minted.sessionConfig,
+    };
+  }
+
+  async #connectGemini(minted) {
+    this.#adoptGeminiMint(minted);
+    try {
+      await this.#openGeminiSocket();
+    } catch (err) {
+      this.#teardown();
+      throw err instanceof RealtimeError
+        ? err
+        : new RealtimeError('gemini_failed', 'Could not start the Gemini voice session.');
+    }
+
+    this.#startNovaCapture(); // shared 16k capture; uplink framing branches per mode
+
+    this.#connected = true;
+    this.#emit('sessionready', {
+      sessionId: this.#sessionId,
+      model: this.#model,
+      voice: this.#voice,
+      engine: this.#engine,
+    });
+  }
+
+  /** Open one Gemini WSS connection and complete the setup handshake:
+   * connect with the token in the URL (browsers can't set WS headers; the
+   * Constrained method only accepts ?access_token= auth), send the
+   * broker-authored `setup` frame on open — swapping in the stored
+   * resumption handle on reconnects — and gate on `setupComplete`. On
+   * success the socket is installed as the live one (make-before-break for
+   * mid-call reconnects); rejects on error/close/timeout before the gate. */
+  #openGeminiSocket() {
+    const { endpoint, token, sessionConfig } = this.#geminiMinted;
+    const url = endpoint + '?access_token=' + encodeURIComponent(token);
+    let ws;
+    try {
+      ws = new WebSocket(url);
+    } catch {
+      return Promise.reject(
+        new RealtimeError('gemini_failed', 'Could not open the Gemini voice connection.'),
+      );
+    }
+    ws.binaryType = 'arraybuffer';
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const fail = (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+        try {
+          ws.close();
+        } catch {
+          /* already closed */
+        }
+        reject(err);
+      };
+      const timer = setTimeout(
+        () => fail(new RealtimeError('gemini_failed', 'The Gemini session did not start in time.')),
+        GEMINI_SETUP_TIMEOUT_MS,
+      );
+
+      ws.onopen = () => {
+        // sessionConfig is the exact `setup` body the broker minted the
+        // token against (belt-and-suspenders for the known Google bug where
+        // constraints-only systemInstruction is intermittently ignored). A
+        // resumption reconnect swaps in the stored handle — same server-side
+        // session, new connection.
+        const setup = this.#geminiResumeHandle
+          ? { ...sessionConfig, sessionResumption: { handle: this.#geminiResumeHandle } }
+          : sessionConfig;
+        try {
+          ws.send(JSON.stringify({ setup }));
+        } catch {
+          /* the close handler owns the failure */
+        }
+      };
+      ws.onmessage = (e) => {
+        const evt = this.#parseGeminiFrame(e.data);
+        if (!evt || !('setupComplete' in evt)) return; // nothing else is expected pre-gate
+        if (this.#closing) {
+          fail(new RealtimeError('gemini_failed', 'The session was closed.'));
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        this.#installGeminiSocket(ws);
+        resolve();
+      };
+      ws.onerror = () =>
+        fail(new RealtimeError('gemini_failed', 'The Gemini voice connection failed.'));
+      ws.onclose = (e) => {
+        // A pre-setup rejection (bad/expired token) surfaces here — include
+        // the close code so the error banner is diagnosable.
+        const code = e && e.code ? ' (close ' + e.code + ')' : '';
+        fail(new RealtimeError('gemini_failed', 'Gemini refused the connection' + code + '.'));
+      };
+    });
+  }
+
+  /** Swap `ws` in as the live Gemini socket: detach + close any predecessor
+   * (goAway reconnects are make-before-break) and attach the steady-state
+   * handlers — from here on a close/error is a mid-call drop, except while
+   * a reconnect is in flight (its own failure path owns the drop). */
+  #installGeminiSocket(ws) {
+    const old = this.#geminiWs;
+    if (old && old !== ws) {
+      old.onopen = old.onmessage = old.onerror = old.onclose = null;
+      try {
+        old.close();
+      } catch {
+        /* already closed */
+      }
+    }
+    this.#geminiWs = ws;
+    ws.onmessage = (e) => this.#onGeminiMessage(e);
+    ws.onerror = () => {
+      if (this.#geminiWs === ws && !this.#geminiReconnecting) this.#handleDrop('gemini');
+    };
+    ws.onclose = () => {
+      if (this.#geminiWs === ws && !this.#geminiReconnecting) this.#handleDrop('gemini');
+    };
+  }
+
+  /** Gemini frames are JSON in text OR binary frames (Google sends
+   * ArrayBuffers; downlink audio is base64 inside the JSON). */
+  #parseGeminiFrame(data) {
+    let text;
+    if (typeof data === 'string') text = data;
+    else if (data instanceof ArrayBuffer) text = GEMINI_TEXT_DECODER.decode(data);
+    else return null;
+    let evt;
+    try {
+      evt = JSON.parse(text);
+    } catch {
+      return null;
+    }
+    return evt && typeof evt === 'object' ? evt : null;
+  }
+
+  #onGeminiMessage(e) {
+    const evt = this.#parseGeminiFrame(e.data);
+    if (!evt) return;
+
+    // One frame can carry several fields (usageMetadata rides beside
+    // serverContent) — check presence, never switch exclusively.
+    if (evt.usageMetadata) this.#geminiUsage = evt.usageMetadata;
+
+    if (evt.sessionResumptionUpdate) {
+      const u = evt.sessionResumptionUpdate;
+      if (u.resumable && u.newHandle) this.#geminiResumeHandle = u.newHandle;
+    }
+
+    if (evt.goAway) {
+      // Connection recycle warning (~10-min lifetime). Reconnect
+      // proactively with the stored handle; mid-utterance, defer to the
+      // turn boundary so the recycle doesn't audibly clip the assistant.
+      if (this.#speaking) this.#geminiReconnectPending = true;
+      else void this.#geminiReconnect();
+    }
+
+    if (evt.toolCall && Array.isArray(evt.toolCall.functionCalls)) {
+      // Same router flow as every engine: the dispatcher POSTs
+      // /api/v1/tools/invoke and answers through sendEvent → #geminiSend,
+      // which needs the call's name again — remember it per id.
+      for (const fc of evt.toolCall.functionCalls) {
+        if (!fc || !fc.id || !fc.name) continue;
+        this.#geminiCallNames.set(fc.id, fc.name);
+        this.#tools.dispatch({
+          name: fc.name,
+          callId: fc.id,
+          argsJson: JSON.stringify(fc.args || {}),
+        });
+      }
+    }
+
+    if (evt.toolCallCancellation && Array.isArray(evt.toolCallCancellation.ids)) {
+      // The server withdrew these calls (usually a barge-in): the invoke
+      // may already be in flight, so suppress the eventual output instead —
+      // no stale toolResponse goes back.
+      for (const id of evt.toolCallCancellation.ids) {
+        this.#geminiCancelled.add(id);
+        this.#geminiCallNames.delete(id);
+      }
+    }
+
+    if (evt.serverContent) this.#onGeminiServerContent(evt.serverContent);
+  }
+
+  #onGeminiServerContent(sc) {
+    // Barge-in: automatic VAD heard the user over the assistant. There is
+    // no client→server cancel primitive (gemini-plan.md §3.2) — the barge
+    // is the local half of the Nova flow only: flush the playback queue.
+    if (sc.interrupted === true && this.#speaking) this.#geminiBargeIn();
+
+    // User transcription deltas (inputTranscription.text — deltas, not
+    // snapshots). The first delta of an utterance opens a fresh itemId and
+    // doubles as the "user is speaking" signal (no explicit VAD event
+    // reaches the client in auto-VAD mode).
+    if (sc.inputTranscription && typeof sc.inputTranscription.text === 'string' && sc.inputTranscription.text) {
+      if (!this.#geminiUserItem) {
+        this.#geminiUserItem = 'g-user-' + ++this.#geminiTurn;
+        this.#emit('speechstarted');
+      }
+      const itemId = this.#geminiUserItem;
+      const delta = sc.inputTranscription.text;
+      const text = (this.#userText.get(itemId) || '') + delta;
+      this.#userText.set(itemId, text);
+      this.#emit('userdelta', { itemId, delta, text });
+    }
+
+    // Assistant transcription deltas (outputTranscription.text).
+    if (sc.outputTranscription && typeof sc.outputTranscription.text === 'string' && sc.outputTranscription.text) {
+      this.#geminiAssistantBegan();
+      if (!this.#geminiAsstItem) this.#geminiAsstItem = 'g-asst-' + ++this.#geminiTurn;
+      const itemId = this.#geminiAsstItem;
+      const delta = sc.outputTranscription.text;
+      const text = (this.#assistantText.get(itemId) || '') + delta;
+      this.#assistantText.set(itemId, text);
+      this.#emit('assistantdelta', { itemId, delta, text });
+    }
+
+    // Assistant audio: base64 PCM16 in modelTurn parts (24 kHz; the
+    // mimeType announces the rate) → the shared scheduled-playback path.
+    const parts = sc.modelTurn && Array.isArray(sc.modelTurn.parts) ? sc.modelTurn.parts : [];
+    for (const part of parts) {
+      const inline = part && part.inlineData;
+      if (!inline || !inline.data) continue;
+      this.#geminiAssistantBegan();
+      const m = /rate=(\d+)/.exec(inline.mimeType || '');
+      if (m) this.#outRate = Number(m[1]);
+      this.#novaEnqueueAudio(this.#base64ToPcm(inline.data));
+    }
+
+    if (sc.turnComplete === true) this.#onGeminiTurnComplete();
+  }
+
+  /** First sign of the assistant's reply: the user's utterance is over —
+   * finalize their transcription (mirrors the Nova user-turn.end →
+   * assistant-turn.start ordering) and report thinking once per turn. */
+  #geminiAssistantBegan() {
+    if (this.#geminiUserItem) {
+      this.#emit('speechstopped');
+      this.#geminiFinalizeUser();
+    }
+    if (!this.#geminiThinking) {
+      this.#geminiThinking = true;
+      this.#emit('thinking');
+    }
+  }
+
+  /** Emit userfinal for the open user transcription item, if any. */
+  #geminiFinalizeUser() {
+    const itemId = this.#geminiUserItem;
+    if (!itemId) return;
+    this.#geminiUserItem = '';
+    const text = this.#userText.get(itemId) ?? '';
+    this.#userText.delete(itemId);
+    this.#emit('userfinal', { itemId, text });
+  }
+
+  /** Emit assistantfinal for the open assistant transcription item, if any
+   * (also called on interruption so the partial reply stays rendered). */
+  #geminiFinalizeAssistant() {
+    const itemId = this.#geminiAsstItem;
+    if (!itemId) return;
+    this.#geminiAsstItem = '';
+    const text = this.#assistantText.get(itemId) ?? '';
+    this.#assistantText.delete(itemId);
+    this.#emit('assistantfinal', { itemId, text });
+  }
+
+  /** serverContent.turnComplete ends the assistant turn: finalize
+   * transcripts, settle the speaking state, surface the turn's usage, and
+   * run any reconnect deferred to this boundary. */
+  #onGeminiTurnComplete() {
+    this.#geminiFinalizeAssistant();
+    this.#geminiFinalizeUser(); // e.g. a turn with no audible reply
+    this.#geminiThinking = false;
+    if (this.#speaking) {
+      this.#speaking = false;
+      this.#emit('speakingended');
+    }
+    this.#emitGeminiUsage();
+    this.#emit('responsedone');
+    if (this.#geminiReconnectPending) {
+      this.#geminiReconnectPending = false;
+      void this.#geminiReconnect();
+    }
+  }
+
+  /** usageMetadata → the OpenAI-shaped usage payload the page's cost badge
+   * already prices (modality breakdowns → text/audio in/out). Gemini has no
+   * input caching, so the cached breakdown stays empty — rates.go prices
+   * Gemini's cached == uncached, so the arithmetic stays honest either way. */
+  #emitGeminiUsage() {
+    const u = this.#geminiUsage;
+    if (!u) return;
+    this.#geminiUsage = null;
+    const split = (rows) => {
+      const acc = { text: 0, audio: 0 };
+      for (const r of Array.isArray(rows) ? rows : []) {
+        if (!r) continue;
+        const n = Number(r.tokenCount) || 0;
+        if (String(r.modality || '').toUpperCase() === 'AUDIO') acc.audio += n;
+        else acc.text += n; // TEXT + any future modality prices as text
+      }
+      return acc;
+    };
+    const inTok = split(u.promptTokensDetails);
+    const outTok = split(u.responseTokensDetails);
+    this.#emit('usage', {
+      usage: {
+        total_tokens: Number(u.totalTokenCount) || 0,
+        input_token_details: {
+          text_tokens: inTok.text,
+          audio_tokens: inTok.audio,
+          cached_tokens_details: {},
+        },
+        output_token_details: {
+          text_tokens: outTok.text,
+          audio_tokens: outTok.audio,
+        },
+      },
+      responseId: '',
+    });
+  }
+
+  /** Gemini barge-in: flush local playback and keep the partial transcript.
+   * Nothing is sent — automatic VAD truncates server-side and there is no
+   * cancel primitive (never send response.cancel here). */
+  #geminiBargeIn() {
+    this.#novaStopPlayback();
+    this.#geminiFinalizeAssistant();
+    this.#speaking = false;
+    this.#emit('bargein');
+  }
+
+  /** goAway/expiry reconnect: open a replacement connection resuming the
+   * same server-side session via the stored handle (make-before-break —
+   * #installGeminiSocket retires the old socket once the new one is ready).
+   * Within the token's window the same token reopens (a uses:1 token
+   * permits resumption reconnects); near/past expiresAt a fresh bootstrap
+   * is fetched first — the Nova-style per-reconnect re-mint. */
+  async #geminiReconnect() {
+    if (this.#closing || !this.#connected || this.#geminiReconnecting) return;
+    this.#geminiReconnecting = true;
+    try {
+      if (Date.now() >= this.#geminiMinted.expiresAtMs - GEMINI_TOKEN_EXPIRY_SKEW_MS) {
+        const { body, warning } = await mintOnce(this.sessionPath);
+        if (warning) this.#emit('quotawarning', { message: warning });
+        if (!body || body.mode !== 'gemini-direct') {
+          // The pin changed mid-session — treat it as a drop; the next
+          // conversation picks up the new engine.
+          throw new RealtimeError('gemini_failed', 'The voice service no longer offers a Gemini session.');
+        }
+        // Keep the original sessionId: the conversation (and its transcript
+        // log) continues across the re-mint; the resumption handle carries
+        // the model-side context into the fresh token's session.
+        this.#adoptGeminiMint(body);
+      }
+      await this.#openGeminiSocket();
+    } catch {
+      this.#geminiReconnecting = false;
+      this.#handleDrop('gemini-reconnect');
+      return;
+    }
+    this.#geminiReconnecting = false;
+  }
+
+  #geminiWsSend(obj) {
+    const ws = this.#geminiWs;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    try {
+      ws.send(JSON.stringify(obj));
+    } catch {
+      /* socket raced closed — drop handler owns recovery */
+    }
+  }
+
+  // Uplink audio framing: base64 PCM16 inside a JSON realtimeInput frame —
+  // NEVER raw binary like the Nova bridge (16 kHz mono, mimeType announces
+  // the rate).
+  #geminiSendAudio(pcm) {
+    const ws = this.#geminiWs;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    try {
+      ws.send(
+        JSON.stringify({
+          realtimeInput: {
+            audio: {
+              data: this.#pcmToBase64(pcm),
+              mimeType: 'audio/pcm;rate=' + this.#inRate,
+            },
+          },
+        }),
+      );
+    } catch {
+      /* socket raced closed — drop handler owns recovery */
+    }
+  }
+
+  #pcmToBase64(pcm) {
+    const bytes = new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+    let bin = '';
+    const STRIDE = 0x2000; // stay under fromCharCode argument-count limits
+    for (let i = 0; i < bytes.length; i += STRIDE) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + STRIDE));
+    }
+    return btoa(bin);
+  }
+
+  #base64ToPcm(b64) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes.buffer;
+  }
+
+  // Translate the shared OpenAI-shaped control events into Gemini Live wire
+  // messages so the tool dispatcher / composer / turn controls stay
+  // engine-agnostic (the Gemini sibling of #novaSend).
+  #geminiSend(obj) {
+    const t = obj && obj.type;
+    if (t === 'conversation.item.create' && obj.item) {
+      if (obj.item.type === 'function_call_output') {
+        const callId = obj.item.call_id;
+        if (this.#geminiCancelled.delete(callId)) return; // server withdrew this call
+        const name = this.#geminiCallNames.get(callId) || '';
+        this.#geminiCallNames.delete(callId);
+        let result = obj.item.output;
+        try {
+          result = JSON.parse(obj.item.output);
+        } catch {
+          /* keep as string */
+        }
+        this.#geminiWsSend({
+          toolResponse: {
+            functionResponses: [{ id: callId, name, response: { result } }],
+          },
+        });
+        return;
+      }
+      if (obj.item.type === 'message') {
+        const parts = obj.item.content || [];
+        const text = (parts[0] && parts[0].text) || '';
+        if (text) {
+          this.#geminiWsSend({
+            clientContent: {
+              turns: [{ role: 'user', parts: [{ text }] }],
+              turnComplete: true,
+            },
+          });
+        }
+        return;
+      }
+    }
+    // Turn boundaries belong to Gemini's automatic VAD (and clientContent's
+    // own turnComplete) — the OpenAI-shaped turn nudges have no wire sibling.
+    if (t === 'response.create' || t === 'input_audio_buffer.commit') return;
+    if (t === 'response.cancel' || t === 'output_audio_buffer.clear') {
+      // No server cancel primitive exists — the barge is purely local.
+      this.#novaStopPlayback();
+      this.#speaking = false;
+      return;
+    }
+    // Anything else is OpenAI-dialect with no Gemini equivalent: dropping
+    // it beats sending a frame Google would close the connection over.
+  }
+
   /** Deliberate end (spec `ending` state): close everything, stop tracks. */
   close() {
     if (this.#closing) return;
@@ -1119,6 +1684,32 @@ export class RealtimeSession extends EventTarget {
       }
       this.#novaWs = null;
     }
+
+    // Gemini cleanup (no-ops in other modes) — the shared capture/playback
+    // paths are stopped just below with Nova's.
+    this.#geminiReconnecting = false;
+    this.#geminiReconnectPending = false;
+    this.#geminiUsage = null;
+    this.#geminiUserItem = '';
+    this.#geminiAsstItem = '';
+    this.#geminiThinking = false;
+    this.#geminiResumeHandle = '';
+    this.#geminiMinted = null;
+    this.#geminiCallNames.clear();
+    this.#geminiCancelled.clear();
+    if (this.#geminiWs) {
+      this.#geminiWs.onopen = null;
+      this.#geminiWs.onmessage = null;
+      this.#geminiWs.onerror = null;
+      this.#geminiWs.onclose = null;
+      try {
+        this.#geminiWs.close();
+      } catch {
+        /* already closed */
+      }
+      this.#geminiWs = null;
+    }
+
     this.#stopNovaCapture();
     this.#novaStopPlayback();
     if (this.#playbackCtx) {
@@ -1218,6 +1809,13 @@ export class RealtimeSession extends EventTarget {
       this.#novaSend(obj);
       return;
     }
+    if (this.#mode === 'gemini-direct') {
+      if (!this.#geminiWs || this.#geminiWs.readyState !== WebSocket.OPEN) {
+        throw new RealtimeError('not_connected', 'The voice session is not connected.');
+      }
+      this.#geminiSend(obj);
+      return;
+    }
     if (!this.#dc || !this.#dcOpen) {
       throw new RealtimeError('not_connected', 'The voice session is not connected.');
     }
@@ -1235,6 +1833,10 @@ export class RealtimeSession extends EventTarget {
   cancelResponse() {
     if (this.#mode === 'nova-bridge') {
       this.#novaBargeIn();
+      return;
+    }
+    if (this.#mode === 'gemini-direct') {
+      this.#geminiBargeIn();
       return;
     }
     this.sendEvent({ type: 'response.cancel' });
@@ -1275,6 +1877,11 @@ export class RealtimeSession extends EventTarget {
     if (this.#mode === 'nova-bridge') {
       if (!this.#connected) return;
       this.#novaBargeIn();
+      return;
+    }
+    if (this.#mode === 'gemini-direct') {
+      if (!this.#connected) return;
+      this.#geminiBargeIn();
       return;
     }
     if (!this.#dcOpen) return;
@@ -1318,11 +1925,13 @@ export class RealtimeSession extends EventTarget {
    *     user-transcription events.
    *
    * Nova bridge: no-op (returns false) — the Bedrock session is held
-   * server-side and has no client session.update surface.
+   * server-side and has no client session.update surface. Gemini: also a
+   * no-op — the session config is locked into the ephemeral token at mint,
+   * so mid-session changes land at the next mint like Nova.
    * @returns {boolean} true if the update was sent to a live session.
    */
   updateAudioInput({ eagerness = 'auto' } = {}) {
-    if (this.#mode === 'nova-bridge') return false;
+    if (this.#mode === 'nova-bridge' || this.#mode === 'gemini-direct') return false;
     if (!this.#dc || !this.#dcOpen) return false;
     const turnDetection = { type: 'semantic_vad', interrupt_response: true };
     if (eagerness === 'low') {

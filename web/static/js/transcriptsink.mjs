@@ -249,7 +249,14 @@ export function createTranscriptSink({
   // here too would double-log every user turn.)
   function attachSession(session) {
     session.addEventListener('sessionready', (e) => {
-      beginSession(e.detail.sessionId, e.detail.model || 'openai-realtime');
+      // Engine tag: gemini-direct sessions tag their engine pin (M13 —
+      // the model id alone can't identify them in history); OpenAI/Nova
+      // sessions keep the model-id tag byte-for-byte as before so
+      // existing engines' stored transcripts are unchanged by M13.
+      const tag = e.detail.engine === 'gemini-flash-live'
+        ? e.detail.engine
+        : (e.detail.model || 'openai-realtime');
+      beginSession(e.detail.sessionId, tag);
     });
     session.addEventListener('closed', () => endSession());
     session.addEventListener('connectionlost', () => endSession());

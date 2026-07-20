@@ -334,8 +334,13 @@ function renderField(key) {
       const r = document.querySelector(`input[name="voiceEngine"][value="${CSS.escape(val)}"]`);
       for (const el of document.querySelectorAll('input[name="voiceEngine"]')) el.checked = false;
       if (r) r.checked = true;
+      syncGeminiVoiceVisibility(); // M13: the Gemini voice picker is engine-scoped
       break;
     }
+    case 'geminiVoice':
+      // M13: the Gemini-engine voice override (voice-engine-section block).
+      syncGeminiVoiceValue();
+      break;
     case 'theme': {
       const r = document.querySelector(`input[name="theme"][value="${CSS.escape(doc.theme)}"]`);
       if (r) r.checked = true;
@@ -1114,21 +1119,86 @@ if (accentCustom) {
 }
 
 // ==================== voice-engine-section:BEGIN ====================
-// M12 secondary-voice-engine picker (FR-VE-04), owned by the M12 web-client
-// workstream — edit only inside these markers. Bound to voiceEngine.default
-// (the engine this browser session and any un-pinned device use; the broker
-// resolves devices[deviceId] ?? default). The segmented radios render
-// without a checked attribute — the current value is hydrated from the
-// fetched doc via renderField('voiceEngine') at the bottom of init(). Unknown
-// forward-compat fields (e.g. voiceEngine.devices) are preserved untouched
-// by the spread + the autosave engine's whole-document PUT.
+// M12 secondary-voice-engine picker (FR-VE-04) + M13 Gemini voice picker,
+// owned by the voice-engine workstream — edit only inside these markers.
+// Bound to voiceEngine.default (the engine this browser session and any
+// un-pinned device use; the broker resolves devices[deviceId] ?? default).
+// The segmented radios render without a checked attribute — the current
+// value is hydrated from the fetched doc via renderField('voiceEngine') at
+// the bottom of init(). Unknown forward-compat fields (e.g.
+// voiceEngine.devices) are preserved untouched by the spread + the autosave
+// engine's whole-document PUT. The radio wiring is value-generic: the M13
+// gemini-flash-live radio needs no per-value code, only the engine-scoped
+// Gemini voice picker below.
 for (const r of document.querySelectorAll('input[name="voiceEngine"]')) {
   r.addEventListener('change', () => {
     if (!r.checked) return;
     doc.voiceEngine = { ...doc.voiceEngine, default: r.value };
+    syncGeminiVoiceVisibility();
     markChanged('voiceEngine');
   });
 }
+
+// M13 Gemini voice (gemini-plan.md B4, D4): a per-engine voice picker fed
+// by the additive `geminiVoices` catalog on GET /api/v1/realtime/voices,
+// shown only while the engine selection is gemini-flash-live (the OpenAI
+// voice picker stays persona-scoped in the persona editor). Writes the
+// top-level `geminiVoice` settings key; "" = unset, which lets the broker's
+// chain resolve persona geminiVoice ?? Kore instead.
+
+const geminiVoiceField = $('geminiVoiceField');
+const geminiVoiceSel = $('geminiVoice');
+
+function syncGeminiVoiceVisibility() {
+  const engine = (doc.voiceEngine && doc.voiceEngine.default) || 'openai-realtime';
+  geminiVoiceField.hidden = engine !== 'gemini-flash-live';
+}
+
+function syncGeminiVoiceValue() {
+  const want = typeof doc.geminiVoice === 'string' ? doc.geminiVoice : '';
+  if ([...geminiVoiceSel.options].some((o) => o.value === want)) {
+    geminiVoiceSel.value = want;
+    return;
+  }
+  // Forward-compat: an unknown stored voice is kept selectable, never
+  // silently dropped (same rule as the persona editor's fillCatalogSelect).
+  const opt = document.createElement('option');
+  opt.value = want;
+  opt.textContent = `${want} (kept as-is)`;
+  geminiVoiceSel.appendChild(opt);
+  geminiVoiceSel.value = want;
+}
+
+async function loadGeminiVoices() {
+  let rows = [];
+  try {
+    const resp = await apiJSON('/api/v1/realtime/voices');
+    rows = Array.isArray(resp.geminiVoices) ? resp.geminiVoices : [];
+  } catch {
+    /* catalog fetch failed — keep the SSR "Persona default" option; the
+       stored value still round-trips via syncGeminiVoiceValue below */
+  }
+  const auto = document.createElement('option');
+  auto.value = '';
+  auto.textContent = 'Persona default (Kore fallback)';
+  geminiVoiceSel.replaceChildren(auto);
+  for (const v of rows) {
+    if (!v || !v.id) continue;
+    const opt = document.createElement('option');
+    opt.value = v.id;
+    // Same label recipe as the persona editor's voice select.
+    opt.textContent = `${v.name || v.id}${v.gender ? ` (${v.gender})` : ''}${v.description ? ` — ${v.description}` : ''}`;
+    geminiVoiceSel.appendChild(opt);
+  }
+  syncGeminiVoiceValue();
+}
+
+geminiVoiceSel.addEventListener('change', () => {
+  doc.geminiVoice = geminiVoiceSel.value;
+  markChanged('geminiVoice');
+});
+
+loadGeminiVoices();
 // ==================== voice-engine-section:END ====================
 
 // ---- theme -------------------------------------------------------------

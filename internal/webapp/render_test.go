@@ -127,6 +127,9 @@ func TestAssetFingerprinting(t *testing.T) {
 func TestPageCSPMatchesSpec(t *testing.T) {
 	for _, want := range []string{
 		"connect-src 'self' https://api.openai.com",
+		// gemini-flash-live client-direct Live API WSS (M13, gemini-plan.md
+		// Phase B1).
+		"wss://generativelanguage.googleapis.com",
 		// wasm-unsafe-eval: WebAssembly compilation only (onnxruntime wake
 		// word), never JS eval.
 		"script-src 'self' 'wasm-unsafe-eval'",

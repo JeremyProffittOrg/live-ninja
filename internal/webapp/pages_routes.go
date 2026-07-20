@@ -30,7 +30,8 @@ import (
 )
 
 // pageCSP is the strict page policy from docs/web-ui-spec.md §0:
-// self + api.openai.com (SDP exchange) only; blob: for wake-word worklet
+// self + api.openai.com (SDP exchange) + generativelanguage.googleapis.com
+// (Gemini Live client-direct WSS, M13); blob: for wake-word worklet
 // modules and remote-audio object URLs; data: images for the CSS select
 // chevron; inline styles allowed (style attributes in static markup),
 // inline scripts never. 'wasm-unsafe-eval' permits ONLY WebAssembly
@@ -41,10 +42,13 @@ const pageCSP = "default-src 'self'; " +
 	"script-src 'self' 'wasm-unsafe-eval'; " +
 	"style-src 'self' 'unsafe-inline'; " +
 	"img-src 'self' data:; " +
-	// The wakewords bucket hosts trained wake-word detectors fetched via
-	// presigned S3 URLs (wakeword.mjs fetchVerified) — SHA-256-pinned
-	// client-side, so the wildcard-free bucket host is the only extra origin.
-	"connect-src 'self' https://api.openai.com https://live-ninja-wakewords-759775734231.s3.amazonaws.com https://live-ninja-wakewords-759775734231.s3.us-east-1.amazonaws.com; " +
+	// wss://generativelanguage.googleapis.com is the gemini-flash-live
+	// engine's client-direct Live API socket (M13, realtime.mjs
+	// #connectGemini). The wakewords bucket hosts trained wake-word
+	// detectors fetched via presigned S3 URLs (wakeword.mjs fetchVerified) —
+	// SHA-256-pinned client-side, so the wildcard-free bucket host is the
+	// only other extra origin.
+	"connect-src 'self' https://api.openai.com wss://generativelanguage.googleapis.com https://live-ninja-wakewords-759775734231.s3.amazonaws.com https://live-ninja-wakewords-759775734231.s3.us-east-1.amazonaws.com; " +
 	"media-src 'self' blob:; " +
 	"worker-src 'self' blob:; " +
 	"base-uri 'self'; " +
