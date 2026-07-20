@@ -9,6 +9,32 @@ import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONObject
 
 /**
+ * Verbose-diagnostics configuration (04-logging §A4 / 01-platform §B-iv).
+ * Persisted as the nested `diagnostics` object of the settings document.
+ * Consumed by the logging workstream (LogSink observes this shape for
+ * enabled / severity-floor / per-category gating). Owner defaults: fully on,
+ * VERBOSE floor, all eight categories enabled (troubleshooting phase).
+ */
+data class DiagnosticsConfig(
+    val enabled: Boolean = true,
+    val minLevel: String = "VERBOSE",
+    val categories: Map<String, Boolean> = DEFAULT_CATEGORIES,
+) {
+    companion object {
+        /** The eight log categories (mirrors ninja.jeremy.liveninja.log LogCategory). */
+        val CATEGORY_KEYS = listOf(
+            "WAKE", "AUDIO", "REALTIME", "AUTH", "TOOLS", "UI", "NET", "GENERAL",
+        )
+
+        /** Severity floor choices, most-verbose first (radio group order in Settings). */
+        val LEVELS = listOf("VERBOSE", "DEBUG", "INFO", "WARN", "ERROR")
+
+        /** All eight categories enabled — the owner default. */
+        val DEFAULT_CATEGORIES: Map<String, Boolean> = CATEGORY_KEYS.associateWith { true }
+    }
+}
+
+/**
  * Typed projection of the canonical settings document
  * (contracts/settings.schema.json). [raw] carries the FULL JSON document —
  * including fields this app version does not understand — so every write-back
@@ -35,6 +61,18 @@ data class SettingsDocument(
     val storeAudio: Boolean,
     val storeTranscripts: Boolean,
     val retentionDays: Int,
+    /**
+     * Voice-session lifecycle toggles (01-platform §B-iv). Additive keys; owner
+     * defaults baked here so a document written by an older app version (which
+     * omits them) reads as the intended defaults.
+     */
+    val lockedSessions: Boolean = true,
+    val wakeScreenOnWake: Boolean = true,
+    val keepScreenOn: Boolean = false,
+    /** Active visual style (03-theme). hal9000 is the default look. */
+    val appStyle: String = "hal9000",
+    /** Verbose diagnostics configuration (04-logging §A4). */
+    val diagnostics: DiagnosticsConfig = DiagnosticsConfig(),
     val raw: JSONObject,
 ) {
     companion object {
@@ -126,6 +164,40 @@ class SettingsStore @Inject constructor(
         it.put("privacy", privacy)
     }
 
+    // ---- voice-session lifecycle toggles (01-platform §B-iv) ----
+
+    fun setLockedSessions(value: Boolean) = update { it.put("lockedSessions", value) }
+    fun setWakeScreenOnWake(value: Boolean) = update { it.put("wakeScreenOnWake", value) }
+    fun setKeepScreenOn(value: Boolean) = update { it.put("keepScreenOn", value) }
+
+    /** Set the active visual style (03-theme: hal9000 / ninja / minimal / terminal). */
+    fun setAppStyle(style: String) = update { it.put("appStyle", style) }
+
+    // ---- diagnostics (04-logging §A4) ----
+
+    fun setDiagnosticsEnabled(enabled: Boolean) = updateDiagnostics { it.put("enabled", enabled) }
+
+    fun setDiagnosticsMinLevel(level: String) = updateDiagnostics { it.put("minLevel", level) }
+
+    /** Toggle a single log category on/off, preserving the other seven. */
+    fun setDiagnosticsCategory(category: String, enabled: Boolean) = updateDiagnostics {
+        val categories = it.optJSONObject("categories") ?: JSONObject()
+        categories.put(category, enabled)
+        it.put("categories", categories)
+    }
+
+    /** Replace the whole diagnostics config (used by the all/none Settings actions). */
+    fun setDiagnostics(config: DiagnosticsConfig) = update {
+        it.put("diagnostics", diagnosticsJson(config.enabled, config.minLevel, config.categories))
+    }
+
+    private fun updateDiagnostics(block: (JSONObject) -> Unit) = update {
+        val diagnostics = it.optJSONObject("diagnostics")
+            ?: diagnosticsJson(true, "VERBOSE", DiagnosticsConfig.DEFAULT_CATEGORIES)
+        block(diagnostics)
+        it.put("diagnostics", diagnostics)
+    }
+
     /** Reset the local document to schema defaults (used on sign-out). */
     fun resetToDefaults() {
         synchronized(lock) {
@@ -162,7 +234,31 @@ class SettingsStore @Inject constructor(
             storeAudio = privacy?.optBoolean("storeAudio", false) ?: false,
             storeTranscripts = privacy?.optBoolean("storeTranscripts", true) ?: true,
             retentionDays = privacy?.optInt("retentionDays", 30) ?: 30,
+            lockedSessions = raw.optBoolean("lockedSessions", true),
+            wakeScreenOnWake = raw.optBoolean("wakeScreenOnWake", true),
+            keepScreenOn = raw.optBoolean("keepScreenOn", false),
+            appStyle = raw.optString("appStyle", "hal9000"),
+            diagnostics = parseDiagnostics(raw.optJSONObject("diagnostics")),
             raw = raw,
+        )
+    }
+
+    /**
+     * Project the nested `diagnostics` object, tolerating a missing object,
+     * missing keys, and missing per-category entries (each defaults on). Unknown
+     * category keys in the stored JSON are ignored by this typed projection but
+     * still round-trip through [raw].
+     */
+    private fun parseDiagnostics(obj: JSONObject?): DiagnosticsConfig {
+        if (obj == null) return DiagnosticsConfig()
+        val storedCategories = obj.optJSONObject("categories")
+        val categories = DiagnosticsConfig.CATEGORY_KEYS.associateWith { key ->
+            storedCategories?.optBoolean(key, true) ?: true
+        }
+        return DiagnosticsConfig(
+            enabled = obj.optBoolean("enabled", true),
+            minLevel = obj.optString("minLevel", "VERBOSE"),
+            categories = categories,
         )
     }
 
@@ -196,6 +292,24 @@ class SettingsStore @Inject constructor(
                 put("storeTranscripts", true)
                 put("retentionDays", 30)
             },
+        )
+        put("lockedSessions", true)
+        put("wakeScreenOnWake", true)
+        put("keepScreenOn", false)
+        put("appStyle", "hal9000")
+        put("diagnostics", diagnosticsJson(true, "VERBOSE", DiagnosticsConfig.DEFAULT_CATEGORIES))
+    }
+
+    private fun diagnosticsJson(
+        enabled: Boolean,
+        minLevel: String,
+        categories: Map<String, Boolean>,
+    ): JSONObject = JSONObject().apply {
+        put("enabled", enabled)
+        put("minLevel", minLevel)
+        put(
+            "categories",
+            JSONObject().apply { categories.forEach { (key, value) -> put(key, value) } },
         )
     }
 
