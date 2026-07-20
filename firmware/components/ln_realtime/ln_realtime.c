@@ -1,8 +1,8 @@
 /*
  * ln_realtime.c — realtime voice WSS client core (M5Stack Tab5).
  *
- * Two transports behind one lifecycle, chosen by the device's voiceEngine pin
- * (resolved server-side; see ln_rt_session.c):
+ * Three transports behind one lifecycle, chosen by the device's voiceEngine
+ * pin (resolved server-side; see ln_rt_session.c):
  *   - OPENAI_DIRECT (default): client-direct WSS to wss://api.openai.com with a
  *     Bearer ephemeral token; a session.update pins pcm16 in/out on connect.
  *   - NOVA_BRIDGE (M12, FR-VE-03): WSS to the backend Nova Sonic media bridge
@@ -11,6 +11,17 @@
  *     bidirectional stream and speaks the same pcm16 event framing, so uplink
  *     (input_audio_buffer.append), downlink (response.output_audio.delta),
  *     transcripts and barge-in flow through unchanged. HIL-unverified.
+ *   - GEMINI_DIRECT (M13): client-direct WSS to Gemini Live
+ *     (generativelanguage.googleapis.com, BidiGenerateContentConstrained) with
+ *     a config-constrained ephemeral token URL-escaped into ?access_token=.
+ *     The client sends the broker-staged {"setup":...} frame on connect and
+ *     readiness gates on the server's setupComplete. Uplink is the AFE's
+ *     native 16 kHz (realtimeInput.audio JSON+base64 — the 16k->24k resampler
+ *     is BYPASSED); downlink stays base64 pcm16 @ 24 kHz
+ *     (serverContent.modelTurn.parts[].inlineData). goAway triggers the normal
+ *     reconnect, carrying the sessionResumptionUpdate handle so the fresh
+ *     token resumes the same conversation. HIL-unverified (locked decision D1,
+ *     gemini-plan.md §2).
  *
  * Worker task owns the connection lifecycle (session fetch -> WSS connect ->
  * supervise -> reconnect/backoff). The esp_websocket_client task delivers RX
@@ -121,14 +132,31 @@ static StaticStreamBuffer_t s_up_sb_struct;
 static uint8_t *s_up_storage; /* PSRAM */
 static uint32_t s_up_dropped; /* bytes dropped while the buffer was full */
 
-static char s_ws_url[1280];   /* OpenAI URL is short; Nova bridge URL (ws_url[640]) + "?token=" + token[512] needs headroom */
+static char s_ws_url[1280];   /* OpenAI URL is short; Nova bridge URL (ws_url[640]) + "?token=" + token[512]
+                                 needs headroom. Gemini worst case: 110-char endpoint + "?access_token=" (14)
+                                 + a fully %-escaped ~76-char token (228) ≈ 352 — comfortable. */
 static char s_ws_headers[576]; /* "Authorization: Bearer ek_...\r\n" (OpenAI-direct only) */
 
 /* Transport the current session negotiated (set in ws_open, read by the WS
  * event handler on the esp_websocket_client task). Only the OpenAI-direct path
  * sends OpenAI's session.update on connect; the Nova bridge owns session
- * config server-side and would not understand that frame. */
+ * config server-side and would not understand that frame. The Gemini path
+ * instead sends s_setup_frame on connect (below). */
 static volatile ln_rt_engine_mode_t s_engine_mode = LN_RT_ENGINE_OPENAI_DIRECT;
+
+/* GEMINI_DIRECT session state (M13). s_setup_frame points into the PSRAM
+ * staging buffer owned by ln_rt_session.c (valid for the whole session: the
+ * next fetch only happens after teardown); set by ws_open on the worker task
+ * before the WS client starts, read in WEBSOCKET_EVENT_CONNECTED on the WS
+ * task. s_resume_handle holds the latest sessionResumptionUpdate handle
+ * (written on the WS task, read by the worker during a reconnect fetch —
+ * never concurrently, since fetches only run while no WSS session is live).
+ * Google documents no handle size; a few hundred bytes observed, 512 is
+ * generous. s_tool_buf stages toolResponse refusal frames (WS task only). */
+static const char *s_setup_frame;
+static char s_resume_handle[512];
+#define LN_RT_TOOL_BUF_SZ 4096
+static char *s_tool_buf; /* PSRAM */
 
 /* ---------------------------------------------------------------- events -- */
 
@@ -253,23 +281,34 @@ static esp_err_t ws_send_str(const char *frame)
 
 static esp_err_t send_audio_slice(const int16_t *samples, size_t n_samples)
 {
-    static const char k_prefix[] = "{\"type\":\"input_audio_buffer.append\",\"audio\":\"";
+    /* OpenAI + Nova bridge speak input_audio_buffer.append (24 kHz pcm16);
+     * Gemini Live takes realtimeInput.audio with the AFE's native 16 kHz —
+     * the mimeType rate is the authoritative uplink rate server-side. */
+    static const char k_oai_prefix[] = "{\"type\":\"input_audio_buffer.append\",\"audio\":\"";
+    static const char k_oai_suffix[] = "\"}";
+    static const char k_gem_prefix[] = "{\"realtimeInput\":{\"audio\":{\"data\":\"";
+    static const char k_gem_suffix[] = "\",\"mimeType\":\"audio/pcm;rate=16000\"}}}";
     esp_err_t ret = ESP_ERR_INVALID_STATE;
+    const bool gemini = (s_engine_mode == LN_RT_ENGINE_GEMINI_DIRECT);
+    const char *prefix = gemini ? k_gem_prefix : k_oai_prefix;
+    const char *suffix = gemini ? k_gem_suffix : k_oai_suffix;
+    const size_t prefix_len = gemini ? sizeof(k_gem_prefix) - 1 : sizeof(k_oai_prefix) - 1;
+    const size_t suffix_len = gemini ? sizeof(k_gem_suffix) - 1 : sizeof(k_oai_suffix) - 1;
 
     if (xSemaphoreTake(s_send_mtx, LN_RT_SEND_TIMEOUT) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
     if (s_ws != NULL && s_connected) {
-        size_t pos = sizeof(k_prefix) - 1;
-        memcpy(s_uplink_buf, k_prefix, pos);
+        size_t pos = prefix_len;
+        memcpy(s_uplink_buf, prefix, prefix_len);
         size_t olen = 0;
         int rc = mbedtls_base64_encode((unsigned char *)s_uplink_buf + pos,
-                                       LN_RT_UPLINK_BUF_SZ - pos - 3, &olen,
+                                       LN_RT_UPLINK_BUF_SZ - pos - suffix_len - 1, &olen,
                                        (const unsigned char *)samples, n_samples * 2);
         if (rc == 0) {
             pos += olen;
-            s_uplink_buf[pos++] = '"';
-            s_uplink_buf[pos++] = '}';
+            memcpy(s_uplink_buf + pos, suffix, suffix_len);
+            pos += suffix_len;
             int sent = esp_websocket_client_send_text(s_ws, s_uplink_buf, (int)pos,
                                                       LN_RT_SEND_TIMEOUT);
             ret = (sent == (int)pos) ? ESP_OK : ESP_FAIL;
@@ -293,6 +332,21 @@ esp_err_t ln_realtime_send_audio(const int16_t *samples, size_t n_samples)
      * uplink task owns the (blocking) socket writes. Send with zero
      * timeout: when the network is behind, newest audio is dropped here
      * rather than stalling the real-time capture pipeline. */
+    if (s_engine_mode == LN_RT_ENGINE_GEMINI_DIRECT) {
+        /* Gemini takes the AFE's native 16 kHz directly (send_audio_slice
+         * frames it as audio/pcm;rate=16000) — the 16k->24k resampler is
+         * OpenAI-only and MUST be bypassed here or the server would hear
+         * 2/3-speed audio. The stream buffer carries raw pcm16 bytes either
+         * way; its 2 s @ 24 kHz sizing is 3 s of headroom at 16 kHz. */
+        if (s_up_sb != NULL) {
+            size_t want = n_samples * sizeof(int16_t);
+            size_t put = xStreamBufferSend(s_up_sb, samples, want, 0);
+            if (put < want) {
+                s_up_dropped += (uint32_t)(want - put);
+            }
+        }
+        return ESP_OK;
+    }
     while (n_samples > 0) {
         size_t slice = (n_samples > LN_RT_RESAMPLE_IN_MAX) ? LN_RT_RESAMPLE_IN_MAX
                                                            : n_samples;
@@ -363,7 +417,10 @@ esp_err_t ln_realtime_barge_in(void)
     }
     ln_audio_play_stop();
     s_have_carry = false;
-    if (s_response_active) {
+    /* Gemini has no client->server cancel primitive in auto-VAD mode — the
+     * local playback flush above is the whole barge-in; the server's own VAD
+     * interrupts generation when the user keeps talking. */
+    if (s_response_active && s_engine_mode != LN_RT_ENGINE_GEMINI_DIRECT) {
         return ws_send_str("{\"type\":\"response.cancel\"}");
     }
     return ESP_OK;
@@ -487,6 +544,193 @@ static void handle_msg(const cJSON *root)
      * intentionally ignored on-device. */
 }
 
+/* ---------------------------------------------- Gemini Live events (M13) -- */
+
+const char *ln_rt_resumption_handle(void)
+{
+    return s_resume_handle;
+}
+
+/** First model output of a turn — mirror OpenAI's response.created effects
+ *  (ln_ui clears the caption, ln_ctrl moves LISTENING->THINKING). Gemini has
+ *  no explicit response-started event, so audio/transcript arrival is it. */
+static void gemini_mark_response_started(void)
+{
+    if (!s_response_active) {
+        s_response_active = true;
+        s_have_carry = false;
+        post_evt(LN_RT_EVENT_RESPONSE_STARTED);
+    }
+}
+
+/** Answer every functionCall in a toolCall with a structured refusal.
+ *
+ *  Deliberate device parity, NOT a stub: this firmware has no tool router —
+ *  the OpenAI path silently ignores its function_call events, and the
+ *  device-side POST /api/v1/tools/invoke flow (contracts/api.md) was never
+ *  implemented on this surface. Unlike OpenAI, an unanswered Gemini
+ *  functionCall stalls the model's turn, so each call gets an immediate
+ *  {"error":...} result and the model voices a graceful "can't do that
+ *  here". Full on-device tool invocation is a backlog item. */
+static void gemini_refuse_tool_calls(const cJSON *calls)
+{
+    cJSON *frame = cJSON_CreateObject();
+    if (frame == NULL) {
+        return;
+    }
+    cJSON *tr = cJSON_AddObjectToObject(frame, "toolResponse");
+    cJSON *arr = (tr != NULL) ? cJSON_AddArrayToObject(tr, "functionResponses") : NULL;
+    int n = 0;
+    const cJSON *call = NULL;
+    cJSON_ArrayForEach(call, calls) {
+        const cJSON *id = cJSON_GetObjectItemCaseSensitive(call, "id");
+        const cJSON *name = cJSON_GetObjectItemCaseSensitive(call, "name");
+        if (arr == NULL || !cJSON_IsString(id)) {
+            continue;
+        }
+        cJSON *fr = cJSON_CreateObject();
+        if (fr == NULL) {
+            continue;
+        }
+        cJSON_AddStringToObject(fr, "id", id->valuestring);
+        if (cJSON_IsString(name)) {
+            cJSON_AddStringToObject(fr, "name", name->valuestring);
+        }
+        cJSON *resp = cJSON_AddObjectToObject(fr, "response");
+        cJSON *result = (resp != NULL) ? cJSON_AddObjectToObject(resp, "result") : NULL;
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "error",
+                                    "tool execution is not available on this device");
+        }
+        cJSON_AddItemToArray(arr, fr);
+        n++;
+    }
+    if (n > 0) {
+        if (s_tool_buf != NULL &&
+            cJSON_PrintPreallocated(frame, s_tool_buf, LN_RT_TOOL_BUF_SZ, 0)) {
+            if (ws_send_str(s_tool_buf) != ESP_OK) {
+                ESP_LOGW(TAG, "toolResponse refusal send failed");
+            }
+            ESP_LOGW(TAG, "refused %d tool call(s) — no on-device tool router", n);
+        } else {
+            ESP_LOGE(TAG, "toolResponse refusal frame exceeds %d B — dropped",
+                     LN_RT_TOOL_BUF_SZ);
+        }
+    }
+    cJSON_Delete(frame);
+}
+
+/** Gemini Live server messages (no OpenAI-style "type" field — each message
+ *  is keyed by which top-level member is present). */
+static void handle_gemini_msg(const cJSON *root)
+{
+    /* Readiness: {"setupComplete":{}} acks our setup frame — audio may flow. */
+    if (cJSON_GetObjectItemCaseSensitive(root, "setupComplete") != NULL) {
+        if (!s_session_ready_posted) {
+            s_session_ready_posted = true;
+            post_evt(LN_RT_EVENT_SESSION_READY);
+        }
+        return;
+    }
+
+    const cJSON *tc = cJSON_GetObjectItemCaseSensitive(root, "toolCall");
+    if (cJSON_IsObject(tc)) {
+        gemini_refuse_tool_calls(cJSON_GetObjectItemCaseSensitive(tc, "functionCalls"));
+        return;
+    }
+    /* toolCallCancellation: nothing is ever pending on-device — no-op. */
+    if (cJSON_GetObjectItemCaseSensitive(root, "toolCallCancellation") != NULL) {
+        return;
+    }
+
+    /* Connection lifecycle: the server recycles connections every ~10 min and
+     * announces it with goAway. Wake the worker's supervise wait exactly like
+     * a link drop: it tears the WSS down and reconnects through a fresh
+     * bootstrap (fresh token) carrying s_resume_handle, so the SAME
+     * conversation continues (ln_rt_session.c injects the handle). */
+    const cJSON *ga = cJSON_GetObjectItemCaseSensitive(root, "goAway");
+    if (cJSON_IsObject(ga)) {
+        const cJSON *tl = cJSON_GetObjectItemCaseSensitive(ga, "timeLeft");
+        ESP_LOGI(TAG, "gemini goAway (timeLeft=%s) — recycling the connection",
+                 cJSON_IsString(tl) ? tl->valuestring : "?");
+        xEventGroupSetBits(s_eg, EG_WS_DOWN);
+        return;
+    }
+    const cJSON *sru = cJSON_GetObjectItemCaseSensitive(root, "sessionResumptionUpdate");
+    if (cJSON_IsObject(sru)) {
+        const cJSON *h = cJSON_GetObjectItemCaseSensitive(sru, "newHandle");
+        if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(sru, "resumable")) &&
+            cJSON_IsString(h) && h->valuestring[0] != '\0') {
+            strlcpy(s_resume_handle, h->valuestring, sizeof(s_resume_handle));
+        }
+        return;
+    }
+
+    const cJSON *sc = cJSON_GetObjectItemCaseSensitive(root, "serverContent");
+    if (!cJSON_IsObject(sc)) {
+        return; /* usageMetadata-only frames etc. — ignored on-device */
+    }
+
+    /* Barge-in: auto VAD heard the user over playback. There is no
+     * client->server cancel primitive on Gemini — flush locally only, and
+     * surface it as SPEECH_STARTED (same UI/state effect as OpenAI's
+     * input_audio_buffer.speech_started barge-in). */
+    if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(sc, "interrupted"))) {
+        ln_audio_play_stop();
+        s_have_carry = false;
+        s_response_active = false;
+        post_evt(LN_RT_EVENT_SPEECH_STARTED);
+    }
+
+    /* Assistant audio: serverContent.modelTurn.parts[].inlineData.data —
+     * base64 pcm16 @ 24 kHz, the same downlink rate/decoder as the other
+     * engines. */
+    const cJSON *mt = cJSON_GetObjectItemCaseSensitive(sc, "modelTurn");
+    if (cJSON_IsObject(mt)) {
+        const cJSON *parts = cJSON_GetObjectItemCaseSensitive(mt, "parts");
+        const cJSON *part = NULL;
+        cJSON_ArrayForEach(part, parts) {
+            const cJSON *inl = cJSON_GetObjectItemCaseSensitive(part, "inlineData");
+            if (!cJSON_IsObject(inl)) {
+                continue;
+            }
+            const cJSON *data = cJSON_GetObjectItemCaseSensitive(inl, "data");
+            if (!cJSON_IsString(data) || data->valuestring[0] == '\0') {
+                continue;
+            }
+            gemini_mark_response_started();
+            handle_audio_delta(data->valuestring);
+        }
+    }
+
+    /* Assistant transcript deltas (outputTranscription.text). Never posted
+     * with final=true: Gemini has no full-transcript recap event, and a
+     * final chunk REPLACES the ln_ui caption — an empty final would wipe it.
+     * inputTranscription (user speech) has no on-device consumer; the other
+     * engines emit assistant transcripts only, so parity keeps it ignored. */
+    const cJSON *ot = cJSON_GetObjectItemCaseSensitive(sc, "outputTranscription");
+    if (cJSON_IsObject(ot)) {
+        const cJSON *txt = cJSON_GetObjectItemCaseSensitive(ot, "text");
+        if (cJSON_IsString(txt) && txt->valuestring[0] != '\0') {
+            gemini_mark_response_started();
+            post_transcript(txt->valuestring, strlen(txt->valuestring), false);
+        }
+    }
+
+    /* Turn teardown: generationComplete = all audio generated (drain the
+     * playback tail now), turnComplete = the assistant turn is over. Both
+     * may arrive in one message; play_end is an idempotent flag. */
+    if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(sc, "generationComplete"))) {
+        ln_audio_play_end();
+        post_evt(LN_RT_EVENT_RESPONSE_AUDIO_DONE);
+    }
+    if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(sc, "turnComplete"))) {
+        ln_audio_play_end();
+        s_response_active = false;
+        post_evt(LN_RT_EVENT_RESPONSE_DONE);
+    }
+}
+
 static bool rx_reserve(size_t needed)
 {
     if (needed <= s_rx_cap) {
@@ -540,7 +784,11 @@ static void handle_rx(const esp_websocket_event_data_t *d)
         return;
     }
     s_rx_len = 0;
-    handle_msg(root);
+    if (s_engine_mode == LN_RT_ENGINE_GEMINI_DIRECT) {
+        handle_gemini_msg(root);
+    } else {
+        handle_msg(root);
+    }
     cJSON_Delete(root);
 }
 
@@ -569,12 +817,32 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t event_id,
          * config — and the old beta-shape update (input_audio_format) was
          * rejected by GA sessions with an error event anyway. */
         s_connected = true;
+        if (s_engine_mode == LN_RT_ENGINE_GEMINI_DIRECT) {
+            /* Gemini DOES require a client-sent frame: the broker-staged
+             * {"setup":...} (config also locked into the token via
+             * liveConnectConstraints — sending it client-side too is the
+             * documented workaround for the constraints-only
+             * systemInstruction bug). Readiness gates on the server's
+             * setupComplete ack in handle_gemini_msg. Sending from this
+             * handler is safe: the client lock is recursive and this runs
+             * on the client task. */
+            if (s_setup_frame != NULL && ws_send_str(s_setup_frame) == ESP_OK) {
+                ESP_LOGI(TAG, "gemini setup frame sent (%u B)",
+                         (unsigned)strlen(s_setup_frame));
+            } else {
+                ESP_LOGE(TAG, "gemini setup frame send failed — server will close");
+            }
+        }
         xEventGroupSetBits(s_eg, EG_WS_CONNECTED);
         post_evt(LN_RT_EVENT_CONNECTED);
         break;
     }
     case WEBSOCKET_EVENT_DATA:
-        if (d->op_code == 0x01 || d->op_code == 0x00) { /* text / continuation */
+        /* text / continuation; Gemini Live additionally delivers its JSON in
+         * BINARY frames (op 0x02 — browsers see Blobs), so parse those like
+         * text on that engine. */
+        if (d->op_code == 0x01 || d->op_code == 0x00 ||
+            (d->op_code == 0x02 && s_engine_mode == LN_RT_ENGINE_GEMINI_DIRECT)) {
             handle_rx(d);
         } else if (d->op_code == 0x08) {
             ESP_LOGI(TAG, "server sent close frame");
@@ -607,10 +875,42 @@ static void ws_teardown(void)
     }
 }
 
+/** Percent-encode src into dst as an RFC 3986 query value (everything but
+ *  unreserved chars escaped — matches Go's url.QueryEscape treatment of the
+ *  token in the proven Phase 0 spike; Gemini access tokens contain '/').
+ *  Returns false if dst (cap incl. NUL) would overflow. */
+static bool url_escape_into(char *dst, size_t cap, const char *src)
+{
+    static const char k_hex[] = "0123456789ABCDEF";
+    size_t o = 0;
+    for (const unsigned char *p = (const unsigned char *)src; *p != '\0'; p++) {
+        unsigned char c = *p;
+        bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                          (c >= '0' && c <= '9') ||
+                          c == '-' || c == '.' || c == '_' || c == '~';
+        if (unreserved) {
+            if (o + 1 >= cap) {
+                return false;
+            }
+            dst[o++] = (char)c;
+        } else {
+            if (o + 3 >= cap) {
+                return false;
+            }
+            dst[o++] = '%';
+            dst[o++] = k_hex[c >> 4];
+            dst[o++] = k_hex[c & 0x0F];
+        }
+    }
+    dst[o] = '\0';
+    return true;
+}
+
 static esp_err_t ws_open(const ln_rt_session_info_t *si)
 {
     const char *headers = NULL;
     s_engine_mode = si->mode;
+    s_setup_frame = NULL;
 
     if (si->mode == LN_RT_ENGINE_NOVA_BRIDGE) {
         /* Connect straight to the backend Nova Sonic bridge. Auth is the
@@ -624,6 +924,24 @@ static esp_err_t ws_open(const ln_rt_session_info_t *si)
         } else {
             strlcpy(s_ws_url, si->ws_url, sizeof(s_ws_url));
         }
+        s_ws_headers[0] = '\0';
+        headers = NULL;
+    } else if (si->mode == LN_RT_ENGINE_GEMINI_DIRECT) {
+        /* Client-direct WSS to Gemini Live. Ephemeral tokens are only honored
+         * by the v1alpha *Constrained* endpoint with the token URL-escaped in
+         * an access_token query param — no Authorization header, no
+         * subprotocol (live-verified, gemini-plan.md §10 correction 2). */
+        int n = snprintf(s_ws_url, sizeof(s_ws_url), "%s?access_token=", si->ws_url);
+        if (n < 0 || (size_t)n >= sizeof(s_ws_url) ||
+            !url_escape_into(s_ws_url + n, sizeof(s_ws_url) - (size_t)n, si->token)) {
+            ESP_LOGE(TAG, "gemini WSS URL exceeds %u B", (unsigned)sizeof(s_ws_url));
+            return ESP_FAIL;
+        }
+        if (si->setup_frame == NULL) {
+            ESP_LOGE(TAG, "gemini bootstrap carried no setup frame");
+            return ESP_FAIL;
+        }
+        s_setup_frame = si->setup_frame;
         s_ws_headers[0] = '\0';
         headers = NULL;
     } else {
@@ -679,6 +997,11 @@ static int backoff_ms(int attempt)
 static void run_session(void)
 {
     int attempt = 0;
+
+    /* A START command is a brand-new conversation — never resume a previous
+     * Gemini session across it. Reconnects WITHIN this loop keep the handle
+     * (that is the goAway/link-drop resume path). */
+    s_resume_handle[0] = '\0';
 
     while (s_should_run) {
         if (attempt > 0) {
@@ -782,9 +1105,10 @@ esp_err_t ln_realtime_init(void)
     s_uplink_buf = ln_rt_alloc(LN_RT_UPLINK_BUF_SZ);
     s_rs_buf = ln_rt_alloc((3 * LN_RT_RESAMPLE_IN_MAX / 2 + 2) * sizeof(int16_t));
     s_up_storage = ln_rt_alloc(LN_RT_UP_SB_BYTES);
+    s_tool_buf = ln_rt_alloc(LN_RT_TOOL_BUF_SZ);
     if (s_cmd_q == NULL || s_eg == NULL || s_send_mtx == NULL || s_rx_buf == NULL ||
         s_dec_buf == NULL || s_uplink_buf == NULL || s_rs_buf == NULL ||
-        s_up_storage == NULL) {
+        s_up_storage == NULL || s_tool_buf == NULL) {
         ESP_LOGE(TAG, "init: out of memory");
         return ESP_ERR_NO_MEM;
     }

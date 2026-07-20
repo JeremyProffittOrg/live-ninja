@@ -2,10 +2,12 @@
  * ln_realtime — realtime voice WSS client for the Live Ninja M5Stack Tab5.
  *
  * The device's per-device voiceEngine pin (settings.schema.json) selects the
- * transport at session bootstrap: OpenAI-direct (default, below) or, when
- * pinned to nova-sonic, the backend Nova Sonic media bridge (M12, FR-VE-03) —
- * same pcm16 framing and same public API, only the WSS URL + auth differ. The
- * branch is internal; callers use the identical start/stop/send_audio surface.
+ * transport at session bootstrap: OpenAI-direct (default, below); when pinned
+ * to nova-sonic, the backend Nova Sonic media bridge (M12, FR-VE-03); or,
+ * when pinned to gemini-flash-live, client-direct WSS to Gemini Live with an
+ * ephemeral token in the URL (M13) — same pcm16 audio contract and same
+ * public API, only URL/auth/event framing differ. The branch is internal;
+ * callers use the identical start/stop/send_audio surface.
  *
  * Owns the realtime voice transport (plan.md M5, WS-F; OpenAI-direct path):
  *   1. Session bootstrap over HTTPS: GET {backend}/v1/realtime/session with the
@@ -48,7 +50,8 @@ typedef enum {
     LN_RT_EVENT_CONNECTING = 0,
     /** WSS link is up and session.update has been sent. No payload. */
     LN_RT_EVENT_CONNECTED,
-    /** Server acked the session (session.created/updated). Audio may flow. No payload. */
+    /** Server acked the session (session.created/updated; Gemini:
+     *  setupComplete). Audio may flow. No payload. */
     LN_RT_EVENT_SESSION_READY,
     /** Server VAD detected user speech — local barge-in already executed
      *  (playback flushed, response.cancel sent). No payload. */
