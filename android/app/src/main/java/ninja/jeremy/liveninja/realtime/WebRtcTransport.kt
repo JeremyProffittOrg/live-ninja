@@ -328,9 +328,12 @@ class WebRtcTransport @Inject constructor(
         previousAudioMode = am.mode
         am.mode = AudioManager.MODE_IN_COMMUNICATION
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            am.availableCommunicationDevices
-                .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-                ?.let { am.setCommunicationDevice(it) }
+            // Prefer BT SCO → wired → speaker instead of forcing the built-in
+            // speaker (02-voice §B3): route to the best available headset.
+            val devices = am.availableCommunicationDevices
+            PREFERRED_ROUTE_TYPES.firstNotNullOfOrNull { type ->
+                devices.firstOrNull { it.type == type }
+            }?.let { am.setCommunicationDevice(it) }
         } else {
             previousSpeakerphone = am.isSpeakerphoneOn
             @Suppress("DEPRECATION")
@@ -511,5 +514,14 @@ class WebRtcTransport @Inject constructor(
 
         /** libwebrtc AudioTrack volume scale is 0..10; 1.0 is nominal. */
         const val NOMINAL_VOLUME = 1.0
+
+        /** Communication-device routing preference: headset first, speaker last. */
+        val PREFERRED_ROUTE_TYPES = listOf(
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+            AudioDeviceInfo.TYPE_WIRED_HEADSET,
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+            AudioDeviceInfo.TYPE_USB_HEADSET,
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
+        )
     }
 }

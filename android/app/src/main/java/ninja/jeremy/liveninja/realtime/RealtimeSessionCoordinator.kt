@@ -40,6 +40,7 @@ class RealtimeSessionCoordinator @Inject constructor(
     @GeminiTransport private val geminiLiveTransport: RealtimeTransport,
     private val sessionApi: RealtimeSessionApi,
     private val toolRouter: ToolCallRouter,
+    private val transcriptStore: TranscriptStore,
 ) : RealtimeSessionController {
 
     /**
@@ -74,6 +75,10 @@ class RealtimeSessionCoordinator @Inject constructor(
     override suspend fun start() {
         lifecycleMutex.withLock {
             if (_connected.value) return
+
+            // Fresh conversation: clear the process-wide transcript so a UI
+            // attaching mid-session (screen-on) renders only this session.
+            transcriptStore.clear()
 
             val session = sessionApi.fetchSession()
 
@@ -219,6 +224,7 @@ class RealtimeSessionCoordinator @Inject constructor(
                 if (json.optBoolean("ok")) "completed" else
                     json.optJSONObject("error")?.optString("message").orEmpty().ifEmpty { "failed" }
             }.getOrDefault("completed")
+            transcriptStore.addToolChip(itemId = call.callId, name = call.name, summary = summary)
             emit(SessionUiEvent.ToolCall(itemId = call.callId, name = call.name, summary = summary))
         }
     }
@@ -226,6 +232,7 @@ class RealtimeSessionCoordinator @Inject constructor(
     private fun emitDelta(itemId: String, role: TranscriptRole, delta: String, done: Boolean) {
         if (itemId.isEmpty() || (delta.isEmpty() && !done)) return
         emittedChars[keyFor(itemId, role)] = (emittedChars[keyFor(itemId, role)] ?: 0) + delta.length
+        transcriptStore.appendDelta(itemId, role, delta, done)
         emit(SessionUiEvent.TranscriptDelta(itemId, role, delta, done))
     }
 
@@ -237,6 +244,7 @@ class RealtimeSessionCoordinator @Inject constructor(
         if (itemId.isEmpty()) return
         val sent = emittedChars.remove(keyFor(itemId, role)) ?: 0
         val remainder = if (fullText.length > sent) fullText.substring(sent) else ""
+        transcriptStore.appendDelta(itemId, role, remainder, done = true)
         emit(SessionUiEvent.TranscriptDelta(itemId, role, remainder, done = true))
     }
 

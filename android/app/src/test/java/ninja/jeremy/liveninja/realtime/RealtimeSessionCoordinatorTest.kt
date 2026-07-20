@@ -97,7 +97,7 @@ class RealtimeSessionCoordinatorTest {
             sessionId = "rs-1",
             quotaWarning = null,
         )
-        return RealtimeSessionCoordinator(transport, novaTransport, geminiTransport, sessionApi, toolRouter)
+        return RealtimeSessionCoordinator(transport, novaTransport, geminiTransport, sessionApi, toolRouter, TranscriptStore())
     }
 
     /** Collect coordinator UI events into [sink] and wait until [predicate] matches one. */
@@ -151,7 +151,7 @@ class RealtimeSessionCoordinatorTest {
             ),
             sessionConfig = JSONObject().put("model", "models/gemini-3.1-flash-live-preview"),
         )
-        val coord = RealtimeSessionCoordinator(transport, novaTransport, geminiTransport, sessionApi, toolRouter)
+        val coord = RealtimeSessionCoordinator(transport, novaTransport, geminiTransport, sessionApi, toolRouter, TranscriptStore())
 
         coord.start()
 

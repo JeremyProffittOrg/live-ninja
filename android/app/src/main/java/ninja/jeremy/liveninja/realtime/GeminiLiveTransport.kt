@@ -663,9 +663,11 @@ class GeminiLiveTransport @Inject constructor(
         previousAudioMode = am.mode
         am.mode = AudioManager.MODE_IN_COMMUNICATION
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            am.availableCommunicationDevices
-                .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-                ?.let { am.setCommunicationDevice(it) }
+            // Prefer BT SCO → wired → speaker (mirror WebRtcTransport, 02-voice §B3).
+            val devices = am.availableCommunicationDevices
+            PREFERRED_ROUTE_TYPES.firstNotNullOfOrNull { type ->
+                devices.firstOrNull { it.type == type }
+            }?.let { am.setCommunicationDevice(it) }
         } else {
             previousSpeakerphone = am.isSpeakerphoneOn
             @Suppress("DEPRECATION")
@@ -817,5 +819,14 @@ class GeminiLiveTransport @Inject constructor(
 
         /** Refresh the token this early before expiry when reconnecting. */
         const val TOKEN_EXPIRY_MARGIN_MS = 60_000L
+
+        /** Communication-device routing preference: headset first, speaker last. */
+        val PREFERRED_ROUTE_TYPES = listOf(
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+            AudioDeviceInfo.TYPE_WIRED_HEADSET,
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+            AudioDeviceInfo.TYPE_USB_HEADSET,
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
+        )
     }
 }

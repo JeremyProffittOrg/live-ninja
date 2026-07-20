@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import ninja.jeremy.liveninja.realtime.TranscriptStore
 import ninja.jeremy.liveninja.ui.overlay.LiveOverlayController
 import ninja.jeremy.liveninja.ui.overlay.OverlayMicState
 import ninja.jeremy.liveninja.ui.state.RealtimeSessionController
@@ -58,6 +59,7 @@ class ConversationViewModel @Inject constructor(
     sessionControllerOpt: Optional<RealtimeSessionController>,
     private val overlay: LiveOverlayController,
     settingsStore: SettingsStore,
+    private val transcriptStore: TranscriptStore,
 ) : ViewModel() {
 
     private val sessionController: RealtimeSessionController? = sessionControllerOpt.orElse(null)
@@ -65,15 +67,42 @@ class ConversationViewModel @Inject constructor(
     private val _state = MutableStateFlow(ConversationUiState())
     val state: StateFlow<ConversationUiState> = _state
 
-    private var eventsJob: Job? = null
+    private var startJob: Job? = null
     private var tickerJob: Job? = null
     private var bargeInFlashJob: Job? = null
     private var appInBackground = false
 
+    /** Previous `connected` sample, so the init collector fires only on real transitions. */
+    private var lastConnected: Boolean? = null
+
     init {
+        // Transcript is process-wide (survives screen-off/backgrounded sessions):
+        // render TranscriptStore, don't accumulate from events (02-voice §B4).
+        viewModelScope.launch {
+            transcriptStore.turns.collect { turns ->
+                _state.update { it.copy(transcript = turns.map(::toUiTurn)) }
+            }
+        }
         viewModelScope.launch {
             settingsStore.document.collect { doc ->
                 _state.update { it.copy(wakePhraseLabel = wakeLabelFor(doc.wakeWord)) }
+            }
+        }
+        // Mic state is derived from the singleton session's `connected` — so a
+        // session started with the screen off (by SessionOrchestrator) is
+        // reflected the moment the UI attaches, not only on an in-app tap.
+        sessionController?.let { controller ->
+            viewModelScope.launch { controller.events.collect(::onSessionEvent) }
+            viewModelScope.launch {
+                controller.connected.collect { connected ->
+                    val previous = lastConnected
+                    lastConnected = connected
+                    when {
+                        previous == null -> if (connected) onSessionBecameLive()
+                        connected && !previous -> onSessionBecameLive()
+                        !connected && previous -> onSessionEnded()
+                    }
+                }
             }
         }
     }
@@ -87,9 +116,11 @@ class ConversationViewModel @Inject constructor(
             }
             return
         }
-        if (_state.value.micState in
+        if (controller.connected.value || _state.value.micState in
             setOf(MicUiState.CONNECTING, MicUiState.LISTENING, MicUiState.SPEAKING)
         ) {
+            // Already live (e.g. wake-started) or connecting — just reflect it.
+            if (controller.connected.value) onSessionBecameLive()
             return
         }
         _state.update {
@@ -100,14 +131,11 @@ class ConversationViewModel @Inject constructor(
                 sessionSeconds = 0,
             )
         }
-        eventsJob?.cancel()
-        eventsJob = viewModelScope.launch {
-            launch { controller.events.collect(::onSessionEvent) }
+        startJob?.cancel()
+        startJob = viewModelScope.launch {
             try {
                 controller.start()
-                _state.update { it.copy(micState = MicUiState.LISTENING) }
-                startTicker()
-                syncOverlay()
+                // LISTENING + ticker are driven by the connected collector.
             } catch (e: Exception) {
                 _state.update {
                     it.copy(
@@ -116,10 +144,39 @@ class ConversationViewModel @Inject constructor(
                         errorDetail = e.message,
                     )
                 }
-                eventsJob?.cancel()
             }
         }
     }
+
+    /** A session became live (in-app tap OR wake/assist-started while screen off). */
+    private fun onSessionBecameLive() {
+        _state.update {
+            if (it.micState in setOf(MicUiState.LISTENING, MicUiState.SPEAKING)) {
+                it
+            } else {
+                it.copy(micState = MicUiState.LISTENING, error = null, errorDetail = null)
+            }
+        }
+        startTicker()
+        syncOverlay()
+    }
+
+    /** The session dropped/ended (transport closed, remote stop, or our stop()). */
+    private fun onSessionEnded() {
+        if (_state.value.micState == MicUiState.ERROR) return
+        stopTicker()
+        _state.update { it.copy(micState = MicUiState.IDLE, micMuted = false) }
+        overlay.hide()
+    }
+
+    private fun toUiTurn(entry: TranscriptStore.Entry): TranscriptTurn = TranscriptTurn(
+        id = entry.id,
+        role = entry.role,
+        text = entry.text,
+        done = entry.done,
+        toolName = entry.toolName,
+        toolSummary = entry.toolSummary,
+    )
 
     /** The screen is about to launch the RECORD_AUDIO runtime prompt. */
     fun onRequestingMicPermission() {
@@ -143,11 +200,9 @@ class ConversationViewModel @Inject constructor(
         }
         _state.update { it.copy(micState = MicUiState.ENDING) }
         viewModelScope.launch {
+            // stop() flips `connected` → false, which onSessionEnded() reflects
+            // (idle state, ticker, overlay). Set ENDING here for the interim.
             runCatching { controller.stop() }
-            eventsJob?.cancel()
-            stopTicker()
-            _state.update { it.copy(micState = MicUiState.IDLE, micMuted = false) }
-            overlay.hide()
         }
     }
 
@@ -193,25 +248,11 @@ class ConversationViewModel @Inject constructor(
 
     private fun onSessionEvent(event: SessionUiEvent) {
         when (event) {
-            is SessionUiEvent.TranscriptDelta -> _state.update { current ->
-                val turns = current.transcript.toMutableList()
-                val index = turns.indexOfFirst { it.id == event.itemId && !it.isToolCall }
-                if (index >= 0) {
-                    val existing = turns[index]
-                    turns[index] = existing.copy(
-                        text = existing.text + event.textDelta,
-                        done = event.done,
-                    )
-                } else {
-                    turns += TranscriptTurn(
-                        id = event.itemId,
-                        role = event.role,
-                        text = event.textDelta,
-                        done = event.done,
-                    )
-                }
-                current.copy(transcript = turns)
-            }
+            // Transcript rows (deltas + tool chips) are accumulated in the
+            // process-wide TranscriptStore and rendered from there; the events
+            // below only drive mic state / transient visuals.
+            is SessionUiEvent.TranscriptDelta -> Unit
+            is SessionUiEvent.ToolCall -> Unit
 
             is SessionUiEvent.AssistantSpeaking -> {
                 _state.update { current ->
@@ -236,19 +277,6 @@ class ConversationViewModel @Inject constructor(
                 }
                 flashBargeIn()
                 syncOverlay()
-            }
-
-            is SessionUiEvent.ToolCall -> _state.update { current ->
-                current.copy(
-                    transcript = current.transcript + TranscriptTurn(
-                        id = event.itemId,
-                        role = TranscriptRole.ASSISTANT,
-                        text = "",
-                        done = true,
-                        toolName = event.name,
-                        toolSummary = event.summary,
-                    ),
-                )
             }
 
             is SessionUiEvent.SessionError -> {

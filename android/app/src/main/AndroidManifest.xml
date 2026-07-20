@@ -5,9 +5,17 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Session FGS expands to microphone|mediaPlayback while a realtime call is live. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!-- Wake the screen over the keyguard on wake-word detection (01-platform §B-ii). -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- Session-scoped PARTIAL_WAKE_LOCK so Doze cannot stall a screen-off session. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Battery-optimization exemption prompt (onboarding + Settings health card). -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Live-session floating bubble (TYPE_APPLICATION_OVERLAY). Optional —
          requested via Settings.ACTION_MANAGE_OVERLAY_PERMISSION in onboarding;
          LiveOverlayController no-ops without the user grant. -->
@@ -100,7 +108,7 @@
         <service
             android:name=".wake.WakeWordService"
             android:exported="false"
-            android:foregroundServiceType="microphone" />
+            android:foregroundServiceType="microphone|mediaPlayback" />
 
         <!-- Restart the wake service after reboot / app update when enabled. Only the system
              can send these protected broadcasts, so exported is safe and required for
