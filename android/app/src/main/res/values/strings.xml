@@ -142,6 +142,7 @@
     <string name="login_error_exchange">Sign-in could not be completed. Please try again.</string>
     <string name="login_error_network">Can\'t reach Live Ninja right now. Check your connection and try again.</string>
     <string name="login_error_session_expired">Your session ended. Sign in again to continue.</string>
+    <string name="login_error_storage_reset">Sign-in data was reset after a storage error — please sign in again.</string>
 
     <string name="onboarding_step_progress">Step %1$d of %2$d</string>
     <string name="onboarding_back">Back</string>

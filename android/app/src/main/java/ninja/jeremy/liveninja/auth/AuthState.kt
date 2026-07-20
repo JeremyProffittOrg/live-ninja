@@ -19,6 +19,13 @@ enum class AuthError {
 
     /** The stored session was revoked or its refresh window lapsed. */
     SESSION_EXPIRED,
+
+    /**
+     * The encrypted credential store was corrupt and had to be wiped
+     * (01-platform §A1). The session could not be recovered — the user must
+     * sign in again. The login screen surfaces a one-line explanation (M1.4).
+     */
+    STORAGE_RESET,
 }
 
 /** App-wide authentication state, published by [AuthRepository.state]. */

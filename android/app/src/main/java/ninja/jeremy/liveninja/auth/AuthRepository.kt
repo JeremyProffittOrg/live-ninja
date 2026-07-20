@@ -8,6 +8,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -39,7 +40,18 @@ class AuthRepository @Inject constructor(
     private val refresher: TokenRefresher,
 ) : DefaultLifecycleObserver {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    /**
+     * Last-resort guard (01-platform §A1 layer 3): any auth coroutine that
+     * fails without its own handling logs and drops the app to a clean signed-out
+     * state rather than letting the throw reach the process's default handler and
+     * kill it on load. The SupervisorJob keeps sibling coroutines alive.
+     */
+    private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        Log.e(TAG, "Unhandled auth coroutine failure; signing out defensively", throwable)
+        _state.value = AuthState.SignedOut()
+    }
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + exceptionHandler)
     private val refreshMutex = Mutex()
 
     private val _state = MutableStateFlow<AuthState>(AuthState.SignedOut())
@@ -59,6 +71,17 @@ class AuthRepository @Inject constructor(
         scope.launch {
             refresher.sessionExpired.collect {
                 _state.value = AuthState.SignedOut(AuthError.SESSION_EXPIRED)
+            }
+        }
+        // A corruption wipe (01-platform §A1) discards the local session: surface
+        // the forced re-login with an explanation, unless a fresh sign-in already
+        // landed. StateFlow replays the current value, so a wipe that happened
+        // before this collector attaches is still caught.
+        scope.launch {
+            tokenStore.storeReset.collect { wiped ->
+                if (wiped && _state.value !is AuthState.SignedIn) {
+                    _state.value = AuthState.SignedOut(AuthError.STORAGE_RESET)
+                }
             }
         }
         ProcessLifecycleOwner.get().lifecycle.addObserver(this)

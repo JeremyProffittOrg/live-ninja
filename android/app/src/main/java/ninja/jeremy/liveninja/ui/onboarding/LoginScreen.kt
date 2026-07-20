@@ -168,4 +168,5 @@ private fun AuthError.messageRes(): Int = when (this) {
     AuthError.EXCHANGE_FAILED -> R.string.login_error_exchange
     AuthError.NETWORK -> R.string.login_error_network
     AuthError.SESSION_EXPIRED -> R.string.login_error_session_expired
+    AuthError.STORAGE_RESET -> R.string.login_error_storage_reset
 }
