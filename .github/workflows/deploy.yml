@@ -396,8 +396,12 @@ jobs:
           set -eu
           aws s3 sync web/static/vendor "s3://live-ninja-assets-759775734231/static/vendor" \
             --cache-control "public, max-age=31536000, immutable" --delete
+          # --exclude "downloads/*": android-release.yml publishes APKs under
+          # static/models/downloads/ (not present in the repo tree); without the
+          # exclude, --delete would remove them on every push.
           aws s3 sync web/static/models "s3://live-ninja-assets-759775734231/static/models" \
-            --cache-control "public, max-age=31536000, immutable" --delete
+            --cache-control "public, max-age=31536000, immutable" --delete \
+            --exclude "downloads/*"
 
       # M12: the nova-bridge task definition pins the image to :latest (like the
       # wakeword-train job def), so a rebuilt image with an unchanged tag string
