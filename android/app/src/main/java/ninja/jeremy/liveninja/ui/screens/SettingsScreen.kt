@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -698,16 +699,62 @@ fun SettingsScreen(
 
             // ---------- Appearance ----------
             SectionHeader(stringResource(R.string.settings_section_appearance))
+            val isHal = doc.appStyle == "hal9000"
+            // 4 options -> radio group (UI standard: 2-5 mutually-exclusive
+            // options worth seeing at once). Each style ports its own
+            // ninja/minimal/terminal/HAL token set from web/static/css/app.css
+            // (M8.1); HAL always overrides the light/dark/system control below.
+            LabeledRadioGroup(
+                label = stringResource(R.string.settings_style_label),
+                options = listOf(
+                    RadioOption(
+                        value = "hal9000",
+                        label = stringResource(R.string.settings_style_hal9000),
+                        description = stringResource(R.string.settings_style_hal9000_desc),
+                        enabled = true,
+                    ),
+                    RadioOption(
+                        value = "ninja",
+                        label = stringResource(R.string.settings_style_ninja),
+                        description = stringResource(R.string.settings_style_ninja_desc),
+                        enabled = true,
+                    ),
+                    RadioOption(
+                        value = "minimal",
+                        label = stringResource(R.string.settings_style_minimal),
+                        description = stringResource(R.string.settings_style_minimal_desc),
+                        enabled = true,
+                    ),
+                    RadioOption(
+                        value = "terminal",
+                        label = stringResource(R.string.settings_style_terminal),
+                        description = stringResource(R.string.settings_style_terminal_desc),
+                        enabled = true,
+                    ),
+                ),
+                selected = doc.appStyle,
+                onSelect = viewModel::setAppStyle,
+            )
+
+            Spacer(Modifier.height(8.dp))
+            Text(stringResource(R.string.settings_theme_label), style = MaterialTheme.typography.bodyMedium)
             val themeChoices = listOf(
                 "light" to stringResource(R.string.settings_theme_light),
                 "dark" to stringResource(R.string.settings_theme_dark),
                 "system" to stringResource(R.string.settings_theme_system),
             )
-            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            // Grayed out (disabled, not hidden) while HAL is selected — HAL pins
+            // dark regardless of this setting; the caption below explains why.
+            SingleChoiceSegmentedButtonRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .alpha(if (isHal) 0.5f else 1f),
+            ) {
                 themeChoices.forEachIndexed { index, (value, label) ->
                     SegmentedButton(
                         selected = doc.theme == value,
                         onClick = { viewModel.setTheme(value) },
+                        enabled = !isHal,
                         shape = SegmentedButtonDefaults.itemShape(
                             index = index,
                             count = themeChoices.size,
@@ -715,6 +762,13 @@ fun SettingsScreen(
                         modifier = Modifier.heightIn(min = 44.dp),
                     ) { Text(label) }
                 }
+            }
+            if (isHal) {
+                Text(
+                    stringResource(R.string.settings_theme_hal_note),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))

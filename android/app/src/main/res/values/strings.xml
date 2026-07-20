@@ -276,6 +276,17 @@
     <string name="settings_mic_system_default">System default</string>
 
     <string name="settings_section_appearance">Appearance</string>
+    <string name="settings_style_label">App style</string>
+    <string name="settings_style_hal9000">HAL 9000</string>
+    <string name="settings_style_hal9000_desc">Deep black chrome with a glowing red eye</string>
+    <string name="settings_style_ninja">Ninja</string>
+    <string name="settings_style_ninja_desc">Dark navy chrome with an electric teal accent</string>
+    <string name="settings_style_minimal">Minimal</string>
+    <string name="settings_style_minimal_desc">Flat chrome with a cyan accent, no glow</string>
+    <string name="settings_style_terminal">Terminal</string>
+    <string name="settings_style_terminal_desc">Black CRT phosphor with a green accent</string>
+    <string name="settings_theme_label">Theme</string>
+    <string name="settings_theme_hal_note">HAL 9000 is always dark</string>
     <string name="settings_theme_light">Light</string>
     <string name="settings_theme_dark">Dark</string>
     <string name="settings_theme_system">System</string>

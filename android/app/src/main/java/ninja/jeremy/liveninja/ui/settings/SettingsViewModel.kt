@@ -435,6 +435,9 @@ class SettingsViewModel @Inject constructor(
     // ---- Appearance ----
     fun setTheme(theme: String) = settingsStore.setTheme(theme)
 
+    /** Style picker (M8.1/M8.2, 03-theme): hal9000/ninja/minimal/terminal. */
+    fun setAppStyle(style: String) = settingsStore.setAppStyle(style)
+
     // ---- Privacy ----
     fun setStoreAudio(enabled: Boolean) = with(_state.value.doc) {
         settingsStore.setPrivacy(enabled, storeTranscripts, retentionDays)

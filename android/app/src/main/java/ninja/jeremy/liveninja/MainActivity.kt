@@ -1,6 +1,7 @@
 package ninja.jeremy.liveninja
 
 import android.content.Intent
+import android.content.res.Configuration
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -11,6 +12,7 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -25,6 +27,7 @@ import ninja.jeremy.liveninja.ui.LiveNinjaRoot
 import ninja.jeremy.liveninja.ui.conversation.ConversationViewModel
 import ninja.jeremy.liveninja.ui.state.SettingsStore
 import ninja.jeremy.liveninja.ui.theme.LiveNinjaTheme
+import ninja.jeremy.liveninja.ui.theme.liveNinjaColorScheme
 import ninja.jeremy.liveninja.wake.WakeBootReceiver
 import ninja.jeremy.liveninja.wake.WakePreferences
 import ninja.jeremy.liveninja.wake.WakeWordService
@@ -63,15 +66,32 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // HAL 9000 pins a near-black system-bar scrim (03-theme §C); other styles
-        // keep the default adaptive bars.
-        if (settingsStore.document.value.appStyle == "hal9000") {
+        // System bars use the active style's own background color (03-theme §C
+        // for HAL; M8.1 extends the same treatment to ninja/minimal/terminal).
+        // HAL pins dark regardless of the theme setting; the other three follow
+        // it — snapshot at launch, same one-shot pattern as before (not
+        // reactive to a style/theme change without restart).
+        val launchDoc = settingsStore.document.value
+        val darkAtLaunch = when (launchDoc.theme) {
+            "light" -> false
+            "dark" -> true
+            else -> (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+                Configuration.UI_MODE_NIGHT_YES
+        }
+        val barBackground = liveNinjaColorScheme(
+            launchDoc.appStyle,
+            darkTheme = launchDoc.appStyle == "hal9000" || darkAtLaunch,
+        ).background.toArgb()
+        if (launchDoc.appStyle == "hal9000" || darkAtLaunch) {
             enableEdgeToEdge(
-                SystemBarStyle.dark(0xFF050507.toInt()),
-                SystemBarStyle.dark(0xFF050507.toInt()),
+                SystemBarStyle.dark(barBackground),
+                SystemBarStyle.dark(barBackground),
             )
         } else {
-            enableEdgeToEdge()
+            enableEdgeToEdge(
+                SystemBarStyle.light(barBackground, barBackground),
+                SystemBarStyle.light(barBackground, barBackground),
+            )
         }
         handleAssistIntent(intent)
         handleAuthRedirect(intent)
@@ -94,7 +114,7 @@ class MainActivity : ComponentActivity() {
                 }
                 onDispose { window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
             }
-            LiveNinjaTheme(darkTheme = darkTheme) {
+            LiveNinjaTheme(appStyle = settings.appStyle, darkTheme = darkTheme) {
                 LiveNinjaRoot(assistTriggers = assistantEvents.triggers)
             }
         }

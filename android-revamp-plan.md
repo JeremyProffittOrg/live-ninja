@@ -171,15 +171,69 @@ _(placeholder)_
 
 **Two agents may parallelize (disjoint: M8.1/M8.2 theme-side vs M8.3/M8.5 voice-side; M8.4 sequenced last for build.gradle.kts).** **DoD:** 4-style picker working per web semantics; latency and reliability polish landed; gates green; pushed.
 
-- `[ ]` **M8.1** (Sonnet) Port ninja/minimal/terminal token sets from `web/static/css/app.css` style blocks into the Theme.kt registry; these styles follow light/dark axis; HAL pins dark. *Files:* `ui/theme/Theme.kt`.
-- `[ ]` **M8.2** (Sonnet) Style picker in SettingsScreen (4 options, `appStyle` key); gray out light/dark control with caption "HAL 9000 is always dark" while HAL selected. *Files:* `ui/screens/SettingsScreen.kt`, `ui/settings/SettingsViewModel.kt`. *Deps:* M8.1.
+- `[x]` **M8.1** (Sonnet) Port ninja/minimal/terminal token sets from `web/static/css/app.css` style blocks into the Theme.kt registry; these styles follow light/dark axis; HAL pins dark. *Files:* `ui/theme/Theme.kt`.
+- `[x]` **M8.2** (Sonnet) Style picker in SettingsScreen (4 options, `appStyle` key); gray out light/dark control with caption "HAL 9000 is always dark" while HAL selected. *Files:* `ui/screens/SettingsScreen.kt`, `ui/settings/SettingsViewModel.kt`. *Deps:* M8.1.
 - `[ ]` **M8.3** (Opus) Latency: parallelize `RealtimeSessionCoordinator.start()` (fetchSession ∥ ensureFactory+PC+offer+ICE, join at SDP POST); pre-warm `ensureFactory()` + ADM at WakeWordService start; earcon-at-detection confirmed from M2. Target ~0.9-1.6s to listening. *Files:* `realtime/RealtimeSessionCoordinator.kt`, `realtime/WebRtcTransport.kt`, `wake/WakeWordService.kt`.
 - `[ ]` **M8.4** (Sonnet) Reliability: 15-min WorkManager watchdog (serviceEnabled && dead → tap-to-resume notification, never FGS-from-background) — new `wake/WakeWatchdogWorker.kt` + WorkManager dep in `build.gradle.kts`; per-OEM guidance card in Settings. **Owner's phone = Samsung Galaxy (One UI): guidance must cover Settings → Battery → Never sleeping apps + 'Unrestricted' battery for Live Ninja + disable 'Put unused apps to sleep'.** *Deps:* M8.2.
 - `[ ]` **M8.5** (Sonnet) Duty-cycle policy (charging always-continuous; saver 12s/2s; thermal SEVERE 8s/4s) + surface degraded state in notification; EnergyVad adaptive/lower threshold while charging. *Files:* `wake/WakeWordService.kt`, `wake/EnergyVad.kt`.
 - `[ ]` **M8.6** (Haiku) Gate: lint + tests + assembleDebug; commit + push.
 
 **Implementation notes:**
-_(placeholder)_
+_(placeholder — M8.3/M8.4/M8.5 voice-side)_
+
+**M8.1/M8.2 (theme-side, done):** Full detail in scratchpad `notes-M8-theme.md`. Summary:
+- Read `app.css` directly (not just spec 03): ninja/minimal share identical
+  surface/text/border tokens (both reset to `--ln-base-*`, which follow the
+  `:root`/`:root[data-theme="light"]` axis) and differ only in accent
+  (teal/cyan). Terminal's CSS block is actually unconditional/pinned-dark on
+  the web (same pattern as HAL) — no light variant exists there; per this
+  plan's explicit "these three follow light/dark" instruction, invented a
+  light terminal variant reusing ninja/minimal's light base surfaces with a
+  derived green ink (documented as a deliberate plan-authorized deviation
+  from literal CSS, not a literal port).
+  - `primary` in dark mode = the style's own `STYLE_ACCENTS` accent
+    (teal/cyan/green) per literal CSS var() resolution (`--ln-teal` is
+    overridden to the style's accent by `theme.js#setAccent`, and dark-mode
+    `--ln-accent-ink` reads through `var(--ln-teal)`) — HAL is the one
+    exception (spec 03's owner-decision carve-out, already implemented by
+    M4, untouched here). In light mode, ported ninja's literal CSS ink
+    (#0a706b) and derived AA-safe same-hue inks for minimal/cyan (#0a6b8f)
+    and terminal/green (#0a7038), contrast-verified ≥5.3:1 on bg / ≥5.9:1 on
+    white (no CSS precedent exists for those two — the CSS only hand-tunes
+    the teal case).
+  - Refactored `Theme.kt` with a `StyleTokens` holder + `buildColorScheme()`
+    + `Color.mix()` so Material-only tiers (containers, surfaceContainer*,
+    inversePrimary) derive programmatically instead of ~20 more hand-picked
+    hex constants per combo with no CSS source of truth. `HalOrb.kt` was NOT
+    touched (not in file set) — it already reads
+    `LocalLiveNinjaColors.current` generically, so populating the registry
+    correctly makes the existing orb composable render each style's colors
+    automatically.
+  - `liveNinjaColorScheme`/`liveNinjaColors` gained a `darkTheme: Boolean`
+    param; `LiveNinjaTheme` now honors it for non-HAL styles
+    (`effectiveDark = appStyle == "hal9000" || darkTheme`).
+  - `MainActivity.kt` (surgical): wired `appStyle = settings.appStyle` into
+    the `LiveNinjaTheme(...)` call (the M4-left gap flagged in this plan);
+    extended the `enableEdgeToEdge` gate to compute bar background from the
+    active style+brightness via the same registry function (HAL's resulting
+    bytes are unchanged — still hardcoded-equivalent `0xFF050507`, always
+    dark) instead of only special-casing HAL vs. a bare default.
+  - Settings: 4-option `LabeledRadioGroup` (existing helper, already
+    supports per-option `enabled`) bound to `appStyle`; theme
+    `SingleChoiceSegmentedButtonRow` gets `enabled = !isHal` per button +
+    `.alpha(0.5f)` on the row + a caption below when HAL is selected. Added
+    `strings.xml` entries (not in the M8.2 file list, but not a guarded
+    shared file either, and the codebase has zero hardcoded UI text
+    anywhere).
+  - New `ui/theme/ThemeTest.kt` (pure JVM, no Robolectric): registry
+    dispatch, per-style accent fidelity, light/dark divergence, HAL
+    fallback, orb-color tracking.
+  - Gate green (`testDebugUnitTest assembleDebug`). Flagged but did NOT
+    touch: `realtime/SessionOrchestratorTest.assistReplay_sameTimestamp_isDeduped`
+    is flakily timing-sensitive under load (a fixed `delay(150)` margin) —
+    verified via baseline bisection that it's pre-existing and unrelated to
+    this task's diff, not something in `wake/*`/`realtime/*` (both
+    off-limits here) that this task changed.
 
 ---
 

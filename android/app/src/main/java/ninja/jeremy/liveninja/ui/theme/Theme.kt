@@ -3,6 +3,7 @@ package ninja.jeremy.liveninja.ui.theme
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
@@ -14,13 +15,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shader
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.RadialGradientShader
+import androidx.compose.ui.graphics.SolidColor
 
 // ---------------------------------------------------------------------------
-// HAL 9000 theme (03-theme spec). HAL is the default look; the colorScheme and
-// the extended [LiveNinjaColors] are selected by a style registry keyed on the
-// persisted `appStyle` setting. Only "hal9000" is populated today; the
-// ninja/minimal/terminal slots land in M8 (they follow the light/dark axis;
-// HAL pins dark regardless of the theme setting — spec §A).
+// Style registry (03-theme spec + M8.1, web/static/css/app.css [data-ln-style]
+// blocks + web/static/js/theme.js STYLE_ACCENTS). The colorScheme and the
+// extended [LiveNinjaColors] are selected by a registry keyed on the
+// persisted `appStyle` setting. HAL 9000 is the default look and pins dark
+// regardless of the theme setting (spec §A); ninja/minimal/terminal follow
+// the light/dark/system theme setting like the web's --ln-base-* tokens do.
 // ---------------------------------------------------------------------------
 
 /**
@@ -139,41 +142,312 @@ val HalColorScheme: ColorScheme = darkColorScheme(
     scrim = Color(0xFF000000),
 )
 
+// --- Shared helpers for the light/dark styles --------------------------------
+
+/** Linear channel-wise mix toward [other] by [fraction] (0 = this, 1 = other). */
+private fun Color.mix(other: Color, fraction: Float): Color = Color(
+    red = red + (other.red - red) * fraction,
+    green = green + (other.green - green) * fraction,
+    blue = blue + (other.blue - blue) * fraction,
+    alpha = alpha,
+)
+
+/**
+ * Approximates a CSS `radial-gradient(NxM at 70% -10%, top 0%, bottom 55%)`
+ * background (same construction HAL uses — spec §A bg-grad).
+ */
+private fun radialBackgroundGradient(top: Color, bottom: Color): Brush = object : ShaderBrush() {
+    override fun createShader(size: Size): Shader {
+        val maxDim = maxOf(size.width, size.height).coerceAtLeast(1f)
+        return RadialGradientShader(
+            center = Offset(size.width * 0.70f, size.height * -0.10f),
+            radius = maxDim * 1.15f,
+            colors = listOf(top, bottom),
+            colorStops = listOf(0f, 0.55f),
+        )
+    }
+}
+
+/**
+ * CSS-token-equivalent values for one (style, brightness) combination — ported
+ * from app.css's `:root`/`[data-theme="light"]` base tokens (ninja/minimal
+ * reset to these) and the `[data-ln-style="terminal"]` block. [primary] is the
+ * style's STYLE_ACCENTS accent (theme.js) in dark mode — the web overrides
+ * `--ln-teal` to that accent per zone, and dark-mode `--ln-accent-ink`
+ * resolves through `var(--ln-teal)`, so the raw accent IS the ink there. Light
+ * mode's `--ln-base-accent-ink` is a hand-tuned fixed hex in the CSS
+ * (independent of the accent picker, because the bright brand hues fail AA as
+ * text on light surfaces) — [primary] here is the same kind of AA-safe
+ * same-hue shade (ninja's #0a706b matches the CSS literal exactly; minimal's
+ * cyan and terminal's green shades are derived the same way, since the CSS
+ * only ever hand-tuned the teal case).
+ */
+private class StyleTokens(
+    val bg: Color,
+    val bgGradTop: Color,
+    val hasGradient: Boolean = true,
+    val surface: Color,
+    val surface2: Color,
+    val surfaceRaised: Color,
+    val inputBg: Color,
+    val track: Color,
+    val border: Color,
+    val borderStrong: Color,
+    val text: Color,
+    val textMuted: Color,
+    val textDim: Color,
+    val primary: Color,
+    val onPrimary: Color,
+    val success: Color,
+    val warn: Color,
+    val error: Color,
+    val errorBorder: Color,
+    val orbCoreStops: List<Pair<Float, Color>>,
+)
+
+/** Builds a full Material3 [ColorScheme] from [t] (spec §A token → M3 slot mapping). */
+private fun buildColorScheme(t: StyleTokens, isDark: Boolean): ColorScheme {
+    val containerMix = if (isDark) Color.Black else Color.White
+    val onContainerMix = if (isDark) Color.White else Color.Black
+    val primaryContainer = t.primary.mix(containerMix, 0.70f)
+    val onPrimaryContainer = t.primary.mix(onContainerMix, 0.55f)
+    val errorContainer = t.error.mix(containerMix, 0.70f)
+    val onErrorContainer = t.error.mix(onContainerMix, 0.55f)
+    val surfaceContainerHighest = t.surfaceRaised.mix(onContainerMix, 0.07f)
+    val inversePrimary = t.primary.mix(containerMix, 0.40f)
+    return if (isDark) {
+        darkColorScheme(
+            primary = t.primary, onPrimary = t.onPrimary,
+            primaryContainer = primaryContainer, onPrimaryContainer = onPrimaryContainer,
+            secondary = t.primary, onSecondary = t.onPrimary, // single brand hue per style
+            secondaryContainer = primaryContainer, onSecondaryContainer = onPrimaryContainer,
+            tertiary = t.primary, onTertiary = t.onPrimary, // no HAL-style decorative-only 2nd hue
+            tertiaryContainer = primaryContainer, onTertiaryContainer = onPrimaryContainer,
+            background = t.bg, onBackground = t.text,
+            surface = t.bg, onSurface = t.text,
+            surfaceVariant = t.surface2, onSurfaceVariant = t.textMuted,
+            surfaceTint = t.primary,
+            inverseSurface = t.text, inverseOnSurface = t.bg,
+            inversePrimary = inversePrimary,
+            outline = t.borderStrong, outlineVariant = t.border,
+            scrim = Color(0xFF000000),
+            error = t.error, onError = t.onPrimary,
+            errorContainer = errorContainer, onErrorContainer = onErrorContainer,
+            surfaceBright = t.surfaceRaised, surfaceDim = t.surface,
+            surfaceContainer = t.surfaceRaised,
+            surfaceContainerHigh = t.surface2,
+            surfaceContainerHighest = surfaceContainerHighest,
+            surfaceContainerLow = t.inputBg,
+            surfaceContainerLowest = t.bg,
+        )
+    } else {
+        lightColorScheme(
+            primary = t.primary, onPrimary = t.onPrimary,
+            primaryContainer = primaryContainer, onPrimaryContainer = onPrimaryContainer,
+            secondary = t.primary, onSecondary = t.onPrimary,
+            secondaryContainer = primaryContainer, onSecondaryContainer = onPrimaryContainer,
+            tertiary = t.primary, onTertiary = t.onPrimary,
+            tertiaryContainer = primaryContainer, onTertiaryContainer = onPrimaryContainer,
+            background = t.bg, onBackground = t.text,
+            surface = t.bg, onSurface = t.text,
+            surfaceVariant = t.surface2, onSurfaceVariant = t.textMuted,
+            surfaceTint = t.primary,
+            inverseSurface = t.text, inverseOnSurface = t.bg,
+            inversePrimary = inversePrimary,
+            outline = t.borderStrong, outlineVariant = t.border,
+            scrim = Color(0xFF000000),
+            error = t.error, onError = t.onPrimary,
+            errorContainer = errorContainer, onErrorContainer = onErrorContainer,
+            surfaceBright = t.surfaceRaised, surfaceDim = t.surface,
+            surfaceContainer = t.surfaceRaised,
+            surfaceContainerHigh = t.surface2,
+            surfaceContainerHighest = surfaceContainerHighest,
+            surfaceContainerLow = t.inputBg,
+            surfaceContainerLowest = t.bg,
+        )
+    }
+}
+
+private fun StyleTokens.toLiveNinjaColors(): LiveNinjaColors = LiveNinjaColors(
+    textDim = textDim,
+    success = success,
+    warn = warn,
+    track = track,
+    accentGlow = primary.copy(alpha = 0.30f),
+    orbAccent = primary,
+    orbCoreStops = orbCoreStops,
+    backgroundGradient = if (hasGradient) radialBackgroundGradient(bgGradTop, bg) else SolidColor(bg),
+)
+
+// --- Ninja tokens (app default; STYLE_ACCENTS.ninja = teal, same as base) ---
+
+/** Ninja's default (unstyled-orb) core gradient — app.css .ln-orb__core base radial, teal-hued. */
+private val NinjaOrbCoreStops = listOf(
+    0.00f to Color(0xFFEAFFFB),
+    0.12f to Color(0xFFB8F5EA),
+    0.30f to Color(0xFF22E0D0),
+    0.55f to Color(0xFF0C8F8C), // --ln-teal-700
+    0.80f to Color(0xFF0A2A28),
+    1.00f to Color(0xFF050B0A),
+)
+
+private val NinjaDarkTokens = StyleTokens(
+    bg = Color(0xFF060D18), bgGradTop = Color(0xFF12294A),
+    surface = Color(0xB8142642), surface2 = Color(0xD91C3254), surfaceRaised = Color(0xFF142544),
+    inputBg = Color(0xFF0F1E35), track = Color(0xFF16294A),
+    border = Color(0x297AA0CD), borderStrong = Color(0x4D7AA0CD),
+    text = Color(0xFFF4F8FB), textMuted = Color(0xFF9FB0C4), textDim = Color(0xFF8296AE),
+    primary = Color(0xFF22E0D0), onPrimary = Color(0xFF052220),
+    success = Color(0xFF34E39B), warn = Color(0xFFFFCA4A), error = Color(0xFFFF5C72),
+    errorBorder = Color(0x80FF5C72),
+    orbCoreStops = NinjaOrbCoreStops,
+)
+
+private val NinjaLightTokens = StyleTokens(
+    bg = Color(0xFFEEF3F8), bgGradTop = Color(0xFFDCE9F5),
+    surface = Color(0xD9FFFFFF), surface2 = Color(0xFFF5F9FD), surfaceRaised = Color(0xFFFFFFFF),
+    inputBg = Color(0xFFFFFFFF), track = Color(0xFFC9D6E4),
+    border = Color(0x24102A4A), borderStrong = Color(0x47102A4A),
+    text = Color(0xFF0C1A2E), textMuted = Color(0xFF3D4F66), textDim = Color(0xFF55677E),
+    primary = Color(0xFF0A706B), onPrimary = Color(0xFFFFFFFF), // literal web accent-ink (5.3:1 on bg)
+    success = Color(0xFF0A7A4F), warn = Color(0xFF7A5B00), error = Color(0xFFC81E3E),
+    errorBorder = Color(0x73C81E3E),
+    orbCoreStops = NinjaOrbCoreStops,
+)
+
+val NinjaDarkColorScheme: ColorScheme = buildColorScheme(NinjaDarkTokens, isDark = true)
+val NinjaLightColorScheme: ColorScheme = buildColorScheme(NinjaLightTokens, isDark = false)
+val NinjaDarkColors: LiveNinjaColors = NinjaDarkTokens.toLiveNinjaColors()
+val NinjaLightColors: LiveNinjaColors = NinjaLightTokens.toLiveNinjaColors()
+
+// --- Minimal tokens (STYLE_ACCENTS.minimal = cyan; same base surfaces as ninja) ---
+
+private val MinimalOrbCoreStops = listOf(
+    0.00f to Color(0xFFF2FBFF),
+    0.12f to Color(0xFFBEEAFF),
+    0.30f to Color(0xFF38D0FF),
+    0.55f to Color(0xFF0B6A8F),
+    0.80f to Color(0xFF0A2230),
+    1.00f to Color(0xFF050B10),
+)
+
+private val MinimalDarkTokens = StyleTokens(
+    bg = NinjaDarkTokens.bg, bgGradTop = NinjaDarkTokens.bgGradTop,
+    surface = NinjaDarkTokens.surface, surface2 = NinjaDarkTokens.surface2, surfaceRaised = NinjaDarkTokens.surfaceRaised,
+    inputBg = NinjaDarkTokens.inputBg, track = NinjaDarkTokens.track,
+    border = NinjaDarkTokens.border, borderStrong = NinjaDarkTokens.borderStrong,
+    text = NinjaDarkTokens.text, textMuted = NinjaDarkTokens.textMuted, textDim = NinjaDarkTokens.textDim,
+    primary = Color(0xFF38D0FF), onPrimary = Color(0xFF052220),
+    success = NinjaDarkTokens.success, warn = NinjaDarkTokens.warn, error = NinjaDarkTokens.error,
+    errorBorder = NinjaDarkTokens.errorBorder,
+    orbCoreStops = MinimalOrbCoreStops,
+)
+
+private val MinimalLightTokens = StyleTokens(
+    bg = NinjaLightTokens.bg, bgGradTop = NinjaLightTokens.bgGradTop,
+    surface = NinjaLightTokens.surface, surface2 = NinjaLightTokens.surface2, surfaceRaised = NinjaLightTokens.surfaceRaised,
+    inputBg = NinjaLightTokens.inputBg, track = NinjaLightTokens.track,
+    border = NinjaLightTokens.border, borderStrong = NinjaLightTokens.borderStrong,
+    text = NinjaLightTokens.text, textMuted = NinjaLightTokens.textMuted, textDim = NinjaLightTokens.textDim,
+    primary = Color(0xFF0A6B8F), onPrimary = Color(0xFFFFFFFF), // derived AA-safe cyan ink (5.4:1 on bg)
+    success = NinjaLightTokens.success, warn = NinjaLightTokens.warn, error = NinjaLightTokens.error,
+    errorBorder = NinjaLightTokens.errorBorder,
+    orbCoreStops = MinimalOrbCoreStops,
+)
+
+val MinimalDarkColorScheme: ColorScheme = buildColorScheme(MinimalDarkTokens, isDark = true)
+val MinimalLightColorScheme: ColorScheme = buildColorScheme(MinimalLightTokens, isDark = false)
+val MinimalDarkColors: LiveNinjaColors = MinimalDarkTokens.toLiveNinjaColors()
+val MinimalLightColors: LiveNinjaColors = MinimalLightTokens.toLiveNinjaColors()
+
+// --- Terminal tokens (STYLE_ACCENTS.terminal = green; CRT phosphor, app.css literal) ---
+
+/** Literal `[data-ln-style="terminal"]` core radial: `circle at 50% 45%, #eaffea 0%, accent 18%, #0a3a16 70%, #010401 100%`. */
+private val TerminalOrbCoreStops = listOf(
+    0.00f to Color(0xFFEAFFEA),
+    0.18f to Color(0xFF33FF66),
+    0.70f to Color(0xFF0A3A16),
+    1.00f to Color(0xFF010401),
+)
+
+private val TerminalDarkTokens = StyleTokens(
+    bg = Color(0xFF000000), bgGradTop = Color(0xFF000000), hasGradient = false, // CSS --ln-bg-grad: none
+    surface = Color(0xD9081008), surface2 = Color(0xE60C180C), surfaceRaised = Color(0xFF071007),
+    inputBg = Color(0xFF061006), track = Color(0xFF12331A),
+    border = Color(0x3850C86E), borderStrong = Color(0x6650C86E),
+    text = Color(0xFFEAFFEA), textMuted = Color(0xFF9FD8AB), textDim = Color(0xFF86BF93),
+    primary = Color(0xFF33FF66), onPrimary = Color(0xFF052220),
+    success = Color(0xFF34E39B), warn = Color(0xFFFFCA4A), error = Color(0xFFFF5C72),
+    errorBorder = Color(0x80FF5C72),
+    orbCoreStops = TerminalOrbCoreStops,
+)
+
+/**
+ * app.css never gives terminal a light variant (its block is unconditional,
+ * pinned dark like HAL) — M8.1 pins terminal to the light/dark AXIS regardless
+ * (android-revamp-plan.md M8.1), so this reuses ninja/minimal's light base
+ * surfaces (the only light palette the design system defines) with terminal's
+ * own AA-safe green ink, same derivation as minimal's cyan ink above.
+ */
+private val TerminalLightTokens = StyleTokens(
+    bg = NinjaLightTokens.bg, bgGradTop = NinjaLightTokens.bgGradTop, hasGradient = false,
+    surface = NinjaLightTokens.surface, surface2 = NinjaLightTokens.surface2, surfaceRaised = NinjaLightTokens.surfaceRaised,
+    inputBg = NinjaLightTokens.inputBg, track = NinjaLightTokens.track,
+    border = NinjaLightTokens.border, borderStrong = NinjaLightTokens.borderStrong,
+    text = NinjaLightTokens.text, textMuted = NinjaLightTokens.textMuted, textDim = NinjaLightTokens.textDim,
+    primary = Color(0xFF0A7038), onPrimary = Color(0xFFFFFFFF), // derived AA-safe green ink (5.6:1 on bg)
+    success = NinjaLightTokens.success, warn = NinjaLightTokens.warn, error = NinjaLightTokens.error,
+    errorBorder = NinjaLightTokens.errorBorder,
+    orbCoreStops = TerminalOrbCoreStops,
+)
+
+val TerminalDarkColorScheme: ColorScheme = buildColorScheme(TerminalDarkTokens, isDark = true)
+val TerminalLightColorScheme: ColorScheme = buildColorScheme(TerminalLightTokens, isDark = false)
+val TerminalDarkColors: LiveNinjaColors = TerminalDarkTokens.toLiveNinjaColors()
+val TerminalLightColors: LiveNinjaColors = TerminalLightTokens.toLiveNinjaColors()
+
 // --- Style registry ---------------------------------------------------------
 
 /**
- * Material color scheme for [appStyle]. Only "hal9000" is populated today; the
- * ninja/minimal/terminal styles fall back to HAL until M8 ports their token
- * sets from web/static/css/app.css.
+ * Material color scheme for [appStyle] at the given brightness. HAL ignores
+ * [darkTheme] (always dark — spec §A); ninja/minimal/terminal honor it.
+ * Unrecognized styles fall back to HAL.
  */
-fun liveNinjaColorScheme(appStyle: String): ColorScheme = when (appStyle) {
+fun liveNinjaColorScheme(appStyle: String, darkTheme: Boolean): ColorScheme = when (appStyle) {
     "hal9000" -> HalColorScheme
+    "ninja" -> if (darkTheme) NinjaDarkColorScheme else NinjaLightColorScheme
+    "minimal" -> if (darkTheme) MinimalDarkColorScheme else MinimalLightColorScheme
+    "terminal" -> if (darkTheme) TerminalDarkColorScheme else TerminalLightColorScheme
     else -> HalColorScheme
 }
 
-/** Extended (non-Material) colors for [appStyle]. */
-fun liveNinjaColors(appStyle: String): LiveNinjaColors = when (appStyle) {
+/** Extended (non-Material) colors for [appStyle] at the given brightness. */
+fun liveNinjaColors(appStyle: String, darkTheme: Boolean): LiveNinjaColors = when (appStyle) {
     "hal9000" -> HalLiveNinjaColors
+    "ninja" -> if (darkTheme) NinjaDarkColors else NinjaLightColors
+    "minimal" -> if (darkTheme) MinimalDarkColors else MinimalLightColors
+    "terminal" -> if (darkTheme) TerminalDarkColors else TerminalLightColors
     else -> HalLiveNinjaColors
 }
 
 /**
  * @param appStyle persisted style key (SettingsStore.appStyle). Defaults to
  *   "hal9000" so HAL renders without any change at the call site.
- * @param darkTheme retained for the future light/dark styles; ignored under HAL
- *   (HAL pins dark).
+ * @param darkTheme the resolved light/dark/system theme setting. Ignored under
+ *   HAL, which always pins dark (spec §A); honored by ninja/minimal/terminal.
  * @param dynamicColor retained for API compatibility; ignored under HAL
  *   (dynamicColor=false when HAL active — spec §A).
  */
 @Composable
 fun LiveNinjaTheme(
     appStyle: String = "hal9000",
-    @Suppress("UNUSED_PARAMETER") darkTheme: Boolean = true,
+    darkTheme: Boolean = true,
     @Suppress("UNUSED_PARAMETER") dynamicColor: Boolean = false,
     content: @Composable () -> Unit,
 ) {
-    val colorScheme = liveNinjaColorScheme(appStyle)
-    val extended = liveNinjaColors(appStyle)
+    val effectiveDark = if (appStyle == "hal9000") true else darkTheme
+    val colorScheme = liveNinjaColorScheme(appStyle, effectiveDark)
+    val extended = liveNinjaColors(appStyle, effectiveDark)
     CompositionLocalProvider(LocalLiveNinjaColors provides extended) {
         MaterialTheme(
             colorScheme = colorScheme,
