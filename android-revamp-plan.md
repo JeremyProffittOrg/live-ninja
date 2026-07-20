@@ -167,7 +167,7 @@ _(placeholder)_
 
 ---
 
-## M8 — Style picker + voice polish (post-ship) `[ ]`
+## M8 — Style picker + voice polish (post-ship) `[x]` (commits 54be833 + 00f86fb + 23dbd17 — all five tasks done, nothing cut; orchestrator tests made deterministic)
 
 **Two agents may parallelize (disjoint: M8.1/M8.2 theme-side vs M8.3/M8.5 voice-side; M8.4 sequenced last for build.gradle.kts).** **DoD:** 4-style picker working per web semantics; latency and reliability polish landed; gates green; pushed.
 
@@ -267,7 +267,7 @@ _(placeholder — M8.3/M8.5 voice-side)_
 
 ---
 
-## M9 — Optional reship v2 `[ ]`
+## M9 — Optional reship v2 `[x]` (v0.2.1-hal shipped ~10:55 ET: CI run 29748981891, liveninja-1f1ae7e.apk verified 200, final email sent)
 
 - `[ ]` **M9.1** (Sonnet) If M8 lands before EOD: re-dispatch `android-release.yml`, verify link, note in EOD email. *Deps:* M8. Skip cleanly if time runs out — v1 already shipped.
 
@@ -276,7 +276,7 @@ _(placeholder)_
 
 ---
 
-## M10 — End-of-day wrap `[ ]`
+## M10 — End-of-day wrap `[x]` (final email sent; memories written: android-revamp-2026-07-20, owner-phone-samsung, machine-android-build-env; screenshots delivered in chat)
 
 **DoD:** owner has final summary email; repo memory current; all plan statuses finalized.
 
