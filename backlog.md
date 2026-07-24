@@ -12,7 +12,34 @@ should be picked up as "next" without that decision being made explicitly.
 - **Nova Sonic's empty tool/persona config.** A real defect, explicitly ruled out of scope for the M18–M20 tool-parity work. Only matters if Nova is ever re-enabled. ⟵ archive/tool-parity-plan.md §0
 - **Speed / Energy / Register voice knobs.** Proposed to the owner, never picked. ⟵ archive/plan.md §8 M14 item 11b
 
-## Tab5 / firmware
+## Tab5 / M5Stack — whole surface removed from the plan (owner, 2026-07-24)
+
+The Tab5 is **out of scope as scheduled work**. The shipped firmware still functions (HIL-verified
+multi-turn voice loop, "Hi Lily" wake word, WSS direct to OpenAI), and the backend serves it
+unchanged — but nothing below is planned. Promote items back into `plan.md` only if the surface is
+picked up again. Full history: [archive/plan.md](archive/plan.md) M5 + §8 M5 notes.
+
+- **`ProvisionIoT` is an empty hook** — `internal/auth/device.go`. The IoT identity leg (Fleet Provisioning by Claiming Certificate, on-chip keypair X.509, 10-yr lineage, per-device topic policy `${iot:Connection.Thing.ThingName}`, `IOT_DATA_ENDPOINT`) has never been exercised end to end. This was the project's **one genuinely unimplemented stub**; it is unimplemented by choice now. The `DELETE /devices/{id}` revoke path (detach + delete cert/Thing) is likewise written but unproven. ⟵ archive/plan.md M5 / §8 M14 item 12
+- **Tab5 hardware pairing e2e** — on-screen user code → confirm page → PKCE claim → 10-yr refresh. Blocked by the hook above. ⟵ docs/qa-report.md Surface 1
+- **CSRF middleware route exemption** for the device-pairing confirm page's no-JS native POST (the inline progressive-enhancement fetch covers the JS case today). ⟵ archive/plan.md §8 M7
+- **Shadow `ln-` prefix collapse** — lower security-review finding, was queued for M8 cleanup. ⟵ archive/plan.md §8 M7
+- **OTA never exercised** — A/B partitions, IoT-Jobs canary → fleet, mark-valid-after-check-in, rollback-on-fail: all implemented, never run.
+- **Security hardening never enabled** — flash encryption + Secure Boot v2 + NVS encryption were deferred through the entire build. **Do this before the device ever leaves the bench.**
+- **HIL rig never wired to CI** — PlatformIO flash + serial/telemetry MQTT assert exists as scaffolding only.
+- **`device_control` smoke step** — "reboot the terminal" → `device_control` with `action:reboot` was step 3 of the post-M19 tool-manifest smoke; unverifiable without a Tab5. ⟵ archive/tool-parity-plan.md §Verification
+- **Live voice round-trip capture from the Tab5** into the shared transcript sink (parity with web/Android) — unverified. ⟵ docs/qa-report.md
+- **Owner eyeball of the reworked LCD screens** — onboarding slide-outs, WiFi list-select, subnet picker, QR at bottom, conversation-fills-screen layout: all flashed and serial-verified, never visually reviewed.
+- **Gemini path on firmware is HIL-unverified** (committed `968d373`). ⟵ archive/gemini-plan.md §10
+- **Fleet registry row** — reconcile the Tab5 in `c:\dev\fleet\esp32.md` (eFuse MAC `30:ED:A0:E3:01:1E`, last seen COM58). House rule, still worth doing if the board is touched.
+- **Watch item:** one `sdio_rx_get_buffer` assert on esp-hosted slave v1.4.7 during a rapid mint-retry storm; next lever is SDIO RX buffer tuning. Only matters if the device is used again.
+
+**If this surface is ever resumed, two build gotchas that cost real time:** `set "MSYSTEM="` before
+`export.bat` and set `IDF_PYTHON_ENV_PATH` (export otherwise picks a Python 3.14 env that isn't
+installed); open Espressif native-USB consoles with **DTR=RTS deasserted**, or the chip straps into
+silent download mode on reset and looks bricked. Flash recipe and the P4/C6 esp-hosted slave-OTA
+rule live in `c:\dev\fleet\esp32.md`.
+
+### Tab5 technical debt (was already backlog before the surface was dropped)
 
 - **On-device tool invocation.** The firmware has *no* tool-invoke plumbing on any engine — OpenAI `function_call`s are ignored by design, and Gemini `functionCall`s get an immediate `{"error":"tool execution is not available on this device"}` response so turns never stall. Full on-device invocation is a deliberate future item. ⟵ archive/gemini-plan.md §10 · archive/tool-parity-plan.md §0
 - **Uplink shedding during playback.** 20–50 KB bursts of mic audio are dropped while downlink audio plays (SDIO/WiFi full-duplex ceiling). Options: pace/trim uplink during SPEAKING (barge-in only needs VAD-grade audio), or tune esp-hosted buffers. Non-blocking. ⟵ archive/plan.md §8

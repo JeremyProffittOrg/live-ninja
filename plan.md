@@ -26,14 +26,19 @@ verification checklist), [SETUP.md](SETUP.md) (one-time owner setup checklist).
 
 The platform is **built and deployed to production**. M0–M13 are code-complete and live at
 `live.jeremy.ninja`; the QA campaign found **0 blockers and 0 functional bugs** across 8 surfaces.
-The Android app shipped as v0.2.1-hal, the Tab5 firmware has a HIL-verified multi-turn voice loop,
-and the tool manifest is single-sourced.
+The Android app shipped as v0.2.1-hal and the tool manifest is single-sourced.
+
+> **Scope decision (2026-07-24): the M5Stack Tab5 surface is OUT of this plan.** All Tab5 /
+> firmware / IoT-provisioning work — including the `ProvisionIoT` hook, device pairing, OTA,
+> Secure Boot, and the HIL rig — moved to [backlog.md](backlog.md). The shipped firmware still
+> works (HIL-verified multi-turn voice loop); it is simply not scheduled work. Active surfaces
+> are **web** and **Android**.
 
 What is left divides cleanly into four buckets — the workstreams below:
 
 - **WS-1 Verification** — human/mic/hardware-gated checks that no agent can run. Mostly owner work.
 - **WS-2 Base Knowledge (M15–M17)** — the only large greenfield build left. Authored, unstarted.
-- **WS-3 Unfinished platform work** — the real code gaps (`ProvisionIoT`, wake-word training run, Tab5 hardening).
+- **WS-3 Unfinished platform work** — the real code gaps (wake-word training run, deferred cleanup findings).
 - **WS-4 Launch (M8)** — distribution, runbook, go/no-go.
 
 WS-2 and WS-3 are independent and can run in parallel. WS-1 gates WS-4.
@@ -46,7 +51,7 @@ WS-2 and WS-3 are independent and can run in parallel. WS-1 gates WS-4.
 archived plans is either confirmed working or converted into a bug with a repro.
 
 > These cannot be automated: the agent profile has **no microphone** (hard block, hit repeatedly
-> across M12/M13/M19 verification) and the Tab5/phone are physically at the owner's desk.
+> across M12/M13/M19 verification) and the phone is physically at the owner's desk.
 
 ### 1.1 Live voice loop — web  `[ ]` (owner)
 ⟵ archive/plan.md §8 M14 item 12 · docs/qa-report.md "Live voice / microphone"
@@ -63,15 +68,15 @@ archived plans is either confirmed working or converted into a bug with a repro.
 ⟵ archive/gemini-plan.md §4 Phase E · exact 6-step script in that file's §10 "Phase E status"
 - `[!]` **E1 cross-engine parity:** pin one device to `gemini-flash-live`, one to `openai-realtime` — transcripts land in the same sink with correct `engine` tags, tools invoke identically, topics/memory extraction runs, cost priced at Gemini rates, barge-in cuts playback, persona switch changes the Gemini voice per the D4b mapping, user `geminiVoice` overrides it.
 - `[!]` **E2 lifecycle:** a >10-min session survives the `goAway` recycle via resumption handle; a >30-min session re-fetches a fresh token and resumes; the quota gate still fires pre-mint.
-  Notes: Android `GeminiLiveTransport` was compile-unverified when written — the later v0.2.1-hal build compiled it, so that gate is satisfied; the **firmware** Gemini path remains HIL-unverified.
+  Notes: Android `GeminiLiveTransport` was compile-unverified when written — the later v0.2.1-hal build compiled it, so that gate is satisfied.
 
 ### 1.3 Tool-manifest live smoke (post-M19)  `[ ]` (owner)
 ⟵ archive/tool-parity-plan.md §Verification
 - `[ ]` "Set a timer for 20 minutes" → fires; no `invalid_args` in the `LOG#` audit rows.
 - `[ ]` "Set a timer for 3 days" → model hands off to `set_reminder` (one `invalid_args` row naming `set_reminder`, then a successful `set_reminder`, is the healthy shape).
 - `[ ]` "What's the weather in London in celsius" → `units:metric` actually requested.
-- `[ ]` "Reboot the terminal" → `device_control` with `action:reboot`.
 - `[ ]` "What notes do I have tagged work" → tag filter used; "read me my recent notes" with no query succeeds.
+  (The `device_control` / "reboot the terminal" step from the original smoke needs a Tab5 — moved to `backlog.md`.)
 - `[ ]` Repeat the first two on a `gemini-flash-live`-pinned device.
 
 ### 1.4 Authed web surfaces  `[ ]` (owner or owner-assisted browser session)
@@ -85,12 +90,10 @@ archived plans is either confirmed working or converted into a bug with a repro.
 - `[ ]` `/conversation` authed runtime: drawer focus-trap/Escape, mic-sens chips live-apply, persona `<select>` populated, transcript streams, cost badge on session start.
 - `[ ]` Settings **drawer** opened and exercised in a real browser — the drawer relocation was only ever statically screenshotted, never hydrated live (`initSettingsPanel`). ⟵ archive/plan.md §8 Task #8 Request 3
 
-### 1.5 Device / hardware  `[ ]` (owner, at the device)
+### 1.5 Android device  `[ ]` (owner, on the phone)
 ⟵ docs/qa-report.md "Device / hardware" · archive/plan.md §8
-- `[ ]` Tab5 hardware pairing e2e: on-screen user-code → typed into the confirm page → PKCE claim yields the 10-yr refresh. **Blocked by 3.1 below** (`ProvisionIoT` is an empty hook).
-- `[ ]` Live voice round-trip capture on Android and Tab5 — confirm their transcript sink feeds user turns identically to web.
+- `[ ]` Live voice round-trip capture on Android — confirm its transcript sink feeds user turns identically to web.
 - `[ ]` PWA install + offline: install prompt / add-to-homescreen / real offline navigation fallback on a device.
-- `[ ]` Owner eyeball of the reworked Tab5 LCD screens (onboarding slide-outs, WiFi list-select, subnet picker, QR at bottom, conversation-fills-screen layout).
 - `[ ]` Android wake / lock-screen paths on real hardware (shipped untested; first-run checklist was in the v0.2.1-hal email).
 - `[ ]` Android FRR/FAR wake-engine corpus harness gated in CI + on-device instrumented runs. **M4 DoD gap.** (S)
 
@@ -124,7 +127,7 @@ good RCAs. Estimated: M15 one focused session, M17 one session, M16 rides along.
 
 ### M15 — Base Knowledge Layer  `[ ]`
 
-**Definition of Done:** every minted session (web, Android, Tab5, fallback turns) carries a
+**Definition of Done:** every minted session (web, Android, fallback turns) carries a
 server-built BASE KNOWLEDGE block — identity, home location, local date/time, timezone, units,
 contact email; the weather tool works with **no location argument** (profile default, straight to
 coordinates, no geocode leg) and correctly resolves "City, ST" when a location *is* given; the
@@ -137,8 +140,6 @@ profile is owner-editable in the web Settings drawer and versioned like the rest
 - `[ ]` **S** — **Settings UI "About you"** (`conversation.html` + `settings.mjs`): name, pronouns, home/work location (typeahead against the Open-Meteo geocoder — **selection only** per house UI rules; ZIP accepted; saves resolved lat/lon+timezone, shows the resolved label back), units toggle, notes list. Server PUT validates via schema.
 - `[ ]` **S** — **Bootstrap from memory:** one-time assisted seed — "Suggest my profile" runs `memory_search` for home/work/name facts and pre-fills the form for confirmation (never silently copies memory → profile).
 - `[ ]` **H** — `contracts/api.md` + `settings.schema.json` docs; plan notes.
-
-**Explicitly not in M15:** putting the profile on-device for the Tab5 (it mints through the same broker).
 
 ### M16 — Knowledge Refinement Loop  `[ ]`
 
@@ -165,60 +166,42 @@ Full architecture diagram in [archive/base-knowledge-plan.md](archive/base-knowl
 - `[ ]` **S** — Report email formatting + `RCA#` persistence + dedupe/cooldown/cap logic (caps are the cost story: worst case 10 Opus calls/day ≈ low single-digit dollars/month; normal case ≈ pennies).
 - `[ ]` **H** — **Owner manual step:** enable Anthropic Claude Opus model access in Bedrock `us-east-1` (same console flow as the Nova Sonic request). If denied/slow: hold RCA disabled rather than shipping a weaker analyst — never downgrade.
 - `[ ]` **S** — Tests: fake Bedrock + fake SES; dedupe window; cap; a golden RCA prompt snapshot test so context-gathering regressions are visible in review.
-- `[ ]` **F** — Phase 2 (after server RCA proves out): web `toolerror` path and Tab5 `ln_rt` fatal errors POST a lightweight `/api/v1/rca/client-event` breadcrumb onto the same queue — catches failures that never reach the tool router.
+- `[ ]` **F** — Phase 2 (after server RCA proves out): the web `toolerror` path POSTs a lightweight `/api/v1/rca/client-event` breadcrumb onto the same queue — catches failures that never reach the tool router.
 
 ---
 
 ## WS-3 — Unfinished platform work
 
-### 3.1 `ProvisionIoT` — the one true unimplemented stub  `[ ]` **O**
-⟵ archive/plan.md M5 / §8 M14 item 12 · qa-report Surface 1
-`internal/auth/device.go`'s `ProvisionIoT` hook var is still an **empty hook**. The IoT identity
-leg (Thing + on-chip-keypair X.509 cert, 10-yr lineage) has never been exercised end to end, which
-also blocks the Tab5 pairing verification in 1.5.
-- `[ ]` Fill in the provisioning leg: Fleet Provisioning by Claiming Certificate, per-device topic policy (`${iot:Connection.Thing.ThingName}`), `IOT_DATA_ENDPOINT` wired, claim-cert path proven.
-- `[ ]` Revoke path: `DELETE /devices/{id}` detaches + deletes the IoT cert/Thing (code exists, unproven).
-
-### 3.2 Wake-word training: complete one full run  `[~]`
+### 3.1 Wake-word training: complete one full run  `[~]`
 ⟵ archive/plan.md §8 line 667 (M6) · archive/android-revamp-plan.md M11.1
 A full **train → model → hot-swap** run has never completed. The owner kicked off "Hey Live Ninja"
 training on 2026-07-20 from their phone; Android `ModelManager.sync` fetches + hot-swaps on
 completion (zero Android code needed). Do **not** relabel to "Hey Jarvis" (owner decision).
 - `[~]` Confirm the 2026-07-20 training job finished and produced per-platform models in S3 (SHA-256 pinned).
-- `[ ]` Verify hot-swap on web + Android (SHA verify + live swap); Tab5 keeps the curated WakeNet set (`wn9_hilili_tts` "Hi Lily" is the shipped default).
+- `[ ]` Verify hot-swap on web + Android (SHA verify + live swap).
 - `[ ]` Until then the Android wake word is **inert** (packaged model is `hey_jarvis`) — say so in any user-facing note.
 
-### 3.3 Tab5 firmware remainder  `[ ]`
-⟵ archive/plan.md M5 DoD · §8 M5 notes
-- `[ ]` **F** — OTA exercise: A/B partitions, IoT-Jobs canary → fleet, mark-valid-after-check-in, rollback-on-fail (implemented, never run).
-- `[ ]` **O** — Security hardening: flash encryption + Secure Boot v2 + NVS encryption (deferred through the whole build; do this before the device leaves the bench).
-- `[ ]` **S** — HIL rig scaffolding in CI (PlatformIO flash + serial/telemetry MQTT assert) — scaffolded, never wired to CI.
-- `[ ]` **H** — Reconcile the Tab5 row in `c:\dev\fleet\esp32.md` (eFuse MAC `30:ED:A0:E3:01:1E`, last COM58) — house fleet rule.
-- `[ ]` **H** — Watch for a recurrence of the `sdio_rx_get_buffer` assert seen once on slave v1.4.7 during a rapid mint-retry storm; next lever is esp-hosted SDIO RX buffer tuning. Escalate only if it recurs in normal operation.
-
-### 3.4 Deferred security/cleanup findings  `[ ]`
+### 3.2 Deferred security/cleanup findings  `[ ]`
 ⟵ archive/plan.md §8 M7 "Lower findings ... noted for M8 cleanup"
 - `[ ]` **S** — Idempotency-before-execute ordering in the tool router.
-- `[ ]` **S** — Shadow `ln-` prefix collapse.
-- `[ ]` **S** — CSRF middleware route exemption for the device-pairing confirm page's no-JS native POST (progressive-enhancement fetch covers the JS case today; the exemption is the proper fix).
 - `[ ]` **H** — `scripts/gen-icons/main.go` still emits the old teal icon design (dev-only; the HAL-eye PNGs are committed).
 
-### 3.5 Owner decision needed  `[ ]`
+### 3.3 Owner decision needed  `[ ]`
 - `[ ]` Add `proffitt.jeremy+qa@gmail.com` to the allowlist for two-account QA? (A QA password was pasted in-transcript on 2026-07-18 — **rotate it**. Clean path: owner signs the QA account into a separate Chrome profile once, then an agent can drive it; agents never type credentials.) ⟵ archive/plan.md §8 M14 item 11
 
 ---
 
 ## WS-4 — M8 Launch  `[ ]`
 
-**Definition of Done:** SES production access granted; Cost Allocation Tags confirmed active; all
-three surfaces pass end-to-end smoke on production; distribution channels live; budgets confirmed
+**Definition of Done:** SES production access granted; Cost Allocation Tags confirmed active; the
+web and Android surfaces pass end-to-end smoke on production; distribution channels live; budgets confirmed
 emailing (**no CloudWatch alerts — owner decision 2026-07-19; alarms stay removed**); runbook +
 `/v1` long-horizon compatibility commitment documented.
 
 - `[x]` **H** — SES production access + DKIM `@jeremy.ninja`, bounce/complaint SNS suppression wired (owner confirmed 2026-07-18).
 - `[x]` **H** — `Project`/`CostCenter` Cost Allocation Tags active; budgets alerting (activated at M0 via CLI).
-- `[ ]` **S** — Production end-to-end smoke: web voice turn, Android wake → WebRTC turn + tool call, Tab5 wake → direct WSS turn + barge-in. **Gated on WS-1.**
-- `[ ]` **S** — Distribution: web live ✅; **Android signed release APK** (release keystore `C:\dev\live-ninja-keys\release.keystore`, alias `liveninja`, held by owner) + `.well-known/assetlinks.json` + `GET /v1/app/android/latest` updater + **Google Play listing** (Play signing, data-safety); Tab5 firmware release channel + fleet provisioning claim enabled.
+- `[ ]` **S** — Production end-to-end smoke: web voice turn, Android wake → WebRTC turn + tool call. **Gated on WS-1.**
+- `[ ]` **S** — Distribution: web live ✅; **Android signed release APK** (release keystore `C:\dev\live-ninja-keys\release.keystore`, alias `liveninja`, held by owner) + `.well-known/assetlinks.json` + `GET /v1/app/android/latest` updater + **Google Play listing** (Play signing, data-safety).
 - `[ ]` **H** — Runbook + on-call: alarm→action mapping, credential-rotation steps (re-put SSM), device kill-switch, `/v1` compatibility-lifetime commitment.
 - `[ ]` **O** — Launch go/no-go review against every risk table; sign off residual-risk acceptances.
 
@@ -242,7 +225,5 @@ emailing (**no CloudWatch alerts — owner decision 2026-07-19; alarms stay remo
 - **Never put a query string on a ConvID path route** (`<ts>#<sid>`): the CloudFront/API-GW/LWA chain treats the decoded `#` as a fragment and silently drops everything after it. Local Fiber tests pass either way.
 - **Gradle on this machine:** `java -cp gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain` — the `cmd //c gradlew.bat` route silently fails under git-bash. `JAVA_HOME` is stale; the real JDK is `C:/Users/Jeremy/jdk-temurin17/jdk-17.0.19+10`.
 - **Never blanket `taskkill //IM <interpreter>`** — killing all `python.exe` once took down the `windows-mcp` server mid-session. Target the PID.
-- **ESP-IDF:** `set "MSYSTEM="` before `export.bat`, and set `IDF_PYTHON_ENV_PATH` (export picks a Python 3.14 env that isn't installed).
-- **Espressif native-USB consoles:** open with DTR=RTS deasserted, or the chip straps into silent download mode on reset and looks bricked.
-- **Broker mint slots:** 3 concurrent sessions, ~10-min TTL. Burned slots make device retests wait — budget for it.
+- **Broker mint slots:** 3 concurrent sessions, ~10-min TTL. Burned slots make retests wait — budget for it.
 - **GitHub "cancelled" runs** = queue replacement by a newer push, not a failure.
