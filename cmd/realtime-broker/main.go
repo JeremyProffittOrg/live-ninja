@@ -52,6 +52,7 @@ import (
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
 	"github.com/JeremyProffittOrg/live-ninja/internal/observ"
 	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
+	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	"github.com/JeremyProffittOrg/live-ninja/internal/voiceengine"
 )
 
@@ -180,8 +181,8 @@ var validSurfaces = map[string]bool{
 // an interface so tests can fake the OpenAI legs without HTTP.
 // *realtime.FallbackClient is the production implementation.
 type fallbackAPI interface {
-	Turn(ctx context.Context, personaID, text string) (string, error)
-	TurnWithTools(ctx context.Context, personaID string, messages []realtime.ChatMessage) (*realtime.TurnResult, error)
+	Turn(ctx context.Context, personaID, text, extraSystem string) (string, error)
+	TurnWithTools(ctx context.Context, personaID string, messages []realtime.ChatMessage, extraSystem string) (*realtime.TurnResult, error)
 	Transcribe(ctx context.Context, audio []byte, filename, contentType string) (string, error)
 	Speak(ctx context.Context, text, voice string) ([]byte, error)
 	ExtractTopics(ctx context.Context, transcript string, existing []realtime.TopicOption) (*realtime.ExtractResult, error)
@@ -343,6 +344,14 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 	voice := sv.Voice
 	accentDirective := realtime.AccentDirective(sv.AccentID)
 
+	// Base Knowledge block (M15): the stable facts about this user — name,
+	// home coordinates, local date/time, units — rendered server-side and
+	// appended to every session. One projected GetItem, same lenient posture
+	// as the voice read: an empty or unreadable profile yields "" and mints
+	// exactly as it did pre-M15.
+	baseKnowledge := realtime.BuildBaseKnowledge(
+		store.LoadProfile(ctx, b.settings, b.table, req.UserID), time.Now())
+
 	// Guide Entity injection (FR-MEM-07): append the user's enabled guides
 	// to the persona instructions, priority order. Best-effort — a guide
 	// read failure is logged but must not take voice down with it.
@@ -355,7 +364,7 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 	}
 
 	start := time.Now()
-	res, err := b.minter.Mint(ctx, req.Persona, voice, req.MicEagerness, accentDirective+guideSuffix)
+	res, err := b.minter.Mint(ctx, req.Persona, voice, req.MicEagerness, baseKnowledge+accentDirective+guideSuffix)
 	observ.EmitMetric(metricsNamespace, "EphemeralTokenMintLatency",
 		float64(time.Since(start).Milliseconds()), "Milliseconds",
 		map[string]string{"Surface": req.Surface})
@@ -473,6 +482,8 @@ func (b *broker) handleGeminiDirect(ctx context.Context, l *slog.Logger, req Req
 	// and composes into the instructions identically.
 	gv := realtime.ResolveSessionGeminiVoice(ctx, b.settings, b.table, req.UserID, req.Persona)
 	accentDirective := realtime.AccentDirective(gv.AccentID)
+	baseKnowledge := realtime.BuildBaseKnowledge(
+		store.LoadProfile(ctx, b.settings, b.table, req.UserID), time.Now())
 
 	guideSuffix := ""
 	if guides, gerr := realtime.LoadEnabledGuides(ctx, b.ddb, b.table, req.UserID); gerr != nil {
@@ -482,7 +493,7 @@ func (b *broker) handleGeminiDirect(ctx context.Context, l *slog.Logger, req Req
 		guideSuffix = realtime.GuideInstructions(guides)
 	}
 	persona := realtime.ResolvePersona(req.Persona)
-	instructions := persona.Instructions + realtime.SessionDirectives + accentDirective + guideSuffix
+	instructions := persona.Instructions + realtime.SessionDirectives + baseKnowledge + accentDirective + guideSuffix
 
 	start := time.Now()
 	res, err := b.geminiMint.Mint(ctx, gv.Voice, instructions)
@@ -542,11 +553,18 @@ func (b *broker) handleFallbackTurn(ctx context.Context, l *slog.Logger, req Req
 		return resp
 	}
 
+	// A degraded turn gets the same server-composed knowledge a realtime
+	// session would (M15): without this, "what's the weather" works by voice
+	// and fails in the text fallback, which is a worse bug than the outage
+	// that triggered the fallback.
+	extraSystem := realtime.SessionDirectives + realtime.BuildBaseKnowledge(
+		store.LoadProfile(ctx, b.settings, b.table, req.UserID), time.Now())
+
 	// Tool-capable turn: same tool catalog realtime sessions get; the
 	// model's tool_calls are returned verbatim for the WEB function to
 	// execute (this function has no tool-side IAM, by design).
 	if len(p.Messages) > 0 {
-		res, err := b.fallback.TurnWithTools(ctx, req.Persona, p.Messages)
+		res, err := b.fallback.TurnWithTools(ctx, req.Persona, p.Messages, extraSystem)
 		if err != nil {
 			return b.fallbackError(l, req, "turn", err)
 		}
@@ -554,7 +572,7 @@ func (b *broker) handleFallbackTurn(ctx context.Context, l *slog.Logger, req Req
 		return Response{Text: res.Text, ToolCalls: res.ToolCalls}
 	}
 
-	text, err := b.fallback.Turn(ctx, req.Persona, p.Text)
+	text, err := b.fallback.Turn(ctx, req.Persona, p.Text, extraSystem)
 	if err != nil {
 		return b.fallbackError(l, req, "turn", err)
 	}

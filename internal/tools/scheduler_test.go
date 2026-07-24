@@ -9,6 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 )
 
 // capturingScheduler is a minimal SchedulerAPI fake that records every
@@ -55,10 +57,10 @@ func schedulerTestDeps(fixedNow time.Time) (*Deps, *capturingScheduler) {
 func TestResolveFireTimeSecondsAliasMatchesInSeconds(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 
-	viaInSeconds, err := resolveFireTime(now, map[string]any{"inSeconds": 3600})
+	viaInSeconds, err := resolveFireTime(now, map[string]any{"inSeconds": 3600}, time.UTC)
 	require.Nil(t, err)
 
-	viaSeconds, err := resolveFireTime(now, map[string]any{"seconds": 3600})
+	viaSeconds, err := resolveFireTime(now, map[string]any{"seconds": 3600}, time.UTC)
 	require.Nil(t, err)
 
 	assert.Equal(t, viaInSeconds, viaSeconds, "inSeconds and seconds must resolve to an identical fire time")
@@ -199,4 +201,62 @@ func TestSetReminderStillAllowsBeyondTimerCap(t *testing.T) {
 	inv.IdempotencyKey = "k1"
 	res := r.Invoke(context.Background(), inv)
 	require.True(t, res.OK, "set_reminder must still serve durations beyond set_timer's 24h cap: %+v", res.Error)
+}
+
+// M15: the model now knows the local clock from its base knowledge, so it
+// emits naive local datetimes ("2026-07-25T09:00:00") far more often than
+// correctly-offset RFC3339. Before this those were a hard invalid_args.
+func TestResolveFireTimeAcceptsNaiveLocalDatetime(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC) // 08:00 EDT
+
+	cases := []struct {
+		name string
+		at   string
+	}{
+		{"seconds precision", "2026-07-25T09:00:00"},
+		{"minute precision", "2026-07-25T09:00"},
+		{"space separator", "2026-07-25 09:00"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, terr := resolveFireTime(now, map[string]any{"at": tc.at}, ny)
+			require.Nil(t, terr)
+			// 9am Eastern is 13:00 UTC — the point of the whole exercise.
+			assert.Equal(t, time.Date(2026, 7, 25, 13, 0, 0, 0, time.UTC), got.UTC())
+		})
+	}
+}
+
+// An explicit offset still wins: a naive parse must never reinterpret a time
+// the caller already pinned to a zone.
+func TestResolveFireTimeOffsetTimeIsUnchanged(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+
+	got, terr := resolveFireTime(now, map[string]any{"at": "2026-07-25T09:00:00-07:00"}, ny)
+	require.Nil(t, terr)
+	assert.Equal(t, time.Date(2026, 7, 25, 16, 0, 0, 0, time.UTC), got.UTC())
+}
+
+func TestResolveFireTimeStillRejectsGarbage(t *testing.T) {
+	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	_, terr := resolveFireTime(now, map[string]any{"at": "next tuesday-ish"}, time.UTC)
+	require.NotNil(t, terr)
+	assert.Equal(t, CodeInvalidArgs, terr.Code)
+}
+
+// schedulerLocation degrades to UTC rather than failing when the profile
+// carries no timezone or a stale one.
+func TestSchedulerLocationDegrades(t *testing.T) {
+	assert.Equal(t, time.UTC, schedulerLocation(store.Profile{}))
+	assert.Equal(t, time.UTC, schedulerLocation(store.Profile{
+		HomeLocation: &store.Location{Label: "x", Lat: 1, Lon: 2, Timezone: "Mars/Olympus_Mons"},
+	}))
+	loc := schedulerLocation(store.Profile{
+		HomeLocation: &store.Location{Label: "x", Lat: 1, Lon: 2, Timezone: "America/New_York"},
+	})
+	assert.Equal(t, "America/New_York", loc.String())
 }

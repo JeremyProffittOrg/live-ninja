@@ -13,6 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/scheduler"
 	schedulertypes "github.com/aws/aws-sdk-go-v2/service/scheduler/types"
+
+	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 )
 
 // set_timer / set_reminder create a one-shot EventBridge Scheduler
@@ -112,7 +114,12 @@ func handleSchedule(ctx context.Context, deps *Deps, inv Invocation, args map[st
 	}
 
 	now := deps.Now().UTC()
-	fireAt, terr := resolveFireTime(now, args)
+	// The user's timezone (M15): lets an 'at' value arrive as a naive local
+	// datetime. The model now knows the local clock from its base knowledge,
+	// so "remind me at 9am tomorrow" produces 2026-07-25T09:00:00 far more
+	// often than a correctly-offset RFC3339 string — before this that was a
+	// hard invalid_args, now it means 9am where the user actually is.
+	fireAt, terr := resolveFireTime(now, args, schedulerLocation(deps.profileFor(ctx, inv.UserID)))
 	if terr != nil {
 		return nil, terr
 	}
@@ -170,9 +177,34 @@ func handleSchedule(ctx context.Context, deps *Deps, inv Invocation, args map[st
 	}, nil
 }
 
+// schedulerLocation resolves the profile timezone for naive 'at' values,
+// degrading to UTC when the profile carries no timezone or names an unknown
+// one (a stale zone id must never fail a reminder).
+func schedulerLocation(p store.Profile) *time.Location {
+	tz := p.Timezone()
+	if tz == "" {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
+
+// naiveLocalLayouts are the offset-less datetime shapes accepted for 'at'
+// and interpreted in the user's own timezone.
+var naiveLocalLayouts = []string{
+	"2006-01-02T15:04:05",
+	"2006-01-02T15:04",
+	"2006-01-02 15:04:05",
+	"2006-01-02 15:04",
+}
+
 // resolveFireTime picks the fire time from 'at' xor 'inSeconds' and
-// bounds it to [now+minLead, now+maxLead].
-func resolveFireTime(now time.Time, args map[string]any) (time.Time, *ToolError) {
+// bounds it to [now+minLead, now+maxLead]. local interprets an 'at' value
+// that carries no UTC offset.
+func resolveFireTime(now time.Time, args map[string]any, local *time.Location) (time.Time, *ToolError) {
 	atStr, hasAt := args["at"].(string)
 	hasAt = hasAt && atStr != ""
 	secs, hasSecs := args["inSeconds"].(int)
@@ -191,7 +223,15 @@ func resolveFireTime(now time.Time, args map[string]any) (time.Time, *ToolError)
 	if hasAt {
 		t, err := time.Parse(time.RFC3339, atStr)
 		if err != nil {
-			return time.Time{}, toolErrf(CodeInvalidArgs, "'at' must be RFC3339, e.g. 2026-07-18T09:00:00-04:00")
+			// Second chance: a naive local datetime, interpreted in the
+			// user's timezone rather than rejected.
+			parsed, ok := parseNaiveLocal(atStr, local)
+			if !ok {
+				return time.Time{}, toolErrf(CodeInvalidArgs,
+					"'at' must be RFC3339 with an offset (2026-07-18T09:00:00-04:00) "+
+						"or a local datetime (2026-07-18T09:00)")
+			}
+			t = parsed
 		}
 		fireAt = t
 	} else {
@@ -205,6 +245,19 @@ func resolveFireTime(now time.Time, args map[string]any) (time.Time, *ToolError)
 		return time.Time{}, toolErrf(CodeInvalidArgs, "the requested time is more than a year away")
 	}
 	return fireAt, nil
+}
+
+// parseNaiveLocal parses an offset-less datetime in loc.
+func parseNaiveLocal(s string, loc *time.Location) (time.Time, bool) {
+	if loc == nil {
+		loc = time.UTC
+	}
+	for _, layout := range naiveLocalLayouts {
+		if t, err := time.ParseInLocation(layout, s, loc); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // scheduleName builds a unique EventBridge Scheduler name (allowed chars

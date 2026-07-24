@@ -436,6 +436,12 @@ func validateAndNormalizeSettings(doc map[string]any) string {
 			}
 		}
 	}
+	// profile: the Base Knowledge block (M15). Validated in profile_routes.go
+	// beside the geocode endpoint that produces its locations, since the two
+	// have to agree on the stored shape.
+	if msg := validateProfile(doc); msg != "" {
+		return msg
+	}
 	return ""
 }
 

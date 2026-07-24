@@ -119,12 +119,14 @@ func ValidateChatMessages(msgs []ChatMessage) error {
 // against the fallback chat model with the full realtime tool catalog
 // bound. It returns the model's answer verbatim — final text, or the
 // tool_calls it wants executed — and never executes anything itself.
-func (c *FallbackClient) TurnWithTools(ctx context.Context, personaID string, messages []ChatMessage) (*TurnResult, error) {
+// extraSystem carries the same server-composed directive block the realtime
+// path appends (base knowledge + guides, M15); pass "" for none.
+func (c *FallbackClient) TurnWithTools(ctx context.Context, personaID string, messages []ChatMessage, extraSystem string) (*TurnResult, error) {
 	if err := ValidateChatMessages(messages); err != nil {
 		return nil, fmt.Errorf("realtime: invalid fallback messages: %w", err)
 	}
 
-	body, err := buildToolTurnRequest(personaID, messages)
+	body, err := buildToolTurnRequest(personaID, messages, extraSystem)
 	if err != nil {
 		return nil, err
 	}
@@ -138,11 +140,11 @@ func (c *FallbackClient) TurnWithTools(ctx context.Context, personaID string, me
 // buildToolTurnRequest assembles the chat-completions payload: the
 // resolved persona's instructions as the system prompt, the caller's
 // messages converted to OpenAI wire shape, and the full tool catalog.
-func buildToolTurnRequest(personaID string, messages []ChatMessage) ([]byte, error) {
+func buildToolTurnRequest(personaID string, messages []ChatMessage, extraSystem string) ([]byte, error) {
 	persona := ResolvePersona(personaID)
 
 	wire := make([]map[string]any, 0, len(messages)+1)
-	wire = append(wire, map[string]any{"role": "system", "content": persona.Instructions})
+	wire = append(wire, map[string]any{"role": "system", "content": persona.Instructions + extraSystem})
 	for _, m := range messages {
 		switch m.Role {
 		case "tool":

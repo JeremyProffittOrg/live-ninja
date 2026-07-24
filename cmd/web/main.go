@@ -116,7 +116,11 @@ func main() {
 	webapp.RegisterSettingsRoutes(app, deps)
 	webapp.RegisterDeliverablesRoutes(app, deps)
 	webapp.RegisterWakewordRoutes(app, deps)
-	webapp.RegisterMemoryRoutes(app, deps, buildMemoryService(ctx, deps, logger))
+	memSvc := buildMemoryService(ctx, deps, logger)
+	webapp.RegisterMemoryRoutes(app, deps, memSvc)
+	// Base Knowledge profile support (M15): the location typeahead behind the
+	// "About you" pickers, and the memory-derived profile suggestion.
+	webapp.RegisterProfileRoutes(app, deps, memSvc)
 	webapp.RegisterHistoryRoutes(app, deps)
 	webapp.RegisterTelemetryRoutes(app, deps)
 	webapp.RegisterPageRoutes(app, deps)

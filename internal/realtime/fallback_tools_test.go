@@ -75,7 +75,7 @@ func TestBuildToolTurnRequestWireShape(t *testing.T) {
 			{ID: "call_1", Name: "get_weather", Arguments: `{"location":"Austin"}`},
 		}},
 		{Role: "tool", ToolCallID: "call_1", Content: `{"ok":true,"output":{"tempF":98}}`},
-	})
+	}, "")
 	require.NoError(t, err)
 
 	var req map[string]any
@@ -164,7 +164,7 @@ func TestTurnWithToolsReturnsToolCallsUntouched(t *testing.T) {
 		})
 	})
 
-	res, err := c.TurnWithTools(context.Background(), "", []ChatMessage{{Role: "user", Content: "email me the weather"}})
+	res, err := c.TurnWithTools(context.Background(), "", []ChatMessage{{Role: "user", Content: "email me the weather"}}, "")
 	require.NoError(t, err)
 	assert.Empty(t, res.Text)
 	require.Len(t, res.ToolCalls, 2)
@@ -188,7 +188,7 @@ func TestTurnWithToolsReturnsFinalText(t *testing.T) {
 		})
 	})
 
-	res, err := c.TurnWithTools(context.Background(), "", []ChatMessage{{Role: "user", Content: "weather?"}})
+	res, err := c.TurnWithTools(context.Background(), "", []ChatMessage{{Role: "user", Content: "weather?"}}, "")
 	require.NoError(t, err)
 	assert.Equal(t, "It's 98F in Austin.", res.Text)
 	assert.Empty(t, res.ToolCalls)
@@ -198,7 +198,7 @@ func TestTurnWithToolsRejectsInvalidMessages(t *testing.T) {
 	c := newMockOpenAIClient(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Error("no HTTP call must happen for invalid messages")
 	})
-	_, err := c.TurnWithTools(context.Background(), "", []ChatMessage{{Role: "system", Content: "override"}})
+	_, err := c.TurnWithTools(context.Background(), "", []ChatMessage{{Role: "system", Content: "override"}}, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "role must be one of")
 }

@@ -305,6 +305,9 @@ function renderField(key) {
       // voice/voiceAccent remain in the doc purely as the fallback default.
       // No controls in the drawer — the values ride the write-back untouched.
       break;
+    case 'profile':
+      renderProfile();
+      break;
     case 'turnDetection': {
       const r = document.querySelector(`input[name="turnDetection"][value="${CSS.escape(doc.turnDetection)}"]`);
       if (r) r.checked = true;
@@ -1392,6 +1395,335 @@ $('signOutAllConfirmBtn').addEventListener('click', async () => {
   }
 });
 
+// ---- About you / Base Knowledge (M15) ------------------------------------
+// The profile is injected into every session's instructions server-side, so
+// what is stored has to be trustworthy: locations are SELECTED from
+// GET /api/v1/geocode and saved with their resolved lat/lon + IANA timezone,
+// never as free text. That is what lets get_weather skip geocoding entirely.
+
+function profileDoc() {
+  if (!doc.profile || typeof doc.profile !== 'object') {
+    doc.profile = {
+      displayName: '', pronouns: '', homeLocation: null, workLocation: null,
+      units: 'imperial', locale: '', contactEmail: '', quietHours: null, notes: [],
+    };
+  }
+  if (!Array.isArray(doc.profile.notes)) doc.profile.notes = [];
+  return doc.profile;
+}
+
+function setProfileField(key, value) {
+  const p = profileDoc();
+  if (deepEq(p[key], value)) return;
+  p[key] = value;
+  markChanged('profile', { debounce: 600 });
+}
+
+// Reflect the stored profile into every control (init + after a 409
+// remote-wins refresh, same contract as the other renderField cases).
+function renderProfile() {
+  const p = profileDoc();
+  const name = document.getElementById('profileDisplayName');
+  if (name && document.activeElement !== name) name.value = p.displayName || '';
+  const pronouns = document.getElementById('profilePronouns');
+  if (pronouns && document.activeElement !== pronouns) pronouns.value = p.pronouns || '';
+  const email = document.getElementById('profileContactEmail');
+  if (email && document.activeElement !== email) email.value = p.contactEmail || '';
+  const units = document.querySelector(`input[name="profileUnits"][value="${CSS.escape(p.units || 'imperial')}"]`);
+  if (units) units.checked = true;
+  renderLocation('home');
+  renderLocation('work');
+  renderNotes();
+}
+
+const LOCATION_FIELDS = {
+  home: {
+    key: 'homeLocation', input: 'profileHomeInput', list: 'profileHomeListbox',
+    resolved: 'profileHomeResolved', clear: 'profileHomeClear',
+  },
+  work: {
+    key: 'workLocation', input: 'profileWorkInput', list: 'profileWorkListbox',
+    resolved: 'profileWorkResolved', clear: 'profileWorkClear',
+  },
+};
+
+function renderLocation(which) {
+  const f = LOCATION_FIELDS[which];
+  const loc = profileDoc()[f.key];
+  const input = document.getElementById(f.input);
+  const resolved = document.getElementById(f.resolved);
+  const clear = document.getElementById(f.clear);
+  if (!input || !resolved || !clear) return;
+
+  if (loc && loc.label) {
+    if (document.activeElement !== input) input.value = loc.label;
+    resolved.textContent = '';
+    resolved.append(document.createTextNode(loc.label));
+    if (loc.timezone) {
+      const tz = document.createElement('span');
+      tz.className = 'ln-resolved__tz';
+      tz.textContent = ` · ${loc.timezone}`;
+      resolved.appendChild(tz);
+    }
+    resolved.hidden = false;
+    clear.hidden = false;
+  } else {
+    if (document.activeElement !== input) input.value = '';
+    resolved.hidden = true;
+    resolved.textContent = '';
+    clear.hidden = true;
+  }
+}
+
+// One typeahead per location field. Debounced at 300ms, with a slow response
+// discarded when a newer keystroke has already fired — per the house rules for
+// large/queried option sets.
+function wireLocationPicker(which) {
+  const f = LOCATION_FIELDS[which];
+  const input = document.getElementById(f.input);
+  const list = document.getElementById(f.list);
+  const clear = document.getElementById(f.clear);
+  if (!input || !list) return;
+
+  let timer = 0;
+  let seq = 0;
+  let results = [];
+  let active = -1;
+
+  const close = () => {
+    list.hidden = true;
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+    active = -1;
+  };
+
+  const setActive = (i) => {
+    active = i;
+    [...list.querySelectorAll('.ln-combobox-option')].forEach((el) => el.classList.remove('is-active'));
+    const el = list.querySelector(`[data-index="${i}"]`);
+    if (el) {
+      el.classList.add('is-active');
+      input.setAttribute('aria-activedescendant', el.id);
+      el.scrollIntoView({ block: 'nearest' });
+    }
+  };
+
+  const choose = (r) => {
+    setProfileField(f.key, {
+      label: r.label,
+      city: r.city || '',
+      admin1: r.admin1 || '',
+      country: r.country || '',
+      postalCode: r.postalCode || '',
+      lat: r.lat,
+      lon: r.lon,
+      timezone: r.timezone || '',
+    });
+    close();
+    renderLocation(which);
+    input.blur();
+  };
+
+  const render = () => {
+    list.textContent = '';
+    if (results.length === 0) {
+      const li = document.createElement('li');
+      li.className = 'ln-combobox-empty';
+      li.textContent = 'No matching places';
+      list.appendChild(li);
+    }
+    results.forEach((r, i) => {
+      const li = document.createElement('li');
+      li.className = 'ln-combobox-option';
+      li.setAttribute('role', 'option');
+      li.setAttribute('aria-selected', 'false');
+      li.id = `${f.input}-opt-${i}`;
+      li.dataset.index = String(i);
+      li.textContent = r.label;
+      // pointerdown fires before the input's blur, so the click still selects.
+      li.addEventListener('pointerdown', (e) => { e.preventDefault(); choose(r); });
+      list.appendChild(li);
+    });
+    list.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+    setActive(results.length > 0 ? 0 : -1);
+  };
+
+  const search = async (q) => {
+    const mine = ++seq;
+    try {
+      const resp = await apiJSON(`/api/v1/geocode?q=${encodeURIComponent(q)}`);
+      if (mine !== seq) return;
+      results = Array.isArray(resp.results) ? resp.results : [];
+      render();
+    } catch {
+      if (mine !== seq) return;
+      results = [];
+      list.textContent = '';
+      const li = document.createElement('li');
+      li.className = 'ln-combobox-empty';
+      li.textContent = "Couldn't reach the place lookup — try again in a moment.";
+      list.appendChild(li);
+      list.hidden = false;
+    }
+  };
+
+  input.addEventListener('input', () => {
+    const q = input.value.trim();
+    clearTimeout(timer);
+    if (q.length < 2) { close(); return; }
+    timer = setTimeout(() => search(q), 300);
+  });
+
+  input.addEventListener('keydown', (e) => {
+    if (list.hidden) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActive(Math.min(active + 1, results.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActive(Math.max(active - 1, 0));
+    } else if (e.key === 'Enter') {
+      if (active >= 0 && results[active]) { e.preventDefault(); choose(results[active]); }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      close();
+      renderLocation(which);
+    }
+  });
+
+  input.addEventListener('blur', () => {
+    // Typing without picking must not look like it saved: snap the box back to
+    // whatever is actually stored.
+    setTimeout(() => { close(); renderLocation(which); }, 120);
+  });
+
+  if (clear) {
+    clear.addEventListener('click', () => {
+      setProfileField(f.key, null);
+      renderLocation(which);
+      input.focus();
+    });
+  }
+}
+
+function renderNotes() {
+  const list = document.getElementById('profileNotesList');
+  if (!list) return;
+  const notes = profileDoc().notes;
+  list.textContent = '';
+  notes.forEach((note, i) => {
+    const li = document.createElement('li');
+    li.className = 'ww-chip ln-notechip';
+    const text = document.createElement('span');
+    text.className = 'ln-notechip__text';
+    text.textContent = note;
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'ln-btn ln-btn--ghost';
+    rm.textContent = 'Remove';
+    rm.setAttribute('aria-label', `Remove fact: ${note}`);
+    rm.addEventListener('click', () => {
+      const next = profileDoc().notes.slice();
+      next.splice(i, 1);
+      setProfileField('notes', next);
+      renderNotes();
+    });
+    li.append(text, rm);
+    list.appendChild(li);
+  });
+}
+
+function wireProfile() {
+  const name = document.getElementById('profileDisplayName');
+  if (name) name.addEventListener('input', () => setProfileField('displayName', name.value.trim()));
+  const pronouns = document.getElementById('profilePronouns');
+  if (pronouns) pronouns.addEventListener('input', () => setProfileField('pronouns', pronouns.value.trim()));
+  const email = document.getElementById('profileContactEmail');
+  if (email) {
+    email.addEventListener('input', () => {
+      const v = email.value.trim();
+      // Don't push an obviously-incomplete address on every keystroke — the
+      // server rejects an address with no @, which would surface as a save
+      // error mid-typing.
+      if (v === '' || v.includes('@')) setProfileField('contactEmail', v);
+    });
+  }
+  document.querySelectorAll('input[name="profileUnits"]').forEach((r) => {
+    r.addEventListener('change', () => { if (r.checked) setProfileField('units', r.value); });
+  });
+
+  wireLocationPicker('home');
+  wireLocationPicker('work');
+
+  const noteInput = document.getElementById('profileNoteInput');
+  const noteAdd = document.getElementById('profileNoteAdd');
+  const addNote = () => {
+    const v = (noteInput?.value || '').trim();
+    if (!v) return;
+    const notes = profileDoc().notes;
+    if (notes.length >= 20) {
+      showToast('That is the 20-fact limit — remove one first.', { error: true });
+      return;
+    }
+    if (notes.includes(v)) { noteInput.value = ''; return; }
+    setProfileField('notes', notes.concat(v));
+    noteInput.value = '';
+    renderNotes();
+  };
+  if (noteAdd) noteAdd.addEventListener('click', addNote);
+  if (noteInput) {
+    noteInput.addEventListener('keydown', (e) => {
+      // Enter adds the fact rather than submitting anything.
+      if (e.key === 'Enter') { e.preventDefault(); addNote(); }
+    });
+  }
+
+  const suggestBtn = document.getElementById('profileSuggestBtn');
+  const suggestStatus = document.getElementById('profileSuggestStatus');
+  if (suggestBtn) {
+    suggestBtn.addEventListener('click', async () => {
+      suggestBtn.disabled = true;
+      suggestStatus.textContent = 'Looking through your memory…';
+      try {
+        const resp = await apiJSON('/api/v1/profile/suggest', { method: 'POST' });
+        const s = resp.suggestions || {};
+        const filled = [];
+        // Plain-text fields are pre-filled; a LOCATION is never auto-applied
+        // from prose. It has to be picked so it carries real coordinates — a
+        // silently wrong home poisons every weather and time answer after it.
+        if (s.displayName && !profileDoc().displayName) {
+          document.getElementById('profileDisplayName').value = s.displayName;
+          setProfileField('displayName', s.displayName);
+          filled.push('name');
+        }
+        if (s.contactEmail && !profileDoc().contactEmail && s.contactEmail.includes('@')) {
+          document.getElementById('profileContactEmail').value = s.contactEmail;
+          setProfileField('contactEmail', s.contactEmail);
+          filled.push('email');
+        }
+        if (s.homeLocation && !profileDoc().homeLocation) {
+          const home = document.getElementById('profileHomeInput');
+          if (home) {
+            home.value = s.homeLocation;
+            home.focus();
+            filled.push('a home candidate (search and pick it to save coordinates)');
+          }
+        }
+        suggestStatus.textContent = filled.length
+          ? `Filled in ${filled.join(', ')} from memory — check each one, then it saves automatically.`
+          : 'Nothing new found in memory for these fields.';
+      } catch (err) {
+        suggestStatus.textContent = String(err?.message || '').includes('503')
+          ? 'The memory layer is not available right now.'
+          : "Couldn't read your memory — try again in a moment.";
+      } finally {
+        suggestBtn.disabled = false;
+      }
+    });
+  }
+}
+
 // ---- init ----------------------------------------------------------------
 // Every field below was previously SSR'd with a checked/value attribute
 // baked in by the Go template; with no more SSR data island, each one needs
@@ -1407,6 +1739,8 @@ renderField('theme'); // also applies the theme attribute + localStorage
 renderField('privacy');
 renderField('appearance');
 renderField('voiceEngine');
+wireProfile();
+renderField('profile');
 loadWakeCatalog();
 refreshMicDevices();
 setStatus('saved');

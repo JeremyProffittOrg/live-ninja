@@ -78,6 +78,23 @@ func DefaultSettings() map[string]any {
 		"micDeviceId": nil,
 		"voiceEngine": map[string]any{"default": "openai-realtime", "devices": map[string]any{}},
 		"privacy":     map[string]any{"storeAudio": false, "storeTranscripts": true, "retentionDays": 30},
+		// profile: the Base Knowledge block (M15) — stable facts injected
+		// server-side into every session's instructions and used as default
+		// arguments for profile-aware tools. Locations are null until the
+		// owner picks one from the geocoder (never free-typed), so a fresh
+		// document mints exactly as it did pre-M15: an empty profile
+		// contributes no instruction block at all. See profile.go.
+		"profile": map[string]any{
+			"displayName":  "",
+			"pronouns":     "",
+			"homeLocation": nil,
+			"workLocation": nil,
+			"units":        UnitsImperial,
+			"locale":       "",
+			"contactEmail": "",
+			"quietHours":   nil,
+			"notes":        []any{},
+		},
 	}
 }
 

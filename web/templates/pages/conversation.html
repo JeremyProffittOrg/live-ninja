@@ -195,6 +195,100 @@
 
     <p class="ln-muted conv-drawer__intro">Changes save automatically and apply on every device you use Live Ninja on.</p>
 
+    <!-- ============ About you (M15 Base Knowledge) ============
+         These facts are injected into EVERY session's instructions
+         server-side (internal/realtime/baseknowledge.go), which is why the
+         locations are pickers rather than text boxes: a stored place carries
+         its resolved lat/lon + IANA timezone, so weather and time answers
+         never depend on the model naming a place correctly. -->
+    <section class="ln-card set-section" aria-labelledby="sectionAbout">
+      <div class="set-section__intro">
+        <h2 class="ln-card__title" id="sectionAbout">About you</h2>
+        <p class="ln-muted">What Live Ninja knows before you say anything. It uses these in every conversation — so &ldquo;what&rsquo;s the weather&rdquo; needs no location and &ldquo;what&rsquo;s today&rdquo; has an answer.</p>
+      </div>
+
+      <div class="ln-field">
+        <label for="profileDisplayName">Your name</label>
+        <input class="ln-input" id="profileDisplayName" type="text" maxlength="80"
+               autocomplete="name" placeholder="Jeremy" aria-describedby="profileNameHint">
+        <p class="ln-hint" id="profileNameHint">What it should call you.</p>
+      </div>
+
+      <div class="ln-field">
+        <label for="profilePronouns">Pronouns <span class="ln-muted">(optional)</span></label>
+        <input class="ln-input" id="profilePronouns" type="text" maxlength="32" placeholder="he/him">
+      </div>
+
+      <div class="ln-field ln-combobox" id="profileHomeCombobox">
+        <label for="profileHomeInput">Home location</label>
+        <div class="ln-locationrow">
+          <input class="ln-input" id="profileHomeInput" type="text" role="combobox"
+                 aria-expanded="false" aria-controls="profileHomeListbox" aria-autocomplete="list"
+                 autocomplete="off" spellcheck="false" placeholder="Town, ZIP, or city"
+                 aria-describedby="profileHomeHint">
+          <button class="ln-btn ln-btn--ghost" type="button" id="profileHomeClear" hidden>Clear</button>
+        </div>
+        <ul class="ln-combobox-panel" id="profileHomeListbox" role="listbox" aria-label="Matching places" hidden></ul>
+        <p class="ln-resolved" id="profileHomeResolved" hidden></p>
+        <p class="ln-hint" id="profileHomeHint">Search and pick a result &mdash; that saves exact coordinates and your timezone.</p>
+      </div>
+
+      <div class="ln-field ln-combobox" id="profileWorkCombobox">
+        <label for="profileWorkInput">Work location <span class="ln-muted">(optional)</span></label>
+        <div class="ln-locationrow">
+          <input class="ln-input" id="profileWorkInput" type="text" role="combobox"
+                 aria-expanded="false" aria-controls="profileWorkListbox" aria-autocomplete="list"
+                 autocomplete="off" spellcheck="false" placeholder="Town, ZIP, or city">
+          <button class="ln-btn ln-btn--ghost" type="button" id="profileWorkClear" hidden>Clear</button>
+        </div>
+        <ul class="ln-combobox-panel" id="profileWorkListbox" role="listbox" aria-label="Matching places" hidden></ul>
+        <p class="ln-resolved" id="profileWorkResolved" hidden></p>
+      </div>
+
+      <fieldset class="ln-fieldset">
+        <legend>Units</legend>
+        <div class="ln-choices">
+          <label class="ln-choice">
+            <input type="radio" name="profileUnits" value="imperial">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Imperial</span>
+              <span class="ln-choice__desc">Fahrenheit, miles</span>
+            </span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="profileUnits" value="metric">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Metric</span>
+              <span class="ln-choice__desc">Celsius, kilometres</span>
+            </span>
+          </label>
+        </div>
+      </fieldset>
+
+      <div class="ln-field">
+        <label for="profileContactEmail">Your email <span class="ln-muted">(optional)</span></label>
+        <input class="ln-input" id="profileContactEmail" type="email" maxlength="254"
+               autocomplete="email" placeholder="you@example.com" aria-describedby="profileEmailHint">
+        <p class="ln-hint" id="profileEmailHint">Where &ldquo;send that to me&rdquo; goes. Sending anywhere else still needs your confirmation.</p>
+      </div>
+
+      <div class="ln-field">
+        <label for="profileNoteInput">Anything else it should always know</label>
+        <div class="ln-locationrow">
+          <input class="ln-input" id="profileNoteInput" type="text" maxlength="200"
+                 placeholder="I work in Eastern time" aria-describedby="profileNotesHint">
+          <button class="ln-btn ln-btn--ghost" type="button" id="profileNoteAdd">Add</button>
+        </div>
+        <ul class="ww-chips" id="profileNotesList" aria-label="Saved facts"></ul>
+        <p class="ln-hint" id="profileNotesHint">Short facts, up to 20. Each one is added to every conversation.</p>
+      </div>
+
+      <div class="ln-field">
+        <button class="ln-btn ln-btn--ghost" type="button" id="profileSuggestBtn">Suggest from memory</button>
+        <p class="ln-hint" id="profileSuggestStatus" role="status"></p>
+      </div>
+    </section>
+
     <!-- ============ Wake word ============ -->
     <section class="ln-card set-section" aria-labelledby="sectionWakeWord">
       <div class="set-section__intro">

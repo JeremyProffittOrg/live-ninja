@@ -279,11 +279,32 @@ type Deps struct {
 
 	HTTPClient *http.Client // get_weather / web_lookup; defaulted by NewRegistry
 
+	// Profile loads the caller's Base Knowledge profile (M15) so
+	// profile-aware tools can take their defaults from it: get_weather's
+	// location and units, the scheduler's timezone. Defaulted by NewRegistry
+	// to a projected single-item read through Store; tests inject fakes.
+	//
+	// It is a loader rather than a value because Deps is process-wide while a
+	// profile is per-user: the invocation's verified UserID picks the row, so
+	// one user's profile can never leak into another's tool call.
+	Profile func(ctx context.Context, userID string) store.Profile
+
 	Reauthorize ReauthorizeFunc
 
 	// Now is the clock; defaulted to time.Now by NewRegistry (tests
 	// override for deterministic schedules/IDs).
 	Now func() time.Time
+}
+
+// profileFor is the nil-safe accessor every profile-aware handler uses. A
+// registry built without a Profile loader (or for an invocation with no
+// user, e.g. a local smoke test) sees the zero profile and falls back to the
+// pre-M15 behaviour rather than failing the call.
+func (d *Deps) profileFor(ctx context.Context, userID string) store.Profile {
+	if d == nil || d.Profile == nil || userID == "" {
+		return store.Profile{}
+	}
+	return d.Profile(ctx, userID)
 }
 
 // Registry holds the tool catalog and runs the invocation pipeline.
@@ -315,6 +336,16 @@ func NewRegistry(deps *Deps) (*Registry, error) {
 	}
 	if deps.Now == nil {
 		deps.Now = time.Now
+	}
+	if deps.Profile == nil {
+		st := deps.Store
+		deps.Profile = func(ctx context.Context, userID string) store.Profile {
+			p, err := st.GetProfile(ctx, userID)
+			if err != nil {
+				return store.Profile{}
+			}
+			return p
+		}
 	}
 
 	r := &Registry{deps: deps, tools: make(map[string]*Definition)}

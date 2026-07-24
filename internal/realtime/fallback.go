@@ -62,12 +62,17 @@ func NewFallbackClient(loader *config.Loader) *FallbackClient {
 // Turn runs one text-only fallback turn: the user's text against
 // gpt-4o-mini with the resolved persona's instructions as the system
 // prompt. Returns the assistant's reply text.
-func (c *FallbackClient) Turn(ctx context.Context, personaID, text string) (string, error) {
+//
+// extraSystem is the server-composed session directive block (base
+// knowledge + guides) appended to the persona instructions, so a degraded
+// text turn knows the same facts a realtime session does (M15) — pass "" for
+// none.
+func (c *FallbackClient) Turn(ctx context.Context, personaID, text, extraSystem string) (string, error) {
 	persona := ResolvePersona(personaID)
 	body, err := json.Marshal(map[string]any{
 		"model": fallbackChatModel,
 		"messages": []map[string]string{
-			{"role": "system", "content": persona.Instructions},
+			{"role": "system", "content": persona.Instructions + extraSystem},
 			{"role": "user", "content": text},
 		},
 	})

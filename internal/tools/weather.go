@@ -8,16 +8,34 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 )
+
+// locationSource labels how the coordinates were chosen, so the model (and
+// the tool-call Details panel) can see when an answer came from the profile
+// rather than from an argument it supplied.
+func locationSource(argLocation string) string {
+	if argLocation == "" {
+		return "profile-home"
+	}
+	return "geocoded"
+}
 
 // get_weather is a keyless, real forecast tool built on Open-Meteo
 // (open-meteo.com): free geocoding + forecast APIs, no API key, generous
 // rate limits. Two GETs per call: resolve the location name to
 // coordinates, then fetch current conditions + a short daily forecast.
 
-const (
+// Upstream endpoints. Vars rather than consts purely as a test seam: the
+// geocoding tests point them at an httptest server to assert what was
+// actually asked of the geocoder (M15 — that the "City, ST" compound is split
+// before the call, and that a profile-home question makes no call at all).
+var (
 	geocodeURL  = "https://geocoding-api.open-meteo.com/v1/search"
 	forecastURL = "https://api.open-meteo.com/v1/forecast"
+)
+
+const (
 
 	// toolsUserAgent identifies our calls to the free upstream APIs
 	// (both Open-Meteo and Wikipedia ask for a descriptive UA).
@@ -27,29 +45,25 @@ const (
 func getWeatherDefinition() *Definition {
 	return &Definition{
 		Name: "get_weather",
-		Description: "Get current weather conditions and a short daily forecast for a named place " +
-			"(city, town, or 'city, state/country').",
+		Description: "Get current weather conditions and a short daily forecast. " +
+			"Omit location to use the user's home location from your base knowledge — that is the " +
+			"normal case and the most accurate one. Pass location only when the user asks about a " +
+			"different place.",
 		Params: []ParamSpec{
-			{Name: "location", Type: "string", Required: true, MinLen: 2, MaxLen: 120,
-				Description: "Place name to look up, e.g. 'Charlotte' or 'Paris, France'."},
+			// Optional since M15: with a profile home location the handler
+			// goes straight to coordinates and skips geocoding entirely, so
+			// the single most common weather question needs no argument the
+			// model could get wrong.
+			{Name: "location", Type: "string", MinLen: 2, MaxLen: 120,
+				Description: "Only when asking about somewhere other than home: a place name such as " +
+					"'Charlotte', 'Huntersville, NC', 'Paris, France', or a postal code."},
 			{Name: "days", Type: "integer", Min: floatPtr(1), Max: floatPtr(7),
 				Description: "How many days of forecast to return (default 3)."},
 			{Name: "units", Type: "string", Enum: []string{"imperial", "metric"},
-				Description: "Unit system for temperatures and wind (default imperial)."},
+				Description: "Unit system for temperatures and wind. Defaults to the user's preferred units."},
 		},
 		Handler: handleGetWeather,
 	}
-}
-
-type geocodeResponse struct {
-	Results []struct {
-		Name      string  `json:"name"`
-		Latitude  float64 `json:"latitude"`
-		Longitude float64 `json:"longitude"`
-		Country   string  `json:"country"`
-		Admin1    string  `json:"admin1"`
-		Timezone  string  `json:"timezone"`
-	} `json:"results"`
 }
 
 type forecastResponse struct {
@@ -70,32 +84,62 @@ type forecastResponse struct {
 	} `json:"daily"`
 }
 
-func handleGetWeather(ctx context.Context, deps *Deps, _ Invocation, args map[string]any) (map[string]any, *ToolError) {
-	location := args["location"].(string)
+func handleGetWeather(ctx context.Context, deps *Deps, inv Invocation, args map[string]any) (map[string]any, *ToolError) {
+	profile := deps.profileFor(ctx, inv.UserID)
+
 	days := 3
 	if d, ok := args["days"].(int); ok {
 		days = d
 	}
-	units := "imperial"
+	// Units come from the profile unless the caller asked for a specific
+	// system ("...in celsius"), which still wins.
+	units := profile.UnitsOrDefault()
 	if u, ok := args["units"].(string); ok && u != "" {
 		units = u
 	}
 
-	// Leg 1: geocode.
-	gq := url.Values{}
-	gq.Set("name", location)
-	gq.Set("count", "1")
-	gq.Set("language", "en")
-	gq.Set("format", "json")
-	var geo geocodeResponse
-	if err := httpGetJSON(ctx, deps.HTTPClient, geocodeURL+"?"+gq.Encode(), &geo); err != nil {
-		deps.Log.Error("tools: geocoding failed", "error", err.Error())
-		return nil, toolErrf(CodeUpstreamError, "the weather service is unavailable right now")
+	location, _ := args["location"].(string)
+	location = strings.TrimSpace(location)
+
+	// Leg 1: resolve coordinates.
+	//
+	// The happy path has no leg 1 at all: with no location argument and a
+	// geocode-verified home in the profile, the coordinates are already known
+	// and correct, so the whole class of "which Paris did you mean" and
+	// "City, ST returns nothing" failures simply cannot occur.
+	var place geoCandidate
+	switch {
+	case location == "":
+		home := profile.Home()
+		if !home.Resolved() {
+			return nil, toolErrf(CodeInvalidArgs,
+				"no location given and no home location is set in the user's profile — "+
+					"ask which place they mean, or have them set a home location in Settings")
+		}
+		// Label() composes name + admin1 + country, so feed it the CITY and
+		// let it rebuild the label — passing the already-composed
+		// home.Label here would render "Huntersville, North Carolina,
+		// United States, North Carolina, United States".
+		place = geoCandidate{
+			Name:      home.City,
+			Latitude:  home.Lat,
+			Longitude: home.Lon,
+			Country:   home.Country,
+			Admin1:    home.Admin1,
+			Timezone:  home.Timezone,
+		}
+		if place.Name == "" {
+			// A stored location without a separate city field: use the label
+			// verbatim and suppress the parts that would duplicate it.
+			place.Name, place.Admin1, place.Country = home.Label, "", ""
+		}
+	default:
+		resolved, terr := resolvePlace(ctx, deps, location, profile.Home())
+		if terr != nil {
+			return nil, terr
+		}
+		place = resolved
 	}
-	if len(geo.Results) == 0 {
-		return nil, toolErrf(CodeNotFound, "no place found matching %q", location)
-	}
-	place := geo.Results[0]
 
 	// Leg 2: forecast.
 	fq := url.Values{}
@@ -136,17 +180,12 @@ func handleGetWeather(ctx context.Context, deps *Deps, _ Invocation, args map[st
 		daily = append(daily, entry)
 	}
 
-	locName := place.Name
-	if place.Admin1 != "" {
-		locName += ", " + place.Admin1
-	}
-	if place.Country != "" {
-		locName += ", " + place.Country
-	}
+	locName := place.Label()
 
 	return map[string]any{
 		"location": map[string]any{
 			"name":      locName,
+			"source":    locationSource(location),
 			"latitude":  place.Latitude,
 			"longitude": place.Longitude,
 			"timezone":  place.Timezone,

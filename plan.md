@@ -10,7 +10,7 @@ Folded in from (full history + verbose implementation notes preserved in each):
 |---|---|
 | [archive/plan.md](archive/plan.md) | Master M0–M12 plan + the entire §8 implementation-notes / RESUME-STATE history. **Read §8 there before resuming anything** — it is the deepest record of how this system actually works. |
 | [archive/gemini-plan.md](archive/gemini-plan.md) | M13 Gemini Flash Live — code-complete + deployed; E1/E2 live-audio verification outstanding |
-| [archive/base-knowledge-plan.md](archive/base-knowledge-plan.md) | M15–M17 — fully authored, **never started**; the largest block of real work below |
+| [archive/base-knowledge-plan.md](archive/base-knowledge-plan.md) | M15–M17 — **M15 shipped 2026-07-24**; M17 then M16 remain the largest block of real work below |
 | [archive/tool-parity-plan.md](archive/tool-parity-plan.md) | M18–M20 — complete; only the owner live-audio smoke remains |
 | [archive/android-revamp-plan.md](archive/android-revamp-plan.md) | Android v0.2.1-hal — shipped; wake-word training kickoff outstanding |
 
@@ -37,7 +37,7 @@ The Android app shipped as v0.2.1-hal and the tool manifest is single-sourced.
 What is left divides cleanly into four buckets — the workstreams below:
 
 - **WS-1 Verification** — human/mic/hardware-gated checks that no agent can run. Mostly owner work.
-- **WS-2 Base Knowledge (M15–M17)** — the only large greenfield build left. Authored, unstarted.
+- **WS-2 Base Knowledge (M15–M17)** — **M15 done 2026-07-24**; M17 (tool-failure RCA) is next, then M16.
 - **WS-3 Unfinished platform work** — the real code gaps (wake-word training run, deferred cleanup findings).
 - **WS-4 Launch (M8)** — distribution, runbook, go/no-go.
 
@@ -114,7 +114,7 @@ grounded problem statement (P1–P4, each citing the real seam), the full archit
 M17, and the sequencing/cost/risk analysis. Read it before starting; the task lists below are
 verbatim.
 
-**Sequencing (locked in the source plan): M15 → M17 → M16-polish.** M15 kills the daily
+**Sequencing (locked in the source plan): M15 → M17 → M16-polish.** M15 is done; **M17 is next.** M15 kills the daily
 annoyances immediately (weather, location, clock); M17 needs M15's profile + system map to write
 good RCAs. Estimated: M15 one focused session, M17 one session, M16 rides along.
 
@@ -125,7 +125,7 @@ good RCAs. Estimated: M15 one focused session, M17 one session, M16 rides along.
 > 4. Seed the profile from the existing memory entity automatically on first deploy, or wait for the Settings form? *(default: pre-fill a pending suggestion, owner approves in Settings)*
 > 5. Opus specifically, or "best available Anthropic model on Bedrock at build time"? *(default: Opus; fallback is hold-disabled, never downgrade)*
 
-### M15 — Base Knowledge Layer  `[ ]`
+### M15 — Base Knowledge Layer  `[x]`  (built + deployed 2026-07-24)
 
 **Definition of Done:** every minted session (web, Android, fallback turns) carries a
 server-built BASE KNOWLEDGE block — identity, home location, local date/time, timezone, units,
@@ -133,13 +133,67 @@ contact email; the weather tool works with **no location argument** (profile def
 coordinates, no geocode leg) and correctly resolves "City, ST" when a location *is* given; the
 profile is owner-editable in the web Settings drawer and versioned like the rest of the settings doc.
 
-- `[ ]` **O** — **Profile schema** (`contracts/settings.schema.json` + `internal/store`): new `profile` section of the settings document (rides the existing optimistic-concurrency version + cross-tab sync for free): `displayName`, `pronouns?`, `homeLocation {label, postalCode?, city?, admin1?, country?, lat, lon, timezone}`, `workLocation?`, `units (imperial|metric)`, `locale?`, `contactEmail`, `quietHours?`, `notes[]` (≤200 chars each, cap ~20). Locations stored **geocode-verified** (lat/lon resolved at save time, never at question time).
-- `[ ]` **S** — **Server-side directive builder** (`internal/realtime/baseknowledge.go`): `BuildBaseKnowledge(profile, now)` → compact block appended in the mint chain (after `memoryUsageDirective`, before the guide suffix — same anti-injection posture: server-resolved, never client-supplied). Includes **current local date + time** from the profile timezone at mint (the model has no clock at all today). Also injected into fallback-turn completions.
-- `[ ]` **S** — **Tool-context defaults** (`internal/tools`): `Deps` gains the resolved profile. `get_weather.location` becomes **optional** → defaults to profile coordinates (skips geocoding entirely); `units` defaults from profile; scheduler/timer tools default to profile timezone.
-- `[ ]` **S** — **Weather geocoding hardening:** split "City, admin" on comma → `name=City`, `count=5`, rank candidates by admin1/country match and proximity to profile home (kills "Paris, TX → France"); pass bare postal codes through unchanged. Table-driven tests for the shapes that fail today: "Huntersville, NC", "Paris, TX", "Charlotte", "28078".
-- `[ ]` **S** — **Settings UI "About you"** (`conversation.html` + `settings.mjs`): name, pronouns, home/work location (typeahead against the Open-Meteo geocoder — **selection only** per house UI rules; ZIP accepted; saves resolved lat/lon+timezone, shows the resolved label back), units toggle, notes list. Server PUT validates via schema.
-- `[ ]` **S** — **Bootstrap from memory:** one-time assisted seed — "Suggest my profile" runs `memory_search` for home/work/name facts and pre-fills the form for confirmation (never silently copies memory → profile).
-- `[ ]` **H** — `contracts/api.md` + `settings.schema.json` docs; plan notes.
+- `[x]` **O** — **Profile schema** (`contracts/settings.schema.json` + `internal/store`): new `profile` section of the settings document (rides the existing optimistic-concurrency version + cross-tab sync for free): `displayName`, `pronouns?`, `homeLocation {label, postalCode?, city?, admin1?, country?, lat, lon, timezone}`, `workLocation?`, `units (imperial|metric)`, `locale?`, `contactEmail`, `quietHours?`, `notes[]` (≤200 chars each, cap ~20). Locations stored **geocode-verified** (lat/lon resolved at save time, never at question time).
+- `[x]` **S** — **Server-side directive builder** (`internal/realtime/baseknowledge.go`): `BuildBaseKnowledge(profile, now)` → compact block appended in the mint chain (after `memoryUsageDirective`, before the guide suffix — same anti-injection posture: server-resolved, never client-supplied). Includes **current local date + time** from the profile timezone at mint (the model has no clock at all today). Also injected into fallback-turn completions.
+- `[x]` **S** — **Tool-context defaults** (`internal/tools`): `Deps` gains the resolved profile. `get_weather.location` becomes **optional** → defaults to profile coordinates (skips geocoding entirely); `units` defaults from profile; scheduler/timer tools default to profile timezone.
+- `[x]` **S** — **Weather geocoding hardening:** split "City, admin" on comma → `name=City`, `count=5`, rank candidates by admin1/country match and proximity to profile home (kills "Paris, TX → France"); pass bare postal codes through unchanged. Table-driven tests for the shapes that fail today: "Huntersville, NC", "Paris, TX", "Charlotte", "28078".
+- `[x]` **S** — **Settings UI "About you"** (`conversation.html` + `settings.mjs`): name, pronouns, home/work location (typeahead against the Open-Meteo geocoder — **selection only** per house UI rules; ZIP accepted; saves resolved lat/lon+timezone, shows the resolved label back), units toggle, notes list. Server PUT validates via schema.
+- `[x]` **S** — **Bootstrap from memory:** one-time assisted seed — "Suggest my profile" runs `memory_search` for home/work/name facts and pre-fills the form for confirmation (never silently copies memory → profile).
+- `[x]` **H** — `contracts/api.md` + `settings.schema.json` docs; plan notes.
+
+**Implementation notes (2026-07-24).** Built and shipped in one pass. `go build/vet/test ./...`,
+`node --check` on every `.mjs`, and `sam validate --lint` all green. No new AWS resources, no IAM
+changes, no new secrets — the profile rides the existing settings document.
+
+- **Files added:** `internal/store/profile.go` (typed read view, `LoadProfile` projected GetItem,
+  `ProfileFromDoc`, the shared `USStateName` table), `internal/realtime/baseknowledge.go`
+  (`BuildBaseKnowledge`), `internal/tools/geocode.go` (split + rank),
+  `internal/webapp/profile_routes.go` (`GET /api/v1/geocode`, `POST /api/v1/profile/suggest`,
+  `validateProfile`), plus a test file for each.
+- **Files changed:** `contracts/settings.schema.json` (`profile` + `$defs/profileLocation`),
+  `internal/store/settings.go` (profile in `DefaultSettings`), `cmd/realtime-broker/main.go` (all
+  three mint paths), `internal/realtime/fallback{,_tools}.go` (new `extraSystem` parameter),
+  `internal/tools/{weather,scheduler,registry}.go`, `internal/webapp/settings_routes.go`,
+  `cmd/web/main.go`, `web/templates/pages/conversation.html`, `web/static/js/settings.mjs`,
+  `web/static/css/app.css`, `contracts/api.md`.
+- **Composition order (a contract, test-enforced by `TestBaseKnowledgeComposesAfterSessionDirectives`):**
+  persona → `SessionDirectives` (memory + silence) → **BASE KNOWLEDGE** → accent → guides.
+  Applied identically on the OpenAI mint, the Gemini mint, and the text fallback turn — a degraded
+  turn now knows the same facts a voice session does, which is why `Turn`/`TurnWithTools` grew an
+  `extraSystem` parameter rather than the block being bolted on at one call site.
+- **`time/tzdata` is a load-bearing import** in `baseknowledge.go`. Lambda's `provided.al2023`
+  image ships no `/usr/share/zoneinfo`, so without it every `LoadLocation` would fail and the clock
+  line would silently render in UTC **in production while passing locally**. `TestTimezoneDatabaseIsAvailable`
+  guards it. Do not remove the blank import.
+- **The weather fix is two independent fixes.** (1) With a home on file the model omits `location`
+  entirely and the handler goes straight to the stored coordinates — **zero geocoding requests**,
+  asserted in `TestGetWeatherWithNoLocationUsesProfileHome`. (2) When a location *is* given, the
+  `"City, ST"` compound is split before the call (the geocoder's name index has no compound
+  entries — this is exactly why "Huntersville, NC" returned nothing while "28078" worked) and up to
+  five candidates are ranked: +40 admin1 match (via the US state-abbreviation table), +30 country,
+  +0–9 proximity to home. Proximity deliberately can never outrank an explicit hint, so
+  "Paris, France" from a Charlotte home still resolves to France.
+- **Locations are pickers, not text boxes**, per the house rule. `GET /api/v1/geocode` returns
+  exactly the stored shape so the client saves the selected record verbatim, and `validateProfile`
+  **rejects** any location without numeric lat/lon. That rejection is what makes the geocode-free
+  weather path trustworthy — accepting a coordinate-less location would quietly recreate the
+  free-text field this design exists to remove.
+- **`Deps.Profile` is a loader, not a value** (`internal/tools/registry.go`): `Deps` is
+  process-wide while a profile is per-user, so the invocation's verified `UserID` picks the row and
+  one user's profile can never leak into another's tool call. `profileFor` is nil-safe — a registry
+  built without it sees the zero profile and behaves exactly as pre-M15.
+- **Bug caught by its own test:** the profile-home path first passed `home.Label` as the candidate
+  *name*, so `Label()` re-appended admin1/country and rendered "Huntersville, North Carolina,
+  United States, North Carolina, United States". The city now feeds the composer.
+- **Scheduler:** `at` accepts an offset-less local datetime interpreted in the profile timezone.
+  This only became worth doing *because* the model now has a clock — it emits `2026-07-25T09:00`
+  far more often than correctly-offset RFC3339, which used to be a hard `invalid_args`.
+- **Not in this milestone:** the `profile_suggest` *tool* (that is M16). `POST /api/v1/profile/suggest`
+  is an owner-triggered button that writes nothing, and it never auto-applies a location — only
+  plain-text fields prefill; a location must still be picked so it carries real coordinates.
+- **Owner action to make this live:** open Settings → **About you**, pick your home location, and
+  confirm units. Until a profile exists every mint is byte-identical to before — the feature is
+  inert, not half-on.
 
 ### M16 — Knowledge Refinement Loop  `[ ]`
 

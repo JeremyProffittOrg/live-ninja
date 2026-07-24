@@ -55,13 +55,13 @@ type fakeFallback struct {
 	turnWithTools int
 }
 
-func (f *fakeFallback) Turn(_ context.Context, _ string, text string) (string, error) {
+func (f *fakeFallback) Turn(_ context.Context, _ string, text string, _ string) (string, error) {
 	f.turnCalls++
 	f.gotTurnText = text
 	return f.turnText, f.turnErr
 }
 
-func (f *fakeFallback) TurnWithTools(_ context.Context, _ string, messages []realtime.ChatMessage) (*realtime.TurnResult, error) {
+func (f *fakeFallback) TurnWithTools(_ context.Context, _ string, messages []realtime.ChatMessage, _ string) (*realtime.TurnResult, error) {
 	f.turnWithTools++
 	f.gotMessages = messages
 	return f.toolsResult, f.toolsErr

@@ -58,6 +58,18 @@ func TestRenderAllPages(t *testing.T) {
 				// 2026-07-19) — the standalone /settings page is gone, so
 				// this page's render must carry its controls.
 				`id="personaPreset"`,
+				// M15 "About you": the Base Knowledge form. The locations are
+				// comboboxes backed by GET /api/v1/geocode, never free text —
+				// if these ever regress to bare inputs, a stored location
+				// loses its coordinates and every weather/time answer degrades.
+				`id="sectionAbout"`,
+				`id="profileDisplayName"`,
+				`id="profileHomeInput"`,
+				`role="combobox"`,
+				`id="profileHomeListbox"`,
+				`name="profileUnits"`,
+				`id="profileNotesList"`,
+				`id="profileSuggestBtn"`,
 				"Each persona carries its own voice and accent",
 				"Sign out everywhere",
 			},

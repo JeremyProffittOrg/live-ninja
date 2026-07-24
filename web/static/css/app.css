@@ -1845,3 +1845,29 @@ dialog.conv-drawer[open] {
 .conv-drawer__cost-label { font-weight: 700; text-transform: uppercase; font-size: var(--ln-fs-xs); letter-spacing: 0.05em; }
 .conv-drawer__cost-value { color: var(--ln-text); font-weight: 700; font-variant-numeric: tabular-nums; }
 .conv-drawer__cost-sub { font-size: var(--ln-fs-xs); color: var(--ln-text-dim); }
+
+/* ====================================================================
+   ABOUT YOU / BASE KNOWLEDGE (M15)
+   ==================================================================== */
+/* Text box + button on one row: the control heights MUST match, and the
+   TEXT BOX is the reference — align-items:stretch plus a zero min-height
+   override on the button makes the button take the input's height rather
+   than imposing its own. */
+.ln-locationrow { display: flex; gap: var(--ln-sp-3); align-items: stretch; }
+.ln-locationrow .ln-input { flex: 1 1 auto; min-width: 0; }
+.ln-locationrow .ln-btn { flex: 0 0 auto; min-height: 0; align-self: stretch; }
+
+/* The resolved place echoed back after a pick — proof the coordinates and
+   timezone were actually stored, not just the text the user typed. */
+.ln-resolved {
+  margin-top: var(--ln-sp-2);
+  font-size: var(--ln-fs-sm);
+  color: var(--ln-text);
+  display: flex; align-items: center; gap: var(--ln-sp-2);
+}
+.ln-resolved::before { content: "📍"; font-size: 1em; }
+.ln-resolved .ln-resolved__tz { color: var(--ln-text-dim); }
+
+/* A saved fact chip carries its own remove control. */
+.ln-notechip { max-width: 100%; }
+.ln-notechip__text { overflow-wrap: anywhere; }
