@@ -264,8 +264,8 @@ the loop and the usage is steady enough to amortize the bridge.
 
 ## References
 
-- `plan.md` → **M12 — Secondary Voice Engine (Nova Sonic)** (DoD + task list).
-- `gemini-plan.md` → **M13 — Tertiary Voice Engine (Gemini Flash Live)** (protocol facts, mint recipe, DoD).
+- `archive/plan.md` → **M12 — Secondary Voice Engine (Nova Sonic)** (DoD + task list; Nova is disabled — see `backlog.md`).
+- `archive/gemini-plan.md` → **M13 — Tertiary Voice Engine (Gemini Flash Live)** (protocol facts, mint recipe, DoD).
 - PRD → **FR-VE-01..04**.
 - `contracts/api.md` → `GET /v1/realtime/session`, `WSS /v1/realtime/bridge/{sessionId}`.
 - `contracts/settings.schema.json` → `#/properties/voiceEngine`.

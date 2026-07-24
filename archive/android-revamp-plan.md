@@ -1,3 +1,7 @@
+> **MIGRATED — 2026-07-24.** This plan is archived. Its unfinished items were consolidated into
+> [/plan.md](../plan.md) and any deliberately-deferred items into [/backlog.md](../backlog.md).
+> Kept here as a historical record — do not edit; track live work in /plan.md.
+
 # Live Ninja Android Same-Day Revamp — Execution Plan (2026-07-20)
 
 **Goal:** installable debug APK link emailed to proffitt.jeremy@gmail.com TODAY, containing: crash fixes, screen-off/locked voice sessions, HAL 9000 theme, verbose exportable logging. Style picker (ninja/minimal/terminal) and polish ship in a second build if time allows.

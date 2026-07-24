@@ -1,3 +1,7 @@
+> **MIGRATED — 2026-07-24.** This plan is archived. Its unfinished items were consolidated into
+> [/plan.md](../plan.md) and any deliberately-deferred items into [/backlog.md](../backlog.md).
+> Kept here as a historical record — do not edit; track live work in /plan.md.
+
 # Live Ninja — Base Knowledge Layer + Tool-Failure Agentic RCA
 
 > **Status:** authoring / awaiting owner go · **Owner:** jeremy · 2026-07-19

@@ -1,3 +1,7 @@
+> **MIGRATED — 2026-07-24.** This plan is archived. Its unfinished items were consolidated into
+> [/plan.md](../plan.md) and any deliberately-deferred items into [/backlog.md](../backlog.md).
+> Kept here as a historical record — do not edit; track live work in /plan.md.
+
 # Gemini Flash Live — Third Voice Engine Integration Plan (M13)
 
 > **Status:** LOCKED 2026-07-19 (question pass complete) — ready for autonomous execution · **Owner:** jeremy · **Repo:** `JeremyProffittOrg/live-ninja`

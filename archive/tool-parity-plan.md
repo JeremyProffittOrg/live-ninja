@@ -1,3 +1,7 @@
+> **MIGRATED — 2026-07-24.** This plan is archived. Its unfinished items were consolidated into
+> [/plan.md](../plan.md) and any deliberately-deferred items into [/backlog.md](../backlog.md).
+> Kept here as a historical record — do not edit; track live work in /plan.md.
+
 # Live Ninja — Tool Manifest Parity & Correctness
 
 > **Status:** COMPLETE — M18 `[x]`, M19 `[x]`, and M20 `[x]` all complete 2026-07-20 (see
