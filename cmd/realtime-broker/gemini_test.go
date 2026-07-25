@@ -193,3 +193,26 @@ func TestMintNovaPinNeverTouchesGemini(t *testing.T) {
 	assert.Equal(t, "nova_bridge_unavailable", resp.Error)
 	assert.Equal(t, 0, gm.calls)
 }
+
+// TestMintGeminiFailureWithoutDefaultEngineDoesNotPanic guards the fallback's
+// escape hatch. When a Gemini mint fails the broker now cascades to the default
+// engine rather than returning 502 — but with no OpenAI minter configured there
+// is nothing to cascade to, and dereferencing the nil minter would turn a handled
+// error into a panicking Lambda. The original Gemini error must survive intact.
+//
+// The happy-path cascade (Gemini fails -> OpenAI mints successfully) is
+// deliberately NOT covered here: broker.minter is a concrete *realtime.Minter
+// rather than an interface, so it cannot be faked without a wider refactor. That
+// path is currently only exercised in production, which is worth stating plainly
+// rather than implying more coverage than exists.
+func TestMintGeminiFailureWithoutDefaultEngineDoesNotPanic(t *testing.T) {
+	ddb := testutil.NewFakeDynamo()
+	seedEnginePin(t, ddb, "u1", "gemini-flash-live")
+	b := newGeminiTestBroker(ddb, &fakeGeminiMint{err: errors.New("boom")})
+	require.Nil(t, b.minter, "this test's premise is that no default engine is wired")
+
+	resp, err := b.Handle(context.Background(), Request{UserID: "u1", Surface: "web"})
+	require.NoError(t, err)
+	assert.Equal(t, "mint_failed", resp.Error)
+	assert.Equal(t, 502, resp.Code)
+}

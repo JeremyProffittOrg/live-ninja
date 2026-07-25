@@ -323,8 +323,34 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 
 	// Gemini-pinned device (M13): client-direct WSS to Gemini Live with a
 	// single-use config-constrained ephemeral token — no bridge, no new infra.
+	//
+	// The engines below tell the caller to "use the fallback cascade" when they
+	// cannot mint — but no client has ever implemented one, so a pinned engine
+	// that is down was a hard 502 with no way out except changing the setting.
+	// That is exactly what a device pinned to Gemini hit: Gemini's ephemeral-token
+	// endpoint rejects API-key auth outright (ACCESS_TOKEN_TYPE_UNSUPPORTED), so
+	// EVERY mint 502'd and the surface simply could not start a conversation.
+	//
+	// The cascade belongs here rather than in each client: one implementation
+	// covers web, Android and anything added later, and the broker is the only
+	// place that knows which engines are actually configured. A pinned engine is
+	// a preference, not a constraint worth failing the user over.
 	if engine == voiceengine.EngineGeminiFlashLive {
-		return b.handleGeminiDirect(ctx, l, req, sessionID, warnings)
+		resp := b.handleGeminiDirect(ctx, l, req, sessionID, warnings)
+		// Nothing to fall back TO if the default engine is not configured — return
+		// the original error rather than pretending, or dereferencing a nil minter.
+		if resp.Error == "" || b.minter == nil {
+			return resp
+		}
+		l.Warn("realtime-broker: pinned engine could not mint; falling back",
+			slog.String("engine", string(voiceengine.EngineGeminiFlashLive)),
+			slog.String("error", resp.Error),
+			slog.String("sessionId", sessionID))
+		observ.EmitMetric(metricsNamespace, "EngineFallback", 1, "Count",
+			map[string]string{"Surface": req.Surface, "From": string(voiceengine.EngineGeminiFlashLive)})
+		// Tell the user once, plainly, rather than silently changing engines on
+		// them — a voice that sounds different with no explanation is its own bug.
+		warnings = append(warnings, "Gemini Live is unavailable right now; using the default voice engine for this conversation.")
 	}
 
 	// Persona-embedded voice identity (personas are the unit of voice
