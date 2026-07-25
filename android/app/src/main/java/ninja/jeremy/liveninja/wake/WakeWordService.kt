@@ -565,7 +565,21 @@ class WakeWordService : Service() {
          * to `false` on a fresh process (the only way this flag could otherwise go stale
          * is a hard process kill, which also resets it).
          */
-        @Volatile var isRunning: Boolean = false
+        @Volatile
+        var isRunning: Boolean = false
+            set(value) {
+                field = value
+                runningFlow.value = value
+            }
+
+        /**
+         * Observable mirror of [isRunning] (WS-5 M21.4). The Settings switch needs the
+         * *actual* service state, not just the persisted `serviceEnabled` intent: on
+         * Android 15+ a microphone FGS cannot be started from BOOT_COMPLETED, so after a
+         * reboot the flag stays true while nothing is listening. Reporting only the flag
+         * makes the switch claim the assistant is awake when it is not.
+         */
+        val runningFlow: MutableStateFlow<Boolean> = MutableStateFlow(false)
 
         const val ACTION_START = "ninja.jeremy.liveninja.wake.START"
         const val ACTION_MUTE = "ninja.jeremy.liveninja.wake.MUTE"

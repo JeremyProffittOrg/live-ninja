@@ -76,6 +76,12 @@ data class SettingsUiState(
     val doc: SettingsDocument,
     val wakeOptions: List<WakeWordOption> = emptyList(),
     val wakeCatalogOffline: Boolean = false,
+    /**
+     * Catalog id of the head model actually loaded on this device (WS-5 M21.3). When it
+     * differs from `doc.wakeWord` the selected phrase cannot be detected, and Settings
+     * says so instead of letting the picker imply otherwise.
+     */
+    val activeWakeWordId: String = "",
     val micDevices: List<MicDeviceOption> = emptyList(),
     val personaPresets: List<PersonaPreset> = SettingsViewModel.PERSONA_PRESETS,
     /** Gemini Live voice catalog; empty until fetched (or when the fetch failed offline). */
@@ -130,6 +136,23 @@ class SettingsViewModel @Inject constructor(
      * to follow the service, not a copy of it.
      */
     val wakeServiceEnabled: StateFlow<Boolean> = wakePrefs.serviceEnabledFlow
+
+    /**
+     * Whether the wake service is *actually* running (WS-5 M21.4), as opposed to
+     * [wakeServiceEnabled] which is only the persisted intent. The two diverge after a
+     * reboot, because Android 15+ refuses a microphone FGS start from BOOT_COMPLETED.
+     */
+    val wakeServiceRunning: StateFlow<Boolean> = ninja.jeremy.liveninja.wake.WakeWordService.runningFlow
+
+    init {
+        // Track the loaded head model so the wake picker can flag a selection that has
+        // no model behind it yet (WS-5 M21.3).
+        viewModelScope.launch {
+            modelManager.headModel.collect { ref ->
+                _state.update { it.copy(activeWakeWordId = ref.wakeWordId) }
+            }
+        }
+    }
 
     private val _notices = MutableSharedFlow<SettingsNotice>(extraBufferCapacity = 4)
     val notices: SharedFlow<SettingsNotice> = _notices

@@ -107,14 +107,28 @@ class WakeWordCatalogRepository @Inject constructor(
     companion object {
         /**
          * Shipped phrase set (mirrors mockups/android/07-wakeword-manager.html's
-         * pre-trained model library). `hey-live-ninja` is the platform default
-         * model every client bundles (wakeword-manifest.md fallback rule).
+         * pre-trained model library).
+         *
+         * `hey-jarvis` is what this build actually bundles
+         * (ModelManager.ASSET_DEFAULT_HEAD); `hey-live-ninja` is the platform default
+         * per wakeword-manifest.md but needs its trained model synced before the
+         * detector can match it. Entries must never claim a phrase is available when
+         * no model backs it — that is exactly the WS-5 M21.3 defect.
          */
         val BUILT_IN = listOf(
+            // The bundled asset really is openWakeWord's public "hey jarvis" v0.1
+            // (ModelManager.ASSET_DEFAULT_HEAD). It is listed first and honestly,
+            // because it is the only phrase that works out of the box.
+            WakeWordOption(
+                id = "hey-jarvis",
+                label = "“Hey Jarvis”",
+                description = "Bundled model · works offline, no training needed",
+                engines = listOf("openwakeword"),
+            ),
             WakeWordOption(
                 id = "hey-live-ninja",
                 label = "“Hey Live Ninja”",
-                description = "Default phrase · bundled model, always available",
+                description = "Platform default · needs a trained model synced to this device",
                 engines = listOf("openwakeword"),
             ),
             WakeWordOption(

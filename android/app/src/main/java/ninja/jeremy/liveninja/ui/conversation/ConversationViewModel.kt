@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import ninja.jeremy.liveninja.realtime.TranscriptStore
+import ninja.jeremy.liveninja.wake.ModelManager
 import ninja.jeremy.liveninja.ui.overlay.LiveOverlayController
 import ninja.jeremy.liveninja.ui.overlay.OverlayMicState
 import ninja.jeremy.liveninja.ui.state.RealtimeSessionController
@@ -51,7 +52,11 @@ data class ConversationUiState(
     val error: ConversationError? = null,
     val errorDetail: String? = null,
     /** Wake phrase label for the idle caption ("Listening for …"). */
-    val wakePhraseLabel: String = "Hey Live Ninja",
+    val wakePhraseLabel: String = "Hey Jarvis",
+    /** Catalog id the user selected in Settings (may have no model on this device yet). */
+    val selectedWakeWordId: String = "",
+    /** Catalog id of the head model actually loaded — what the detector can match. */
+    val activeWakeWordId: String = "",
 )
 
 @HiltViewModel
@@ -60,6 +65,7 @@ class ConversationViewModel @Inject constructor(
     private val overlay: LiveOverlayController,
     settingsStore: SettingsStore,
     private val transcriptStore: TranscriptStore,
+    private val modelManager: ModelManager,
 ) : ViewModel() {
 
     private val sessionController: RealtimeSessionController? = sessionControllerOpt.orElse(null)
@@ -85,9 +91,28 @@ class ConversationViewModel @Inject constructor(
         }
         viewModelScope.launch {
             settingsStore.document.collect { doc ->
-                _state.update { it.copy(wakePhraseLabel = wakeLabelFor(doc.wakeWord)) }
+                // Deliberately NOT doc.wakeWord. The selected catalog id is an
+                // aspiration; the phrase the detector can actually match is whatever
+                // head model is loaded. Advertising a phrase with no model behind it
+                // is how the home screen ended up promising "Hey Live Ninja" on a
+                // build that only bundles hey_jarvis (WS-5 M21.3).
+                _state.update { it.copy(selectedWakeWordId = doc.wakeWord) }
             }
         }
+        // The wake caption follows the loaded head model (WS-5 M21.3): ModelManager
+        // emits on every verified swap, so the hint changes the moment a newly
+        // downloaded phrase becomes active.
+        viewModelScope.launch {
+            modelManager.headModel.collect { ref ->
+                _state.update {
+                    it.copy(
+                        activeWakeWordId = ref.wakeWordId,
+                        wakePhraseLabel = wakeLabelFor(ref.wakeWordId),
+                    )
+                }
+            }
+        }
+
         // Mic state is derived from the singleton session's `connected` — so a
         // session started with the screen off (by SessionOrchestrator) is
         // reflected the moment the UI attaches, not only on an in-app tap.

@@ -109,6 +109,7 @@ fun SettingsScreen(
     val viewModel: SettingsViewModel = hiltViewModel()
     val state by viewModel.state.collectAsState()
     val wakeServiceEnabled by viewModel.wakeServiceEnabled.collectAsState()
+    val wakeServiceRunning by viewModel.wakeServiceRunning.collectAsState()
     val doc = state.doc
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
@@ -187,20 +188,35 @@ fun SettingsScreen(
             val micLauncher = rememberLauncherForActivityResult(
                 ActivityResultContracts.RequestPermission(),
             ) { granted -> if (granted) WakeWordService.start(context) }
+            // WS-5 M21.4: the switch shows whether listening is actually happening, not
+            // just whether it was requested. After a reboot those differ — the flag stays
+            // true while nothing is listening — and a switch that reads ON while the
+            // assistant is deaf is worse than one that reads OFF.
+            val wakePaused = wakeServiceEnabled && !wakeServiceRunning
+            val startListening: () -> Unit = {
+                if (micGranted) WakeWordService.start(context)
+                else micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
             LabeledSwitchRow(
                 label = stringResource(R.string.settings_wake_service_label),
                 description = stringResource(R.string.settings_wake_service_desc),
-                checked = wakeServiceEnabled,
+                checked = wakeServiceRunning,
                 onCheckedChange = { enable ->
-                    when {
-                        !enable -> WakeWordService.stop(context)
-                        // Starting a microphone foreground service without the permission
-                        // throws, so ask first and start from the grant callback.
-                        micGranted -> WakeWordService.start(context)
-                        else -> micLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                    }
+                    // In the paused state the switch already reads OFF, so a tap means
+                    // "resume", never "stop".
+                    if (enable || wakePaused) startListening() else WakeWordService.stop(context)
                 },
             )
+            if (wakePaused) {
+                Text(
+                    stringResource(R.string.settings_wake_service_paused),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                OutlinedButton(onClick = startListening) {
+                    Text(stringResource(R.string.settings_wake_service_resume))
+                }
+            }
             if (!micGranted) {
                 Text(
                     stringResource(R.string.settings_wake_service_needs_mic),
@@ -302,6 +318,21 @@ fun SettingsScreen(
                         stateDescription = "$sensitivityPercent percent"
                     },
             )
+            // WS-5 M21.3: never let the picker imply a phrase works when no model
+            // backs it. activeWakeWordId comes from the loaded head model.
+            val activeWake = state.activeWakeWordId
+            if (activeWake.isNotEmpty() && doc.wakeWord.isNotEmpty() && activeWake != doc.wakeWord) {
+                Text(
+                    stringResource(
+                        R.string.settings_wake_phrase_unavailable,
+                        state.wakeOptions.firstOrNull { it.id == activeWake }?.label
+                            ?: activeWake,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+
             Text(
                 stringResource(R.string.settings_sensitivity_hint),
                 style = MaterialTheme.typography.bodySmall,
