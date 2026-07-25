@@ -43,12 +43,30 @@ const ephemeralTTLSeconds = 60
 // memory_search while the owner asked "what is my home address") — the model
 // answers personal-fact questions from the conversation alone unless told,
 // per session, that persistent memory exists and must be consulted.
+// M16 extends it with the base-knowledge split. Two stores now hold facts
+// about the user and they are NOT interchangeable: the profile is server-
+// injected into these very instructions (the BASE KNOWLEDGE block below) and
+// feeds tool defaults, while memory is episodic and only arrives when the model
+// chooses to search. Without the split spelled out, the model does the wrong
+// thing in both directions — it memory_writes "I prefer Celsius" (a standing
+// preference that then never reaches a session) and it re-asks for a home
+// address that is already in front of it.
 const memoryUsageDirective = "\n\nYou have persistent long-term memory from previous conversations, " +
 	"accessed through the memory_search tool. Before answering any question about the user's " +
 	"personal facts — addresses, people, dates, preferences, projects, plans, or anything they may " +
 	"have told you before — call memory_search first. Never claim you don't know or can't remember " +
 	"a personal fact without having searched. Use memory_write to save new lasting facts the user " +
-	"shares."
+	"shares.\n\nTwo stores, two purposes. STABLE facts that should hold in every future " +
+	"conversation — the user's name, pronouns, home or work location, preferred units, email, " +
+	"locale, or any standing preference — belong in their base-knowledge profile, which the server " +
+	"lists for you in the facts block of these instructions whenever it is set. Never search " +
+	"memory for a fact that block already states, and never use memory_write for one: propose it " +
+	"with profile_suggest instead. EPISODIC facts — what happened, who was there, what was " +
+	"decided, one-off plans, anything tied to a moment — belong in memory_write. profile_suggest " +
+	"only queues a change for the account owner to confirm in Settings; units and a new always-true " +
+	"fact they explicitly asked you to remember can apply immediately, and the result says so. " +
+	"Unless the result says it was applied, tell the user you have suggested the change — never " +
+	"that it is in effect."
 
 // silenceDirective follows memoryUsageDirective in every session's
 // instructions. The session's mic keeps streaming through the keep-warm

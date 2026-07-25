@@ -60,6 +60,12 @@ type Deps struct {
 	BrokerFn string
 	// SQSEmailURL is the EmailQueue URL (EMAIL_QUEUE_URL env).
 	SQSEmailURL string
+	// SQSRcaURL is the M17 RcaQueue URL (RCA_QUEUE_URL env). Empty leaves
+	// tools.Deps.RCA nil, which makes the tool router's failure hook inert —
+	// tools keep working, no root-cause analyses are ever requested. The queue
+	// itself is unconditional in template.yaml (only the analyzer function is
+	// gated on RcaEnable), so this is normally always set in production.
+	SQSRcaURL string
 
 	SQS    SQSSendAPI
 	Lambda LambdaInvokeAPI

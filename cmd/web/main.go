@@ -201,6 +201,7 @@ func buildDeps(ctx context.Context, cfg config.App, logger *slog.Logger) (*webap
 		Log:                 logger,
 		BrokerFn:            os.Getenv("BROKER_FUNCTION_NAME"),
 		SQSEmailURL:         cfg.EmailQueueURL,
+		SQSRcaURL:           os.Getenv("RCA_QUEUE_URL"),
 		SQS:                 sqs.NewFromConfig(awsCfg),
 		Lambda:              lambdaClient,
 		Firehose:            firehose.NewFromConfig(awsCfg),
@@ -208,6 +209,14 @@ func buildDeps(ctx context.Context, cfg config.App, logger *slog.Logger) (*webap
 	}
 	if deps.TelemetryStreamName == "" {
 		logger.Warn("telemetry lake disabled (TELEMETRY_FIREHOSE_STREAM_NAME not set)")
+	}
+	// M17: RcaQueue is created unconditionally by template.yaml (only the
+	// analyzer function is gated on RcaEnable), so an empty RCA_QUEUE_URL here
+	// means the env var was dropped from the template, not that RCA is off. Warn
+	// loudly — the symptom otherwise is silence: tools keep working and no tool
+	// failure is ever analysed.
+	if deps.SQSRcaURL == "" {
+		logger.Warn("tool-failure RCA enqueue disabled (RCA_QUEUE_URL not set)")
 	}
 
 	// M9 deliverables service: only wired when the dedicated bucket is

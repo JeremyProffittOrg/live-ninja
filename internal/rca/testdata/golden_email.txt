@@ -1,0 +1,42 @@
+Live Ninja RCA — get_weather / invalid_args
+rcaId aa11bb22cc33   txId 8f2c1d6e-0000-4000-8000-000000000001   confidence high
+
+SYMPTOM
+  get_weather was called with a one-character location placeholder
+
+ROOT CAUSE
+  The model emitted "x" for the location argument instead of omitting it, so the router's
+  MinLen=2 gate rejected the call before internal/tools/weather.go could fall back to the
+  profile's stored home coordinates.
+
+EVIDENCE
+  1. the audit turn shows args={"location":"x"}
+  2. the profile has a geocode-resolved home location
+
+SUGGESTED CODE FIXES
+  1. internal/tools/weather.go: describe in the location param that omitting it uses the profile home location
+  2. internal/realtime/baseknowledge.go: state the stored home location explicitly in BASE KNOWLEDGE
+
+REPRO STEPS
+  1. POST /api/v1/tools/invoke with {"tool":"get_weather","args":{"location":"x"}}
+
+BASE-KNOWLEDGE SUGGESTIONS (filed as pending; approve in Settings > About you)
+  - profile.units = metric — the user asked for celsius twice   [PROFSUGG id ff00aa11bb22]
+
+CONTEXT
+  occurred      2026-07-25T14:03:11.482913Z
+  surface       web        engine  gpt-realtime
+  session       sess-123   call    call_abc
+  args          {"location":"x"}
+  error         argument "location" must be at least 2 characters
+  turns in window   14
+  suppressed similar since last report   3
+  prior RCAs for this tool+code (30d)    2
+
+MODEL
+  us.anthropic.claude-opus-4-5-20251101-v1:0   in 6412 tok / out 744 tok   stop=end_turn
+  prompt sha256 0123456789ab
+
+-- 
+Automated by cmd/rca-analyzer. Deduped by failure signature 0123456789abcdef,
+1 analysis per hour per signature, 10 per UTC day.

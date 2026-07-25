@@ -7,6 +7,10 @@ package webapp
 //	GET  /api/v1/geocode?q=…      place typeahead backing the location pickers
 //	POST /api/v1/profile/suggest  memory-derived prefill for the "About you" form
 //
+// M16's approval queue (GET /api/v1/profile/suggestions and the resolve route)
+// is mounted by RegisterProfileRoutes below but implemented in
+// profile_suggestions_routes.go.
+//
 // The geocode route exists because of a house UI rule: a field whose valid
 // values are enumerable or queryable must be a picker, never a blind text box.
 // A home location is exactly that — so the form queries this endpoint and
@@ -54,10 +58,17 @@ const geocodeTimeout = 6 * time.Second
 // RegisterProfileRoutes mounts the profile-support API. svc may be nil (no
 // Bedrock embedder configured); the suggest route then answers 503
 // not_configured, exactly like the rest of the memory surface.
+//
+// The two /profile/suggestions routes are M16's approval queue
+// (profile_suggestions_routes.go) — deliberately mounted here beside the
+// geocode endpoint, because approving a location suggestion is finished by
+// picking a geocoder result and the two halves belong together.
 func RegisterProfileRoutes(app *fiber.App, deps *Deps, svc *memory.Service) {
 	api := app.Group("/api/v1", RequireAuth())
 	api.Get("/geocode", handleGeocode(deps))
 	api.Post("/profile/suggest", handleProfileSuggest(deps, svc))
+	api.Get("/profile/suggestions", handleListProfileSuggestions(deps))
+	api.Post("/profile/suggestions/:id/resolve", handleResolveProfileSuggestion(deps))
 }
 
 // geocodeSuggestion is one pickable place, already in the exact shape the
@@ -309,16 +320,20 @@ func validateProfile(doc map[string]any) string {
 		return "profile must be an object"
 	}
 
-	if msg := checkProfileString(p, "displayName", 80); msg != "" {
+	// The bounds come from store rather than from literals here: M16's
+	// auto-apply writes the same fields without going through this validator,
+	// and two copies of "80" would let one path start writing documents the
+	// other rejects.
+	if msg := checkProfileString(p, "displayName", store.MaxProfileNameChars); msg != "" {
 		return msg
 	}
-	if msg := checkProfileString(p, "pronouns", 32); msg != "" {
+	if msg := checkProfileString(p, "pronouns", store.MaxProfilePronounChars); msg != "" {
 		return msg
 	}
-	if msg := checkProfileString(p, "locale", 20); msg != "" {
+	if msg := checkProfileString(p, "locale", store.MaxProfileLocaleChars); msg != "" {
 		return msg
 	}
-	if msg := checkProfileString(p, "contactEmail", 254); msg != "" {
+	if msg := checkProfileString(p, "contactEmail", store.MaxProfileEmailChars); msg != "" {
 		return msg
 	}
 	if email, _ := p["contactEmail"].(string); email != "" && !strings.Contains(email, "@") {
@@ -363,8 +378,8 @@ func validateProfile(doc map[string]any) string {
 	case nil:
 		p["notes"] = []any{}
 	case []any:
-		if len(notes) > 20 {
-			return "profile.notes is limited to 20 entries"
+		if len(notes) > store.MaxProfileNotes {
+			return fmt.Sprintf("profile.notes is limited to %d entries", store.MaxProfileNotes)
 		}
 		cleaned := make([]any, 0, len(notes))
 		for _, n := range notes {
@@ -376,8 +391,9 @@ func validateProfile(doc map[string]any) string {
 			if s == "" {
 				continue
 			}
-			if len([]rune(s)) > 200 {
-				return "profile.notes entries must be at most 200 characters"
+			if len([]rune(s)) > store.MaxProfileNoteChars {
+				return fmt.Sprintf("profile.notes entries must be at most %d characters",
+					store.MaxProfileNoteChars)
 			}
 			cleaned = append(cleaned, s)
 		}
@@ -409,8 +425,9 @@ func validateProfileLocation(p map[string]any, key string) string {
 	}
 
 	label, _ := loc["label"].(string)
-	if strings.TrimSpace(label) == "" || len([]rune(label)) > 160 {
-		return "profile." + key + ".label must be a non-empty label of at most 160 characters"
+	if strings.TrimSpace(label) == "" || len([]rune(label)) > store.MaxProfileLabelChars {
+		return fmt.Sprintf("profile.%s.label must be a non-empty label of at most %d characters",
+			key, store.MaxProfileLabelChars)
 	}
 	lat, latOK := numberVal(loc["lat"])
 	lon, lonOK := numberVal(loc["lon"])

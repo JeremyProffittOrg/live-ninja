@@ -125,4 +125,14 @@ func TestBaseKnowledgeComposesAfterSessionDirectives(t *testing.T) {
 	require.True(t, personaAt < memoryAt, "persona first")
 	require.True(t, memoryAt < baseAt, "memory directive before base knowledge")
 	require.True(t, baseAt < guidesAt, "base knowledge before guides")
+
+	// The ordering assertions above locate the block by its header text, so
+	// that header has to be unique in the composed instructions — M16's
+	// memoryUsageDirective now talks ABOUT the profile, and if it ever spelled
+	// the header verbatim the three Index() calls above would silently start
+	// measuring the directive's mention instead of the block itself and pass no
+	// matter where the real block ended up.
+	require.Equal(t, 1, strings.Count(instructions, "BASE KNOWLEDGE"),
+		"the BASE KNOWLEDGE header must appear exactly once — the ordering assertions above "+
+			"locate the block by it, so a second mention (e.g. in a directive) makes them vacuous")
 }

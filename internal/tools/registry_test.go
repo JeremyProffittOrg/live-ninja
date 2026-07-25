@@ -27,6 +27,19 @@ func newTestDeps() *Deps {
 	}
 }
 
+// newTestDepsWithFake is newTestDeps plus a handle on the FakeDynamo behind
+// the Store, with DDB pointing at that same fake so NewRegistry can default
+// Deps.IdempotencyRelease from it — production wires one *dynamodb.Client into
+// both fields. newTestDeps deliberately leaves DDB nil (that is the "no
+// releaser wired" degradation path), so the two constructors stay separate.
+func newTestDepsWithFake() (*Deps, *testutil.FakeDynamo) {
+	fake := testutil.NewFakeDynamo()
+	d := newTestDeps()
+	d.Store = store.NewWithClient(fake, "live-ninja-test")
+	d.DDB = fake
+	return d, fake
+}
+
 func newTestRegistry(t *testing.T, deps *Deps) *Registry {
 	t.Helper()
 	r, err := NewRegistry(deps)
@@ -236,6 +249,144 @@ func TestSideEffectingToolRequiresIdempotencyKey(t *testing.T) {
 	assert.Equal(t, CodeInvalidArgs, res.Error.Code)
 	assert.Contains(t, res.Error.Message, "idempotencyKey")
 	assert.Equal(t, int64(0), calls.Load())
+}
+
+// registerFlakyTool adds a side-effecting tool whose handler counts its
+// executions and fails with whatever code *code points at ("" = succeed), so a
+// test can flip the outcome between two deliveries of the same call.
+func registerFlakyTool(t *testing.T, r *Registry, calls *atomic.Int64, code *string) {
+	t.Helper()
+	require.NoError(t, r.register(&Definition{
+		Name:          "flaky_tool",
+		Description:   "test-only side-effecting tool with a switchable failure",
+		SideEffecting: true,
+		Params: []ParamSpec{
+			{Name: "value", Type: "string", Required: true},
+		},
+		Handler: func(ctx context.Context, deps *Deps, inv Invocation, args map[string]any) (map[string]any, *ToolError) {
+			calls.Add(1)
+			if *code != "" {
+				return nil, toolErrf(*code, "handler failed before doing anything")
+			}
+			return map[string]any{"echo": args["value"]}, nil
+		},
+	}))
+}
+
+// TestIdempotencyClaimReleasedOnPreSideEffectFailure is the WS-3 3.2
+// regression test. The IDEMP# marker is claimed before the handler runs (which
+// is correct — it is what makes a duplicate delivery a no-op), but nothing
+// released it again when the handler failed without reaching its external
+// dependency. The next delivery of the same call therefore hit the marker and
+// was answered ok:true / duplicate:true "this call was already processed":
+// the side effect had never happened, yet the model — and the human it is
+// talking to — were told it had. This test fails on that behaviour (the second
+// Invoke reports a duplicate and the handler count stays at 1) and passes once
+// the claim is released.
+func TestIdempotencyClaimReleasedOnPreSideEffectFailure(t *testing.T) {
+	deps, fake := newTestDepsWithFake()
+	r := newTestRegistry(t, deps)
+
+	var calls atomic.Int64
+	code := CodeNotConfigured
+	registerFlakyTool(t, r, &calls, &code)
+
+	inv := invocation("flaky_tool", map[string]any{"value": "x"})
+	inv.IdempotencyKey = "idem-release"
+
+	// First delivery: the claim is taken, the handler runs and fails before
+	// any side effect.
+	res := r.Invoke(context.Background(), inv)
+	require.False(t, res.OK)
+	require.NotNil(t, res.Error)
+	assert.Equal(t, CodeNotConfigured, res.Error.Code)
+	assert.Equal(t, int64(1), calls.Load())
+	assert.Nil(t, fake.RawItem("IDEMP#user-1#idem-release", "IDEMP"),
+		"a handler failure with no side effect must not leave the claim behind")
+
+	// Re-delivery of the SAME call now executes for real instead of being
+	// swallowed as an already-processed duplicate.
+	code = ""
+	res = r.Invoke(context.Background(), inv)
+	require.True(t, res.OK)
+	assert.False(t, res.Duplicate, "the retry must execute, not report a phantom duplicate")
+	assert.Equal(t, "x", res.Output["echo"])
+	assert.Equal(t, int64(2), calls.Load())
+
+	// The successful claim IS retained, so a third delivery is a duplicate.
+	assert.NotNil(t, fake.RawItem("IDEMP#user-1#idem-release", "IDEMP"))
+	res = r.Invoke(context.Background(), inv)
+	require.True(t, res.OK)
+	assert.True(t, res.Duplicate)
+	assert.Equal(t, int64(2), calls.Load())
+}
+
+// TestIdempotencyClaimHeldOnUpstreamError pins the other half of the policy:
+// upstream_error means the external system was called and its outcome is
+// unknown, so the claim is kept and an identical re-delivery is refused rather
+// than risking a second email / a second MQTT publish. At-most-once wins over
+// retryability exactly where — and only where — the ambiguity is real.
+func TestIdempotencyClaimHeldOnUpstreamError(t *testing.T) {
+	deps, fake := newTestDepsWithFake()
+	r := newTestRegistry(t, deps)
+
+	var calls atomic.Int64
+	code := CodeUpstreamError
+	registerFlakyTool(t, r, &calls, &code)
+
+	inv := invocation("flaky_tool", map[string]any{"value": "x"})
+	inv.IdempotencyKey = "idem-hold"
+
+	res := r.Invoke(context.Background(), inv)
+	require.False(t, res.OK)
+	assert.Equal(t, CodeUpstreamError, res.Error.Code)
+	assert.NotNil(t, fake.RawItem("IDEMP#user-1#idem-hold", "IDEMP"),
+		"an ambiguous upstream failure must keep the claim")
+
+	// Even though the handler would now succeed, the identical re-delivery is
+	// refused: we cannot know the first attempt did not already act.
+	code = ""
+	res = r.Invoke(context.Background(), inv)
+	require.True(t, res.OK)
+	assert.True(t, res.Duplicate)
+	assert.Equal(t, int64(1), calls.Load())
+}
+
+func TestIdempotencyReleasableCodes(t *testing.T) {
+	for _, code := range []string{CodeInvalidArgs, CodeForbidden, CodeNotFound,
+		CodeAlreadyExists, CodeNotConfigured, CodeConfirmationRequired} {
+		assert.True(t, idempotencyReleasable(code), code)
+	}
+	// upstream_error is ambiguous; unknown_tool never comes from a handler;
+	// an unrecognized future code must default to holding the claim.
+	for _, code := range []string{CodeUpstreamError, CodeUnknownTool, "some_new_code", ""} {
+		assert.False(t, idempotencyReleasable(code), code)
+	}
+}
+
+// TestIdempotencyReleaseWithoutDeleteCapableClientIsInert guards the
+// degradation path: a registry whose DDB client cannot DeleteItem keeps the
+// pre-fix behaviour (the marker lives out its TTL) instead of panicking.
+func TestIdempotencyReleaseWithoutDeleteCapableClientIsInert(t *testing.T) {
+	deps := newTestDeps() // DDB nil -> no releaser defaulted
+	r := newTestRegistry(t, deps)
+	require.Nil(t, deps.IdempotencyRelease)
+
+	var calls atomic.Int64
+	code := CodeNotConfigured
+	registerFlakyTool(t, r, &calls, &code)
+
+	inv := invocation("flaky_tool", map[string]any{"value": "x"})
+	inv.IdempotencyKey = "idem-no-releaser"
+
+	res := r.Invoke(context.Background(), inv)
+	require.False(t, res.OK)
+	assert.Equal(t, CodeNotConfigured, res.Error.Code)
+
+	res = r.Invoke(context.Background(), inv)
+	require.True(t, res.OK)
+	assert.True(t, res.Duplicate)
+	assert.Equal(t, int64(1), calls.Load())
 }
 
 func TestReauthorizationDeniesRevokedUser(t *testing.T) {

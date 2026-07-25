@@ -1358,6 +1358,11 @@ if (settingsDrawer && settingsDrawerBtn && typeof settingsDrawer.showModal === '
   settingsDrawerBtn.addEventListener('click', () => {
     settingsDrawer.showModal();
     void loadDrawerCost();
+    // M16: the drawer may have been open for hours, or the badge may have
+    // appeared from a background auto-apply — re-read the suggestion queue so
+    // "About you" shows what the badge is counting (settings.mjs owns the
+    // fetch; this is only the "you opened it" trigger).
+    if (window.__lnRefreshProfileSuggestions) window.__lnRefreshProfileSuggestions();
   });
   if (settingsDrawerClose) {
     settingsDrawerClose.addEventListener('click', () => settingsDrawer.close());

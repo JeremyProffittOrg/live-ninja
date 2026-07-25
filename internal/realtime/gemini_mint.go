@@ -281,7 +281,7 @@ func sanitizeSchemaNode(node map[string]any) {
 func sanitizeGeminiParameters(params map[string]any) map[string]any {
 	copied, ok := deepCopyValue(params).(map[string]any)
 	if !ok {
-		// Not a schema object (shouldn't happen for any of the 20 tools —
+		// Not a schema object (shouldn't happen for any tool in the catalog —
 		// every "parameters" value is a JSON-Schema object) — hand back the
 		// original rather than panic; there is nothing to sanitize.
 		return params

@@ -95,6 +95,50 @@ Parameters:
       directly. This stack is pinned to us-east-1 (samconfig.toml); change this only
       if
       the region changes.
+  RcaEnable:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      M17 master switch for the tool-failure RCA analyzer. Gates the
+      RcaAnalyzerFunction and its log group ONLY — RcaQueue/RcaDeadLetterQueue
+      and the web function's enqueue permission are unconditional, so flipping
+      this needs no code change and no WebFunction update: with the analyzer
+      off, messages simply age out of the queue via MessageRetentionPeriod.
+      Left on by default because a missing Bedrock model grant degrades
+      gracefully (internal/rca: failures are recorded with
+      status=model_unavailable and the owner is emailed at most once per 24h)
+      rather than failing loudly. To hold RCA disabled, add RcaEnable=false to
+      the SAM deploy step's --parameter-overrides.
+  RcaBedrockModelId:
+    Type: String
+    Default: us.anthropic.claude-opus-4-5-20251101-v1:0
+    Description: >-
+      M17: the Bedrock model id or cross-region inference-profile id the RCA
+      analyzer calls (env RCA_MODEL_ID; never hardcoded in Go). OWNER MUST
+      CONFIRM this value against `aws bedrock list-inference-profiles` /
+      `list-foundation-models --by-provider anthropic` in us-east-1 when
+      granting Anthropic Claude Opus model access — the exact id for the
+      current Opus generation must be read from the account, not guessed. A
+      wrong or ungranted id is NOT a crash: internal/rca classifies both
+      AccessDenied and "invalid model identifier" as model_unavailable, records
+      the failure, and emails the owner once per 24h. The IAM grant below is
+      wildcarded to anthropic.claude-opus-* so changing this parameter never
+      requires a policy change.
+  RcaDailyCap:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    Description: >-
+      M17: maximum Opus analyses per UTC day (plan.md locked default 10). This
+      is the entire cost story — worst case ~10 Opus calls/day.
+  RcaCooldownMinutes:
+    Type: Number
+    Default: 60
+    MinValue: 1
+    Description: >-
+      M17: minimum minutes between analyses of the same failure signature
+      (plan.md locked default 60).
 
 Globals:
   Function:
@@ -140,6 +184,10 @@ Conditions:
   NovaBridgeServiceReady: !And
   - !Equals [!Ref NovaBridgeEnable, "true"]
   - !Equals [!Ref NovaBridgeImageReady, "true"]
+  # M17: gates the RCA analyzer function + its log group only. The queue, the
+  # DLQ and the web function's RCA_QUEUE_URL/sqs:SendMessage stay
+  # unconditional — see the RcaEnable parameter description.
+  RcaEnabled: !Equals [!Ref RcaEnable, "true"]
 Resources:
   # ------------------------------------------------------------------
   # HTTP API (no custom domain here - CloudFront fronts it)
@@ -211,6 +259,9 @@ Resources:
           # extraction trigger.
           BEDROCK_EMBED_MODEL: amazon.titan-embed-text-v2:0
           TOPICS_EXTRACT_FUNCTION_NAME: !Ref TopicsExtractFunction
+          # M17: Registry.finish enqueues error-outcome invocations here.
+          # Unset disables the hook entirely (tools.Deps.RCA stays nil).
+          RCA_QUEUE_URL: !Ref RcaQueue
           # M7: telemetry lake — POST /api/v1/telemetry batches (max 25 events,
           # contracts/telemetry.schema.json, server-side banned-key validation)
           # are forwarded to this Direct PUT Firehose stream. Each record MUST
@@ -281,6 +332,12 @@ Resources:
           - sqs:SendMessage
           Resource:
           - !GetAtt EmailQueue.Arn
+        - Sid: RcaEnqueue
+          Effect: Allow
+          Action:
+          - sqs:SendMessage
+          Resource:
+          - !GetAtt RcaQueue.Arn
         - Sid: InvokeRealtimeBroker
           Effect: Allow
           Action:
@@ -766,6 +823,179 @@ Resources:
           Resource:
           - !GetAtt RealtimeBrokerFunction.Arn
 
+  # M17 tool-failure RCA analyzer (cmd/rca-analyzer). Gathers the failing
+  # invocation + transcript window + tool contract + prior RCAs +
+  # docs/system-map.md, asks Claude Opus on Bedrock for a structured RCA,
+  # emails the owner via SES, persists an RCA# item (30d TTL) and files
+  # base-knowledge suggestions into the M16 PROFSUGG# queue. Deduped by
+  # failure signature: 1 analysis/hour/signature, RcaDailyCap per UTC day.
+  # Query/GetItem only - never a Scan. (Description below is capped at 256
+  # chars by CloudFormation, hence the detail living here.)
+  RcaAnalyzerFunction:
+    Type: AWS::Serverless::Function
+    Condition: RcaEnabled
+    Properties:
+      FunctionName: live-ninja-rca-analyzer
+      Description: >-
+        M17 tool-failure RCA analyzer - SQS consumer over live-ninja-rca. Asks
+        Claude Opus on Bedrock for a structured RCA of a failed tool call,
+        emails the owner, persists an RCA# item and files PROFSUGG# suggestions.
+        Deduped + rate-capped. Query/GetItem only.
+      CodeUri: .build/rca-analyzer/
+      LoggingConfig:
+        LogGroup: !Ref RcaAnalyzerLogGroup
+      MemorySize: 512
+      Timeout: 300
+      Environment:
+        Variables:
+          RCA_MODEL_ID: !Ref RcaBedrockModelId
+          RCA_DAILY_CAP: !Ref RcaDailyCap
+          RCA_COOLDOWN_MINUTES: !Ref RcaCooldownMinutes
+          RCA_MAX_OUTPUT_TOKENS: "2000"
+          RCA_MODEL_TIMEOUT_SECONDS: "120"
+          RCA_EMAIL_TO: proffitt.jeremy@gmail.com
+          # House rule: SES Source MUST be the DKIM-verified @jeremy.ninja
+          # identity with Reply-To at the human inbox. Sending FROM the gmail
+          # address makes SES return a MessageId while Gmail silently drops
+          # the mail on DMARC failure.
+          RCA_EMAIL_FROM: Jeremy Proffitt <jeremy@jeremy.ninja>
+          RCA_EMAIL_REPLY_TO: proffitt.jeremy@gmail.com
+          EMAIL_CONFIGURATION_SET: !Ref SesConfigurationSet
+      Events:
+        RcaJobs:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt RcaQueue.Arn
+            # BatchSize 2 x the 120s per-record budget in cmd/rca-analyzer
+            # leaves headroom under the 300s Timeout. A 20s batching window
+            # coalesces the duplicate bursts a single broken tool produces so
+            # the cooldown suppresses them in one invocation instead of ten.
+            BatchSize: 2
+            MaximumBatchingWindowInSeconds: 20
+            # Partial batch response: a poison message must never drag its
+            # batch-mates back through the pipeline. See cmd/rca-analyzer's
+            # package comment for the full retry contract.
+            FunctionResponseTypes:
+            - ReportBatchItemFailures
+      Policies:
+      - Version: "2012-10-17"
+        Statement:
+        - Sid: QueueConsume
+          Effect: Allow
+          Action:
+          - sqs:ReceiveMessage
+          - sqs:DeleteMessage
+          - sqs:GetQueueAttributes
+          Resource:
+          - !GetAtt RcaQueue.Arn
+            # Bedrock: Converse is authorized by the bedrock:InvokeModel
+            # action - there is no bedrock:Converse action. A cross-region
+            # ("us.") inference profile authorizes against BOTH the profile
+            # ARN and the underlying foundation-model ARN in EVERY region the
+            # profile can route to; omitting the us-west-2/us-east-2
+            # foundation-model ARNs is the most common cause of AccessDenied
+            # on a us.* profile. Kept tight to anthropic.claude-opus-* so no
+            # other model family or vendor is reachable and a
+            # RcaBedrockModelId change needs no policy change.
+        - Sid: BedrockRcaModel
+          Effect: Allow
+          Action:
+          - bedrock:InvokeModel
+          Resource:
+          - !Sub "arn:${AWS::Partition}:bedrock:us-east-1:${AWS::AccountId}:inference-profile/${RcaBedrockModelId}"
+          - !Sub "arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/anthropic.claude-opus-*"
+          - !Sub "arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/anthropic.claude-opus-*"
+          - !Sub "arn:${AWS::Partition}:bedrock:us-east-2::foundation-model/anthropic.claude-opus-*"
+        - Sid: SesSendRcaReport
+          Effect: Allow
+          Action:
+          - ses:SendEmail
+          Resource:
+          - !Sub "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/jeremy.ninja"
+          - !Sub "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/jeremy@jeremy.ninja"
+          - !Sub "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/${SesConfigurationSet}"
+            # ---- DynamoDB, three statements. ----
+            #
+            # dynamodb:LeadingKeys constrains the PARTITION key only. DynamoDB
+            # has no IAM condition key for the sort key, and dynamodb:Attributes
+            # restricts attribute NAMES, not sk prefixes. Two consequences, both
+            # accepted with compensating controls:
+            #
+            # 1. "Transcript partition read-only" cannot be narrowed to LOG#.
+            #    TableTranscriptAndProfileRead grants read over the whole USER#*
+            #    space - transcripts, but also SETTINGS, OAUTH#, ENT#/EMB#,
+            #    PERSONA#. It IS genuinely read-only (no DeleteItem,
+            #    BatchWriteItem, TransactWriteItems, or UpdateItem on USER#*),
+            #    which is the half of the requirement IAM can enforce. Fallback
+            #    for the half it cannot: the analyzer reads exactly two things
+            #    from that space - ListSessionTurns
+            #    (begins_with(sk,"LOG#<sessionId>#")) and the projected
+            #    GetProfile - and nothing else in internal/rca touches the user
+            #    partition.
+            #
+            # 2. PROFSUGG# writes force PutItem on USER#*, which in IAM terms
+            #    also permits overwriting a SETTINGS or OAUTH# item.
+            #    Compensating control, mandatory and code-level: every
+            #    suggestion write goes through Store.PutProfileSuggestion, which
+            #    uses the create-only
+            #    attribute_not_exists(pk) AND attribute_not_exists(sk)
+            #    conditional put, and its sk is built by an unexported
+            #    constructor from a server-generated random id - never from model
+            #    output. So even a bug or a prompt injection that produced a
+            #    different sort key cannot overwrite an existing item, only
+            #    fail. Combined with the absence of any delete or batch-write
+            #    grant, nothing already in the table can be destroyed.
+            #
+            # The alternative - moving suggestions into their own
+            # PROFSUGG#<userId> partition, which WOULD be narrowable - was
+            # rejected: cmd/account-purge deletes the USER#<uid> partition to
+            # satisfy right-to-delete, and a suggestion outside it would survive
+            # account deletion. A separate table was rejected on cost and
+            # because M16 must read these rows from the same single-table Query
+            # the rest of the Settings drawer uses. Residual risk accepted and
+            # documented here rather than hidden.
+            #
+            # ForAllValues: is the documented operator for LeadingKeys (it is
+            # multivalued for BatchGetItem). ForAllValues is vacuously true when
+            # the request supplies no value for the key - safe here because
+            # every granted action (GetItem, Query, PutItem, UpdateItem) always
+            # supplies a partition key, and no
+            # BatchGetItem/BatchWriteItem/Scan is granted.
+        - Sid: TableRcaReadWrite
+          Effect: Allow
+          Action:
+          - dynamodb:GetItem
+          - dynamodb:Query
+          - dynamodb:PutItem
+          - dynamodb:UpdateItem
+          Resource:
+          - !GetAtt Table.Arn
+          Condition:
+            ForAllValues:StringLike:
+              dynamodb:LeadingKeys:
+              - "RCA#*"
+        - Sid: TableTranscriptAndProfileRead
+          Effect: Allow
+          Action:
+          - dynamodb:GetItem
+          - dynamodb:Query
+          Resource:
+          - !GetAtt Table.Arn
+          Condition:
+            ForAllValues:StringLike:
+              dynamodb:LeadingKeys:
+              - "USER#*"
+        - Sid: TableProfileSuggestionCreate
+          Effect: Allow
+          Action:
+          - dynamodb:PutItem
+          Resource:
+          - !GetAtt Table.Arn
+          Condition:
+            ForAllValues:StringLike:
+              dynamodb:LeadingKeys:
+              - "USER#*"
+
   AccountPurgeFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -922,6 +1152,19 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /live-ninja/lambda/topics-extract
+      RetentionInDays: 5
+
+  # M17 rca-analyzer Lambda (cmd/rca-analyzer). Custom-named like the rest,
+  # and stack-managed from day one: the function has never existed in AWS, so
+  # Lambda has never auto-created an unmanaged /aws/lambda/ group for it and
+  # the workflow's legacy-log-group cleanup step deliberately does NOT list it.
+  # Gated on the same condition as the function so RcaEnable=false leaves no
+  # orphan group.
+  RcaAnalyzerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: RcaEnabled
+    Properties:
+      LogGroupName: /live-ninja/lambda/rca-analyzer
       RetentionInDays: 5
 
   # M7 account-purge Lambda (cmd/account-purge, added in this milestone —
@@ -1354,6 +1597,41 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: live-ninja-email-dlq
+      MessageRetentionPeriod: 1209600
+
+  # ------------------------------------------------------------------
+  # M17: tool-failure RCA queue (live-ninja-rca)
+  #
+  # Created unconditionally even when RcaEnable=false, so the web function's
+  # RCA_QUEUE_URL env var and sqs:SendMessage grant need no CloudFormation
+  # condition. With the analyzer gated off, enqueued failures simply expire
+  # after MessageRetentionPeriod - a bounded, free no-op.
+  # ------------------------------------------------------------------
+  RcaQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: live-ninja-rca
+      # VisibilityTimeout MUST be >= the consumer's Timeout (300s) or SQS
+      # would redeliver a message still being processed and run two analyses
+      # concurrently. 360 = 300 + 60s of margin; AWS's "6x the function
+      # timeout" guidance targets high-throughput queues, and this one carries
+      # ~10 messages/day, so redrive latency is irrelevant. (A concurrent
+      # duplicate would in fact be absorbed by the cooldown claim in
+      # internal/rca - this is belt and braces, not the only guard.)
+      VisibilityTimeout: 360
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt RcaDeadLetterQueue.Arn
+        # 3, not EmailQueue's 5: only genuinely transient failures are ever
+        # reported back as batch item failures (cmd/rca-analyzer returns nil
+        # for every permanent condition), so three attempts is plenty and it
+        # bounds the Dynamo/Bedrock work a stuck message can cause.
+        maxReceiveCount: 3
+
+  RcaDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: live-ninja-rca-dlq
       MessageRetentionPeriod: 1209600
 
   # ------------------------------------------------------------------

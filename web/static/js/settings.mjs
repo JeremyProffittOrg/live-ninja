@@ -127,6 +127,19 @@ function markChanged(key, { debounce = 0 } = {}) {
   saveTimer = setTimeout(flush, debounce);
 }
 
+/** Cross-tab ping on the shared version key. Every path that adopts a new
+ * document version calls this — the autosave PUT, the 409 reconcile, and the
+ * M16 undo (which is written by the SERVER, so this tab's own doc is stale
+ * until it re-reads). Storage being blocked (private mode) degrades cross-tab
+ * sync, never the write. */
+function pingSettingsVersion() {
+  try {
+    localStorage.setItem('ln.settings.version', String(version));
+  } catch {
+    /* storage blocked — cross-tab sync degrades gracefully */
+  }
+}
+
 async function flush() {
   if (inFlight) {
     queuedFlush = true;
@@ -163,11 +176,7 @@ async function flush() {
     // Cross-tab ping: an open /conversation tab listens for 'storage' on
     // this key and re-GETs the doc so Mic pickup / turn detection changes
     // apply to its LIVE session (conversation.mjs, SETTINGS_PING_KEY).
-    try {
-      localStorage.setItem('ln.settings.version', String(version));
-    } catch {
-      /* storage blocked — cross-tab sync degrades gracefully */
-    }
+    pingSettingsVersion();
     if (pendingKeys.size > 0) queuedFlush = true;
     else setStatus('saved');
   } catch (err) {
@@ -216,11 +225,7 @@ async function reconcile409() {
   baseline = clone(fresh);
   // The adopted version may have come from another DEVICE (no shared
   // localStorage) — ping local tabs so they re-sync too (see flush()).
-  try {
-    localStorage.setItem('ln.settings.version', String(version));
-  } catch {
-    /* storage blocked — cross-tab sync degrades gracefully */
-  }
+  pingSettingsVersion();
   if (remoteWon) {
     showToast('Someone updated your settings from another device — refreshed.');
   }
@@ -1522,6 +1527,9 @@ function wireLocationPicker(which) {
     close();
     renderLocation(which);
     input.blur();
+    // A pick is the only way a location suggestion can be approved (M16) — it
+    // is what attaches the lat/lon the geocode-free weather path needs.
+    locationSuggestionPicked(which);
   };
 
   const render = () => {
@@ -1724,6 +1732,444 @@ function wireProfile() {
   }
 }
 
+// ---- Suggestion queue (M16 Knowledge Refinement Loop) --------------------
+//
+// Two producers write PROFSUGG# rows server-side: the assistant's
+// profile_suggest tool, and the tool-failure RCA analyzer (internal/rca). This
+// renders whatever is still awaiting a decision and turns each decision into
+// the RIGHT kind of write:
+//
+//   pending + plain field  -> put the value into `doc` and let the normal
+//                             versioned autosave PUT it (no second write path,
+//                             so an approval passes the same server validation
+//                             a manual edit does), then record the decision;
+//   pending + location     -> no direct apply at all: hand the user to the
+//                             geocode picker, because only a picked result
+//                             carries the lat/lon that makes the geocode-free
+//                             weather path trustworthy. The row resolves when
+//                             the pick lands;
+//   auto-applied           -> already written by the server under the locked
+//                             policy (units / a spoken always-known fact);
+//                             offer Keep or Undo, and the Undo is a server
+//                             route because this tab never saw the old value.
+
+const SUGGESTIONS_PATH = '/api/v1/profile/suggestions';
+const AUTOAPPLY_TOAST_KEY = 'ln.profile.autoApplyToastShown';
+
+let suggestions = [];
+let suggestionsInFlight = false;
+// The location suggestion whose picker is currently open, if any: the row is
+// resolved by the PICK, not by the button that opened the picker.
+let awaitingLocationPick = null;
+
+const suggestionsBox = $('profileSuggestions');
+const suggestionsList = $('profileSuggestionsList');
+const suggestionsCount = $('profileSuggestionsCount');
+const suggestionsStatus = $('profileSuggestionsStatus');
+const settingsTabBadge = $('settingsTabBadge');
+const settingsTabBtn = $('settingsDrawerBtn');
+
+function announceSuggestion(msg) {
+  if (suggestionsStatus) suggestionsStatus.textContent = msg;
+}
+
+/** Drawer-tab badge. The count is the accessible signal too — the aria-label
+ * carries it, so nothing here depends on seeing the pill. */
+function renderSuggestionBadge() {
+  const n = suggestions.length;
+  if (settingsTabBadge) {
+    settingsTabBadge.textContent = n > 9 ? '9+' : String(n);
+    settingsTabBadge.hidden = n === 0;
+  }
+  if (settingsTabBtn) {
+    settingsTabBtn.setAttribute(
+      'aria-label',
+      n === 0 ? 'Settings' : `Settings — ${n} suggestion${n === 1 ? '' : 's'} to review`,
+    );
+  }
+}
+
+async function refreshSuggestions() {
+  if (suggestionsInFlight) return;
+  suggestionsInFlight = true;
+  try {
+    const resp = await apiJSON(SUGGESTIONS_PATH);
+    suggestions = Array.isArray(resp.suggestions) ? resp.suggestions : [];
+    renderSuggestions();
+    maybeToastAutoApplied();
+  } catch {
+    // A failed queue read must never break the rest of the drawer: the
+    // suggestions block simply stays as it was (empty on first load).
+  } finally {
+    suggestionsInFlight = false;
+  }
+}
+
+/** An auto-applied change happened without the owner asking, so it gets a
+ * toast with an Undo even if they never open the drawer — the toast element
+ * lives at page level for exactly this. Shown once per suggestion id. */
+function maybeToastAutoApplied() {
+  const applied = suggestions.filter((s) => s.autoApplied);
+  if (applied.length === 0) return;
+  let shown = [];
+  try {
+    shown = JSON.parse(localStorage.getItem(AUTOAPPLY_TOAST_KEY) || '[]');
+  } catch {
+    shown = [];
+  }
+  if (!Array.isArray(shown)) shown = [];
+  const fresh = applied.filter((s) => !shown.includes(s.id));
+  if (fresh.length === 0) return;
+  const sg = fresh[0];
+  showToast(autoAppliedSentence(sg), {
+    label: 'Undo',
+    onClick: () => void decideSuggestion(sg.id, 'undo'),
+  });
+  try {
+    // Keep only ids that are still live so this list can't grow forever.
+    const live = suggestions.map((s) => s.id);
+    localStorage.setItem(
+      AUTOAPPLY_TOAST_KEY,
+      JSON.stringify([...shown, ...fresh.map((s) => s.id)].filter((id) => live.includes(id))),
+    );
+  } catch {
+    /* storage blocked — the toast may repeat next load; harmless */
+  }
+}
+
+function autoAppliedSentence(sg) {
+  if (sg.field === 'profile.notes[]') {
+    return `Live Ninja added an always-known fact: “${sg.proposedValue}”.`;
+  }
+  return `Live Ninja set your ${(sg.fieldLabel || sg.field).toLowerCase()} to ${sg.proposedValue}.`;
+}
+
+function renderSuggestions() {
+  renderSuggestionBadge();
+  if (!suggestionsBox || !suggestionsList) return;
+  suggestionsBox.hidden = suggestions.length === 0;
+  if (suggestionsCount) suggestionsCount.textContent = String(suggestions.length);
+  suggestionsList.textContent = '';
+  for (const sg of suggestions) suggestionsList.appendChild(suggestionRow(sg));
+}
+
+/** One row. Heterogeneous fields of a single proposal, so the values render as
+ * a labelled definition list rather than a table row — every value has a
+ * visible label, per the house presentation rules. */
+function suggestionRow(sg) {
+  const li = document.createElement('li');
+  li.className = 'ln-suggestion';
+  li.dataset.id = sg.id;
+
+  const head = document.createElement('div');
+  head.className = 'ln-suggestion__head';
+  const fieldEl = document.createElement('span');
+  fieldEl.className = 'ln-suggestion__field';
+  fieldEl.textContent = sg.fieldLabel || sg.field;
+  head.appendChild(fieldEl);
+  if (sg.autoApplied) {
+    const badge = document.createElement('span');
+    badge.className = 'ln-badge ln-badge--teal ln-badge--dot-none';
+    badge.textContent = 'Applied automatically';
+    head.appendChild(badge);
+  }
+  li.appendChild(head);
+
+  const dl = document.createElement('dl');
+  dl.className = 'ln-suggestion__values';
+  const pair = (label, value) => {
+    const dt = document.createElement('dt');
+    dt.textContent = label;
+    const dd = document.createElement('dd');
+    dd.textContent = value;
+    dl.append(dt, dd);
+  };
+  // notes[] is an ADDITION, so there is no "now" value to show — printing the
+  // existing facts there would imply approving replaces them.
+  if (sg.field !== 'profile.notes[]') {
+    pair(sg.autoApplied ? 'Was' : 'Now', sg.currentValue || 'not set');
+  }
+  pair(sg.autoApplied ? 'Now' : 'Suggested', sg.proposedValue);
+  li.appendChild(dl);
+
+  if (sg.reason) {
+    const why = document.createElement('p');
+    why.className = 'ln-suggestion__reason';
+    why.textContent = sg.reason;
+    li.appendChild(why);
+  }
+
+  const src = document.createElement('p');
+  src.className = 'ln-suggestion__src';
+  src.textContent = sg.source === 'rca'
+    ? 'Found while analysing a failed tool call'
+    : 'Proposed by Live Ninja during a conversation';
+  li.appendChild(src);
+
+  const err = document.createElement('p');
+  err.className = 'ln-suggestion__error';
+  err.id = `suggestionError-${sg.id}`;
+  err.setAttribute('role', 'alert');
+  err.hidden = true;
+  li.appendChild(err);
+
+  const actions = document.createElement('div');
+  actions.className = 'ln-suggestion__actions';
+  const button = (label, variant, accessibleName, onClick) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `ln-btn ${variant}`;
+    b.textContent = label;
+    b.setAttribute('aria-label', accessibleName);
+    b.setAttribute('aria-describedby', err.id);
+    b.addEventListener('click', () => onClick(b));
+    return b;
+  };
+  const what = `${(sg.fieldLabel || sg.field).toLowerCase()}: ${sg.proposedValue}`;
+
+  if (sg.autoApplied) {
+    actions.append(
+      button('Keep', 'ln-btn--primary', `Keep ${what}`, () => void decideSuggestion(sg.id, 'keep')),
+      button('Undo', 'ln-btn--danger', `Undo ${what}`, () => void decideSuggestion(sg.id, 'undo')),
+    );
+  } else if (sg.needsPick) {
+    // A location can only be approved by picking a real place, so the button
+    // says what it does instead of promising an approval it cannot perform.
+    actions.append(
+      button('Find this place', 'ln-btn--primary', `Find ${what} in the location search`,
+        () => beginLocationPick(sg)),
+      button('Reject', 'ln-btn--ghost', `Reject ${what}`, () => void decideSuggestion(sg.id, 'reject')),
+    );
+  } else {
+    actions.append(
+      button('Approve', 'ln-btn--primary', `Approve ${what}`, () => void approveSuggestion(sg)),
+      button('Reject', 'ln-btn--ghost', `Reject ${what}`, () => void decideSuggestion(sg.id, 'reject')),
+    );
+  }
+  li.appendChild(actions);
+  return li;
+}
+
+function suggestionRowError(id, message) {
+  const el = document.getElementById(`suggestionError-${id}`);
+  if (!el) return;
+  el.textContent = message || '';
+  el.hidden = !message;
+}
+
+function setRowBusy(id, busy) {
+  const row = suggestionsList && suggestionsList.querySelector(`[data-id="${CSS.escape(id)}"]`);
+  if (!row) return;
+  for (const b of row.querySelectorAll('button')) b.disabled = busy;
+}
+
+/** Why this proposal cannot be approved as-is, or '' when it can. The server
+ * validates too — this exists so the reason is stated next to the control
+ * instead of arriving as a generic save failure. */
+function approveBlockedReason(sg) {
+  const v = sg.proposedValue || '';
+  switch (sg.field) {
+    case 'profile.units':
+      return v === 'imperial' || v === 'metric'
+        ? ''
+        : 'That is not a unit system Live Ninja can store — reject it.';
+    case 'profile.notes[]': {
+      const notes = profileDoc().notes;
+      if (notes.includes(v)) return '';
+      return notes.length >= 20
+        ? 'You already have 20 always-known facts. Remove one below, then approve this.'
+        : '';
+    }
+    case 'profile.contactEmail':
+      return v.includes('@')
+        ? ''
+        : 'That is not a valid email address — reject it, and tell Live Ninja the right one.';
+    default:
+      return v.trim() === '' ? 'That suggestion has no value — reject it.' : '';
+  }
+}
+
+/** Put the proposed value into `doc` so the normal autosave writes it. */
+function applySuggestionLocally(sg) {
+  const v = sg.proposedValue;
+  switch (sg.field) {
+    case 'profile.units':
+      setProfileField('units', v);
+      break;
+    case 'profile.notes[]': {
+      const notes = profileDoc().notes;
+      if (!notes.includes(v)) setProfileField('notes', notes.concat(v));
+      break;
+    }
+    case 'profile.displayName':
+      setProfileField('displayName', v);
+      break;
+    case 'profile.pronouns':
+      setProfileField('pronouns', v);
+      break;
+    case 'profile.contactEmail':
+      setProfileField('contactEmail', v);
+      break;
+    case 'profile.locale':
+      setProfileField('locale', v);
+      break;
+    default:
+      return false;
+  }
+  renderProfile();
+  return true;
+}
+
+/** Drive the autosave loop to completion for the profile key and report
+ * whether the document actually committed. flush() already handles the 409
+ * reconcile and re-queues; the second call is that queued retry. */
+async function flushProfileNow() {
+  clearTimeout(saveTimer);
+  await flush();
+  if (pendingKeys.has('profile')) await flush();
+  return !pendingKeys.has('profile');
+}
+
+async function approveSuggestion(sg) {
+  const blocked = approveBlockedReason(sg);
+  if (blocked) {
+    suggestionRowError(sg.id, blocked);
+    return;
+  }
+  suggestionRowError(sg.id, '');
+  setRowBusy(sg.id, true);
+  if (!applySuggestionLocally(sg)) {
+    suggestionRowError(sg.id, 'Live Ninja cannot apply that field here — reject it and edit the field below.');
+    setRowBusy(sg.id, false);
+    return;
+  }
+  if (!(await flushProfileNow())) {
+    // The autosave path already reverted the optimistic value and toasted.
+    suggestionRowError(sg.id, "Couldn't save that — check your connection and try again.");
+    setRowBusy(sg.id, false);
+    return;
+  }
+  await decideSuggestion(sg.id, 'approve', `Approved. ${sg.fieldLabel} is now ${sg.proposedValue}.`);
+}
+
+/** Record a decision server-side and drop the row. Also the only path for
+ * keep/undo, whose write happens entirely on the server. */
+async function decideSuggestion(id, action, announcement) {
+  setRowBusy(id, true);
+  suggestionRowError(id, '');
+  try {
+    const resp = await apiJSON(`${SUGGESTIONS_PATH}/${encodeURIComponent(id)}/resolve`, {
+      method: 'POST',
+      json: { action },
+    });
+    if (resp && resp.version) {
+      // An undo wrote the settings document server-side, so this tab's copy
+      // is stale — re-read before its next PUT can 409 against the revert.
+      await adoptServerSettings(Number(resp.version));
+    }
+    suggestions = suggestions.filter((s) => s.id !== id);
+    renderSuggestions();
+    announceSuggestion(announcement || decisionAnnouncement(action));
+    if (action === 'undo') showToast('Undone — put back the way it was.');
+  } catch (err) {
+    const status = err && err.status;
+    if (status === 404 || status === 409) {
+      // Already handled elsewhere (another tab, a double click). Re-sync
+      // rather than telling the owner something went wrong.
+      suggestions = suggestions.filter((s) => s.id !== id);
+      renderSuggestions();
+      void refreshSuggestions();
+      return;
+    }
+    suggestionRowError(id, "Couldn't save that decision — check your connection and try again.");
+    setRowBusy(id, false);
+  }
+}
+
+function decisionAnnouncement(action) {
+  switch (action) {
+    case 'approve': return 'Approved.';
+    case 'reject': return 'Suggestion dismissed.';
+    case 'keep': return 'Kept.';
+    case 'undo': return 'Undone.';
+    default: return '';
+  }
+}
+
+/** Re-read the settings document after a server-side write and adopt it,
+ * keeping any field still pending locally. Same rule as the 409 reconcile:
+ * the server's copy is authoritative for everything we are not mid-edit on. */
+async function adoptServerSettings(newVersion) {
+  try {
+    const fresh = await apiJSON('/api/v1/settings');
+    version = Number(fresh.version) || newVersion || version;
+    for (const k of Object.keys(fresh)) {
+      if (k === 'version' || pendingKeys.has(k)) continue;
+      if (!deepEq(doc[k], fresh[k])) {
+        doc[k] = clone(fresh[k]);
+        renderField(k);
+      }
+    }
+    doc.version = version;
+    baseline = clone(fresh);
+    baseline.version = version;
+    pingSettingsVersion();
+  } catch {
+    // The version is still advanced here, so the next PUT 409s and the
+    // existing reconcile path recovers — never a silent stale write.
+    version = newVersion || version;
+    doc.version = version;
+  }
+}
+
+/** Approving a location means picking it: prefill the matching combobox with
+ * the proposed name, open the results, and let the pick resolve the row. */
+function beginLocationPick(sg) {
+  const which = sg.field === 'profile.workLocation' ? 'work' : 'home';
+  const input = document.getElementById(LOCATION_FIELDS[which].input);
+  if (!input) {
+    suggestionRowError(sg.id, 'That location field is not available — reject the suggestion.');
+    return;
+  }
+  awaitingLocationPick = { id: sg.id, which, fieldLabel: sg.fieldLabel || sg.field };
+  suggestionRowError(sg.id, '');
+  input.value = sg.proposedValue;
+  input.focus();
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  announceSuggestion(`Searching for ${sg.proposedValue}. Pick the right result to save it with real coordinates.`);
+}
+
+/** Called by wireLocationPicker's choose() once a real geocoder result has
+ * been stored, which is the moment a location suggestion is genuinely
+ * approved. A pick for the OTHER field, or one made with no pending
+ * suggestion, resolves nothing. */
+function locationSuggestionPicked(which) {
+  const claim = awaitingLocationPick;
+  if (!claim || claim.which !== which) return;
+  awaitingLocationPick = null;
+  void (async () => {
+    if (!(await flushProfileNow())) {
+      suggestionRowError(claim.id, "Couldn't save that location — check your connection and try again.");
+      return;
+    }
+    await decideSuggestion(claim.id, 'approve', `Approved. ${claim.fieldLabel} saved with its coordinates.`);
+  })();
+}
+
+// The drawer can be opened long after this module initialised, so
+// conversation.mjs re-reads the queue on open through this hook (the same
+// window.__ln* seam as the appearance applier).
+window.__lnRefreshProfileSuggestions = () => void refreshSuggestions();
+
+// A settings version bump in another tab often IS an auto-apply landing:
+// re-read the queue so the toast and the badge appear without a reload.
+window.addEventListener('storage', (e) => {
+  if (e.key === 'ln.settings.version' && e.newValue !== null) void refreshSuggestions();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') void refreshSuggestions();
+});
+
 // ---- init ----------------------------------------------------------------
 // Every field below was previously SSR'd with a checked/value attribute
 // baked in by the Go template; with no more SSR data island, each one needs
@@ -1741,6 +2187,7 @@ renderField('appearance');
 renderField('voiceEngine');
 wireProfile();
 renderField('profile');
+void refreshSuggestions(); // M16 queue + drawer-tab badge; a failed read is silent
 loadWakeCatalog();
 refreshMicDevices();
 setStatus('saved');

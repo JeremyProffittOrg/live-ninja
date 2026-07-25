@@ -5,7 +5,9 @@ package realtime
 // name in toolManifest must appear verbatim in coreInstructions, or sit on
 // deliberatelyUnmentionedTools, an explicit, named, reviewed allow-list.
 // D4 folded the six previously-missing deliverable/file tools into one
-// "documents and downloads" clause, so this allow-list is empty today.
+// "documents and downloads" clause, so this allow-list is empty today — and
+// M16's profile_suggest (tool 21) was named in coreInstructions in the same
+// commit that registered it, which is exactly the discipline this test buys.
 
 import (
 	"strings"
@@ -21,7 +23,8 @@ import (
 // tool never meant to be model-invoked) — every entry here is a
 // conversation to have before adding it, not a default escape hatch.
 var deliberatelyUnmentionedTools = map[string]string{
-	// (none — D4 named all 20 tools in coreInstructions)
+	// (none — D4 named all 20 tools in coreInstructions; M16 added the 21st,
+	// profile_suggest, to the same clause list)
 }
 
 // TestEveryManifestToolIsDiscoverableFromPersonaPrompt is D5.

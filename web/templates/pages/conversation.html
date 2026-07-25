@@ -170,9 +170,15 @@
        every control below, hydrating from GET /api/v1/settings client-side
        since there is no SSR data island). Native <dialog> supplies the
        focus trap + Escape; conversation.mjs closes on scrim click. */}}
+{{- /* The badge is a COUNT, not a colour cue (house a11y rule: never signal
+       state by colour alone), and settings.mjs rewrites this button's
+       aria-label to "Settings — N suggestions to review" so a screen reader
+       hears the same thing the number shows. Hidden when the queue is
+       empty. */}}
 <button class="conv-settings-tab" type="button" id="settingsDrawerBtn"
         aria-label="Settings" aria-haspopup="dialog">
   <span aria-hidden="true">⚙</span>
+  <span class="conv-settings-tab__badge" id="settingsTabBadge" aria-hidden="true" hidden></span>
 </button>
 <dialog class="conv-drawer" id="settingsDrawer" aria-labelledby="settingsDrawerTitle">
   <div class="conv-drawer__inner">
@@ -205,6 +211,34 @@
       <div class="set-section__intro">
         <h2 class="ln-card__title" id="sectionAbout">About you</h2>
         <p class="ln-muted">What Live Ninja knows before you say anything. It uses these in every conversation — so &ldquo;what&rsquo;s the weather&rdquo; needs no location and &ldquo;what&rsquo;s today&rdquo; has an answer.</p>
+      </div>
+
+      {{- /* ---- Suggestion queue (M16 Knowledge Refinement Loop) ----
+             Rows come from GET /api/v1/profile/suggestions: proposals from the
+             assistant's profile_suggest tool and from the tool-failure RCA
+             analyzer, plus the two changes policy lets it apply on its own
+             (units and a spoken always-known fact), each with an Undo.
+
+             Approving is NOT a special write: settings.mjs puts the proposed
+             value into the same document the controls below edit and lets the
+             normal versioned autosave PUT it, so an approval passes the same
+             server validation as a manual edit. A LOCATION suggestion has no
+             Approve at all — it hands you to the picker below, because only a
+             picked geocoder result carries the lat/lon the geocode-free
+             weather path depends on.
+
+             It sits first in this card on purpose: the drawer-tab badge sends
+             you here to make a decision, and the decision should be the first
+             thing you see. Hidden entirely when the queue is empty. */}}
+      <div class="ln-suggestions" id="profileSuggestions" hidden>
+        <h3 class="ln-suggestions__title" id="profileSuggestionsTitle">
+          Suggestions
+          <span class="ln-badge ln-badge--teal ln-badge--dot-none" id="profileSuggestionsCount">0</span>
+        </h3>
+        <p class="ln-hint" id="profileSuggestionsHint">Live Ninja proposed these while you were talking. Nothing below changes until you approve it.</p>
+        <ul class="ln-suggestions__list" id="profileSuggestionsList"
+            aria-labelledby="profileSuggestionsTitle" aria-describedby="profileSuggestionsHint"></ul>
+        <p class="ln-sr-only" id="profileSuggestionsStatus" role="status" aria-live="polite"></p>
       </div>
 
       <div class="ln-field">

@@ -69,7 +69,11 @@ const coreInstructions = "Always speak and respond in English (US). Only switch 
 	"memory_search/memory_write/entity_get/plan_upsert for lasting memory about the " +
 	"people, places, projects, tasks, and plans in the user's life (search memory before " +
 	"asking the user to repeat something; use forget only when the user explicitly asks " +
-	"you to delete a memory), web_research for recent news and developments — cite " +
+	"you to delete a memory), profile_suggest to propose a change to the always-known " +
+	"facts about the user themselves — name, home or work location, units, email, or a " +
+	"standing preference (it queues the change for their confirmation in Settings, so " +
+	"never claim it took effect unless the result says it was applied), " +
+	"web_research for recent news and developments — cite " +
 	"the source date for anything time-sensitive — and, for documents and downloads, " +
 	"deliverable_create/file_create to make a file, file_list/file_read to browse or read " +
 	"the user's stored files, deliverable_zip to bundle several, and deliverable_deliver to " +

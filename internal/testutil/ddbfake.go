@@ -6,10 +6,13 @@
 // enough of the expression grammar those callers actually emit:
 //
 //	Condition:      attribute_exists(x) | attribute_not_exists(x) |
-//	                a = :v | a > :v (AND-joined), or a single top-level
-//	                OR of those clauses (used by settings optimistic
-//	                concurrency: attribute_not_exists(pk) OR version = :v)
+//	                a = :v | a > :v | a < :v (AND-joined), or a single
+//	                top-level OR of those clauses (used by settings
+//	                optimistic concurrency: attribute_not_exists(pk) OR
+//	                version = :v, and by the M17 RCA claim markers:
+//	                attribute_not_exists(pk) OR expiresAt < :now)
 //	Update:         SET a = :v, b = :w [ADD c :n]
+//	ReturnValues:   UpdateItem/DeleteItem ALL_NEW|UPDATED_NEW|ALL_OLD|UPDATED_OLD
 //	Key condition:  pk = :pk [AND sk = :sk | AND begins_with(sk, :pfx) |
 //	                AND sk BETWEEN :lo AND :hi]
 //	Filter:         a = :v (AND-joined)
@@ -199,6 +202,25 @@ func evalCondition(expr string, item map[string]types.AttributeValue,
 			if !ok1 || !ok2 || !(haveF > wantF) {
 				return false
 			}
+		// " < " mirrors " > " exactly. Added for the M17 RCA claim markers,
+		// whose whole correctness argument is "an expired-but-not-yet-swept
+		// marker must still lose the condition on its own stored expiresAt"
+		// (attribute_not_exists(pk) OR expiresAt < :now).
+		case strings.Contains(clause, " < "):
+			parts := strings.SplitN(clause, " < ", 2)
+			attr := resolveName(parts[0], names)
+			want, ok := values[strings.TrimSpace(parts[1])]
+			if !ok {
+				panic(fmt.Sprintf("testutil: unresolved expression value in clause %q", clause))
+			}
+			if item == nil {
+				return false
+			}
+			haveF, ok1 := avNumber(item[attr])
+			wantF, ok2 := avNumber(want)
+			if !ok1 || !ok2 || !(haveF < wantF) {
+				return false
+			}
 		default:
 			panic(fmt.Sprintf("testutil: unsupported condition clause %q", clause))
 		}
@@ -351,7 +373,22 @@ func (f *FakeDynamo) UpdateItem(ctx context.Context, params *dynamodb.UpdateItem
 			params.ExpressionAttributeNames, params.ExpressionAttributeValues)
 	}
 	f.items[key] = item
-	return &dynamodb.UpdateItemOutput{}, nil
+
+	// ReturnValues: the *_NEW variants hand back the whole post-update item
+	// rather than only the touched attributes (a superset of what real
+	// DynamoDB returns for UPDATED_NEW — harmless for callers that read a
+	// specific attribute they just wrote, which is the only use here: the
+	// M17 RCA daily-budget claim reads back its own atomically-ADDed count).
+	out := &dynamodb.UpdateItemOutput{}
+	switch params.ReturnValues {
+	case types.ReturnValueAllNew, types.ReturnValueUpdatedNew:
+		out.Attributes = copyItem(item)
+	case types.ReturnValueAllOld, types.ReturnValueUpdatedOld:
+		if existing != nil {
+			out.Attributes = copyItem(existing)
+		}
+	}
+	return out, nil
 }
 
 // TransactWriteItems implements the (Update-only) transactional surface

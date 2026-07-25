@@ -45,6 +45,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/memory"
+	"github.com/JeremyProffittOrg/live-ninja/internal/rca"
 	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	"github.com/JeremyProffittOrg/live-ninja/internal/tools"
@@ -568,6 +569,14 @@ func buildAPIToolsRegistry(deps *Deps) *tools.Registry {
 	if mem := buildAPIToolMemory(ctx, deps); mem != nil {
 		toolDeps.Memory = mem
 	}
+	// M17 tool-failure RCA: the enqueue side of the pipeline. Wired here, right
+	// next to the memory seam above, because it is the identical class of bug —
+	// without this line template.yaml sets RCA_QUEUE_URL and grants
+	// sqs:SendMessage, internal/tools' finish hook is compiled in, and the
+	// analyzer polls a queue nothing ever writes to.
+	if enq := buildAPIToolRCA(deps); enq != nil {
+		toolDeps.RCA = enq
+	}
 	// IoT.Publish requires a per-account/region data-plane endpoint; only
 	// wire the client when one is configured (leaving the field a true
 	// nil interface, not a typed-nil *iotdataplane.Client, when it
@@ -609,6 +618,31 @@ func buildAPIToolMemory(ctx context.Context, deps *Deps) tools.MemoryService {
 		return nil
 	}
 	return tools.NewMemoryService(svc)
+}
+
+// buildAPIToolRCA wires tools.Deps.RCA: the M17 tool-failure RCA ingress
+// (internal/rca.SQSEnqueuer over the RcaQueue named by RCA_QUEUE_URL).
+// Returns a genuinely nil interface when the queue or SQS client is
+// absent, which leaves the tool router's failure hook completely inert —
+// tools keep working, no analyses are requested.
+//
+// The nil-check is not decoration. rca.NewSQSEnqueuer returns a TYPED nil
+// (*rca.SQSEnqueuer) when unconfigured, and assigning that straight into
+// the tools.FailureEnqueuer field would produce a non-nil interface
+// holding a nil pointer: the hook's `deps.RCA == nil` guard would be
+// false and every failed tool call would nil-panic on a diagnostics path.
+// Returning the interface from here, only ever from a non-nil pointer, is
+// what keeps that impossible — hence the seam rather than an inline
+// assignment.
+func buildAPIToolRCA(deps *Deps) tools.FailureEnqueuer {
+	enq := rca.NewSQSEnqueuer(deps.SQS, deps.SQSRcaURL)
+	if enq == nil {
+		deps.Log.Warn("api: tool-failure RCA disabled; tool failures will not be analyzed",
+			slog.Bool("sqsClient", deps.SQS != nil),
+			slog.Bool("queueUrl", deps.SQSRcaURL != ""))
+		return nil
+	}
+	return enq
 }
 
 var errAPIUserNotAllowed = errors.New("api: user is not active or no longer allowed")
