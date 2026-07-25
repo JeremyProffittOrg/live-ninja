@@ -25,6 +25,16 @@ package webapp
 // routes through the settings validator, undo routes through
 // store.AutoApplyableProfileField, and neither accepts a value from the request
 // body at all — the proposed value is read from the stored PROFSUGG# row.
+//
+// Neither the auto-apply nor this undo publishes the IoT `config` shadow the way
+// handlePutSettings does, and that is a decision rather than an omission: the two
+// auto-appliable fields (`units`, a `notes[]` entry) are consumed only
+// server-side — the mint chain's BASE KNOWLEDGE block and get_weather's default
+// arguments — and no firmware reads them. Both writes still bump the settings
+// version, so web and Android reconcile through their normal cross-tab /
+// `?since` paths and the device shadow re-converges on the owner's next settings
+// edit. Fanning out from one of the pair and not the other is the actual bug to
+// avoid here.
 
 import (
 	"errors"

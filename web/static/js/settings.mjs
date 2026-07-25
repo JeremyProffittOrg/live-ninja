@@ -2032,6 +2032,27 @@ function applySuggestionLocally(sg) {
   return true;
 }
 
+/** Did the approved value actually survive the write? A 409 reconcile lets the
+ * REMOTE document win any field both sides touched (the documented rule), so a
+ * successful flush is not by itself proof that this approval landed — and
+ * recording an approval whose value was discarded would lose the suggestion
+ * silently, which is the one outcome worse than an error. */
+function suggestionValueLanded(sg) {
+  const p = profileDoc();
+  const v = sg.proposedValue;
+  switch (sg.field) {
+    case 'profile.units': return p.units === v;
+    case 'profile.notes[]': return Array.isArray(p.notes) && p.notes.includes(v);
+    case 'profile.displayName': return p.displayName === v;
+    case 'profile.pronouns': return p.pronouns === v;
+    case 'profile.contactEmail': return p.contactEmail === v;
+    case 'profile.locale': return p.locale === v;
+    case 'profile.homeLocation': return !!(p.homeLocation && p.homeLocation.lat);
+    case 'profile.workLocation': return !!(p.workLocation && p.workLocation.lat);
+    default: return false;
+  }
+}
+
 /** Drive the autosave loop to completion for the profile key and report
  * whether the document actually committed. flush() already handles the 409
  * reconcile and re-queues; the second call is that queued retry. */
@@ -2058,6 +2079,12 @@ async function approveSuggestion(sg) {
   if (!(await flushProfileNow())) {
     // The autosave path already reverted the optimistic value and toasted.
     suggestionRowError(sg.id, "Couldn't save that — check your connection and try again.");
+    setRowBusy(sg.id, false);
+    return;
+  }
+  if (!suggestionValueLanded(sg)) {
+    suggestionRowError(sg.id,
+      'Your settings changed on another device, so this was not applied. Try approving it again.');
     setRowBusy(sg.id, false);
     return;
   }
@@ -2143,7 +2170,7 @@ function beginLocationPick(sg) {
     suggestionRowError(sg.id, 'That location field is not available — reject the suggestion.');
     return;
   }
-  awaitingLocationPick = { id: sg.id, which, fieldLabel: sg.fieldLabel || sg.field };
+  awaitingLocationPick = { id: sg.id, which, field: sg.field, fieldLabel: sg.fieldLabel || sg.field };
   suggestionRowError(sg.id, '');
   input.value = sg.proposedValue;
   input.focus();
@@ -2160,7 +2187,7 @@ function locationSuggestionPicked(which) {
   if (!claim || claim.which !== which) return;
   awaitingLocationPick = null;
   void (async () => {
-    if (!(await flushProfileNow())) {
+    if (!(await flushProfileNow()) || !suggestionValueLanded({ field: claim.field, proposedValue: '' })) {
       suggestionRowError(claim.id, "Couldn't save that location — check your connection and try again.");
       return;
     }
