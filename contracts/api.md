@@ -70,16 +70,20 @@ NFR-02/FR-A02's anti-confused-deputy posture.
 | GET | `/v1/settings?since={version}` | Reconciliation fetch: "give me the doc only if newer than `{version}`" — lets a client that just pushed a local change confirm whether a concurrent write from another surface won. | Session JWT |
 | WSS | `/v1/ws` | Persistent control-plane WebSocket for the web client. Carries `settings.updated` frames (FR-S02) and other server-push control notices (e.g. a device coming online). Not used for realtime audio — that's the direct-to-OpenAI WebRTC path. | Session JWT |
 
-## Base Knowledge profile (M15)
+## Base Knowledge profile (M15) + suggestion queue (M16)
 
 The profile lives inside the settings document (`settings.schema.json` → `profile`), so it is
 read and written through `GET`/`PUT /v1/settings` above — there is no separate profile CRUD
-route. These two endpoints exist only to *support* the form.
+route. The endpoints below exist only to *support* the form and the approval queue; **approving a
+suggestion is a normal `PUT /v1/settings`**, not a write of its own, which is what keeps every
+approved value subject to the same schema validation a manual edit gets.
 
 | Method | Path | Purpose | Auth |
 |---|---|---|---|
 | GET | `/v1/geocode?q={query}` | Place typeahead behind the home/work location pickers. Returns `{results:[{label, city, admin1, country, postalCode, lat, lon, timezone}]}` — **exactly the shape stored in `profile.homeLocation`**, so the client saves the selected record verbatim and no second resolution can drift. Queries under 2 characters return an empty list. A `"City, ST"` query is split before the upstream call (the geocoder's name index has no compound entries) and candidates are filtered by the region hint. Upstream is Open-Meteo's keyless geocoder; a failure is `502 geocode_unavailable`. | Session JWT |
 | POST | `/v1/profile/suggest` | Assisted seed: searches the caller's own memory layer for name/home/work/email facts and returns `{suggestions, sources, note}` for the owner to confirm. **Writes nothing** — a silently-copied home location that happens to be wrong would poison every weather and time answer, so the human confirms in the form. `503 not_configured` when the memory service is unavailable. | Session JWT |
+| GET | `/v1/profile/suggestions` | The base-knowledge approval queue (M16): `{suggestions:[{id, field, fieldLabel, currentValue, proposedValue, reason, source, sourceRef, status, autoApplied, needsPick, createdAt}], pendingCount, autoAppliedCount, reviewCount}` — single-partition `Query` on `PK=USER#{userId}, SK begins_with PROFSUGG#`, never `Scan`. Rows are written by the `profile_suggest` tool and by the M17 RCA analyzer; already-resolved rows are filtered out server-side. `reviewCount` drives the settings drawer's badge. `needsPick` is true for the two location fields, which can only be approved by picking a `/v1/geocode` result. | Session JWT |
+| POST | `/v1/profile/suggestions/{id}/resolve` | Record the owner's decision: `{action}` ∈ `approve`\|`reject` (a pending proposal) \| `keep`\|`undo` (a change the server auto-applied). **The body carries no value** — field and value come from the stored row, so a client can only say yes or no to something the server already holds. `approve`/`reject` only stamp the decision (the client has already written the value through `PUT /v1/settings`); `undo` additionally reverts the profile through the same versioned read-modify-write the auto-apply used and returns the new `{version}`. Resolve-once: a second decision on the same row is `409 already_resolved`. An `undo` for a field outside the auto-apply allowlist is refused. | Session JWT |
 
 Server-side effects of a stored profile (no client action required):
 
@@ -93,6 +97,16 @@ Server-side effects of a stored profile (no client action required):
   profile's. An explicit argument still wins.
 - **`set_timer`/`set_reminder`** accept an offset-less local datetime in `at`
   (`2026-07-25T09:00`), interpreted in the profile timezone. RFC3339 with an offset is unchanged.
+- **`profile_suggest` (M16)** is an assistant-callable tool in the session manifest, routed through
+  `POST /v1/tools/invoke` like every other tool. It writes a pending `PROFSUGG#` row (30-day TTL)
+  and **never** mutates the profile — its result says "suggested … will confirm in Settings" so the
+  model cannot claim the change took effect. Its one exception is the **locked auto-apply policy**:
+  `profile.units` and a `profile.notes[]` addition the user spoke explicitly may be applied
+  immediately (with a toast + Undo in Settings); `profile.homeLocation`, `profile.workLocation`,
+  `profile.displayName`, `profile.pronouns`, `profile.contactEmail` and `profile.locale` **always**
+  require confirmation. That refusal is structural, not advisory — `store.AutoApplyProfileSuggestion`
+  returns `ErrProfileFieldProtected` for a protected field even when a client hand-crafts the tool
+  call with `autoApply:true`, and the same gate guards the `undo` route.
 
 ## Wake-word (M6 — FR-K01..06)
 
@@ -195,4 +209,5 @@ Server-side effects of a stored profile (no client action required):
 |---|---|---|
 | 2026-07-17 | Initial freeze at M0. Full inventory compiled from PRD §5 catalog + all milestone task lists (M1–M12); three route names canonicalized per "Reconciliation notes" above. | WS-G M0 contract-freeze task |
 | 2026-07-18 | RFC 8628 user-code binding added to device pairing: `pair/start` responses gain `userCode` (`XXXX-XXXX`, alphabet `BCDFGHJKLMNPQRSTVWXZ`, displayed on the device); new `POST /auth/device/pair/confirm` route (browser confirm leg — constant-time code match, 5-attempt budget); `pair/poll` gains the terminal `failed` status (`reason: user_code_attempts_exceeded`) and folds the former `pair/claim` step into itself; the shared `lwa/callback` (device leg) now serves the confirm page instead of binding directly. No back-compat shim — the code is required (no device had onboarded). | Pairing anti-phishing gap: an allowlisted attacker could phish a victim into binding a 10-yr device credential to the victim's account |
+| 2026-07-25 | Knowledge Refinement Loop (M16): new `profile_suggest` tool (21st in the manifest); new `GET /v1/profile/suggestions` and `POST /v1/profile/suggestions/{id}/resolve`; `settings.schema.json` documents nothing new (suggestions live in their own `PROFSUGG#` items, not in the settings document); `memoryUsageDirective` now states the stable-vs-episodic split. | The assistant could learn a standing fact mid-conversation and had nowhere to put it: `memory_write` buries it where no session reads it, and letting it write the profile directly would let one wrong home location silently poison every weather and time answer |
 | 2026-07-24 | Base Knowledge profile (M15): `settings.schema.json` gains `profile` (+ `$defs/profileLocation`); new `GET /v1/geocode` and `POST /v1/profile/suggest`; `get_weather.location` becomes **optional** (profile home is the default and skips geocoding entirely) and `units` defaults from the profile; `set_timer`/`set_reminder` accept a naive local `at` in the profile timezone; every mint and the fallback turn carry a server-composed `BASE KNOWLEDGE` block. | The assistant had no baseline context: no clock at all, and "what's the weather" forced a location question every time even though the home address was already in the memory layer |

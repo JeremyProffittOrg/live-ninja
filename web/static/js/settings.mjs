@@ -1807,7 +1807,13 @@ async function refreshSuggestions() {
 
 /** An auto-applied change happened without the owner asking, so it gets a
  * toast with an Undo even if they never open the drawer — the toast element
- * lives at page level for exactly this. Shown once per suggestion id. */
+ * lives at page level for exactly this. Shown once per suggestion id.
+ *
+ * With the drawer OPEN the toast is skipped deliberately: showModal() puts the
+ * drawer in the top layer, above any normal-flow element regardless of
+ * z-index, so a page-level toast would be painted behind it. In that state the
+ * row itself — sitting first in "About you", carrying the same Undo — is the
+ * better affordance, so this scrolls to it and announces instead. */
 function maybeToastAutoApplied() {
   const applied = suggestions.filter((s) => s.autoApplied);
   if (applied.length === 0) return;
@@ -1821,10 +1827,16 @@ function maybeToastAutoApplied() {
   const fresh = applied.filter((s) => !shown.includes(s.id));
   if (fresh.length === 0) return;
   const sg = fresh[0];
-  showToast(autoAppliedSentence(sg), {
-    label: 'Undo',
-    onClick: () => void decideSuggestion(sg.id, 'undo'),
-  });
+  const drawer = $('settingsDrawer');
+  if (drawer && drawer.open) {
+    announceSuggestion(`${autoAppliedSentence(sg)} Undo it in the suggestions list.`);
+    if (suggestionsBox) suggestionsBox.scrollIntoView({ block: 'nearest' });
+  } else {
+    showToast(autoAppliedSentence(sg), {
+      label: 'Undo',
+      onClick: () => void decideSuggestion(sg.id, 'undo'),
+    });
+  }
   try {
     // Keep only ids that are still live so this list can't grow forever.
     const live = suggestions.map((s) => s.id);

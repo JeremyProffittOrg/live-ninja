@@ -277,7 +277,7 @@
     },
     "profile": {
       "type": "object",
-      "description": "Base Knowledge profile (M15). Stable, always-relevant facts about the user, injected server-side into EVERY minted session's instructions as a BASE KNOWLEDGE block (internal/realtime/baseknowledge.go) and used as the default argument source for profile-aware tools (get_weather location/units, scheduler timezone). This is deliberately NOT the memory layer: memory is episodic and retrieval-on-demand, this is stable and always-present. Locations are stored GEOCODE-VERIFIED — lat/lon/timezone are resolved at save time via GET /api/v1/geocode, never at question time. Optional; an absent or empty profile mints exactly as before.",
+      "description": "Base Knowledge profile (M15). Stable, always-relevant facts about the user, injected server-side into EVERY minted session's instructions as a BASE KNOWLEDGE block (internal/realtime/baseknowledge.go) and used as the default argument source for profile-aware tools (get_weather location/units, scheduler timezone). This is deliberately NOT the memory layer: memory is episodic and retrieval-on-demand, this is stable and always-present. Locations are stored GEOCODE-VERIFIED — lat/lon/timezone are resolved at save time via GET /api/v1/geocode, never at question time. Optional; an absent or empty profile mints exactly as before. M16 adds a refinement loop on top: the assistant's profile_suggest tool and the tool-failure RCA analyzer PROPOSE changes as separate PROFSUGG# items (not part of this document), which the owner approves in Settings — an approval is then an ordinary versioned PUT of this document. Only `units` and a `notes[]` addition may ever be written without that confirmation (see those fields); displayName, pronouns, contactEmail, locale, homeLocation and workLocation always require it, and the refusal is enforced server-side in store.AutoApplyProfileSuggestion rather than in the UI.",
       "additionalProperties": true,
       "properties": {
         "displayName": {
@@ -307,7 +307,7 @@
             "metric"
           ],
           "default": "imperial",
-          "description": "Unit system for temperature, wind, distance. Becomes the default `units` argument for get_weather."
+          "description": "Unit system for temperature, wind, distance. Becomes the default `units` argument for get_weather. One of the only two fields the assistant may write on its own (M16 auto-apply policy): the value set is enumerable, the effect is immediately audible in the next answer, and Settings shows an Undo. Everything else needs the owner's confirmation."
         },
         "locale": {
           "type": "string",
@@ -338,7 +338,7 @@
         },
         "notes": {
           "type": "array",
-          "description": "Short free-form owner facts that belong in every session but aren't a modeled field — the 'everything else' bucket. Capped so the instruction block can't grow without bound.",
+          "description": "Short free-form owner facts that belong in every session but aren't a modeled field — the 'everything else' bucket. Capped so the instruction block can't grow without bound. The other field the assistant may write on its own (M16 auto-apply policy), and only ever by ADDING an entry the user spoke explicitly — never by replacing the list; Settings shows an Undo that removes exactly the entry that was added.",
           "maxItems": 20,
           "items": {
             "type": "string",

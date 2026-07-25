@@ -32,12 +32,12 @@ fact in this document.
 ### The tool registry
 
 internal/tools is one execution path behind POST /api/v1/tools/invoke, run for every surface.
-Five pipeline stages, in order (registry.go Invoke/finish): (1) enumerated-argument validation
-against each tool's declared ParamSpec (type, required, enum, length/range bounds); (2) per-call
-Reauthorize (re-checks the user is still active/allowlisted — never trusts a JWT minted before a
-revocation); (3) an IDEMP#<userId>#<key> conditional put for SideEffecting tools, marked *before*
-execution so a duplicate delivery is a no-op; (4) real execution — no stubs; (5) finish: an audit
-LOG# write into the caller's transcript partition (90d TTL) plus a ToolInvocations EMF metric.
+Five pipeline stages (registry.go Invoke/finish): (1) argument validation against each tool's
+ParamSpec (type, required, enum, length/range); (2) per-call Reauthorize (re-checks the user is
+active/allowlisted — never trusts a JWT minted before a revocation); (3) an IDEMP#<userId>#<key>
+conditional put for SideEffecting tools, marked *before* execution so a duplicate delivery is a
+no-op; (4) execution; (5) finish: a LOG# audit row in the caller's transcript partition (90d TTL)
+plus a ToolInvocations EMF metric.
 
 Error codes (registry.go), one meaning each:
 - `unknown_tool` — inv.Tool names nothing in the catalog. Client-supplied text, checked before
@@ -53,7 +53,7 @@ Error codes (registry.go), one meaning each:
   Memory not wired for this environment). The highest-value code here: it usually means a `Deps`
   wiring or IAM gap in production, not a user mistake — the 2026-07-18 incident where every
   memory tool answered not_configured while IAM/Bedrock/REST were all healthy is exactly this.
-- `upstream_error` — a downstream call failed (Open-Meteo, Wikipedia, SES, EventBridge Scheduler,
+- `upstream_error` — a downstream call failed (Open-Meteo, Wikipedia, SES, Scheduler,
   IoT data-plane).
 
 Tool catalog by name and file: comms `send_email` (sendemail.go); scheduling `set_timer` /
@@ -61,7 +61,8 @@ Tool catalog by name and file: comms `send_email` (sendemail.go); scheduling `se
 (weather.go), `web_lookup` / `web_research` (weblookup.go, research.go); notes `remember_note` /
 `recall_note` (notes.go); deliverables `deliverable_create|zip|deliver`, `file_list|read|create`
 (deliverable.go, file.go); memory `memory_search`, `memory_write`, `entity_get`, `plan_upsert`,
-`forget` (memory.go). `Unadvertised` params are enforced but never shown to the model (e.g.
+`forget` (memory.go); `profile_suggest` (profilesuggest.go). `Unadvertised` params
+are enforced but never shown to the model (e.g.
 set_timer's legacy "seconds" alias, kept working but not taught). `OutOfRangeHint` deliberately
 redirects the model to a sibling tool on a bound violation (set_timer overflow -> set_reminder) —
 **one invalid_args failure immediately followed by a successful sibling call is the system's
@@ -90,6 +91,10 @@ failures: `internal/tools/geocode.go` splits a `"City, ST"` query before the geo
 name index has no compound entries), and the scheduler accepts an offset-less local datetime for
 `at` (interpreted in the profile timezone) because the model emits `2026-07-25T09:00` far more
 often than a correct RFC3339 value.
+
+M16: the assistant only PROPOSES profile edits (`profile_suggest`) as `PROFSUGG#` rows the owner
+approves in Settings; only `units` and a `notes[]` addition can apply unconfirmed, gated in
+`store.AutoApplyProfileSuggestion`.
 
 ### Storage and identity
 

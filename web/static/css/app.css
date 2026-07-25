@@ -1871,3 +1871,98 @@ dialog.conv-drawer[open] {
 /* A saved fact chip carries its own remove control. */
 .ln-notechip { max-width: 100%; }
 .ln-notechip__text { overflow-wrap: anywhere; }
+
+/* ====================================================================
+   SUGGESTION QUEUE (M16 — Knowledge Refinement Loop)
+   ==================================================================== */
+/* Every colour below resolves through the shared tokens, so the block meets
+   WCAG-AA in both themes for the same reason the rest of the drawer does —
+   there are no literal colours here to drift out of contrast. */
+.ln-suggestions {
+  margin-bottom: var(--ln-sp-5);
+  padding: var(--ln-sp-4);
+  background: var(--ln-accent-tint);
+  border: 1px solid var(--ln-border-strong);
+  border-radius: var(--ln-r-md);
+}
+.ln-suggestions__title {
+  display: flex; align-items: center; gap: var(--ln-sp-3); flex-wrap: wrap;
+  margin: 0 0 var(--ln-sp-1);
+  font-size: var(--ln-fs-md); font-weight: 700;
+}
+.ln-suggestions__list {
+  list-style: none; margin: var(--ln-sp-3) 0 0; padding: 0;
+  display: flex; flex-direction: column; gap: var(--ln-sp-3);
+}
+
+.ln-suggestion {
+  padding: var(--ln-sp-4);
+  background: var(--ln-surface-raised);
+  border: 1px solid var(--ln-border-strong);
+  border-radius: var(--ln-r-md);
+}
+.ln-suggestion__head {
+  display: flex; align-items: center; gap: var(--ln-sp-3); flex-wrap: wrap;
+  margin-bottom: var(--ln-sp-2);
+}
+.ln-suggestion__field { font-weight: 700; font-size: var(--ln-fs-sm); }
+
+/* Labelled key/value pairs — a single proposal's heterogeneous fields, so a
+   definition list rather than a table row, and no orphaned values. */
+.ln-suggestion__values {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+  gap: var(--ln-sp-1) var(--ln-sp-3);
+  margin: 0 0 var(--ln-sp-2);
+  font-size: var(--ln-fs-sm);
+}
+.ln-suggestion__values dt {
+  color: var(--ln-text-dim); font-weight: 650;
+  text-transform: uppercase; font-size: var(--ln-fs-xs); letter-spacing: 0.04em;
+  align-self: center;
+}
+.ln-suggestion__values dd { margin: 0; color: var(--ln-text); overflow-wrap: anywhere; }
+
+.ln-suggestion__reason {
+  margin: 0 0 var(--ln-sp-2);
+  font-size: var(--ln-fs-sm); color: var(--ln-text-muted);
+  overflow-wrap: anywhere;
+}
+.ln-suggestion__src { margin: 0; font-size: var(--ln-fs-xs); color: var(--ln-text-dim); }
+
+/* Inline, adjacent-to-the-control error (role="alert", referenced by every
+   button's aria-describedby) — the summary toast supplements it, never
+   replaces it. */
+.ln-suggestion__error {
+  margin: var(--ln-sp-2) 0 0;
+  padding: var(--ln-sp-2) var(--ln-sp-3);
+  font-size: var(--ln-fs-sm); font-weight: 650;
+  color: var(--ln-error-ink);
+  background: var(--ln-error-tint);
+  border: 1px solid var(--ln-error-border);
+  border-radius: var(--ln-r-sm);
+}
+
+/* Buttons keep .ln-btn's var(--ln-touch) min-height, so the touch targets are
+   the same ~44px as everywhere else; wrap instead of shrinking on narrow
+   viewports. */
+.ln-suggestion__actions {
+  display: flex; flex-wrap: wrap; gap: var(--ln-sp-3);
+  margin-top: var(--ln-sp-3);
+}
+
+/* Count badge on the docked settings tab. The number IS the signal (never
+   colour alone) and settings.mjs mirrors it into the button's aria-label.
+   .conv-settings-tab is already position:fixed above, which is what anchors
+   this absolute placement. */
+.conv-settings-tab__badge {
+  position: absolute; top: -6px; left: -8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 20px; height: 20px; padding: 0 5px;
+  font-size: var(--ln-fs-xs); font-weight: 800; line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--ln-text-on-teal);
+  background: var(--ln-teal);
+  border: 1px solid var(--ln-teal-700);
+  border-radius: var(--ln-r-pill);
+}
