@@ -596,7 +596,16 @@ jobs:
   # ------------------------------------------------------------------
   web-quality:
     needs: [deploy]
-    if: needs.deploy.result == 'success'
+    # always() is load-bearing, not defensive. deploy's own upstream container
+    # jobs are normally skipped, so deploy only runs because it uses always();
+    # GitHub then propagates "skipped" down the whole chain, and a dependent job
+    # without always() is skipped even when deploy succeeded. That is exactly
+    # what happened on the first run of this job (b21ed31: deploy=success,
+    # web-quality=skipped, zero steps). Same pattern as the two
+    # push-*-container-bootstrap jobs above.
+    if: >-
+      always() &&
+      needs.deploy.result == 'success'
     runs-on: ubuntu-latest
     continue-on-error: true
     permissions:
