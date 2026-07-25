@@ -32,6 +32,12 @@
     <string name="conversation_cost_badge_a11y">Session cost estimate %1$s, list price. %2$d text tokens, %3$d audio tokens.</string>
     <string name="conversation_tap_to_talk">Tap to talk</string>
     <string name="conversation_idle_wake_caption">Or just say “%1$s”</string>
+    <!-- In-app stop-listening control. The wake FGS notification carries a Stop action, but it
+         is PRIORITY_LOW/CATEGORY_SERVICE and is not visible at all while the app is open, so
+         the only in-app off switch used to be buried in Settings. -->
+    <string name="conversation_listening_on">Always listening is on</string>
+    <string name="conversation_listening_stop">Turn off listening</string>
+    <string name="conversation_listening_stopped">Listening turned off. Turn it back on in Settings.</string>
     <string name="conversation_idle_privacy_caption">Wake-word detection stays on this device. Audio streams only during a live conversation.</string>
     <string name="conversation_role_you">You</string>
     <string name="conversation_role_assistant">Live Ninja</string>

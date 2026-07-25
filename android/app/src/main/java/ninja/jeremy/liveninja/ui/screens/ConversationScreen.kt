@@ -35,11 +35,13 @@ import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,6 +60,7 @@ import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import ninja.jeremy.liveninja.R
 import ninja.jeremy.liveninja.realtime.badgeText
+import ninja.jeremy.liveninja.wake.WakeWordService
 import ninja.jeremy.liveninja.ui.conversation.ConversationError
 import ninja.jeremy.liveninja.ui.conversation.ConversationUiState
 import ninja.jeremy.liveninja.ui.conversation.ConversationViewModel
@@ -244,6 +247,8 @@ private fun IdleHero(
     onAcknowledgeError: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
+    val wakeRunning by WakeWordService.runningFlow.collectAsStateWithLifecycle()
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -333,6 +338,27 @@ private fun IdleHero(
                     textAlign = TextAlign.Center,
                     modifier = Modifier.padding(top = 4.dp),
                 )
+                // Stop listening, reachable from where the user actually is. The wake FGS
+                // notification has a Stop action, but it is PRIORITY_LOW/CATEGORY_SERVICE and
+                // is not visible while the app is open — which left Settings as the only
+                // in-app way to stop the microphone. Shown only when something really is
+                // listening (runningFlow, not the persisted intent), so it never offers to
+                // turn off something that is already off.
+                if (wakeRunning) {
+                    Text(
+                        stringResource(R.string.conversation_listening_on),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 16.dp),
+                    )
+                    OutlinedButton(
+                        onClick = { WakeWordService.stop(context) },
+                        modifier = Modifier
+                            .padding(top = 8.dp)
+                            .heightIn(min = 48.dp),
+                    ) { Text(stringResource(R.string.conversation_listening_stop)) }
+                }
             }
         }
     }

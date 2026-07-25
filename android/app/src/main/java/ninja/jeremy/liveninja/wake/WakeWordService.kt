@@ -138,6 +138,35 @@ class WakeWordService : Service() {
             }
         }
 
+        // Everything below is the START path. It used to run for EVERY intent that was not
+        // ACTION_STOP, which had two consequences worth naming:
+        //
+        //  1. A sticky restart (null intent, after an OEM task-kill) resumed listening and
+        //     re-wrote `serviceEnabled = true` even when the user had explicitly turned
+        //     listening off — the service resurrecting itself against an instruction, which
+        //     from the outside looks like "there is no way to turn this off".
+        //  2. A mute/unmute/end-session tap re-entered startForeground, so a failure there
+        //     could turn a mute into a service stop.
+        when (decideWakeStart(intent?.action, prefs.serviceEnabled)) {
+            WakeStartDecision.HANDLE_ONLY -> {
+                updateNotification()
+                return START_STICKY
+            }
+
+            WakeStartDecision.STOP_USER_DISABLED -> {
+                LNLog.i(
+                    LogCategory.WAKE,
+                    TAG,
+                    "sticky restart ignored — the user turned listening off",
+                )
+                WakeWatchdogWorker.cancel(applicationContext)
+                stopSelf()
+                return START_NOT_STICKY
+            }
+
+            WakeStartDecision.START -> Unit // fall through to the start path below
+        }
+
         // Crash-guard A2: never call startForeground(type=MICROPHONE) without the
         // mic grant (SecurityException on targetSdk 34+), and never crash-loop on
         // a background-start refusal. Degrade to a tap-to-resume notification.
