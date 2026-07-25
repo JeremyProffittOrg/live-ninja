@@ -1,6 +1,7 @@
 package ninja.jeremy.liveninja
 
 import android.app.Application
+import android.content.Context
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import dagger.hilt.android.HiltAndroidApp
@@ -28,14 +29,41 @@ class LiveNinjaApplication : Application(), Configuration.Provider {
     @Inject lateinit var hiltWorkerFactory: HiltWorkerFactory
 
     /**
-     * WorkManager detects that [Application] implements [Configuration.Provider]
-     * and switches from its default eager `androidx.startup` init to on-demand
-     * init using this configuration (WorkManager 2.6+, no manifest edit needed).
+     * Supplies [HiltWorkerFactory] for WorkManager's genuinely on-demand init
+     * (M22.2 cold start): this alone does NOT defer initialization — see the
+     * `tools:node="remove"` merge on `androidx.startup.InitializationProvider`
+     * in AndroidManifest.xml for the other required half. With both in place,
+     * WorkManager.initialize() runs (using this configuration) the first time
+     * `WorkManager.getInstance(context)` is called — [ninja.jeremy.liveninja.wake.WakeWatchdogWorker]'s
+     * enqueue()/cancel() calls in WakeWordService — instead of eagerly on
+     * every process start regardless of whether the wake service ever runs.
      */
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
             .setWorkerFactory(hiltWorkerFactory)
             .build()
+
+    /**
+     * Prime the two SharedPreferences files the eager Hilt singleton graph is
+     * about to read synchronously on the main thread (M22.2 cold start):
+     * `LogSink`'s constructor (below) pulls in [ninja.jeremy.liveninja.ui.state.SettingsStore],
+     * whose constructor does a blocking `getString`/parse of "liveninja_settings",
+     * and `MainActivity`'s eager `WakePreferences` field-inject does the same for
+     * "wake" moments later. `Context.getSharedPreferences()` kicks off its XML
+     * parse on a background thread the *first* time a given file name is opened
+     * for this process, then caches the loaded instance — calling it here, off
+     * the main thread, before Hilt touches either file, gives that parse the
+     * maximum possible head start so the later synchronous reads are far more
+     * likely to find the file already loaded instead of blocking on first touch.
+     * This changes only *when* the file is opened, never what is read from it.
+     */
+    override fun attachBaseContext(base: Context) {
+        super.attachBaseContext(base)
+        Thread({
+            base.getSharedPreferences("liveninja_settings", Context.MODE_PRIVATE)
+            base.getSharedPreferences("wake", Context.MODE_PRIVATE)
+        }, "prefs-warmup").start()
+    }
 
     override fun onCreate() {
         super.onCreate()

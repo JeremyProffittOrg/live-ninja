@@ -14,6 +14,7 @@ import kotlinx.coroutines.sync.withLock
 import ninja.jeremy.liveninja.net.LiveNinjaApi
 import ninja.jeremy.liveninja.ui.state.TranscriptRole
 import ninja.jeremy.liveninja.net.TranscriptUploadTurnDto
+import ninja.jeremy.liveninja.net.SessionCostDto
 import ninja.jeremy.liveninja.net.TranscriptUploadRequest
 
 /**
@@ -116,7 +117,7 @@ class TranscriptUploader internal constructor(
      * is the session-end seam the server uses to invoke the topic extractor and write the `CONV`
      * record (`internal/webapp/api_routes.go`: "A final-only flush with zero turns is valid").
      */
-    fun finish() {
+    fun finish(cost: SessionCost? = null) {
         scope.launch {
             val (id, batch) = mutex.withLock {
                 val id = sessionId ?: return@launch
@@ -127,7 +128,7 @@ class TranscriptUploader internal constructor(
                 sessionId = null
                 id to batch
             }
-            send(batch, final = true, sessionIdOverride = id)
+            send(batch, final = true, sessionIdOverride = id, cost = cost)
         }
     }
 
@@ -160,13 +161,28 @@ class TranscriptUploader internal constructor(
         turns: List<TranscriptUploadTurnDto>,
         final: Boolean,
         sessionIdOverride: String? = null,
+        cost: SessionCost? = null,
     ) {
         val id = sessionIdOverride ?: mutex.withLock { sessionId } ?: return
         // The server rejects a non-final flush with no turns; nothing to do.
         if (turns.isEmpty() && !final) return
         try {
             sink.upload(
-                TranscriptUploadRequest(sessionId = id, final = final, turns = turns),
+                TranscriptUploadRequest(
+                    sessionId = id,
+                    final = final,
+                    turns = turns,
+                    // Only ever on the final flush, and only with real usage
+                    // behind it — a zeroed cost would overwrite nothing useful
+                    // but would claim a priced session that never was.
+                    cost = cost?.takeIf { final && it.hasData }?.let {
+                        SessionCostDto(
+                            usd = it.usd,
+                            textTokens = it.textTokens,
+                            audioTokens = it.audioTokens,
+                        )
+                    },
+                ),
             )
         } catch (t: Throwable) {
             Log.w(TAG, "transcript upload failed (final=$final, turns=${turns.size})", t)

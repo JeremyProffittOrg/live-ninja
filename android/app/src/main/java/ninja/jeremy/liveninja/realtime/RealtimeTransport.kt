@@ -36,10 +36,15 @@ interface RealtimeTransport {
     val events: SharedFlow<RealtimeEvent>
 
     /**
-     * Half-duplex fallback (plan.md Android §4.3): when true the mic track is
-     * disabled while the assistant is speaking, for devices whose AEC cannot
-     * prevent self-triggered barge-in. Takes effect from the next speaking
-     * transition; safe to flip mid-session.
+     * Half-duplex mic guard (plan.md Android §4.3, WS-5 M21.2): when true the
+     * outgoing mic is gated while the assistant is audible, for devices whose AEC
+     * cannot prevent the assistant hearing itself. Implemented by [EchoGate] —
+     * gating extends past the playout-stopped event by a tail, since the jitter
+     * buffer and the room are still delivering the assistant's last words.
+     *
+     * Each transport sets this from [EchoGuardPolicy] when a session connects, so
+     * assignment here is an in-session override that lasts until the next
+     * connect. Safe to flip mid-session; takes effect immediately.
      */
     var halfDuplex: Boolean
 

@@ -63,6 +63,18 @@ sealed interface SessionUiEvent {
 
     /** Fatal session error; the UI transitions to its error state. */
     data class SessionError(val message: String) : SessionUiEvent
+
+    /**
+     * Running list-price cost estimate for the live session, refreshed each time
+     * the provider reports token usage. Never emitted for engines that surface
+     * no usage (nova-bridge), so the badge stays hidden rather than showing a
+     * misleading "$0.000".
+     */
+    data class CostUpdated(
+        val usd: Double,
+        val textTokens: Int,
+        val audioTokens: Int,
+    ) : SessionUiEvent
 }
 
 enum class TranscriptRole { USER, ASSISTANT }

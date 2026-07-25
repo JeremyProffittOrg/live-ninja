@@ -161,4 +161,19 @@ data class TranscriptUploadRequest(
     val sessionId: String,
     val final: Boolean = false,
     val turns: List<TranscriptUploadTurnDto> = emptyList(),
+    /**
+     * Client list-price estimate for the whole session, sent only on the
+     * `final:true` flush — it is what puts a cost on the `CONV` row (web does
+     * the same; the server bounds it via `sanitizeSessionCost`). Omitted when no
+     * estimate exists, e.g. an engine that surfaces no usage events.
+     */
+    val cost: SessionCostDto? = null,
+)
+
+/** Session cost estimate on the final transcript flush (`cost` in api.md). */
+@Serializable
+data class SessionCostDto(
+    val usd: Double,
+    val textTokens: Int,
+    val audioTokens: Int,
 )

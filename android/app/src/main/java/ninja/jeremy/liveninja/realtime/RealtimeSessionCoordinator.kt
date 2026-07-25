@@ -68,6 +68,14 @@ class RealtimeSessionCoordinator @Inject constructor(
     private var stateWatchJob: Job? = null
 
     /**
+     * Live cost estimate for the session, plus the rates it is priced with.
+     * Both are per-session: [sessionRates] is null until a bootstrap that
+     * carried rates, which is what keeps the badge hidden on nova-bridge.
+     */
+    private val costTracker = SessionCostTracker()
+    private var sessionRates: RealtimeRates? = null
+
+    /**
      * Characters already emitted per transcript item, so the final
      * `...completed`/`.done` full-text event can be emitted as a remainder
      * delta without duplicating streamed text.
@@ -100,6 +108,11 @@ class RealtimeSessionCoordinator @Inject constructor(
                 webRtcTransport.abortPrepare()
                 throw t
             }
+
+            // Reset before the first turn can arrive: a stale total from the
+            // previous session would otherwise be attributed to this one.
+            costTracker.reset()
+            sessionRates = session.rates
 
             // Start shipping turns to POST /api/v1/transcript for this session
             // (WS-5 M21.1). Must come after the fetch: the broker-issued
@@ -175,7 +188,10 @@ class RealtimeSessionCoordinator @Inject constructor(
             emittedChars.clear()
             // Session-end seam: the final:true flush is what makes the backend
             // run topics-extract and persist the CONV record for History.
-            transcriptUploader.finish()
+            // Carry the session's accrued estimate on the same flush — it is what
+            // puts a cost on the CONV row, so it has to ride the final post
+            // rather than a follow-up call that a dying process may never make.
+            transcriptUploader.finish(costTracker.cost)
         }
     }
 
@@ -197,10 +213,22 @@ class RealtimeSessionCoordinator @Inject constructor(
             is RealtimeEvent.AssistantAudioStarted ->
                 emit(SessionUiEvent.AssistantSpeaking(speaking = true))
 
-            is RealtimeEvent.AssistantAudioStopped,
-            is RealtimeEvent.ResponseDone,
-            ->
+            is RealtimeEvent.AssistantAudioStopped ->
                 emit(SessionUiEvent.AssistantSpeaking(speaking = false))
+
+            is RealtimeEvent.ResponseDone -> {
+                emit(SessionUiEvent.AssistantSpeaking(speaking = false))
+                // response.done is the only carrier of per-turn token counts.
+                costTracker.add(event.usage, sessionRates)?.let { cost ->
+                    emit(
+                        SessionUiEvent.CostUpdated(
+                            usd = cost.usd,
+                            textTokens = cost.textTokens,
+                            audioTokens = cost.audioTokens,
+                        ),
+                    )
+                }
+            }
 
             is RealtimeEvent.UserTranscriptDelta ->
                 emitDelta(event.itemId, TranscriptRole.USER, event.delta, done = false)

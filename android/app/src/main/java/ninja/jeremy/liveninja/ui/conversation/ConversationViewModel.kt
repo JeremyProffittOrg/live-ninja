@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import ninja.jeremy.liveninja.realtime.SessionCost
 import ninja.jeremy.liveninja.realtime.TranscriptStore
 import ninja.jeremy.liveninja.wake.ModelManager
 import ninja.jeremy.liveninja.ui.overlay.LiveOverlayController
@@ -57,6 +58,13 @@ data class ConversationUiState(
     val selectedWakeWordId: String = "",
     /** Catalog id of the head model actually loaded — what the detector can match. */
     val activeWakeWordId: String = "",
+    /**
+     * Running list-price cost estimate for the live session, or null when no
+     * estimate is available (before the first usage report, or on an engine that
+     * surfaces none). Null renders no badge at all — showing "$0.000" for an
+     * unpriced engine would be a lie, not a zero.
+     */
+    val sessionCost: SessionCost? = null,
 )
 
 @HiltViewModel
@@ -154,6 +162,10 @@ class ConversationViewModel @Inject constructor(
                 error = null,
                 errorDetail = null,
                 sessionSeconds = 0,
+                // Clear the previous session's total now rather than waiting for
+                // the first usage report, so the badge never shows the last
+                // conversation's cost against this one.
+                sessionCost = null,
             )
         }
         startJob?.cancel()
@@ -278,6 +290,17 @@ class ConversationViewModel @Inject constructor(
             // below only drive mic state / transient visuals.
             is SessionUiEvent.TranscriptDelta -> Unit
             is SessionUiEvent.ToolCall -> Unit
+
+            is SessionUiEvent.CostUpdated ->
+                _state.update {
+                    it.copy(
+                        sessionCost = SessionCost(
+                            usd = event.usd,
+                            textTokens = event.textTokens,
+                            audioTokens = event.audioTokens,
+                        ),
+                    )
+                }
 
             is SessionUiEvent.AssistantSpeaking -> {
                 _state.update { current ->

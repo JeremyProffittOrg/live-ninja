@@ -71,6 +71,13 @@ data class RealtimeSession(
      * token via liveConnectConstraints server-side).
      */
     val sessionConfig: JSONObject? = null,
+    /**
+     * Per-1M-token list rates for [model], used for the live cost badge.
+     * Present for `openai-direct` and `gemini-direct`; null for `nova-bridge`,
+     * whose usage events never reach the client — so a null here means "no
+     * estimate available", not "free".
+     */
+    val rates: RealtimeRates? = null,
 ) {
     companion object {
         const val MODE_OPENAI_DIRECT = "openai-direct"
@@ -217,6 +224,7 @@ class RealtimeSessionApi @Inject constructor(
                 geminiEndpoint = geminiEndpoint,
                 accessToken = accessToken,
                 sessionConfig = sessionConfig,
+                rates = RealtimeRates.from(json.optJSONObject("rates")),
             )
         }
     }

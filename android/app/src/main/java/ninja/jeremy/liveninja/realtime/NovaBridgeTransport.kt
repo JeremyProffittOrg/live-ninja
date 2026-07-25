@@ -66,11 +66,20 @@ import org.json.JSONObject
  * Barge-in is server-driven (Nova VAD): the bridge sends `turn.start`
  * role=user when it hears the user over the assistant; this transport flushes
  * local playback immediately (Android §4.3) and reports [RealtimeEvent.SpeechStarted].
+ *
+ * Echo (WS-5 M21.2): this path has **no software APM at all** — raw `AudioRecord`
+ * frames go straight onto the socket, so unlike [WebRtcTransport] there is no
+ * AEC3 to fall back on and the platform's VOICE_COMMUNICATION pre-processing is
+ * the only canceller. Adding an APM here would mean hosting libwebrtc's audio
+ * processing for a non-WebRTC transport, which is not a WS-5 change; until then
+ * [EchoGate] is this transport's primary self-echo defence rather than a
+ * fallback, and it is fed from real playout (every PCM chunk written).
  */
 @Singleton
 class NovaBridgeTransport @Inject constructor(
     @ApplicationContext private val context: Context,
     private val httpClient: OkHttpClient,
+    private val echoGuard: EchoGuardPolicy,
 ) : RealtimeTransport {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -82,8 +91,19 @@ class NovaBridgeTransport @Inject constructor(
     private val _events = MutableSharedFlow<RealtimeEvent>(extraBufferCapacity = 256)
     override val events: SharedFlow<RealtimeEvent> = _events.asSharedFlow()
 
-    @Volatile
-    override var halfDuplex: Boolean = false
+    /**
+     * Half-duplex guard (M21.2). The capture loop polls it per frame, so no
+     * push-side callback is needed — the log line is the only reason for one.
+     */
+    private val echoGate = EchoGate(scope) { suppressed ->
+        LNLog.d(LogCategory.AUDIO, TAG, "echo gate ${if (suppressed) "closed" else "open"}")
+    }
+
+    override var halfDuplex: Boolean
+        get() = echoGate.enabled
+        set(value) {
+            echoGate.enabled = value
+        }
 
     private var webSocket: WebSocket? = null
     private var sessionReady: CompletableDeferred<Unit>? = null
@@ -153,6 +173,9 @@ class NovaBridgeTransport @Inject constructor(
             throw IOException("nova bridge did not start within ${SESSION_START_TIMEOUT_MS}ms")
         }
 
+        // Per-session read of the owner switch (M21.2).
+        echoGate.enabled = echoGuard.halfDuplexMicGuard
+        LNLog.i(LogCategory.AUDIO, TAG, "half-duplex mic guard: ${echoGate.enabled}")
         configureAudioForCall()
         startCapture()
         startPlayback()
@@ -258,6 +281,7 @@ class NovaBridgeTransport @Inject constructor(
                 "assistant" -> {
                     if (assistantSpeaking) {
                         assistantSpeaking = false
+                        echoGate.assistantAudioStopped()
                         emit(RealtimeEvent.AssistantAudioStopped)
                     }
                     emit(RealtimeEvent.ResponseDone(null))
@@ -271,6 +295,7 @@ class NovaBridgeTransport @Inject constructor(
 
             "speaking.stop" -> if (assistantSpeaking) {
                 assistantSpeaking = false
+                echoGate.assistantAudioStopped()
                 emit(RealtimeEvent.AssistantAudioStopped)
             }
 
@@ -349,6 +374,9 @@ class NovaBridgeTransport @Inject constructor(
                 track.play()
             }
         }
+        // Speaker is silent now: reopen the mic on the short flush tail so the
+        // interrupting utterance is not clipped.
+        echoGate.playbackFlushed()
         if (sendBargeIn) {
             runCatching { webSocket?.send(JSONObject().put("type", "barge-in").toString()) }
         }
@@ -397,8 +425,8 @@ class NovaBridgeTransport @Inject constructor(
         }
     }
 
-    /** Mic is live only when not user-muted and not half-duplex-gated. */
-    private fun micLive(): Boolean = !userMuted && !(halfDuplex && assistantSpeaking)
+    /** Mic is live only when not user-muted and not echo-gated. */
+    private fun micLive(): Boolean = !userMuted && !echoGate.micSuppressed()
 
     private fun startPlayback() {
         val minBuf = AudioTrack.getMinBufferSize(
@@ -431,6 +459,12 @@ class NovaBridgeTransport @Inject constructor(
             for (chunk in playbackQueue) {
                 if (!isActive) break
                 runCatching { track.write(chunk, 0, chunk.size) }
+                // Ground truth for the echo gate: audio just went to the speaker.
+                // `write` blocks until the buffer accepts it, so this is the closest
+                // signal we have to "the loudspeaker is live", and it keeps the gate
+                // closed through a long queue without relying on the server's
+                // speaking.stop timing.
+                echoGate.assistantAudioPlaying()
             }
         }
     }
@@ -469,6 +503,7 @@ class NovaBridgeTransport @Inject constructor(
         running = false
         assistantSpeaking = false
         userMuted = false
+        echoGate.reset()
 
         captureJob?.cancel()
         captureJob = null

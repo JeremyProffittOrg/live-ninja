@@ -58,10 +58,10 @@ import org.webrtc.audio.JavaAudioDeviceModule
  * WebRTC implementation of [RealtimeTransport] on the prebuilt
  * io.github.webrtc-sdk:android artifact (plan.md M4, Android §4).
  *
- * Media path: mic (VOICE_COMMUNICATION source, hardware+software AEC/NS/AGC)
- * -> PeerConnection audio m-line -> OpenAI; assistant audio arrives on the
- * remote track and plays through the voice-call stream
- * (MODE_IN_COMMUNICATION, routed to the built-in speaker).
+ * Media path: mic (VOICE_COMMUNICATION source, **software** AEC3/NS/AGC — see
+ * [VoiceAudioProcessing]) -> PeerConnection audio m-line -> OpenAI; assistant
+ * audio arrives on the remote track and plays through the voice-call stream
+ * (MODE_IN_COMMUNICATION, routed to the best available communication device).
  *
  * Signaling: local SDP offer POSTed as `application/sdp` to
  * https://api.openai.com/v1/realtime/calls with the ephemeral client secret
@@ -73,11 +73,17 @@ import org.webrtc.audio.JavaAudioDeviceModule
  * here (Android §4.3): on `input_audio_buffer.speech_started` while the
  * assistant is speaking -> `response.cancel`, ~40 ms remote-track fade, then
  * `output_audio_buffer.clear` to flush the server-side jitter/playout buffer.
+ *
+ * Self-echo (WS-5 M21.2) is defended twice over: [VoiceAudioProcessing] moves
+ * echo cancellation from the platform effect (which cancelled nothing on the
+ * Tab S9 FE) to libwebrtc's AEC3, and [EchoGate] gates the outgoing mic while
+ * the assistant is audible when [EchoGuardPolicy] says to.
  */
 @Singleton
 class WebRtcTransport @Inject constructor(
     @ApplicationContext private val context: Context,
     private val httpClient: OkHttpClient,
+    private val echoGuard: EchoGuardPolicy,
 ) : RealtimeTransport {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -89,8 +95,24 @@ class WebRtcTransport @Inject constructor(
     private val _events = MutableSharedFlow<RealtimeEvent>(extraBufferCapacity = 256)
     override val events: SharedFlow<RealtimeEvent> = _events.asSharedFlow()
 
-    @Volatile
-    override var halfDuplex: Boolean = false
+    /**
+     * Half-duplex guard state machine (M21.2). Sole owner of "is the mic gated
+     * because the assistant is audible"; [updateMicEnabled] is its sink, and its
+     * timer is what re-enables the track when the tail expires.
+     */
+    private val echoGate = EchoGate(scope) { suppressed ->
+        updateMicEnabled()
+        LNLog.d(LogCategory.AUDIO, TAG, "echo gate ${if (suppressed) "closed" else "open"}")
+    }
+
+    override var halfDuplex: Boolean
+        get() = echoGate.enabled
+        set(value) {
+            echoGate.enabled = value
+        }
+
+    /** Capture-side processing policy; see [VoiceAudioProcessing] for the why. */
+    private val audioProcessing = VoiceAudioProcessing.SOFTWARE_APM
 
     private var factory: PeerConnectionFactory? = null
     private var peerConnection: PeerConnection? = null
@@ -217,18 +239,13 @@ class WebRtcTransport @Inject constructor(
             ?: throw IOException("createPeerConnection returned null")
         peerConnection = pc
 
-        // Mic capture with software AEC/NS/AGC constraints layered on top of
-        // the hardware effects the audio device module enables.
-        val audioConstraints = MediaConstraints().apply {
-            mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
-            mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
-            mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
-            mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
-        }
-        val source = requireNotNull(factory).createAudioSource(audioConstraints)
+        // Mic capture with the full software APM requested on both surfaces that
+        // can carry it: the source constraints and (144+) the track itself.
+        val source = requireNotNull(factory).createAudioSource(audioProcessing.toAudioSourceConstraints())
         audioSource = source
         val micTrack = requireNotNull(factory).createAudioTrack("liveninja-mic", source)
         localAudioTrack = micTrack
+        applyTrackAudioProcessing(micTrack)
         pc.addTrack(micTrack, listOf("liveninja"))
 
         // Client-created events channel; OpenAI attaches to the same label.
@@ -255,6 +272,10 @@ class WebRtcTransport @Inject constructor(
 
     /** Credential half: SDP POST → set remote answer → await CONNECTED. */
     private suspend fun finishConnect(ephemeralToken: String, callsUrl: String) {
+        // Per-session read of the owner switch (M21.2): a flip takes effect on the
+        // next conversation, never mid-turn.
+        echoGate.enabled = echoGuard.halfDuplexMicGuard
+        LNLog.i(LogCategory.AUDIO, TAG, "half-duplex mic guard: ${echoGate.enabled}")
         configureAudioForCall()
 
         val pc = peerConnection ?: throw IOException("peer connection missing before SDP exchange")
@@ -349,6 +370,9 @@ class WebRtcTransport @Inject constructor(
                 }
             }
             sendEvent(JSONObject().put("type", "output_audio_buffer.clear"))
+            // Speaker is silent now (faded + flushed), so the guard reopens on its
+            // short flush tail rather than the full playout tail.
+            echoGate.playbackFlushed()
             updateMicEnabled()
         }
     }
@@ -358,9 +382,9 @@ class WebRtcTransport @Inject constructor(
         runCatching { remoteAudioTrack?.setVolume(NOMINAL_VOLUME) }
     }
 
-    /** Mic is live only when not user-muted and not half-duplex-gated. */
+    /** Mic is live only when not user-muted and not echo-gated. */
     private fun updateMicEnabled() {
-        val enabled = !userMuted && !(halfDuplex && assistantSpeaking)
+        val enabled = !userMuted && !echoGate.micSuppressed()
         runCatching { localAudioTrack?.setEnabled(enabled) }
     }
 
@@ -373,14 +397,26 @@ class WebRtcTransport @Inject constructor(
 
             is RealtimeEvent.AssistantAudioStarted -> {
                 assistantSpeaking = true
+                echoGate.assistantAudioStarted()
                 restoreVolume()
                 updateMicEnabled()
             }
 
-            is RealtimeEvent.AssistantAudioStopped,
-            is RealtimeEvent.ResponseDone,
-            -> {
+            is RealtimeEvent.AssistantAudioStopped -> {
                 assistantSpeaking = false
+                echoGate.assistantAudioStopped()
+                updateMicEnabled()
+                restoreVolume()
+            }
+
+            // `response.done` means generation finished, NOT that the speaker went
+            // quiet — audio queued server-side is still on its way out. It clears
+            // the barge-in flag (nothing more will be generated to cancel) but only
+            // *bounds* the gate, so the mic does not reopen into the tail of the
+            // assistant's own sentence.
+            is RealtimeEvent.ResponseDone -> {
+                assistantSpeaking = false
+                echoGate.assistantResponseDone()
                 updateMicEnabled()
                 restoreVolume()
             }
@@ -400,32 +436,86 @@ class WebRtcTransport @Inject constructor(
             PeerConnectionFactory.InitializationOptions.builder(context)
                 .createInitializationOptions(),
         )
+        // M21.2: platform AEC/NS OFF. Leaving them on makes the ADM report
+        // BuiltInAECIsAvailable() and libwebrtc then switches AEC3 off in favour
+        // of a platform canceller that, on the Tab S9 FE, cancels nothing.
         val adm = JavaAudioDeviceModule.builder(context)
-            .setUseHardwareAcousticEchoCanceler(true)
-            .setUseHardwareNoiseSuppressor(true)
+            .setUseHardwareAcousticEchoCanceler(audioProcessing.useHardwareAec)
+            .setUseHardwareNoiseSuppressor(audioProcessing.useHardwareNs)
             .createAudioDeviceModule()
-        factory = PeerConnectionFactory.builder()
+        val built = PeerConnectionFactory.builder()
             .setAudioDeviceModule(adm)
             .createPeerConnectionFactory()
+        factory = built
+        // The factory captured the module's platform-effect availability, so the
+        // Java handle is free to go (the native module is owned by the factory).
         adm.release()
+        logAudioProcessingState(built)
+    }
+
+    /**
+     * The M21.2/M23.2 proof line. libwebrtc 144 can report which implementation
+     * each APM component actually resolved to, so the log says whether AEC3 is
+     * running instead of us assuming it is — the one thing the on-device re-verify
+     * needs to distinguish "AEC3 is on and the echo is gone" from "the guard is
+     * carrying the whole fix".
+     */
+    private fun logAudioProcessingState(pcFactory: PeerConnectionFactory) {
+        runCatching {
+            val state = pcFactory.audioProcessingState
+            val aec = state.echoCancellation
+            LNLog.i(
+                LogCategory.AUDIO,
+                TAG,
+                "audio processing: apm=${state.hasAudioProcessingModule}" +
+                    " aec=${aec.effective}(software=${aec.isSoftwareActive}, platform=${aec.isPlatformActive}," +
+                    " platformAvailable=${aec.isPlatformAvailable})" +
+                    " ns=${state.noiseSuppression.effective} agc=${state.autoGainControl.effective}" +
+                    " hpf=${state.highPassFilter.effective}",
+            )
+        }.onFailure { LNLog.w(LogCategory.AUDIO, TAG, "audio processing state unavailable", it) }
+    }
+
+    /**
+     * 144's per-track processing request. Logged, never thrown: a rejection here
+     * leaves the goog* source constraints in force — the pre-M21.2 behaviour, not
+     * a broken session — and the ADM flags above are what actually keep the
+     * platform canceller out of the way.
+     */
+    private fun applyTrackAudioProcessing(track: AudioTrack) {
+        runCatching { track.setAudioProcessingOptions(audioProcessing.toAudioProcessingOptions()) }
+            .onSuccess { LNLog.i(LogCategory.AUDIO, TAG, "mic audio processing: ${it.code} (${it.message})") }
+            .onFailure { LNLog.w(LogCategory.AUDIO, TAG, "mic audio processing request failed", it) }
     }
 
     private fun configureAudioForCall() {
         val am = context.getSystemService(AudioManager::class.java) ?: return
         previousAudioMode = am.mode
         am.mode = AudioManager.MODE_IN_COMMUNICATION
+        var route: AudioDeviceInfo? = null
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             // Prefer BT SCO → wired → speaker instead of forcing the built-in
             // speaker (02-voice §B3): route to the best available headset.
             val devices = am.availableCommunicationDevices
-            PREFERRED_ROUTE_TYPES.firstNotNullOfOrNull { type ->
+            route = PREFERRED_ROUTE_TYPES.firstNotNullOfOrNull { type ->
                 devices.firstOrNull { it.type == type }
-            }?.let { am.setCommunicationDevice(it) }
+            }
+            route?.let { am.setCommunicationDevice(it) }
         } else {
             previousSpeakerphone = am.isSpeakerphoneOn
             @Suppress("DEPRECATION")
             am.isSpeakerphoneOn = true
         }
+        // Full-duplex routing is half the echo story (M21.2): AEC3 only gets a
+        // usable render reference when playout is on the communication path, and a
+        // loudspeaker route is the hardest acoustic case. Log what was actually
+        // resolved so the on-device re-verify is not guessing.
+        LNLog.i(
+            LogCategory.AUDIO,
+            TAG,
+            "call audio: mode=${am.mode} route=${route?.type ?: "platform-default"}" +
+                " platformAecAvailable=${JavaAudioDeviceModule.isBuiltInAcousticEchoCancelerSupported()}",
+        )
     }
 
     private fun restoreAudioMode() {
@@ -444,6 +534,7 @@ class WebRtcTransport @Inject constructor(
         fadeJob = null
         assistantSpeaking = false
         userMuted = false
+        echoGate.reset()
         iceGatheringComplete = null
         peerConnected = null
 

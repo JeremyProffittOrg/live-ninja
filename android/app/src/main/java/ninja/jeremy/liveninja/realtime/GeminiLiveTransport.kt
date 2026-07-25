@@ -78,12 +78,20 @@ import org.json.JSONObject
  *     ~30-min window) sending `setup` + `sessionResumption.handle`; past the
  *     token expiry it re-fetches the session bootstrap for a fresh token —
  *     the same reconnect-re-mint pattern as the Nova bridge.
+ *
+ * Echo (WS-5 M21.2): like [NovaBridgeTransport] and unlike [WebRtcTransport],
+ * this path carries **no software APM** — raw `AudioRecord` frames are base64'd
+ * straight onto the socket, so the platform's VOICE_COMMUNICATION pre-processing
+ * is the only echo canceller available and there is no AEC3 to fall back on.
+ * [EchoGate] is therefore this transport's primary self-echo defence, fed from
+ * real playout (every PCM chunk written to the `AudioTrack`).
  */
 @Singleton
 class GeminiLiveTransport @Inject constructor(
     @ApplicationContext private val context: Context,
     private val httpClient: OkHttpClient,
     private val sessionApi: RealtimeSessionApi,
+    private val echoGuard: EchoGuardPolicy,
 ) : RealtimeTransport {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -95,8 +103,19 @@ class GeminiLiveTransport @Inject constructor(
     private val _events = MutableSharedFlow<RealtimeEvent>(extraBufferCapacity = 256)
     override val events: SharedFlow<RealtimeEvent> = _events.asSharedFlow()
 
-    @Volatile
-    override var halfDuplex: Boolean = false
+    /**
+     * Half-duplex guard (M21.2). The capture loop polls it per frame, so the
+     * callback exists only to log the edges.
+     */
+    private val echoGate = EchoGate(scope) { suppressed ->
+        LNLog.d(LogCategory.AUDIO, TAG, "echo gate ${if (suppressed) "closed" else "open"}")
+    }
+
+    override var halfDuplex: Boolean
+        get() = echoGate.enabled
+        set(value) {
+            echoGate.enabled = value
+        }
 
     @Volatile
     private var webSocket: WebSocket? = null
@@ -193,6 +212,9 @@ class GeminiLiveTransport @Inject constructor(
         tokenValue = token
 
         openSocket()
+        // Per-session read of the owner switch (M21.2).
+        echoGate.enabled = echoGuard.halfDuplexMicGuard
+        LNLog.i(LogCategory.AUDIO, TAG, "half-duplex mic guard: ${echoGate.enabled}")
         configureAudioForCall()
         startCapture()
         startPlayback()
@@ -478,6 +500,7 @@ class GeminiLiveTransport @Inject constructor(
         if (turn == null && !wasSpeaking) return // nothing in flight
         if (wasSpeaking) {
             assistantSpeaking = false
+            echoGate.assistantAudioStopped()
             emit(RealtimeEvent.AssistantAudioStopped)
         }
         turn?.let { (itemId, text) -> emit(RealtimeEvent.AssistantTranscriptDone(itemId, text)) }
@@ -507,6 +530,9 @@ class GeminiLiveTransport @Inject constructor(
                 track.play()
             }
         }
+        // Speaker is silent now: reopen the mic on the short flush tail so the
+        // interrupting utterance is not clipped.
+        echoGate.playbackFlushed()
         if (wasSpeaking) emit(RealtimeEvent.AssistantAudioStopped)
     }
 
@@ -619,8 +645,8 @@ class GeminiLiveTransport @Inject constructor(
         }
     }
 
-    /** Mic is live only when not user-muted and not half-duplex-gated. */
-    private fun micLive(): Boolean = !userMuted && !(halfDuplex && assistantSpeaking)
+    /** Mic is live only when not user-muted and not echo-gated. */
+    private fun micLive(): Boolean = !userMuted && !echoGate.micSuppressed()
 
     private fun startPlayback() {
         val minBuf = AudioTrack.getMinBufferSize(
@@ -653,6 +679,11 @@ class GeminiLiveTransport @Inject constructor(
             for (chunk in playbackQueue) {
                 if (!isActive) break
                 runCatching { track.write(chunk, 0, chunk.size) }
+                // Ground truth for the echo gate: audio just went to the speaker.
+                // `write` blocks until the buffer accepts it, so this is the closest
+                // signal we have to "the loudspeaker is live", and it holds the gate
+                // through a long queue without trusting server turn timing.
+                echoGate.assistantAudioPlaying()
             }
         }
     }
@@ -693,6 +724,7 @@ class GeminiLiveTransport @Inject constructor(
         running = false
         assistantSpeaking = false
         userMuted = false
+        echoGate.reset()
         reconnecting = false
         reconnectJob?.cancel()
         reconnectJob = null

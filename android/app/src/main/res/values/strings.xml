@@ -20,6 +20,9 @@
     <string name="conversation_state_ending">Ending…</string>
     <string name="conversation_state_error">Something went wrong</string>
     <string name="conversation_session_timer">%1$d:%2$02d</string>
+    <!-- Live session cost badge. Args: formatted USD, text tokens, audio tokens.
+         Says "estimate" out loud: it is list price computed on-device, not a bill. -->
+    <string name="conversation_cost_badge_a11y">Session cost estimate %1$s, list price. %2$d text tokens, %3$d audio tokens.</string>
     <string name="conversation_tap_to_talk">Tap to talk</string>
     <string name="conversation_idle_wake_caption">Or just say “%1$s”</string>
     <string name="conversation_idle_privacy_caption">Wake-word detection stays on this device. Audio streams only during a live conversation.</string>

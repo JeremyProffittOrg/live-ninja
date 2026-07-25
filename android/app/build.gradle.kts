@@ -9,9 +9,13 @@ plugins {
 
 val porcupineEnabled = (findProperty("liveninja.porcupine") as String?)?.toBoolean() == true
 
-// Gated arm64-only slim build for CI-distributed debug APKs (owner's phone is arm64-v8a).
-// Left OFF by default so local/emulator builds (x86_64 emulator) stay all-ABI and avoid
-// INSTALL_FAILED_NO_MATCHING_ABIS. CI passes -Pliveninja.arm64Only=true.
+// Gated arm64-only slim build for the DEBUG variant only (CI's -Pliveninja.arm64Only=true
+// distributes a slim debug APK — see .github/workflows/android-release.yml). Left OFF by
+// default so local/emulator debug builds (x86_64 emulator) stay all-ABI and avoid
+// INSTALL_FAILED_NO_MATCHING_ABIS. Release does NOT read this flag (see buildTypes.release
+// below, M22.3): arm64-only is unconditionally the release default now, because the owner's
+// phone (and every other real device this ships to) is arm64-v8a, and x86/x86_64 native libs
+// exist solely to support the emulator, which never runs a release build.
 val arm64Only = (findProperty("liveninja.arm64Only") as String?)?.toBoolean() == true
 
 android {
@@ -26,6 +30,9 @@ android {
         versionName = "0.2.1-hal"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+        // Debug-only, opt-in slim filter (see the `arm64Only` comment above). Release's own
+        // unconditional filter lives on buildTypes.release below, not here, so a plain
+        // `assembleDebug`/emulator run never sees it.
         if (arm64Only) {
             ndk {
                 abiFilters += "arm64-v8a"
@@ -81,6 +88,16 @@ android {
                 "proguard-rules.pro",
             )
             signingConfig = signingConfigs.findByName("release")
+            // M22.3: arm64-only, unconditionally, for every shipped build — debug's
+            // opt-in -Pliveninja.arm64Only flag above intentionally does NOT gate this.
+            // onnxruntime + webrtc ship prebuilt .so for 4 ABIs each; this is the entire
+            // reason a release build was 177 MB (256 MB post-M23.1 dependency bump) instead
+            // of roughly a quarter of that. `BuildType` (like `defaultConfig`/product
+            // flavors) carries its own `ndk.abiFilters` in AGP's unified VariantDimension
+            // DSL, so this narrows the release variant specifically without touching debug.
+            ndk {
+                abiFilters += "arm64-v8a"
+            }
         }
     }
 

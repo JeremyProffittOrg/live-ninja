@@ -1,9 +1,14 @@
 name: Android Release
 
-# Manual-only: builds a debug APK (arm64-only, slim), publishes it to the assets
-# bucket under /static/models/downloads/ (the only /static/* subpaths CloudFront
-# routes to S3 — see template.yaml ~2126-2156), and emails the download link.
-# Dispatch happens in M7, not here.
+# build-and-publish is manual-only: builds a debug APK (arm64-only, slim), publishes it to
+# the assets bucket under /static/models/downloads/ (the only /static/* subpaths CloudFront
+# routes to S3 — see template.yaml ~2126-2156), and emails the download link. Dispatch
+# happens in M7, not here.
+#
+# unit-tests and instrumented-tests (WS-5 M24.3) additionally run on every push touching
+# android/** — that's the actual CI signal ("regressions fail in CI today", plan.md M24.1);
+# workflow_dispatch alone would mean nobody notices a broken test until the next manual
+# release.
 on:
   workflow_dispatch:
     inputs:
@@ -12,12 +17,105 @@ on:
         required: false
         default: assembleDebug
         type: string
+  push:
+    branches: [main]
+    paths:
+      - "android/**"
+      - ".github/workflows/android-release.yml"
 
 permissions:
   contents: read
 
 jobs:
+  unit-tests:
+    name: JVM unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Gradle unit tests
+        working-directory: android
+        run: ./gradlew testDebugUnitTest --no-daemon
+
+      - name: Upload test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: android/app/build/reports/tests/testDebugUnitTest/
+
+  instrumented-tests:
+    name: Instrumented tests (emulator)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # GitHub-hosted ubuntu-latest runners support nested virtualization (KVM) but the
+      # device node needs group perms opened up first — this is reactivecircus's own
+      # documented recipe for hardware-accelerated emulators on Linux runners.
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # api-level/target/arch match this app's compileSdk=35/targetSdk=35 and the local
+      # reference AVD `liveninja-test` (~/.android/avd/liveninja-test.avd: target=android-35,
+      # tag=google_apis, abi.type=x86_64 — see plan.md M24.3). x86_64, not arm64-v8a, because
+      # GitHub-hosted Linux runners are x86_64 hardware; the debug build is all-ABI by default
+      # specifically so it installs on an x86_64 emulator (arm64Only is opt-in — see the
+      # comment on that flag in app/build.gradle.kts), so no extra Gradle property is needed
+      # here.
+      - name: Run instrumented tests
+        uses: reactivecircus/android-emulator-runner@c9c93e6ba9c4194322e114c40970d5983d9a07cc # v2.38.0
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          working-directory: android
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          script: ./gradlew connectedDebugAndroidTest --no-daemon
+
+      - name: Upload instrumented test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: instrumented-test-results
+          path: android/app/build/reports/androidTests/connected/
+
   build-and-publish:
+    # Manual releases only (see the top-level `on:` comment) — a push to main must never
+    # silently ship a new debug APK + email. Gated on unit-tests (fast, deterministic — a
+    # real regression there should block a release) but deliberately NOT on
+    # instrumented-tests: an emulator run is inherently less reliable than a JVM test (boot
+    # timeouts, shared-runner KVM flakiness), and blocking the one physical tester's build on
+    # a flaky emulator is a worse trade than occasionally shipping past an instrumented-test
+    # failure that unit-tests didn't already catch (plan.md M24.3 decision).
+    if: github.event_name == 'workflow_dispatch'
+    needs: unit-tests
     runs-on: ubuntu-latest
     permissions:
       id-token: write # required for OIDC
@@ -48,8 +146,13 @@ jobs:
           mkdir -p android/keystores
           echo "${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}" | base64 -d > android/keystores/debug.keystore
 
-      # -Pliveninja.arm64Only=true (android/app/build.gradle.kts) slims the APK to
-      # arm64-v8a only (owner's phone is arm64) — 183MB all-ABI down to ~50-60MB.
+      # -Pliveninja.arm64Only=true (android/app/build.gradle.kts) slims the DEBUG APK to
+      # arm64-v8a only (owner's phone is arm64) — 183MB all-ABI down to ~50-60MB. This flag
+      # only affects the debug variant; as of M22.3 the release variant is arm64-only
+      # unconditionally (buildTypes.release's own ndk.abiFilters), so a dispatch with
+      # `variant: assembleRelease` would come out slim too even without this flag — release
+      # would still be unsigned here regardless (no release-keystore secret in this repo;
+      # signing stays a local, owner-machine-only step until WS-4's signed-release task lands).
       - name: Gradle build
         working-directory: android
         run: ./gradlew ${{ inputs.variant }} -Pliveninja.arm64Only=true --no-daemon

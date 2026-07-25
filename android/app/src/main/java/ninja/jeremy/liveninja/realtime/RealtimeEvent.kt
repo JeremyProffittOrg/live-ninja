@@ -25,8 +25,18 @@ sealed interface RealtimeEvent {
     /** `response.created` — the model started producing a response. */
     data class ResponseStarted(val responseId: String?) : RealtimeEvent
 
-    /** `response.done` — the response finished (complete, cancelled, or failed). */
-    data class ResponseDone(val responseId: String?) : RealtimeEvent
+    /**
+     * `response.done` — the response finished (complete, cancelled, or failed).
+     *
+     * [usage] is the response's raw token-usage object when the provider sent
+     * one. It is the only place per-turn token counts appear, and it is what
+     * feeds the live cost badge ([SessionCostTracker]); a cancelled or failed
+     * response usually carries none, hence nullable.
+     */
+    data class ResponseDone(
+        val responseId: String?,
+        val usage: JSONObject? = null,
+    ) : RealtimeEvent
 
     /** `output_audio_buffer.started` — assistant audio is now playing (WebRTC-specific). */
     data object AssistantAudioStarted : RealtimeEvent
@@ -93,7 +103,12 @@ object RealtimeEventParser {
                 RealtimeEvent.ResponseStarted(json.optJSONObject("response")?.optString("id")?.ifEmpty { null })
 
             "response.done" ->
-                RealtimeEvent.ResponseDone(json.optJSONObject("response")?.optString("id")?.ifEmpty { null })
+                json.optJSONObject("response").let { resp ->
+                    RealtimeEvent.ResponseDone(
+                        responseId = resp?.optString("id")?.ifEmpty { null },
+                        usage = resp?.optJSONObject("usage"),
+                    )
+                }
 
             "output_audio_buffer.started" -> RealtimeEvent.AssistantAudioStarted
             "output_audio_buffer.stopped", "output_audio_buffer.cleared" -> RealtimeEvent.AssistantAudioStopped

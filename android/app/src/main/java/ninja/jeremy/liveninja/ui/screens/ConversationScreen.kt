@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import ninja.jeremy.liveninja.R
+import ninja.jeremy.liveninja.realtime.badgeText
 import ninja.jeremy.liveninja.ui.conversation.ConversationError
 import ninja.jeremy.liveninja.ui.conversation.ConversationUiState
 import ninja.jeremy.liveninja.ui.conversation.ConversationViewModel
@@ -200,12 +201,37 @@ private fun MicStateBanner(state: ConversationUiState) {
         ) {
             Text(label, style = MaterialTheme.typography.labelLarge)
             if (sessionLive(state.micState)) {
-                val minutes = state.sessionSeconds / 60
-                val seconds = state.sessionSeconds % 60
-                Text(
-                    stringResource(R.string.conversation_session_timer, minutes, seconds),
-                    style = MaterialTheme.typography.labelMedium,
-                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // Cost before the timer: it is the number the user is least
+                    // able to reconstruct after the fact, and web puts it in the
+                    // same upper-right corner of the live panel.
+                    state.sessionCost?.takeIf { it.hasData }?.let { cost ->
+                        // Never signal by position alone: spell out what the
+                        // number is for a screen reader, including that it is an
+                        // estimate and not a bill. Resolved outside semantics{},
+                        // which is not a composable scope.
+                        val costA11y = stringResource(
+                            R.string.conversation_cost_badge_a11y,
+                            cost.badgeText(),
+                            cost.textTokens,
+                            cost.audioTokens,
+                        )
+                        Text(
+                            cost.badgeText(),
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.semantics { contentDescription = costA11y },
+                        )
+                    }
+                    val minutes = state.sessionSeconds / 60
+                    val seconds = state.sessionSeconds % 60
+                    Text(
+                        stringResource(R.string.conversation_session_timer, minutes, seconds),
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
             }
         }
     }

@@ -1,8 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Load-bearing for M21.2's echo fix, and silent when absent: all three
+         transports' configureAudioForCall() set AudioManager.mode =
+         MODE_IN_COMMUNICATION (WebRtcTransport.kt:494, NovaBridgeTransport.kt:477,
+         GeminiLiveTransport.kt:696) so AEC3 gets a render reference on the
+         communication path, and setMode()/setCommunicationDevice() without this
+         permission are dropped by AudioService with no exception and no log — the
+         failure mode is silently keeping MODE_NORMAL, which is what lets the
+         assistant transcribe its own loudspeaker output as user speech.
+         Normal install-time permission — no runtime grant needed, so adding it
+         costs nothing. CONFIRMED on the Tab S9 FE 2026-07-25: without this line the
+         readback was "call audio: mode=0" (MODE_NORMAL) despite setMode() being
+         called; with it, "call audio: mode=3 route=2" and WebRTC's own VolumeLogger
+         agrees ("audio mode is: MODE_IN_COMMUNICATION"). Still outstanding under
+         M23.2: a spoken round-trip proving the echo is actually gone, which needs
+         a real voice and audible playback. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- Session FGS expands to microphone|mediaPlayback while a realtime call is live. -->
@@ -135,6 +152,30 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!-- M22.2 cold start: LiveNinjaApplication implements Configuration.Provider, but
+             that alone does NOT make WorkManager's init lazy: the androidx.startup
+             ContentProvider below still eagerly calls WorkManager.initialize() (opening its
+             Room work database) during ContentProvider.onCreate(), which runs before
+             Application.onCreate() on every process start, whether or not the wake service is
+             even enabled. This tools:node="remove" merge is the other required half of
+             WorkManager's documented "on-demand initialization" recipe: with the default
+             initializer's meta-data gone, WorkManager only initializes (using
+             workManagerConfiguration above) the first time WorkManager.getInstance(context) is
+             actually called; today that is exclusively WakeWatchdogWorker.enqueue()/cancel()
+             from WakeWordService, i.e. only once the always-listening service actually starts,
+             never on a bare app launch. This is also the fix for the pre-existing
+             RemoveWorkManagerInitializer lint error (plan.md M22 baseline). -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
     </application>
 
 </manifest>
