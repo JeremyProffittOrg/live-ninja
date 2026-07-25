@@ -19,6 +19,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import ninja.jeremy.liveninja.ui.state.RealtimeSessionController
 import ninja.jeremy.liveninja.ui.state.SessionUiEvent
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
+import ninja.jeremy.liveninja.wake.WakeWordService
 import ninja.jeremy.liveninja.ui.state.TranscriptRole
 import org.json.JSONObject
 
@@ -36,6 +39,7 @@ import org.json.JSONObject
  */
 @Singleton
 class RealtimeSessionCoordinator @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     @OpenAiRealtimeTransport private val webRtcTransport: RealtimeTransport,
     @NovaSonicTransport private val novaBridgeTransport: RealtimeTransport,
     @GeminiTransport private val geminiLiveTransport: RealtimeTransport,
@@ -56,6 +60,13 @@ class RealtimeSessionCoordinator @Inject constructor(
     private var transport: RealtimeTransport = webRtcTransport
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /**
+     * A device-local tool the model has called whose effect is held until it has
+     * finished speaking its confirmation (see [handleFunctionCall]).
+     */
+    @Volatile
+    private var pendingDeviceAction: DeviceSessionTool? = null
     private val lifecycleMutex = Mutex()
 
     private val _connected = MutableStateFlow(false)
@@ -218,6 +229,10 @@ class RealtimeSessionCoordinator @Inject constructor(
 
             is RealtimeEvent.ResponseDone -> {
                 emit(SessionUiEvent.AssistantSpeaking(speaking = false))
+                pendingDeviceAction?.let { action ->
+                    pendingDeviceAction = null
+                    scope.launch { runDeviceAction(action) }
+                }
                 // response.done is the only carrier of per-turn token counts.
                 costTracker.add(event.usage, sessionRates)?.let { cost ->
                     emit(
@@ -265,7 +280,18 @@ class RealtimeSessionCoordinator @Inject constructor(
      */
     private fun handleFunctionCall(call: RealtimeEvent.FunctionCall) {
         scope.launch {
-            val output = toolRouter.invoke(call)
+            // Device-local tools never reach the backend router: stopping this
+            // device's microphone or recycling its session is not something the
+            // server can do. The action itself is deferred to pendingDeviceAction
+            // and runs once the assistant has finished speaking — acting now would
+            // cut off the very reply that tells the user what happened.
+            val deviceTool = DeviceSessionTool.forName(call.name)
+            val output = if (deviceTool != null) {
+                pendingDeviceAction = deviceTool
+                deviceToolOutput(deviceTool, call.callId)
+            } else {
+                toolRouter.invoke(call)
+            }
             transport.sendEvent(
                 JSONObject()
                     .put("type", "conversation.item.create")
@@ -286,6 +312,29 @@ class RealtimeSessionCoordinator @Inject constructor(
             }.getOrDefault("completed")
             transcriptStore.addToolChip(itemId = call.callId, name = call.name, summary = summary)
             emit(SessionUiEvent.ToolCall(itemId = call.callId, name = call.name, summary = summary))
+        }
+    }
+
+    /**
+     * Perform a deferred device-local tool action, after the assistant's spoken
+     * confirmation has completed.
+     */
+    private suspend fun runDeviceAction(action: DeviceSessionTool) {
+        when (action) {
+            DeviceSessionTool.STOP_LISTENING -> {
+                // stop() ends the live session too, and clears the persisted
+                // serviceEnabled intent so a sticky restart cannot resurrect it.
+                runCatching { stop() }
+                WakeWordService.stop(appContext)
+            }
+
+            DeviceSessionTool.START_NEW_CONVERSATION -> {
+                // A full stop/start, not a transcript clear: the session id is what
+                // the backend keys LOG#/CONV rows against, so only a genuinely new
+                // session gives the new conversation its own History row.
+                runCatching { stop() }
+                runCatching { start() }
+            }
         }
     }
 

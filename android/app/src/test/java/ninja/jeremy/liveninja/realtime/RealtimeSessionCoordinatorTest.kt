@@ -116,6 +116,9 @@ class RealtimeSessionCoordinatorTest {
             quotaWarning = null,
         )
         return RealtimeSessionCoordinator(
+            // Only used to stop the wake service for the device-local stop_listening
+            // tool, which this suite does not exercise.
+            mockk<android.content.Context>(relaxed = true),
             transport, novaTransport, geminiTransport, sessionApi, toolRouter,
             TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())),
         )
@@ -173,6 +176,7 @@ class RealtimeSessionCoordinatorTest {
             sessionConfig = JSONObject().put("model", "models/gemini-3.1-flash-live-preview"),
         )
         val coord = RealtimeSessionCoordinator(
+            mockk<android.content.Context>(relaxed = true),
             transport, novaTransport, geminiTransport, sessionApi, toolRouter,
             TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())),
         )
@@ -221,6 +225,7 @@ class RealtimeSessionCoordinatorTest {
             sessionConfig = JSONObject().put("model", "models/gemini"),
         )
         val coord = RealtimeSessionCoordinator(
+            mockk<android.content.Context>(relaxed = true),
             transport, novaTransport, geminiTransport, sessionApi, toolRouter,
             TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())),
         )
@@ -240,6 +245,7 @@ class RealtimeSessionCoordinatorTest {
         // surface the identical error (02-voice §D.2, failure-path parity).
         coEvery { sessionApi.fetchSession() } throws IOException("session mint failed")
         val coord = RealtimeSessionCoordinator(
+            mockk<android.content.Context>(relaxed = true),
             transport, novaTransport, geminiTransport, sessionApi, toolRouter,
             TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())),
         )

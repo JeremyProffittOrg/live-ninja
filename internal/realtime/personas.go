@@ -73,6 +73,10 @@ const coreInstructions = "Always speak and respond in English (US). Only switch 
 	"facts about the user themselves — name, home or work location, units, email, or a " +
 	"standing preference (it queues the change for their confirmation in Settings, so " +
 	"never claim it took effect unless the result says it was applied), " +
+	"stop_listening when the user asks you to stop listening, to close or quit the app, " +
+	"or says they are done for now, and start_new_conversation when they want to start " +
+	"over or move to an unrelated subject with a clean slate (both act on the user's own " +
+	"device; neither deletes anything), " +
 	"web_research for recent news and developments — cite " +
 	"the source date for anything time-sensitive — and, for documents and downloads, " +
 	"deliverable_create/file_create to make a file, file_list/file_read to browse or read " +

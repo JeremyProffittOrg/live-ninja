@@ -300,7 +300,13 @@ type Definition struct {
 	// SideEffecting tools require an idempotencyKey and get an IDEMP#
 	// conditional-put guard before execution.
 	SideEffecting bool
-	Handler       HandlerFunc
+	// DeviceLocal marks a tool whose work happens on the user's device (stopping
+	// the microphone, recycling a realtime session) and which the client is
+	// expected to intercept before it reaches this router. It still appears in the
+	// manifest — that is what tells the model the capability exists — but reaching
+	// the server Handler means a surface that cannot perform it called it anyway.
+	DeviceLocal bool
+	Handler     HandlerFunc
 }
 
 // ReauthorizeFunc re-checks, at call time, that the user behind a still-
@@ -512,6 +518,10 @@ func definitions() []*Definition {
 		forgetDefinition(),
 		webResearchDefinition(),
 		profileSuggestDefinition(),
+		// Device-local session controls: declared here so the manifest advertises
+		// them, executed by the client (see devicesession.go).
+		stopListeningDefinition(),
+		startNewConversationDefinition(),
 	}
 }
 
@@ -566,7 +576,21 @@ func renderManifest(defs []*Definition) []map[string]any {
 				required = append(required, p.Name)
 			}
 		}
-		params := map[string]any{"type": "object", "properties": props}
+		params := map[string]any{"type": "object"}
+		// Omit "properties" entirely for a parameterless tool rather than emitting
+		// an empty object. The Gemini Go SDK drops an empty property map when it
+		// marshals the same schema into a minted token's constraints, so emitting
+		// it here makes the raw wire setup frame and the SDK-typed constraints
+		// disagree about a tool the model must see identically through both paths.
+		// Fixed at the source (here) rather than in the Gemini sanitizer, because
+		// gemini_mint_test.go asserts the sanitized copy stays exactly equal to the
+		// manifest — divergence is drift to fix upstream, not to paper over
+		// downstream. Surfaced by the catalog's first zero-parameter tools
+		// (stop_listening, start_new_conversation); an object schema with no
+		// declared properties means the same thing either way.
+		if len(props) > 0 {
+			params["properties"] = props
+		}
 		if len(required) > 0 {
 			sort.Strings(required)
 			params["required"] = required
