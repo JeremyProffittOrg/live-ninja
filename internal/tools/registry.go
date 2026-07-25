@@ -197,6 +197,20 @@ type ToolFailure struct {
 // far below both the SQS 256 KB body limit and the RCA prompt budget.
 const maxFailureArgsJSON = 2048
 
+// maxFailureRequestedTool caps RequestedTool, the one ToolFailure field that is
+// raw, unvalidated client input of unbounded length: POST /api/v1/tools/invoke
+// accepts any non-empty `tool` string, and on the unknown_tool path that string
+// is carried verbatim so the RCA can say what the model invented.
+//
+// Unbounded, it reaches three places that must not take it: the SQS body (256 KB
+// hard limit — over it the enqueue just fails), the RCA# DynamoDB item (400 KB
+// item limit — over it every PutRCA for that failure fails after the Opus call
+// has already been paid for), and the Opus prompt itself. internal/rca clamps
+// its own render too, because it must be safe against any producer; this is the
+// producer half, so nothing downstream ever stores the oversized string at all.
+// 256 is ~4x the longest plausible real tool name and keeps the signal intact.
+const maxFailureRequestedTool = 256
+
 // StatusCode maps the result to the HTTP status the /api/v1/tools/invoke
 // handler should return.
 func (r *Result) StatusCode() int {
@@ -802,22 +816,45 @@ func (r *Registry) finish(ctx context.Context, l *slog.Logger, inv Invocation, r
 	if surface == "" {
 		surface = "unknown"
 	}
+	// The Tool dimension is sentinelised on the unknown-tool path for the same
+	// reason enqueueRCA keys the RCA partition with a sentinel: inv.Tool is raw
+	// client input there (Invoke rejects unknown tools before any validation), and
+	// a CloudWatch dimension VALUE is billed per distinct combination — one custom
+	// metric per unique name, indefinitely. A caller looping over random tool
+	// names would mint unbounded custom metrics off an authenticated 404. The
+	// signal is not lost: outcome=error plus the "invoke done" log line (which is
+	// per-request, retention-bounded, and free of cardinality cost) still carries
+	// the exact name.
+	metricTool := inv.Tool
+	if res.Error != nil && res.Error.Code == CodeUnknownTool {
+		metricTool = unknownToolSentinel
+	}
 	observ.EmitMetric("LiveNinja/Tools", "ToolInvocations", 1, "Count", map[string]string{
-		"Tool":    inv.Tool,
+		"Tool":    metricTool,
 		"Outcome": outcome,
 		"Surface": surface,
 	})
 
 	latencyMs := time.Since(start).Milliseconds()
-	if res.OK {
+	switch {
+	case res.OK:
 		l.Info("tools: invoke done",
 			slog.String("outcome", outcome),
 			slog.Int64("latencyMs", latencyMs))
-	} else {
+	case res.Error != nil:
 		l.Warn("tools: invoke done",
 			slog.String("outcome", outcome),
 			slog.String("code", res.Error.Code),
 			slog.String("message", res.Error.Message),
+			slog.Int64("latencyMs", latencyMs))
+	default:
+		// Neither OK nor carrying an error: the only way to reach this is a
+		// handler that panicked, unwinding through this deferred call before
+		// res.Error was set. Dereferencing res.Error here would replace the
+		// original panic with a nil-pointer one inside a defer and throw away the
+		// stack that says which handler broke.
+		l.Error("tools: invoke done with no result and no error (handler panicked)",
+			slog.String("outcome", outcome),
 			slog.Int64("latencyMs", latencyMs))
 	}
 
@@ -865,8 +902,10 @@ func (r *Registry) enqueueRCA(ctx context.Context, l *slog.Logger, inv Invocatio
 		// partition: an unbounded set of tool names would fan the RCA table
 		// out arbitrarily, and a '#' in the name would inject into the key.
 		// The signal — "the model invented a tool" — is preserved by the
-		// sentinel plus RequestedTool.
-		tool, requested = unknownToolSentinel, inv.Tool
+		// sentinel plus RequestedTool, clamped (see maxFailureRequestedTool: the
+		// name is unbounded client input and must not reach the SQS body, the
+		// RCA# item or the Opus prompt at full length).
+		tool, requested = unknownToolSentinel, clampRunes(inv.Tool, maxFailureRequestedTool)
 	}
 
 	// "{}" rather than json.Marshal's "null" for an absent args map: the
@@ -896,6 +935,16 @@ func (r *Registry) enqueueRCA(ctx context.Context, l *slog.Logger, inv Invocatio
 	}
 	observ.EmitMetric("LiveNinja/RCA", "RcaEnqueued", 1, "Count",
 		map[string]string{"Source": rcaSourceToolRouter, "Tool": tool})
+}
+
+// clampRunes truncates to at most n runes. Rune-based, not byte-based, because
+// the value it bounds is arbitrary client input that may be multi-byte and a
+// byte slice would leave a torn rune in the JSON envelope.
+func clampRunes(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n])
 }
 
 // rcaWorthAnalyzing is the enqueue allowlist (M17). An ALLOWLIST, not a

@@ -40,6 +40,14 @@ const (
 	maxErrorMessageChars = 512
 	MaxPromptChars       = 24000
 
+	// maxFailureFieldChars caps ONE "key: value" metadata line in the FAILING
+	// INVOCATION section. Every field there is either a bounded server value or
+	// raw client input (requestedTool and callId come straight off the
+	// /tools/invoke body — see tools.ToolFailure), and a legitimate tool name or
+	// uuid is far under this. It is a cost bound as much as a safety one: without
+	// it a 4 MB tool name is 4 MB of Opus input tokens.
+	maxFailureFieldChars = 200
+
 	// maxTurnTextChars caps ONE rendered turn. Without it a single
 	// pathological utterance (a pasted log, a 5000-word dictation) could
 	// consume the entire window budget and push every other turn out, which
@@ -139,13 +147,22 @@ func systemMapBody() string {
 //
 // userId is deliberately OMITTED: it adds nothing to a root-cause analysis and
 // keeps a user identifier out of a third-party prompt.
+//
+// EVERY value here goes through sanitizePromptLine, not just errorMessage.
+// requestedTool and callId are raw, unvalidated client input — POST
+// /api/v1/tools/invoke accepts any non-empty `tool` and any `callId` string —
+// so a caller who sends a tool name containing "\n\n# INSTRUCTIONS\n..." would
+// otherwise forge a prompt section ahead of the real one and rewrite the
+// analyst's task. That is the same attack windowBody defends against
+// structurally, and this section is on the same footing: one line per field,
+// no field able to begin a line with "# ".
 func failureBody(in PromptInput) string {
 	f := in.Failure
 	rows := [][2]string{
 		{"tool", f.Tool},
 		{"requestedTool", f.RequestedTool},
 		{"errorCode", f.ErrorCode},
-		{"errorMessage", clamp(oneLine(f.ErrorMessage), maxErrorMessageChars)},
+		{"errorMessage", clamp(sanitizePromptLine(f.ErrorMessage), maxErrorMessageChars)},
 		{"occurredAt", f.OccurredAt},
 		{"surface", f.Surface},
 		{"engine", in.Engine},
@@ -156,10 +173,14 @@ func failureBody(in PromptInput) string {
 	}
 	var b strings.Builder
 	for _, row := range rows {
-		if row[1] == "" {
+		key, value := row[0], row[1]
+		if key != "errorMessage" {
+			value = clamp(sanitizePromptLine(value), maxFailureFieldChars)
+		}
+		if value == "" {
 			continue
 		}
-		fmt.Fprintf(&b, "%s: %s\n", row[0], row[1])
+		fmt.Fprintf(&b, "%s: %s\n", key, value)
 	}
 	b.WriteString("args:\n")
 	b.WriteString(fenceJSON(compactJSON(f.ArgsJSON, maxArgsChars)))
@@ -223,27 +244,30 @@ func windowBody(turns []store.Turn) string {
 // Absent metadata renders as "-" rather than an empty run of pipes, so the
 // shape is readable and every field position is unambiguous.
 func renderTurn(t store.Turn) string {
-	text := sanitizeTurnText(t.Text)
+	text := sanitizePromptLine(t.Text)
 	if t.Output != "" {
 		// The tool router's audit rows carry the successful output snippet
 		// separately; include it so a "the sibling call worked" sequence is
 		// visible to the analyst.
-		text += " " + sanitizeTurnText("output="+t.Output)
+		text += " " + sanitizePromptLine("output="+t.Output)
 	}
 	return fmt.Sprintf("[%s|%s|%s|%s] %s",
 		dash(t.Role), dash(t.Surface), dash(t.Engine), dash(t.TS),
 		clamp(text, maxTurnTextChars))
 }
 
-// sanitizeTurnText forces one line and neutralizes every '#' that began a line
-// in the original text.
+// sanitizePromptLine forces one line and neutralizes every '#' that began a
+// line in the original text. It is THE anti-injection control, and every prompt
+// line built from attacker-influenceable content must go through it — transcript
+// turns (windowBody) and the failing invocation's own metadata alike
+// (failureBody: requestedTool and callId are raw client input).
 //
-// The glyph substitution alone already makes forging a section impossible (a
-// rendered turn is one line, prefixed by its number and metadata), but escaping
-// the '#'s that *were* line starts means the prompt also reads unambiguously to
-// the model: it can see that the speaker typed something heading-shaped without
+// The glyph substitution alone already makes forging a section impossible (the
+// output is one line, prefixed by its number or its key), but escaping the '#'s
+// that *were* line starts means the prompt also reads unambiguously to the
+// model: it can see that the speaker typed something heading-shaped without
 // that text ever looking like one of our headings.
-func sanitizeTurnText(s string) string {
+func sanitizePromptLine(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", newlineGlyph)
 	s = strings.ReplaceAll(s, "\r", newlineGlyph)
 	s = strings.ReplaceAll(s, "\n", newlineGlyph)

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/stretchr/testify/assert"
@@ -191,6 +192,28 @@ func TestFinishSentinelisesUnknownTool(t *testing.T) {
 		"a client-supplied tool name must never key the RCA partition")
 	assert.Equal(t, raw, got[0].RequestedTool, "the raw name is preserved as evidence")
 	assert.Equal(t, "{}", got[0].ArgsJSON)
+}
+
+// TestFinishClampsRequestedTool: /api/v1/tools/invoke puts no length limit on
+// `tool`, and on the unknown_tool path that string is carried verbatim. Left
+// unbounded it reaches the SQS body (256 KB hard limit), the RCA# item (400 KB
+// item limit — a PutRCA that fails AFTER the Opus call has been paid for) and
+// the Opus prompt. Clamped at the producer so nothing downstream stores it.
+func TestFinishClampsRequestedTool(t *testing.T) {
+	deps, enq := newRCADeps()
+	r := newTestRegistry(t, deps)
+
+	// Multi-byte on purpose: a byte-based clamp would leave a torn rune in the
+	// JSON envelope.
+	raw := strings.Repeat("é", 100_000)
+	res := r.Invoke(context.Background(), invocation(raw, nil))
+	require.False(t, res.OK)
+	require.Equal(t, CodeUnknownTool, res.Error.Code)
+
+	got := enq.calls()
+	require.Len(t, got, 1)
+	assert.Equal(t, maxFailureRequestedTool, utf8.RuneCountInString(got[0].RequestedTool))
+	assert.True(t, utf8.ValidString(got[0].RequestedTool), "the clamp must not tear a rune")
 }
 
 func TestFinishSkipsEnqueueWithoutUser(t *testing.T) {

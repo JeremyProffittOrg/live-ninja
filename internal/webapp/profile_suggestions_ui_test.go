@@ -86,7 +86,11 @@ func TestConversationPageCarriesTheSuggestionQueueMarkup(t *testing.T) {
 	// aria-label, so the button has to have one to rewrite.
 	tabIdx := strings.Index(html, `id="settingsDrawerBtn"`)
 	require.Positive(t, tabIdx)
-	assert.Contains(t, html[tabIdx-260:tabIdx+260], `aria-label="Settings"`)
+	// Window the search rather than slicing blind: a bare tabIdx±260 panics with
+	// slice-out-of-range if the button ever moves near either end of the file,
+	// which would read as a crashed test rather than a failed assertion.
+	assert.Contains(t, html[max(0, tabIdx-260):min(len(html), tabIdx+260)],
+		`aria-label="Settings"`)
 }
 
 // The suggestion queue's styles must exist in the shipped stylesheet, in both
@@ -97,7 +101,14 @@ func TestSuggestionQueueStylesUseDesignTokens(t *testing.T) {
 
 	start := strings.Index(css, "SUGGESTION QUEUE (M16")
 	require.Positive(t, start, "app.css must carry the M16 suggestion-queue block")
+	// Bound the block at the next top-level section banner. Reading to EOF only
+	// works while M16 happens to be the last section in the file — the moment
+	// anything is appended after it, the no-literal-colour loop below would start
+	// policing unrelated CSS and fail for the wrong reason.
 	block := css[start:]
+	if end := strings.Index(block[1:], "\n/* ======"); end >= 0 {
+		block = block[:end+1]
+	}
 
 	for _, sel := range []string{
 		".ln-suggestions {", ".ln-suggestion {", ".ln-suggestion__values {",

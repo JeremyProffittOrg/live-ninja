@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -432,4 +433,80 @@ func TestManifestAdvertisesEnforcedSchema(t *testing.T) {
 		"device_control", "get_weather", "web_lookup", "remember_note", "recall_note"} {
 		assert.Contains(t, byName, name)
 	}
+}
+
+// captureStdout runs fn with os.Stdout redirected to a temp file and returns
+// what was written. observ.EmitMetric writes EMF straight to os.Stdout (that IS
+// the CloudWatch delivery mechanism under Lambda), so this is the only way to
+// assert on a metric's dimensions. Tests in this package do not run in
+// parallel, so swapping the global is safe here.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "emf")
+	require.NoError(t, err)
+	orig := os.Stdout
+	os.Stdout = f
+	defer func() {
+		os.Stdout = orig
+		_ = f.Close()
+	}()
+	fn()
+	require.NoError(t, f.Sync())
+	raw, err := os.ReadFile(f.Name())
+	require.NoError(t, err)
+	return string(raw)
+}
+
+// TestUnknownToolIsNotAMetricDimension: a CloudWatch dimension VALUE is billed
+// per distinct combination — one custom metric per unique value, indefinitely.
+// inv.Tool is raw client input on the unknown-tool path (Invoke rejects unknown
+// tools before any validation), so emitting it as a dimension let an
+// authenticated caller mint unbounded custom metrics by looping over random tool
+// names off a 404. The name still reaches the (cardinality-free,
+// retention-bounded) log line.
+func TestUnknownToolIsNotAMetricDimension(t *testing.T) {
+	r := newTestRegistry(t, newTestDeps())
+
+	emf := captureStdout(t, func() {
+		res := r.Invoke(context.Background(), invocation("frobnicate-9f3a21", nil))
+		require.False(t, res.OK)
+		require.Equal(t, CodeUnknownTool, res.Error.Code)
+	})
+
+	assert.NotContains(t, emf, "frobnicate-9f3a21",
+		"a client-supplied tool name must never become a CloudWatch dimension value")
+	assert.Contains(t, emf, `"Tool":"`+unknownToolSentinel+`"`)
+
+	// A real tool still reports under its own name — the sentinel must not
+	// flatten the useful per-tool breakdown.
+	emf = captureStdout(t, func() {
+		_ = r.Invoke(context.Background(), invocation("get_weather", map[string]any{"location": "Austin"}))
+	})
+	assert.Contains(t, emf, `"Tool":"get_weather"`)
+}
+
+// TestHandlerPanicPreservesTheOriginalPanic: finish runs in a defer, so it also
+// runs while a panicking handler unwinds — at which point res is neither OK nor
+// carrying an Error. Logging res.Error.Code unconditionally there raised a
+// nil-pointer dereference INSIDE the defer, which replaces the original panic
+// value and throws away the stack naming the handler that actually broke.
+func TestHandlerPanicPreservesTheOriginalPanic(t *testing.T) {
+	r := newTestRegistry(t, newTestDeps())
+	require.NoError(t, r.register(&Definition{
+		Name:        "panic_tool",
+		Description: "test-only tool that panics",
+		Handler: func(ctx context.Context, deps *Deps, inv Invocation, args map[string]any) (map[string]any, *ToolError) {
+			panic("handler exploded")
+		},
+	}))
+
+	recovered := func() (v any) {
+		defer func() { v = recover() }()
+		_ = r.Invoke(context.Background(), invocation("panic_tool", nil))
+		return nil
+	}()
+
+	require.NotNil(t, recovered, "the panic must propagate, not be swallowed")
+	assert.Equal(t, "handler exploded", recovered,
+		"finish must not replace the handler's panic with its own nil dereference")
 }
