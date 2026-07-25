@@ -90,6 +90,34 @@ archived plans is either confirmed working or converted into a bug with a repro.
 > minter. The happy-path cascade is **not unit-covered** — `broker.minter` is a concrete
 > `*realtime.Minter`, not an interface.
 >
+> **THREE ATTEMPTS 2026-07-25, all deployed and tested against production. The three errors
+> CONTRADICT each other, which is the finding.** Credential, SSM parameter and IAM grant are all
+> in place and correct; what remains is a Google-side auth-shape problem, not a wiring problem.
+>
+> | # | What was sent | Commit | Google's response |
+> |---|---|---|---|
+> | 1 | API key only (original) | — | `401 UNAUTHENTICATED` · `ACCESS_TOKEN_TYPE_UNSUPPORTED` · *"Expected OAuth 2 access token"* |
+> | 2 | Bearer **+** api-key header | `4207ee2` | `401` · *"API key for authentication is used with other authentication credentials. Expected only one form of authentication."* |
+> | 3 | Bearer only (api-key header stripped) | `e82a00e` | `400 INVALID_ARGUMENT` · *"an API key is required for this request"* |
+>
+> Read together: (1) says the endpoint demands OAuth2, (3) says it demands an API key, and (2)
+> says it will not take both **as headers**. Attempt 2 is the informative one — it proves the
+> OAuth2 bearer arrives and is recognised as a credential, so the service account and scope are
+> not the problem.
+>
+> **The untried shape, and the most likely answer:** present the api key as a **query parameter**
+> (`?key=...`) alongside the bearer header. That is a different presentation from two headers and
+> is what (2) and (3) together point at. The SDK cannot express it — it only ever sets
+> `x-goog-api-key` — so this needs the direct REST call (option (i) below). **Do this next.**
+>
+> Also worth re-checking before more code: whether the service account needs an explicit IAM role
+> binding on the Google side, and whether the Generative Language API is enabled on the project
+> that owns it. Attempt 2 makes a bad credential unlikely but does not rule out a missing role.
+>
+> **Ruled OUT, not deferred:** `BackendVertexAI` — ephemeral tokens do not exist there at all
+> (`tokens.go:217` refuses outright), matching the Phase-0 finding that only the v1alpha
+> Constrained method honours them.
+>
 > **ATTEMPTED 2026-07-25 (`9c989e8`) — credential wired, and it hit a HARD SDK LIMIT.**
 > The service-account key is in SSM, the broker's IAM grant covers it, and the mint now builds
 > `auth.Credentials` from it. The Go SDK rejects the result at client-init:
