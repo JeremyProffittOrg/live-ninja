@@ -18,6 +18,7 @@ package realtime
 
 import (
 	"cloud.google.com/go/auth/credentials"
+	"cloud.google.com/go/auth/httptransport"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -424,7 +425,35 @@ func (m *GeminiMinter) Mint(ctx context.Context, voice, instructions string) (*G
 			if err != nil {
 				return nil, fmt.Errorf("realtime: gemini service-account credentials: %w", err)
 			}
-			cfg.Credentials = creds
+			// The SDK will NOT use cfg.Credentials on this backend: Credentials and
+			// APIKey are mutually exclusive (client.go:214) and Credentials is only
+			// wired for BackendVertexAI (client.go:369) — on BackendGeminiAPI the
+			// only auth it sends is x-goog-api-key. But APIKey and HTTPClient are
+			// NOT mutually exclusive, and the api-key header is set only when
+			// APIKey is non-empty (api_client.go:325). So supply an OAuth2-backed
+			// transport and let the SDK keep building the request body: the call
+			// then carries BOTH an Authorization bearer and the api key, and
+			// CreateToken can honour the bearer it actually requires.
+			//
+			// Moving to BackendVertexAI is not an alternative — ephemeral tokens
+			// do not exist there at all (tokens.go:217 refuses outright).
+			authedClient, err := httptransport.NewClient(&httptransport.Options{
+				Credentials: creds,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("realtime: gemini oauth2 transport: %w", err)
+			}
+			cfg.HTTPClient = authedClient
+
+			// Still required non-empty by the Gemini backend's own validation
+			// (client.go:345), so pass the real key rather than a placeholder: if
+			// Google prefers the key we get the familiar, diagnosable 401 instead
+			// of a confusing "invalid key" that hides which credential was used.
+			apiKey, keyErr := m.loader.Get(ctx, config.ParamGeminiAPIKey, config.EnvOverrideGeminiAPIKey)
+			if keyErr != nil {
+				return nil, fmt.Errorf("realtime: resolve gemini key alongside service account: %w", keyErr)
+			}
+			cfg.APIKey = apiKey
 		} else {
 			// Fall back to the API key so a missing/unset service account behaves
 			// exactly as before rather than turning into a new failure mode. It
