@@ -32,22 +32,38 @@ import (
 
 // Design tokens: HAL 9000 head with red eye (modern design, Theme.kt colors).
 var (
-	colBg   = color.NRGBA{R: 0x05, G: 0x05, B: 0x07, A: 0xff} // HalBackground #050507
-	colHead = color.NRGBA{R: 0x0d, G: 0x1f, B: 0x3a, A: 0xff} // Navy head (approx #0d1f3a)
-	// colHeadShade (#09162d) is intentionally absent: the shipped art shades the head with a
-	// radial falloff from colHead rather than a second flat tone. Reintroduce it only if this
-	// generator gains real two-tone shading — see the fidelity gap noted at drawHalEye.
-	colRed       = color.NRGBA{R: 0xe3, G: 0x26, B: 0x36, A: 0xff} // HalRed #e32636
-	colRedDark   = color.NRGBA{R: 0x7a, G: 0x0f, B: 0x18, A: 0xff} // Dark red (eye outline)
-	colRedBright = color.NRGBA{R: 0xff, G: 0x5a, B: 0x4a, A: 0xff} // Bright red iris
-	colWhiteWarm = color.NRGBA{R: 0xff, G: 0xf8, B: 0xf2, A: 0xff} // Warm white center highlight
-	colCream     = color.NRGBA{R: 0xff, G: 0xd9, B: 0xc4, A: 0xff} // Cream mid-tone
+	// Every value below was measured off the shipped web/static/icons/icon-512.png,
+	// not eyeballed. The eye is a stack of TRANSLUCENT red discs over a navy base
+	// that a dark lens ellipse has already darkened — solving two samples per ring
+	// (one inside the band, one outside) is what recovers the alphas.
+	colPlate     = color.NRGBA{R: 0x06, G: 0x0d, B: 0x18, A: 0xff} // plate #060d18
+	colHead      = color.NRGBA{R: 0x16, G: 0x29, B: 0x4a, A: 0xff} // flat navy head #16294a
+	colLensBand  = color.NRGBA{R: 0x00, G: 0x00, B: 0x00, A: 0x8b} // black @ 0.545: navy -> (10,20,36)
+	colGlowOuter = color.NRGBA{R: 0xff, G: 0x5f, B: 0x4a, A: 0x2a} // 0.167 -> (64,50,74) over navy
+	colGlowInner = color.NRGBA{R: 0xff, G: 0x5f, B: 0x4a, A: 0x5c} // stacks to (131,64,74)
+	colIris      = color.NRGBA{R: 0xe3, G: 0x43, B: 0x2b, A: 0xff} // opaque iris #e3432b
+	colCore      = color.NRGBA{R: 0xff, G: 0xb1, B: 0x99, A: 0xff} // incandescent core #ffb199
 )
 
-// shape is an analytic inside-test in the 512x512 unit design space.
+// shape is an analytic coverage function in the 512x512 unit design space.
+//
+// cov returns 0..1 rather than a bool because the shipped HAL-eye art is built
+// from soft radial falloffs, not flat discs. The previous bool-only model could
+// only stack hard-edged circles, which is exactly why regenerating produced
+// visible concentric banding where the committed PNGs have a smooth glow.
 type shape struct {
-	inside func(x, y float64) bool
-	col    color.NRGBA
+	cov func(x, y float64) float64
+	col color.NRGBA
+}
+
+// hard turns a binary inside-test into full-or-no coverage.
+func hard(f func(x, y float64) bool) func(x, y float64) float64 {
+	return func(x, y float64) float64 {
+		if f(x, y) {
+			return 1
+		}
+		return 0
+	}
 }
 
 func insideCircle(cx, cy, r float64) func(x, y float64) bool {
@@ -88,28 +104,32 @@ func glyphShapes(scale, bgRadius float64) []shape {
 	s := func(v float64) float64 { return 256 + (v-256)*scale }
 	r := func(v float64) float64 { return v * scale }
 	headCx, headCy := s(256), s(256)
-	headRadius := r(140)
+	// 199 units, measured off the shipped icon-192.png at three angles (the old 140
+	// left a ring of bare plate where the shipped art still has navy).
+	headRadius := r(199)
 
 	return []shape{
-		// Background.
-		{insideRoundedRect(0, 0, 512, 512, bgRadius), colBg},
-		// Navy head (outer).
-		{insideCircle(headCx, headCy, headRadius), colHead},
-		// Darker red iris background (main surround).
-		{insideCircle(headCx, headCy, r(95)), colRedDark},
-		// Dark red pupils/eye shadows (left and right, very prominent).
-		{insideCircle(headCx-r(58), headCy, r(56)), colRedDark},
-		{insideCircle(headCx+r(58), headCy, r(56)), colRedDark},
-		// Red iris shading layers.
-		{insideCircle(headCx, headCy, r(75)), colRed},
-		// Mid iris: bright red (main iris color).
-		{insideCircle(headCx, headCy, r(58)), colRedBright},
-		// Inner iris: red for depth.
-		{insideCircle(headCx, headCy, r(44)), colRed},
-		// Cream-colored mid-tone (warmth, simulates gradient).
-		{insideCircle(headCx, headCy, r(30)), colCream},
-		// Warm white center highlight (incandescent core).
-		{insideCircle(headCx, headCy, r(15)), colWhiteWarm},
+		// Plate.
+		{hard(insideRoundedRect(0, 0, 512, 512, bgRadius)), colPlate},
+		// Flat navy head. r=199 measured at three angles; the old r=140 left a ring
+		// of bare plate where the shipped art still has navy.
+		{hard(insideCircle(headCx, headCy, headRadius)), colHead},
+		// Lens band, UNDER the glow: it darkens the navy, and the translucent glow
+		// discs then sit on top of the darkened base. Drawn over the glow instead it
+		// cuts a flat stripe through the eye, which the shipped art does not have.
+		// A stadium, not an ellipse: half-height is flat at 51 units out to x=106 and
+		// then caps with radius 51. That model predicts half-heights of 51/38/26/14 at
+		// x=110/140/150/155, which is exactly what the shipped art measures — an
+		// ellipse cannot fit both ends and visibly tapers through the middle instead.
+		{hard(insideRoundedRect(headCx-r(157), headCy-r(51), r(314), r(102), r(51))), colLensBand},
+		// Two translucent glow discs, hard-edged (the shipped art has visible ring
+		// boundaries — it is a disc stack, not a gradient).
+		{hard(insideCircle(headCx, headCy, r(128))), colGlowOuter},
+		{hard(insideCircle(headCx, headCy, r(94))), colGlowInner},
+		// Opaque iris, then the centred incandescent core (r=28, centroid measured
+		// at +1,+3 units — it only *looks* offset).
+		{hard(insideCircle(headCx, headCy, r(67))), colIris},
+		{hard(insideCircle(headCx+r(1), headCy+r(3), r(28))), colCore},
 	}
 }
 
@@ -131,10 +151,11 @@ func render(size int, shapes []shape) *image.NRGBA {
 					// the sample wins, alpha-blended over what's below it.
 					var cr, cg, cb, ca float64
 					for _, sh := range shapes {
-						if !sh.inside(x, y) {
+						c := sh.cov(x, y)
+						if c <= 0 {
 							continue
 						}
-						a := float64(sh.col.A) / 255
+						a := float64(sh.col.A) / 255 * c
 						cr = cr*(1-a) + float64(sh.col.R)*a
 						cg = cg*(1-a) + float64(sh.col.G)*a
 						cb = cb*(1-a) + float64(sh.col.B)*a

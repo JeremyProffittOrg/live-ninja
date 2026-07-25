@@ -64,6 +64,12 @@ class OpenWakeWordEngine @Inject constructor(
 
         /** Chunks of pre-roll replayed into the pipeline when the VAD gate opens. */
         private const val PRE_ROLL_CHUNKS = 3
+
+        /** Below this, a peak score is indistinguishable from silence — don't log it. */
+        private const val PEAK_LOG_FLOOR = 0.10f
+
+        /** At most one near-miss line per window; inference runs on every audio chunk. */
+        private const val PEAK_LOG_INTERVAL_MS = 5_000L
     }
 
     private val _detections = MutableSharedFlow<WakeWordDetection>(extraBufferCapacity = 8)
@@ -175,6 +181,9 @@ class OpenWakeWordEngine @Inject constructor(
         val chunk = ShortArray(OwwPipeline.CHUNK_SAMPLES)
         val preRoll = ArrayDeque<ShortArray>(PRE_ROLL_CHUNKS)
         var refractoryUntil = 0L
+        // Highest sub-threshold score since the last near-miss log, and when that was.
+        var peakScore = 0f
+        var peakLoggedAt = 0L
 
         while (scope.isActive && isRunning) {
             var offset = 0
@@ -216,6 +225,31 @@ class OpenWakeWordEngine @Inject constructor(
             }
 
             val threshold = (1f - prefs.sensitivityFlow.value).coerceIn(0.05f, 0.95f)
+
+            // Near-miss visibility. Until this existed the score was logged ONLY when it
+            // crossed the threshold, so a model that was scoring 0.4 against a 0.5 threshold
+            // looked identical to one scoring 0.0 — i.e. identical to "the model is broken".
+            // That cost real time on 2026-07-25: "Hey Live Ninja" was written off as
+            // non-detecting when it in fact scores ~0.7, and nothing in the log could
+            // distinguish "close" from "deaf".
+            //
+            // Debug level and heavily rate-limited on purpose: inference runs on every audio
+            // chunk, so an unconditional log here would be a firehose. Only the peak inside
+            // each window is reported, only when it clears PEAK_LOG_FLOOR (so silence stays
+            // silent), and at most once per PEAK_LOG_INTERVAL_MS.
+            if (score < threshold) {
+                if (score > peakScore) peakScore = score
+                if (peakScore >= PEAK_LOG_FLOOR && now - peakLoggedAt >= PEAK_LOG_INTERVAL_MS) {
+                    LNLog.d(
+                        LogCategory.WAKE,
+                        TAG,
+                        "no wake; peak score=%.3f thr=%.2f (below threshold)".format(peakScore, threshold),
+                    )
+                    peakLoggedAt = now
+                    peakScore = 0f
+                }
+            }
+
             if (score >= threshold) {
                 val phrase = (activeModelRef?.wakeWordId ?: ModelManager.DEFAULT_ASSET_WAKE_WORD_ID)
                     .replace('-', ' ')
