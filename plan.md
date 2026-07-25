@@ -56,16 +56,32 @@ archived plans is either confirmed working or converted into a bug with a repro.
 
 ### 1.1 Live voice loop — web  `[ ]` (owner)
 ⟵ archive/plan.md §8 M14 item 12 · docs/qa-report.md "Live voice / microphone"
-- `[ ]` Real voice session: mint → WebRTC connect to OpenAI → spoken turn → tool call round-trip via `POST /api/v1/tools/invoke`.
-- `[ ]` Model actually **calls `memory_search`** when asked "what is my home address" (the fix deployed 2026-07-18 was never confirmed live). ⟵ qa-report Surface 5
-- `[ ]` Resolved voice/accent audibly applied — Noir Detective → new-york, Josh Lyman → `ash`. ⟵ qa-report Surfaces 2/3
-- `[ ]` Per-persona voice memory: two personas, switch, each speaks its saved voice; `personaPrefs` persists in DynamoDB. ⟵ qa-report Surface 4
-- `[ ]` Cross-tab live apply: change mic pickup / turn detection in tab B → tab A applies mid-session via `session.update`. ⟵ qa-report Surface 4
-- `[ ]` Mid-session mic-eagerness chip audibly changes end-of-turn behaviour. ⟵ qa-report Surface 4
-- `[ ]` Barge-in / wake-word detection in a browser with a working mic. ⟵ qa-report Surface 8
+- `[x]` Real voice session: mint → WebRTC connect to OpenAI → spoken turn → tool call round-trip via `POST /api/v1/tools/invoke`.  **Owner-verified 2026-07-25.**
+- `[x]` Model actually **calls `memory_search`** when asked "what is my home address" (the fix deployed 2026-07-18 was never confirmed live). ⟵ qa-report Surface 5  **Owner-verified 2026-07-25.**
+- `[x]` Resolved voice/accent audibly applied — Noir Detective → new-york, Josh Lyman → `ash`. ⟵ qa-report Surfaces 2/3  **Owner-verified 2026-07-25.**
+- `[x]` Per-persona voice memory: two personas, switch, each speaks its saved voice; `personaPrefs` persists in DynamoDB. ⟵ qa-report Surface 4  **Owner-verified 2026-07-25.**
+- `[x]` Cross-tab live apply: change mic pickup / turn detection in tab B → tab A applies mid-session via `session.update`. ⟵ qa-report Surface 4  **Owner-verified 2026-07-25.**
+- `[x]` Mid-session mic-eagerness chip audibly changes end-of-turn behaviour. ⟵ qa-report Surface 4  **Owner-verified 2026-07-25.**
+- `[x]` Barge-in / wake-word detection in a browser with a working mic. ⟵ qa-report Surface 8  **Owner-verified 2026-07-25.**
 - `[x]` **Android done 2026-07-25** (`costUsd=0.023532`, `surface=android`, read straight from the CONV row; web still unverified). Confirm the cost-persist chain produces a **costed CONV row** (needs one live session; typed fallback turns emit no usage events). ⟵ archive/plan.md §8 M14 item 10
 
-### 1.2 Gemini Flash Live — E1/E2  `[!]` blocked on owner (S)
+### 1.2 Gemini Flash Live — E1/E2  `[!]` **BLOCKED ON A REAL DEFECT, not on the owner**
+
+> **Root cause found 2026-07-25 — Gemini Live has never worked.** A mint attempt returns
+> `mint_failed` and the broker log gives the reason exactly:
+> `Error 401 ... Expected OAuth 2 access token ... Status: UNAUTHENTICATED`,
+> `reason: ACCESS_TOKEN_TYPE_UNSUPPORTED`, on
+> `google.ai.generativelanguage.v1alpha.AuthTokenService.CreateToken`.
+> The broker authenticates with an **API key** (`genai.NewClient{APIKey, BackendGeminiAPI}` —
+> `internal/realtime/gemini_mint.go:401`), and Google's ephemeral-token endpoint **does not
+> accept API-key auth**. So E1/E2 were never a verification gap; the feature could not have
+> passed. Owner decision required — see backlog/decision note below. Observed txIds:
+> `BE8YPi-HoAMEPkQ=`, `BE8YSgrMoAMEQ0Q=`, `BE8ZCjrdoAMEPpA=`.
+>
+> **Options:** (a) OAuth2 service-account credentials for `CreateToken` (SSM SecureString, no
+> secrets manager); (b) proxy Gemini Live through the backend like `nova-bridge` so the key
+> never reaches the client — more infra and standing cost; (c) drop Gemini Live to backlog and
+> stay on `openai-realtime`. Until one is chosen, E1/E2 cannot be attempted.
 ⟵ archive/gemini-plan.md §4 Phase E · exact 6-step script in that file's §10 "Phase E status"
 - `[!]` **E1 cross-engine parity:** pin one device to `gemini-flash-live`, one to `openai-realtime` — transcripts land in the same sink with correct `engine` tags, tools invoke identically, topics/memory extraction runs, cost priced at Gemini rates, barge-in cuts playback, persona switch changes the Gemini voice per the D4b mapping, user `geminiVoice` overrides it.
 - `[!]` **E2 lifecycle:** a >10-min session survives the `goAway` recycle via resumption handle; a >30-min session re-fetches a fresh token and resumes; the quota gate still fires pre-mint.
@@ -73,23 +89,23 @@ archived plans is either confirmed working or converted into a bug with a repro.
 
 ### 1.3 Tool-manifest live smoke (post-M19)  `[ ]` (owner)
 ⟵ archive/tool-parity-plan.md §Verification
-- `[ ]` "Set a timer for 20 minutes" → fires; no `invalid_args` in the `LOG#` audit rows.
-- `[ ]` "Set a timer for 3 days" → model hands off to `set_reminder` (one `invalid_args` row naming `set_reminder`, then a successful `set_reminder`, is the healthy shape).
-- `[ ]` "What's the weather in London in celsius" → `units:metric` actually requested.
-- `[ ]` "What notes do I have tagged work" → tag filter used; "read me my recent notes" with no query succeeds.
+- `[x]` "Set a timer for 20 minutes" → fires; no `invalid_args` in the `LOG#` audit rows.  **Owner-verified 2026-07-25.**
+- `[x]` "Set a timer for 3 days" → model hands off to `set_reminder` (one `invalid_args` row naming `set_reminder`, then a successful `set_reminder`, is the healthy shape).  **Owner-verified 2026-07-25.**
+- `[x]` "What's the weather in London in celsius" → `units:metric` actually requested.  **Owner-verified 2026-07-25.**
+- `[x]` "What notes do I have tagged work" → tag filter used; "read me my recent notes" with no query succeeds.  **Owner-verified 2026-07-25.**
   (The `device_control` / "reboot the terminal" step from the original smoke needs a Tab5 — moved to `backlog.md`.)
 - `[ ]` Repeat the first two on a `gemini-flash-live`-pinned device.
 
 ### 1.4 Authed web surfaces  `[ ]` (owner or owner-assisted browser session)
 ⟵ docs/qa-report.md "Requires an authenticated session"
-- `[ ]` Full LWA web sign-in end-to-end → `__Host-ln_rt` cookie → `/conversation`.
+- `[x]` Full LWA web sign-in end-to-end → `__Host-ln_rt` cookie → `/conversation`.  **Owner-verified 2026-07-25.**
 - `[ ]` Android Custom-Tabs PKCE exchange (`POST /auth/lwa/exchange`) on a real device.
-- `[ ]` `GET /personas` renders the grouped library (builtin/mine/shared) when authed.
-- `[ ]` Persona editor round-trip: create → edit voice/accent → share → copy a shared one → `personachanged` refresh + mid-session pending banner.
-- `[ ]` Settings autosave + 409 reconcile (concurrent second-device edit → remote-wins toast).
-- `[ ]` `/history` authed rendering: tool-call Details disclosure, top toggle persists across reloads.
-- `[ ]` `/conversation` authed runtime: drawer focus-trap/Escape, mic-sens chips live-apply, persona `<select>` populated, transcript streams, cost badge on session start.
-- `[ ]` Settings **drawer** opened and exercised in a real browser — the drawer relocation was only ever statically screenshotted, never hydrated live (`initSettingsPanel`). ⟵ archive/plan.md §8 Task #8 Request 3
+- `[x]` `GET /personas` renders the grouped library (builtin/mine/shared) when authed.  **Owner-verified 2026-07-25.**
+- `[x]` Persona editor round-trip: create → edit voice/accent → share → copy a shared one → `personachanged` refresh + mid-session pending banner.  **Owner-verified 2026-07-25.**
+- `[x]` Settings autosave + 409 reconcile (concurrent second-device edit → remote-wins toast).  **Owner-verified 2026-07-25.**
+- `[x]` `/history` authed rendering: tool-call Details disclosure, top toggle persists across reloads.  **Owner-verified 2026-07-25.**
+- `[x]` `/conversation` authed runtime: drawer focus-trap/Escape, mic-sens chips live-apply, persona `<select>` populated, transcript streams, cost badge on session start.  **Owner-verified 2026-07-25.**
+- `[x]` Settings **drawer** opened and exercised in a real browser — the drawer relocation was only ever statically screenshotted, never hydrated live (`initSettingsPanel`). ⟵ archive/plan.md §8 Task #8 Request 3  **Owner-verified 2026-07-25.**
 
 ### 1.5 Android device  `[ ]` (owner, on the phone)
 ⟵ docs/qa-report.md "Device / hardware" · archive/plan.md §8
