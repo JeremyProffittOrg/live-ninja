@@ -35,6 +35,7 @@ enum class OnboardingStep {
     WELCOME,
     SIGN_IN,
     MIC_PERMISSION,
+    CAMERA_PERMISSION,
     NOTIFICATIONS,
     ASSISTANT_ROLE,
     BATTERY,
@@ -46,6 +47,7 @@ data class OnboardingUiState(
     val signInAvailable: Boolean = false,
     val signedIn: Boolean = false,
     val micGranted: Boolean = false,
+    val cameraGranted: Boolean = false,
     val notificationsGranted: Boolean = false,
     /** Below API 33 POST_NOTIFICATIONS doesn't exist — treated as granted. */
     val notificationsRequestable: Boolean = true,
@@ -101,6 +103,9 @@ class OnboardingViewModel @Inject constructor(
             context, Manifest.permission.RECORD_AUDIO,
         ) == PackageManager.PERMISSION_GRANTED
         val notifRequestable = Build.VERSION.SDK_INT >= 33
+        val cameraGranted = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.CAMERA,
+        ) == PackageManager.PERMISSION_GRANTED
         val notifGranted = if (notifRequestable) {
             ContextCompat.checkSelfPermission(
                 context, Manifest.permission.POST_NOTIFICATIONS,
@@ -111,6 +116,7 @@ class OnboardingViewModel @Inject constructor(
         _state.update {
             it.copy(
                 micGranted = micGranted,
+                cameraGranted = cameraGranted,
                 notificationsGranted = notifGranted,
                 notificationsRequestable = notifRequestable,
                 roleHeld = isAssistantRoleHeld(),
@@ -172,6 +178,25 @@ class OnboardingViewModel @Inject constructor(
             "onboarding",
         )
         _state.update { it.copy(micGranted = granted) }
+    }
+
+    /** Called before Android's camera runtime prompt to retain disclosure evidence. */
+    fun onCameraDisclosureShown() {
+        if (!consentLog.hasRecorded(ConsentEvent.CAMERA_DISCLOSURE_SHOWN)) {
+            consentLog.record(ConsentEvent.CAMERA_DISCLOSURE_SHOWN, "onboarding")
+        }
+    }
+
+    fun onCameraPermissionResult(granted: Boolean) {
+        consentLog.record(
+            if (granted) {
+                ConsentEvent.CAMERA_PERMISSION_GRANTED
+            } else {
+                ConsentEvent.CAMERA_PERMISSION_DENIED
+            },
+            "onboarding",
+        )
+        _state.update { it.copy(cameraGranted = granted) }
     }
 
     fun onNotificationsResult(granted: Boolean) {

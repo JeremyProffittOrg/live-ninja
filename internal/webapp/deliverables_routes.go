@@ -24,6 +24,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -40,6 +41,8 @@ const (
 // DELIVERABLES_BUCKET), every route answers 503 rather than half-working.
 func RegisterDeliverablesRoutes(app *fiber.App, deps *Deps) {
 	api := app.Group("/api/v1", RequireAuth())
+	api.Post("/deliverables/upload-intents", handleCreateUploadIntent(deps))
+	api.Post("/deliverables/:id/upload-complete", handleCompleteUpload(deps))
 	api.Get("/deliverables", handleListDeliverables(deps))
 	api.Get("/deliverables/:id/download", handleDownloadDeliverable(deps))
 	api.Delete("/deliverables/:id", handleDeleteDeliverable(deps))
@@ -47,6 +50,87 @@ func RegisterDeliverablesRoutes(app *fiber.App, deps *Deps) {
 
 func deliverablesUnavailable(c *fiber.Ctx) error {
 	return errorJSON(c, fiber.StatusServiceUnavailable, "not_configured", "The deliverables store is not configured.")
+}
+
+// ---- POST /api/v1/deliverables/upload-intents ----
+
+func handleCreateUploadIntent(deps *Deps) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if deps.Deliv == nil {
+			return deliverablesUnavailable(c)
+		}
+
+		var body struct {
+			Name        string `json:"name"`
+			ContentType string `json:"contentType"`
+			SizeBytes   int64  `json:"sizeBytes"`
+		}
+		if err := c.BodyParser(&body); err != nil {
+			return apiBadRequest(c, "request body must be valid JSON")
+		}
+
+		intent, err := deps.Deliv.BeginMediaUpload(
+			c.Context(), UserID(c), body.Name, body.ContentType, body.SizeBytes,
+		)
+		if err != nil {
+			switch {
+			case errors.Is(err, deliv.ErrNameTaken):
+				return errorJSON(c, fiber.StatusConflict, "already_exists", "A file with that name already exists.")
+			case errors.Is(err, deliv.ErrBadInput):
+				return apiBadRequest(c, err.Error())
+			default:
+				return apiInternalError(c, deps, "create media upload intent", err)
+			}
+		}
+
+		d := intent.Deliverable
+		return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+			"deliverableId": d.DeliverableID,
+			"name":          d.Name,
+			"status":        d.Status,
+			"contentType":   d.ContentType,
+			"sizeBytes":     d.SizeBytes,
+			"uploadUrl":     intent.URL,
+			"expiresAt":     intent.ExpiresAt.Format(time.RFC3339),
+			"headers":       intent.RequiredHeader,
+		})
+	}
+}
+
+// ---- POST /api/v1/deliverables/:id/upload-complete ----
+
+func handleCompleteUpload(deps *Deps) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if deps.Deliv == nil {
+			return deliverablesUnavailable(c)
+		}
+		id := strings.TrimSpace(c.Params("id"))
+		if id == "" {
+			return apiBadRequest(c, "deliverable id is required")
+		}
+
+		d, err := deps.Deliv.CompleteMediaUpload(c.Context(), UserID(c), id)
+		if err != nil {
+			switch {
+			case errors.Is(err, deliv.ErrNotFound):
+				return errorJSON(c, fiber.StatusNotFound, "not_found", "Deliverable not found.")
+			case errors.Is(err, deliv.ErrNotReady):
+				return errorJSON(c, fiber.StatusConflict, "not_ready", "This upload is not pending media.")
+			case errors.Is(err, deliv.ErrBadInput):
+				return apiBadRequest(c, err.Error())
+			default:
+				return apiInternalError(c, deps, "complete media upload", err)
+			}
+		}
+		return c.JSON(fiber.Map{
+			"deliverableId": d.DeliverableID,
+			"name":          d.Name,
+			"status":        d.Status,
+			"contentType":   d.ContentType,
+			"sizeBytes":     d.SizeBytes,
+			"createdAt":     d.CreatedAt,
+		})
+	}
 }
 
 // ---- GET /api/v1/deliverables ----

@@ -748,6 +748,12 @@ type ConversationCostSummary struct {
 	TotalUSD      float64
 	Conversations int
 	Costed        int
+	// OpenAIUSD/OpenAICosted isolate persisted OpenAI sessions from Gemini
+	// and Nova so the owner-set OpenAI budget is not charged for another
+	// provider. Older untagged rows remain in TotalUSD but cannot honestly
+	// be attributed to OpenAI.
+	OpenAIUSD    float64
+	OpenAICosted int
 }
 
 // SumConversationCosts totals the persisted per-session cost estimates
@@ -766,7 +772,7 @@ func (s *Store) SumConversationCosts(ctx context.Context, userID, from, to strin
 			":lo": &types.AttributeValueMemberS{Value: convSKPrefix + from},
 			":hi": &types.AttributeValueMemberS{Value: convSKPrefix + to + skRangeHi},
 		},
-		ProjectionExpression: aws.String("costUsd"),
+		ProjectionExpression: aws.String("costUsd, engine"),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("store: sum conversation costs: %w", err)
@@ -783,8 +789,22 @@ func (s *Store) SumConversationCosts(ctx context.Context, userID, from, to strin
 		}
 		sum.TotalUSD += usd
 		sum.Costed++
+		if engine, ok := r["engine"].(*types.AttributeValueMemberS); ok &&
+			isOpenAIConversationEngine(engine.Value) {
+			sum.OpenAIUSD += usd
+			sum.OpenAICosted++
+		}
 	}
 	return sum, nil
+}
+
+// isOpenAIConversationEngine accepts both the model tags emitted by current
+// clients ("gpt-realtime", future gpt-* variants) and the older engine-family
+// tags ("openai-realtime"). Explicit Gemini/Nova rows never count toward the
+// owner's OpenAI budget.
+func isOpenAIConversationEngine(engine string) bool {
+	engine = strings.ToLower(strings.TrimSpace(engine))
+	return strings.HasPrefix(engine, "gpt-") || strings.HasPrefix(engine, "openai-")
 }
 
 // ---- merge (FR-TOP-02: stable tags, mergedInto alias) ----

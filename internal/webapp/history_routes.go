@@ -425,12 +425,22 @@ func handleCostSummary(deps *Deps) fiber.Handler {
 		if err != nil {
 			return apiInternalError(c, deps, "sum conversation costs", err)
 		}
-		return c.JSON(fiber.Map{
-			"monthStart":    monthStart,
-			"totalUsd":      sum.TotalUSD,
-			"conversations": sum.Conversations,
-			"costed":        sum.Costed,
-		})
+		resp := fiber.Map{
+			"monthStart":     monthStart,
+			"totalUsd":       sum.TotalUSD,
+			"conversations":  sum.Conversations,
+			"costed":         sum.Costed,
+			"openAiTotalUsd": sum.OpenAIUSD,
+			"openAiCosted":   sum.OpenAICosted,
+		}
+		if deps.Cfg.OpenAIMonthlyBudgetUSD > 0 {
+			budget := budgetStatusFromSummary(deps.Cfg.OpenAIMonthlyBudgetUSD, sum)
+			resp["openAiBudgetUsd"] = budget.BudgetUSD
+			resp["openAiRemainingUsd"] = budget.RemainingUSD
+			resp["openAiWarningThresholdUsd"] = budget.WarningThresholdUSD
+			resp["openAiBudgetWarning"] = budget.Warning
+		}
+		return c.JSON(resp)
 	}
 }
 

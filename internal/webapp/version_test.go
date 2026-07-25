@@ -167,6 +167,7 @@ func TestVersionMiddlewareGatesBelowMinExceptWeb(t *testing.T) {
 	app.Use(VersionMiddleware(deps))
 	app.Get("/api/v1/me", func(c *fiber.Ctx) error { return c.SendString("ok") })
 	app.Get("/v1/compat", func(c *fiber.Ctx) error { return c.SendString("ok") })
+	app.Get("/v1/app/android/latest", func(c *fiber.Ctx) error { return c.SendString("ok") })
 	app.Get("/auth/refresh", func(c *fiber.Ctx) error { return c.SendString("ok") })
 
 	// Android below min on a normal route -> 426.
@@ -213,6 +214,17 @@ func TestVersionMiddlewareGatesBelowMinExceptWeb(t *testing.T) {
 	}
 	if resp4.StatusCode != http.StatusOK {
 		t.Fatalf("android below min on /auth/refresh: status = %d, want 200 (exempt)", resp4.StatusCode)
+	}
+
+	// The updater route is also exempt: an obsolete install needs it most.
+	reqUpdate := httptest.NewRequest(http.MethodGet, "/v1/app/android/latest", nil)
+	reqUpdate.Header.Set("X-LN-Client", "android/0.5.0+r1")
+	respUpdate, err := app.Test(reqUpdate)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	if respUpdate.StatusCode != http.StatusOK {
+		t.Fatalf("android below min on updater route: status = %d, want 200 (exempt)", respUpdate.StatusCode)
 	}
 
 	// Malformed/missing header -> never gated, even on a normal route.

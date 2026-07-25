@@ -30,8 +30,10 @@ import org.json.JSONObject
  * [RealtimeSessionController] (ui/state/UiSeams.kt): one live GPT-Realtime
  * session — bootstrap via `GET /api/v1/realtime/session`, WebRTC media via
  * [RealtimeTransport], DataChannel events mapped to [SessionUiEvent]s, and
- * `function_call` round-trips through [ToolCallRouter]
- * (`POST /api/v1/tools/invoke` → `function_call_output` → `response.create`).
+ * `function_call` round-trips through [ToolCallRouter], except server-declared
+ * device-local tools handled in this process
+ * (`POST /api/v1/tools/invoke` or local action → `function_call_output` →
+ * `response.create`).
  *
  * Transport-level barge-in (response.cancel + 40 ms fade + jitter flush on
  * `input_audio_buffer.speech_started`) lives in [WebRtcTransport]; this class
@@ -45,6 +47,8 @@ class RealtimeSessionCoordinator @Inject constructor(
     @GeminiTransport private val geminiLiveTransport: RealtimeTransport,
     private val sessionApi: RealtimeSessionApi,
     private val toolRouter: ToolCallRouter,
+    private val deviceVolumeTool: DeviceVolumeToolExecutor,
+    private val deviceCameraTool: DeviceCameraToolExecutor,
     private val transcriptStore: TranscriptStore,
     private val transcriptUploader: TranscriptUploader,
 ) : RealtimeSessionController {
@@ -61,12 +65,14 @@ class RealtimeSessionCoordinator @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    /**
-     * A device-local tool the model has called whose effect is held until it has
-     * finished speaking its confirmation (see [handleFunctionCall]).
-     */
+    /** A device-local action held through the function-call response and its spoken follow-up. */
+    private data class PendingDeviceAction(
+        val action: DeviceSessionTool,
+        val acknowledgementStarted: Boolean = false,
+    )
+
     @Volatile
-    private var pendingDeviceAction: DeviceSessionTool? = null
+    private var pendingDeviceAction: PendingDeviceAction? = null
     private val lifecycleMutex = Mutex()
 
     private val _connected = MutableStateFlow(false)
@@ -99,6 +105,7 @@ class RealtimeSessionCoordinator @Inject constructor(
 
             // Fresh conversation: clear the process-wide transcript so a UI
             // attaching mid-session (screen-on) renders only this session.
+            pendingDeviceAction = null
             transcriptStore.clear()
 
             // Latency parallelization (02-voice §D.2): speculatively bootstrap
@@ -169,6 +176,10 @@ class RealtimeSessionCoordinator @Inject constructor(
                 throw t
             }
             _connected.value = true
+            session.quotaWarning
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { emit(SessionUiEvent.SessionWarning(it)) }
 
             stateWatchJob?.cancel()
             stateWatchJob = scope.launch {
@@ -195,6 +206,7 @@ class RealtimeSessionCoordinator @Inject constructor(
             eventsJob?.cancel()
             eventsJob = null
             _connected.value = false
+            pendingDeviceAction = null
             transport.disconnect()
             emittedChars.clear()
             // Session-end seam: the final:true flush is what makes the backend
@@ -229,9 +241,11 @@ class RealtimeSessionCoordinator @Inject constructor(
 
             is RealtimeEvent.ResponseDone -> {
                 emit(SessionUiEvent.AssistantSpeaking(speaking = false))
-                pendingDeviceAction?.let { action ->
+                pendingDeviceAction
+                    ?.takeIf { it.acknowledgementStarted }
+                    ?.let { pending ->
                     pendingDeviceAction = null
-                    scope.launch { runDeviceAction(action) }
+                    scope.launch { runDeviceAction(pending.action) }
                 }
                 // response.done is the only carrier of per-turn token counts.
                 costTracker.add(event.usage, sessionRates)?.let { cost ->
@@ -265,10 +279,18 @@ class RealtimeSessionCoordinator @Inject constructor(
                 // peer connection, which the state watcher reports.
                 LNLog.w(LogCategory.REALTIME, TAG, "realtime server error ${event.code}: ${event.message}")
 
+            is RealtimeEvent.ResponseStarted -> {
+                // response.created after a device function result identifies
+                // the acknowledgement response. The earlier response.done is
+                // the function-calling turn and must not trigger the action.
+                pendingDeviceAction = pendingDeviceAction?.copy(
+                    acknowledgementStarted = true,
+                )
+            }
+
             is RealtimeEvent.SessionCreated,
             is RealtimeEvent.SessionUpdated,
             is RealtimeEvent.SpeechStopped,
-            is RealtimeEvent.ResponseStarted,
             is RealtimeEvent.Other,
             -> Unit
         }
@@ -280,17 +302,24 @@ class RealtimeSessionCoordinator @Inject constructor(
      */
     private fun handleFunctionCall(call: RealtimeEvent.FunctionCall) {
         scope.launch {
-            // Device-local tools never reach the backend router: stopping this
-            // device's microphone or recycling its session is not something the
-            // server can do. The action itself is deferred to pendingDeviceAction
-            // and runs once the assistant has finished speaking — acting now would
-            // cut off the very reply that tells the user what happened.
+            // Device-local tools never reach the backend router. Session actions
+            // are deferred until the assistant has spoken its confirmation;
+            // volume/camera actions happen immediately and return their actual
+            // device/storage result in the same Result shape as a backend tool.
             val deviceTool = DeviceSessionTool.forName(call.name)
-            val output = if (deviceTool != null) {
-                pendingDeviceAction = deviceTool
-                deviceToolOutput(deviceTool, call.callId)
-            } else {
-                toolRouter.invoke(call)
+            val output = when {
+                deviceTool != null -> {
+                    pendingDeviceAction = PendingDeviceAction(deviceTool)
+                    deviceToolOutput(deviceTool, call.callId)
+                }
+
+                call.name == DEVICE_VOLUME_TOOL_NAME ->
+                    deviceVolumeTool.execute(call.callId, call.argumentsJson)
+
+                call.name == TAKE_PHOTO_TOOL_NAME || call.name == RECORD_VIDEO_TOOL_NAME ->
+                    deviceCameraTool.execute(call.name, call.callId, call.argumentsJson)
+
+                else -> toolRouter.invoke(call)
             }
             transport.sendEvent(
                 JSONObject()

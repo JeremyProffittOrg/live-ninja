@@ -256,6 +256,7 @@ function randomId() {
 export function createToolDispatcher({
   sendEvent,
   invokePath = '/api/v1/tools/invoke',
+  invokeLocal,
   onToolCall,
   onToolResult,
   onToolError,
@@ -284,10 +285,20 @@ export function createToolDispatcher({
     if (args !== null) {
       try {
         if (onToolCall) onToolCall({ tool: name, callId, args });
-        const result = await apiJSON(invokePath, {
-          method: 'POST',
-          json: { tool: name, args, idempotencyKey: randomId(), callId },
-        });
+        // Device-local tools are still advertised by the server's canonical
+        // manifest, but their action belongs to the surface holding the
+        // hardware. `undefined` means "not handled locally".
+        const localResult =
+          typeof invokeLocal === 'function'
+            ? await invokeLocal({ tool: name, callId, args })
+            : undefined;
+        const result =
+          localResult !== undefined
+            ? localResult
+            : await apiJSON(invokePath, {
+                method: 'POST',
+                json: { tool: name, args, idempotencyKey: randomId(), callId },
+              });
         output = result;
         if (onToolResult) onToolResult({ tool: name, callId, result });
       } catch (err) {
@@ -295,7 +306,7 @@ export function createToolDispatcher({
           err instanceof ApiError
             ? { error: err.code || 'tool_failed', message: err.message, txId: err.txId || undefined }
             : { error: 'tool_failed', message: 'The tool call failed.' };
-        if (onToolError) onToolError({ tool: name, callId, error: err });
+        if (onToolError) onToolError({ tool: name, callId, args: args || {}, error: err });
       }
     }
 

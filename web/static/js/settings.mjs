@@ -1784,7 +1784,7 @@ function renderSuggestionBadge() {
   if (settingsTabBtn) {
     settingsTabBtn.setAttribute(
       'aria-label',
-      n === 0 ? 'Settings' : `Settings — ${n} suggestion${n === 1 ? '' : 's'} to review`,
+      n === 0 ? 'Open settings' : `Open settings — ${n} suggestion${n === 1 ? '' : 's'} to review`,
     );
   }
 }

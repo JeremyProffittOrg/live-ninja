@@ -26,8 +26,8 @@ android {
         applicationId = "ninja.jeremy.liveninja"
         minSdk = 29
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.2.1-hal"
+        versionCode = 5
+        versionName = "0.2.2-hal"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Debug-only, opt-in slim filter (see the `arm64Only` comment above). Release's own
@@ -58,19 +58,29 @@ android {
                 keyPassword = "android"
             }
         }
-        // Release keystore lives OUTSIDE the repo (C:\dev\live-ninja-keys\release.keystore).
-        // Absent-safe: when the file is missing (CI), no release signing config is created
-        // and assembleRelease produces an unsigned APK; assembleDebug is unaffected.
+        // Release keystore lives OUTSIDE the repo for local owner builds and is decoded
+        // into android/keystores only for the lifetime of the manual release CI job.
+        // Passwords and alias have no source-code defaults. The signing config exists
+        // only when the keystore and all inputs are supplied; release CI separately
+        // verifies the resulting APK signature before it can publish anything.
         val releaseKeystorePath = System.getenv("LIVENINJA_RELEASE_KEYSTORE")
             ?: (findProperty("liveninja.releaseKeystore") as String?)
             ?: "C:/dev/live-ninja-keys/release.keystore"
         val releaseKeystore = File(releaseKeystorePath)
-        if (releaseKeystore.exists()) {
+        val releaseStorePassword = System.getenv("LIVENINJA_RELEASE_STORE_PASSWORD")
+        val releaseKeyAlias = System.getenv("LIVENINJA_RELEASE_KEY_ALIAS")
+        val releaseKeyPassword = System.getenv("LIVENINJA_RELEASE_KEY_PASSWORD")
+        if (
+            releaseKeystore.exists() &&
+            !releaseStorePassword.isNullOrBlank() &&
+            !releaseKeyAlias.isNullOrBlank() &&
+            !releaseKeyPassword.isNullOrBlank()
+        ) {
             create("release") {
                 storeFile = releaseKeystore
-                storePassword = System.getenv("LIVENINJA_RELEASE_STORE_PASSWORD") ?: "liveninja-release"
-                keyAlias = System.getenv("LIVENINJA_RELEASE_KEY_ALIAS") ?: "liveninja"
-                keyPassword = System.getenv("LIVENINJA_RELEASE_KEY_PASSWORD") ?: "liveninja-release"
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
             }
         }
     }

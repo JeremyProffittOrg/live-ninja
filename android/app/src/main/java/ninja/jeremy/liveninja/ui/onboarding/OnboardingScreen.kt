@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Assistant
 import androidx.compose.material.icons.filled.BatteryFull
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mic
@@ -68,9 +69,8 @@ import ninja.jeremy.liveninja.ui.state.WakeWordOption
 /**
  * First-run onboarding wizard (plan.md M4 "Onboarding wizard" task; mockups
  * 01-onboarding, 02-login-lwa, 03-set-default-assistant, 04-permissions +
- * wake-word pick). Six steps: welcome → sign-in → mic (prominent disclosure +
- * consent logging) → notifications → assistant role (OEM-aware fallback
- * walkthrough) → wake-word pick.
+ * wake-word pick). Camera has its own prominent-disclosure step because its
+ * voice-command-is-confirmation posture is materially different from mic use.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -94,6 +94,10 @@ fun OnboardingScreen(
     val micLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted -> viewModel.onMicPermissionResult(granted) }
+
+    val cameraLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> viewModel.onCameraPermissionResult(granted) }
 
     val notificationLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -178,6 +182,15 @@ fun OnboardingScreen(
                         MicPermissionStep(
                             granted = state.micGranted,
                             onGrant = { micLauncher.launch(Manifest.permission.RECORD_AUDIO) },
+                            onNext = viewModel::next,
+                        )
+                    }
+
+                    OnboardingStep.CAMERA_PERMISSION -> {
+                        LaunchedEffect(Unit) { viewModel.onCameraDisclosureShown() }
+                        CameraPermissionStep(
+                            granted = state.cameraGranted,
+                            onGrant = { cameraLauncher.launch(Manifest.permission.CAMERA) },
                             onNext = viewModel::next,
                         )
                     }
@@ -404,6 +417,56 @@ private fun MicPermissionStep(
             onClick = onNext,
             modifier = Modifier.heightIn(min = 48.dp),
         ) { Text(stringResource(R.string.onboarding_mic_not_now)) }
+    }
+}
+
+@Composable
+private fun CameraPermissionStep(
+    granted: Boolean,
+    onGrant: () -> Unit,
+    onNext: () -> Unit,
+) {
+    StepHeader(
+        icon = Icons.Filled.CameraAlt,
+        title = stringResource(R.string.onboarding_camera_title),
+        body = stringResource(R.string.onboarding_camera_body),
+    )
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+        ),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                stringResource(R.string.onboarding_camera_disclosure_title),
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                stringResource(R.string.onboarding_camera_disclosure_body),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+    }
+    if (granted) {
+        StatusCard(text = stringResource(R.string.onboarding_camera_granted))
+        Button(
+            onClick = onNext,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp),
+        ) { Text(stringResource(R.string.onboarding_continue)) }
+    } else {
+        Button(
+            onClick = onGrant,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp),
+        ) { Text(stringResource(R.string.onboarding_camera_grant)) }
+        TextButton(
+            onClick = onNext,
+            modifier = Modifier.heightIn(min = 48.dp),
+        ) { Text(stringResource(R.string.onboarding_skip_for_now)) }
     }
 }
 

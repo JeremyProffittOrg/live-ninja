@@ -1,6 +1,7 @@
 package ninja.jeremy.liveninja.net
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerialName
 
 /**
  * Wire DTOs for the M9 Deliverables Store REST surface (contracts/api.md
@@ -21,6 +22,7 @@ import kotlinx.serialization.Serializable
 /** One deliverable index item (DynamoDB DELIV# item projection). */
 @Serializable
 data class DeliverableDto(
+    @SerialName("deliverableId")
     val id: String,
     /** Display/file name; backend may call it `name` or `filename`. */
     val name: String? = null,
@@ -38,6 +40,7 @@ data class DeliverableDto(
 /** GET /api/v1/deliverables response: one Query page + continuation cursor. */
 @Serializable
 data class DeliverableListResponse(
+    @SerialName("deliverables")
     val items: List<DeliverableDto> = emptyList(),
     val nextCursor: String? = null,
 )
@@ -60,8 +63,39 @@ data class DeliverableZipResponse(
     val status: String? = null,
 )
 
-/** DELETE /api/v1/deliverables/{id} acknowledges with {"ok": true} (or 204). */
+/** Signed direct-to-S3 upload request used by device-local camera tools. */
 @Serializable
-data class DeliverableAck(
-    val ok: Boolean = true,
+data class MediaUploadIntentRequest(
+    val name: String,
+    val contentType: String,
+    val sizeBytes: Long,
+)
+
+/**
+ * The backend-authenticated part of a camera upload. [uploadUrl] is then used
+ * with the credential-free OkHttp client so the app never forwards its Live
+ * Ninja Bearer token to S3. Every entry in [headers] is part of the signature
+ * and must be sent unchanged with the PUT.
+ */
+@Serializable
+data class MediaUploadIntentResponse(
+    val deliverableId: String,
+    val name: String,
+    val status: String,
+    val contentType: String,
+    val sizeBytes: Long,
+    val uploadUrl: String,
+    val expiresAt: String? = null,
+    val headers: Map<String, String> = emptyMap(),
+)
+
+/** Server-verified completion after S3 HEAD confirms signed size and MIME. */
+@Serializable
+data class MediaUploadCompleteResponse(
+    val deliverableId: String,
+    val name: String,
+    val status: String,
+    val contentType: String,
+    val sizeBytes: Long,
+    val createdAt: String? = null,
 )

@@ -2,9 +2,11 @@ package realtime
 
 // Gemini Live ephemeral-token mint (M13, gemini-flash-live engine). The
 // broker is the sole holder of the Gemini API key (SSM
-// /live-ninja/prod/gemini/api_key); clients receive only a single-use,
-// config-constrained ephemeral token and connect DIRECTLY to Google — no
-// bridge, no AWS in the media path (the Nova exception stays Nova-only).
+// /live-ninja/prod/gemini/api_key) and service-account credential (SSM
+// /live-ninja/prod/gemini/service_account_json); clients receive only a
+// single-use, config-constrained ephemeral token and connect DIRECTLY to
+// Google — no bridge, no AWS in the media path (the Nova exception stays
+// Nova-only).
 //
 // Protocol facts proven live in the Phase 0 spike (gemini-plan.md §10):
 //   - Tokens must be minted against the v1alpha API surface
@@ -17,12 +19,15 @@ package realtime
 //     protocol does not).
 
 import (
+	"bytes"
+	"cloud.google.com/go/auth"
 	"cloud.google.com/go/auth/credentials"
-	"cloud.google.com/go/auth/httptransport"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"reflect"
 	"sort"
@@ -37,6 +42,12 @@ import (
 // DefaultGeminiLiveModel is the model used when GEMINI_LIVE_MODEL is unset
 // (template.yaml passes the GeminiLiveModel parameter, same default).
 const DefaultGeminiLiveModel = "gemini-3.1-flash-live-preview"
+
+// geminiAuthTokensEndpoint is deliberately a raw REST endpoint. The Go SDK's
+// Gemini Developer client can only put its API key in x-goog-api-key and
+// cannot express the credential shape CreateToken requires in production:
+// an OAuth2 bearer plus the API key in the `key` query parameter.
+const geminiAuthTokensEndpoint = "https://generativelanguage.googleapis.com/v1alpha/auth_tokens"
 
 // GeminiLiveEndpoint is the WSS endpoint clients open with the minted
 // ephemeral token. Ephemeral tokens are only honored by the v1alpha
@@ -88,9 +99,9 @@ type GeminiMintResult struct {
 // tests (production: a genai.Client's AuthTokens service).
 type geminiTokenCreator func(ctx context.Context, cfg *genai.CreateAuthTokenConfig) (*genai.AuthToken, error)
 
-// GeminiMinter mints config-constrained Gemini Live ephemeral tokens. The
-// Gemini API key resolves per-call through the SSM-backed config.Loader
-// (cached 5 min) — it never appears in a deployed env var.
+// GeminiMinter mints config-constrained Gemini Live ephemeral tokens. Its
+// credentials resolve per-call through the SSM-backed config.Loader (cached
+// 5 min) — neither appears in a deployed env var.
 type GeminiMinter struct {
 	loader *config.Loader
 	model  string
@@ -389,114 +400,193 @@ func sdkFunctionDeclarations() []*genai.FunctionDeclaration {
 	return decls
 }
 
+type geminiAuthTokenRESTRequest struct {
+	ExpireTime               time.Time      `json:"expireTime"`
+	NewSessionExpireTime     time.Time      `json:"newSessionExpireTime"`
+	Uses                     *int32         `json:"uses,omitempty"`
+	BidiGenerateContentSetup map[string]any `json:"bidiGenerateContentSetup"`
+}
+
+// createGeminiAuthTokenREST is the intentionally small SDK bypass for
+// AuthTokenService.CreateToken. The Gemini Developer SDK always represents an
+// API key as x-goog-api-key, but production evidence shows this endpoint needs
+// the OAuth2 access token in Authorization and the API key in the `key` query
+// parameter. All other Gemini request/response types remain SDK-owned.
+func createGeminiAuthTokenREST(
+	ctx context.Context,
+	client *http.Client,
+	endpoint, apiKey string,
+	tokenProvider auth.TokenProvider,
+	cfg *genai.CreateAuthTokenConfig,
+	setup map[string]any,
+) (*genai.AuthToken, error) {
+	if strings.TrimSpace(apiKey) == "" {
+		return nil, fmt.Errorf("realtime: gemini REST create token requires an API key")
+	}
+	if tokenProvider == nil {
+		return nil, fmt.Errorf("realtime: gemini REST create token requires OAuth2 credentials")
+	}
+	if cfg == nil {
+		return nil, fmt.Errorf("realtime: gemini REST create token requires a config")
+	}
+
+	accessToken, err := tokenProvider.Token(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("realtime: gemini OAuth2 access token: %w", err)
+	}
+	if accessToken == nil || strings.TrimSpace(accessToken.Value) == "" {
+		return nil, fmt.Errorf("realtime: gemini OAuth2 provider returned an empty access token")
+	}
+
+	endpointURL, err := url.Parse(endpoint)
+	if err != nil || endpointURL.Scheme == "" || endpointURL.Host == "" {
+		return nil, fmt.Errorf("realtime: invalid Gemini auth-token endpoint")
+	}
+	query := endpointURL.Query()
+	query.Set("key", apiKey)
+	endpointURL.RawQuery = query.Encode()
+
+	body, err := json.Marshal(geminiAuthTokenRESTRequest{
+		ExpireTime:               cfg.ExpireTime,
+		NewSessionExpireTime:     cfg.NewSessionExpireTime,
+		Uses:                     cfg.Uses,
+		BidiGenerateContentSetup: setup,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("realtime: marshal Gemini auth-token request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL.String(), bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("realtime: build Gemini auth-token request")
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken.Value)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	if client == nil {
+		client = http.DefaultClient
+	}
+	// The endpoint is canonical and should never redirect. Refusing redirects
+	// prevents either credential from being forwarded if that ever changes.
+	requestClient := *client
+	requestClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := requestClient.Do(req)
+	if err != nil {
+		// net/http errors can contain the full request URL, including ?key=.
+		// Redact both credentials before the error reaches broker logs.
+		safe := redactGeminiCredentials(err.Error(), apiKey, accessToken.Value)
+		return nil, fmt.Errorf("realtime: Gemini auth-token transport: %s", safe)
+	}
+	defer resp.Body.Close()
+
+	const maxResponseBytes = 64 << 10
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		var apiErr struct {
+			Error struct {
+				Message string `json:"message"`
+				Status  string `json:"status"`
+			} `json:"error"`
+		}
+		_ = json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&apiErr)
+		message := redactGeminiCredentials(apiErr.Error.Message, apiKey, accessToken.Value)
+		switch {
+		case apiErr.Error.Status != "" && message != "":
+			return nil, fmt.Errorf("realtime: Gemini auth-token endpoint returned %s (%s): %s",
+				resp.Status, apiErr.Error.Status, message)
+		case message != "":
+			return nil, fmt.Errorf("realtime: Gemini auth-token endpoint returned %s: %s",
+				resp.Status, message)
+		default:
+			return nil, fmt.Errorf("realtime: Gemini auth-token endpoint returned %s", resp.Status)
+		}
+	}
+
+	var tok genai.AuthToken
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&tok); err != nil {
+		return nil, fmt.Errorf("realtime: decode Gemini auth-token response: %w", err)
+	}
+	return &tok, nil
+}
+
+func redactGeminiCredentials(text string, credentials ...string) string {
+	for _, credential := range credentials {
+		if credential == "" {
+			continue
+		}
+		text = strings.ReplaceAll(text, credential, "[REDACTED]")
+		if escaped := url.QueryEscape(credential); escaped != credential {
+			text = strings.ReplaceAll(text, escaped, "[REDACTED]")
+		}
+	}
+	return text
+}
+
 // Mint resolves nothing itself — the broker passes the already-resolved
 // voice and full instruction text (persona + memory directive + accent +
 // guides, the same composition the OpenAI path mints with) — and creates a
 // single-use, config-constrained ephemeral token against v1alpha. The
 // caller runs the quota gate BEFORE calling this.
 func (m *GeminiMinter) Mint(ctx context.Context, voice, instructions string) (*GeminiMintResult, error) {
-	create := m.create
-	if create == nil {
-		cfg := &genai.ClientConfig{
-			Backend: genai.BackendGeminiAPI,
-			// Ephemeral tokens exist only on v1alpha (Phase 0 spike: minting
-			// through the default surface yields a token every WSS method
-			// rejects as an unregistered caller).
-			HTTPOptions: genai.HTTPOptions{APIVersion: "v1alpha"},
-		}
-
-		// Service-account OAuth2 is the ONLY credential that can mint a Live
-		// token. AuthTokenService.CreateToken rejects an API key outright:
-		//
-		//   401 UNAUTHENTICATED ... reason: ACCESS_TOKEN_TYPE_UNSUPPORTED
-		//   "Expected OAuth 2 access token, login cookie or other valid credential"
-		//
-		// That is why every Gemini-pinned mint 502'd from M13 until 2026-07-25 —
-		// the feature could never have worked, and E1/E2 were never a test gap.
-		saJSON, saErr := m.loader.Get(ctx, config.ParamGeminiServiceAccountJSON,
-			config.EnvOverrideGeminiServiceAccountJSON)
-		if saErr == nil && strings.TrimSpace(saJSON) != "" {
-			creds, err := credentials.DetectDefault(&credentials.DetectOptions{
-				CredentialsJSON: []byte(saJSON),
-				// generative-language is the narrow scope for this API;
-				// cloud-platform would work but grants far more than minting a
-				// short-lived voice token needs.
-				Scopes: []string{"https://www.googleapis.com/auth/generative-language"},
-			})
-			if err != nil {
-				return nil, fmt.Errorf("realtime: gemini service-account credentials: %w", err)
-			}
-			// The SDK will NOT use cfg.Credentials on this backend: Credentials and
-			// APIKey are mutually exclusive (client.go:214) and Credentials is only
-			// wired for BackendVertexAI (client.go:369) — on BackendGeminiAPI the
-			// only auth it sends is x-goog-api-key. But APIKey and HTTPClient are
-			// NOT mutually exclusive, and the api-key header is set only when
-			// APIKey is non-empty (api_client.go:325). So supply an OAuth2-backed
-			// transport and let the SDK keep building the request body: the call
-			// then carries BOTH an Authorization bearer and the api key, and
-			// CreateToken can honour the bearer it actually requires.
-			//
-			// Moving to BackendVertexAI is not an alternative — ephemeral tokens
-			// do not exist there at all (tokens.go:217 refuses outright).
-			authedClient, err := httptransport.NewClient(&httptransport.Options{
-				Credentials: creds,
-			})
-			if err != nil {
-				return nil, fmt.Errorf("realtime: gemini oauth2 transport: %w", err)
-			}
-			// Strip the SDK's api-key header on the way out. Sending the bearer
-			// AND the key gets an explicit refusal from Google:
-			//
-			//   401 "API key for authentication is used with other authentication
-			//        credentials. Expected only one form of authentication."
-			//
-			// which also proves the bearer arrives and is recognised — the pair is
-			// the problem, not the credential. The SDK requires APIKey non-empty on
-			// this backend (client.go:345) and sets the header whenever it is set
-			// (api_client.go:325), so removing it here is the only place left that
-			// can leave exactly one form of authentication on the wire.
-			authedClient.Transport = stripAPIKeyHeader{authedClient.Transport}
-			cfg.HTTPClient = authedClient
-
-			// Still required non-empty by the Gemini backend's own validation
-			// (client.go:345), so pass the real key rather than a placeholder: if
-			// Google prefers the key we get the familiar, diagnosable 401 instead
-			// of a confusing "invalid key" that hides which credential was used.
-			apiKey, keyErr := m.loader.Get(ctx, config.ParamGeminiAPIKey, config.EnvOverrideGeminiAPIKey)
-			if keyErr != nil {
-				return nil, fmt.Errorf("realtime: resolve gemini key alongside service account: %w", keyErr)
-			}
-			cfg.APIKey = apiKey
-		} else {
-			// Fall back to the API key so a missing/unset service account behaves
-			// exactly as before rather than turning into a new failure mode. It
-			// will still be rejected by CreateToken — the error is the honest one
-			// above, not a silent misconfiguration.
-			apiKey, err := m.loader.Get(ctx, config.ParamGeminiAPIKey, config.EnvOverrideGeminiAPIKey)
-			if err != nil {
-				return nil, fmt.Errorf("realtime: resolve gemini credential: %w", err)
-			}
-			cfg.APIKey = apiKey
-		}
-
-		client, err := genai.NewClient(ctx, cfg)
-		if err != nil {
-			return nil, fmt.Errorf("realtime: gemini client init: %w", err)
-		}
-		create = client.AuthTokens.Create
-	}
-
 	now := time.Now().UTC()
 	expiresAt := now.Add(geminiTokenTTL)
 	newSessionExpiresAt := now.Add(geminiNewSessionWindow)
 	uses := int32(1)
-
-	tok, err := create(ctx, &genai.CreateAuthTokenConfig{
+	setup := buildGeminiSetup(m.model, voice, instructions)
+	tokenCfg := &genai.CreateAuthTokenConfig{
 		Uses:                   &uses,
 		ExpireTime:             expiresAt,
 		NewSessionExpireTime:   newSessionExpiresAt,
 		LiveConnectConstraints: buildGeminiConstraints(m.model, voice, instructions),
-	})
+	}
+
+	var tok *genai.AuthToken
+	var err error
+	if m.create != nil {
+		tok, err = m.create(ctx, tokenCfg)
+	} else {
+		// An API key in x-goog-api-key gets ACCESS_TOKEN_TYPE_UNSUPPORTED;
+		// bearer + x-goog-api-key is rejected as two auth headers; bearer alone
+		// then gets "an API key is required". The direct REST shape below is the
+		// remaining combination: bearer header + API key query parameter.
+		saJSON, saErr := m.loader.Get(ctx, config.ParamGeminiServiceAccountJSON,
+			config.EnvOverrideGeminiServiceAccountJSON)
+		if saErr == nil && strings.TrimSpace(saJSON) != "" {
+			creds, credErr := credentials.DetectDefault(&credentials.DetectOptions{
+				CredentialsJSON: []byte(saJSON),
+				Scopes:          []string{"https://www.googleapis.com/auth/generative-language"},
+			})
+			if credErr != nil {
+				return nil, fmt.Errorf("realtime: gemini service-account credentials: %w", credErr)
+			}
+			apiKey, keyErr := m.loader.Get(ctx, config.ParamGeminiAPIKey, config.EnvOverrideGeminiAPIKey)
+			if keyErr != nil {
+				return nil, fmt.Errorf("realtime: resolve gemini key alongside service account: %w", keyErr)
+			}
+			tok, err = createGeminiAuthTokenREST(
+				ctx, http.DefaultClient, geminiAuthTokensEndpoint, apiKey, creds, tokenCfg, setup)
+		} else {
+			// Preserve the pre-service-account path when the optional credential
+			// is absent or its SSM parameter does not exist. This remains an SDK
+			// API-key mint, so existing deployments fail in the same diagnosable
+			// way instead of gaining a new configuration failure.
+			apiKey, keyErr := m.loader.Get(ctx, config.ParamGeminiAPIKey, config.EnvOverrideGeminiAPIKey)
+			if keyErr != nil {
+				return nil, fmt.Errorf("realtime: resolve gemini credential: %w", keyErr)
+			}
+			client, clientErr := genai.NewClient(ctx, &genai.ClientConfig{
+				Backend:     genai.BackendGeminiAPI,
+				APIKey:      apiKey,
+				HTTPOptions: genai.HTTPOptions{APIVersion: "v1alpha"},
+			})
+			if clientErr != nil {
+				return nil, fmt.Errorf("realtime: gemini client init: %w", clientErr)
+			}
+			tok, err = client.AuthTokens.Create(ctx, tokenCfg)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("realtime: gemini auth token mint: %w", err)
 	}
@@ -504,7 +594,7 @@ func (m *GeminiMinter) Mint(ctx context.Context, voice, instructions string) (*G
 		return nil, fmt.Errorf("realtime: gemini auth token mint returned no token name")
 	}
 
-	cfgJSON, err := json.Marshal(buildGeminiSetup(m.model, voice, instructions))
+	cfgJSON, err := json.Marshal(setup)
 	if err != nil {
 		return nil, fmt.Errorf("realtime: marshal gemini session config: %w", err)
 	}
@@ -520,20 +610,4 @@ func (m *GeminiMinter) Mint(ctx context.Context, voice, instructions string) (*G
 		SessionConfig: cfgJSON,
 		ToolManifest:  toolManifestJSON,
 	}, nil
-}
-
-// stripAPIKeyHeader removes x-goog-api-key so an OAuth2-authenticated Gemini
-// request carries exactly one credential. See the call site for why both cannot
-// be sent together.
-type stripAPIKeyHeader struct{ base http.RoundTripper }
-
-func (t stripAPIKeyHeader) RoundTrip(req *http.Request) (*http.Response, error) {
-	// RoundTrippers must not mutate the request they are given.
-	clone := req.Clone(req.Context())
-	clone.Header.Del("x-goog-api-key")
-	base := t.base
-	if base == nil {
-		base = http.DefaultTransport
-	}
-	return base.RoundTrip(clone)
 }

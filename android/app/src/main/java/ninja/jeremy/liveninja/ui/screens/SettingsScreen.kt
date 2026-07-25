@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.view.KeyEvent as AndroidKeyEvent
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
@@ -43,7 +45,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -72,6 +73,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -99,21 +102,26 @@ import ninja.jeremy.liveninja.ui.settings.GeminiVoiceOption
 import ninja.jeremy.liveninja.ui.settings.MicDeviceOption
 import ninja.jeremy.liveninja.ui.settings.PersonaPreset
 import ninja.jeremy.liveninja.ui.settings.SettingsNotice
+import ninja.jeremy.liveninja.ui.settings.SettingsAccordionCard
+import ninja.jeremy.liveninja.ui.settings.SettingsHeaderMove
+import ninja.jeremy.liveninja.ui.settings.SettingsSection
 import ninja.jeremy.liveninja.ui.settings.SettingsViewModel
+import ninja.jeremy.liveninja.ui.settings.targetSettingsHeaderIndex
+import ninja.jeremy.liveninja.ui.settings.toggledSettingsSection
 import ninja.jeremy.liveninja.ui.state.DiagnosticsConfig
 import ninja.jeremy.liveninja.ui.state.SettingsDocument
 import ninja.jeremy.liveninja.ui.state.WakeWordOption
 import ninja.jeremy.liveninja.ui.theme.LocalLiveNinjaColors
 
 /**
- * Settings tab — schema-driven form over contracts/settings.schema.json
+ * Settings drawer — schema-driven form over contracts/settings.schema.json
  * (mockups/android/09-settings.html). Every enumerable field is a populated
  * control (combobox/radio/slider/segmented/switch); the single free-text field
  * is the custom-persona system instructions, the schema's one justified case.
  *
- * M22.1: this screen is a LazyColumn of one item per settings group (Wake,
- * Conversation, Audio, Voice & Screen, Appearance, Privacy, Diagnostics,
- * Account) instead of a ~1300-line Column in a single composable. Two things
+ * M22.1/M30: this screen is a LazyColumn of one conditionally composed item
+ * per shared settings accordion section instead of a ~1300-line Column in a
+ * single composable. Two things
  * were measured on-device (Tab S9 FE) driving that split: (1) a single giant
  * composable forced the whole screen to JIT-compile and compose on first
  * frame (55 dropped frames / 705ms) — LazyColumn only composes the items that
@@ -137,6 +145,8 @@ import ninja.jeremy.liveninja.ui.theme.LocalLiveNinjaColors
 fun SettingsScreen(
     modifier: Modifier = Modifier,
     onOpenLogViewer: () -> Unit = {},
+    expandedSection: SettingsSection?,
+    onExpandedSectionChange: (SettingsSection?) -> Unit,
 ) {
     val viewModel: SettingsViewModel = hiltViewModel()
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -145,6 +155,12 @@ fun SettingsScreen(
     val doc = state.doc
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
+    val sectionOrder = SettingsSection.entries
+    val sectionFocusRequesters = remember {
+        List(sectionOrder.size) { FocusRequester() }
+    }
+    val listState = rememberLazyListState()
+    val sectionScope = rememberCoroutineScope()
 
     // Re-check the battery-optimization exemption whenever the user returns from
     // the system prompt (the result arrives out-of-band on ON_RESUME).
@@ -191,134 +207,167 @@ fun SettingsScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            item(key = "wake") {
-                WakeSection(
-                    wakeServiceEnabled = wakeServiceEnabled,
-                    wakeServiceRunning = wakeServiceRunning,
-                    wakeWord = doc.wakeWord,
-                    wakeOptions = state.wakeOptions,
-                    wakeCatalogOffline = state.wakeCatalogOffline,
-                    wakeEngine = doc.wakeEngine,
-                    porcupineAvailable = state.porcupineAvailable,
-                    sensitivity = doc.sensitivity,
-                    activeWakeWordId = state.activeWakeWordId,
-                    customPhrase = state.customPhrase,
-                    customPhraseValid = state.customPhraseValid,
-                    customRequestInProgress = state.customRequestInProgress,
-                    customJob = state.customJob,
-                    onSetWakeWord = viewModel::setWakeWord,
-                    onSetWakeEngine = viewModel::setWakeEngine,
-                    onSetSensitivity = viewModel::setSensitivity,
-                    onSetCustomPhrase = viewModel::setCustomPhrase,
-                    onRequestCustomWakeWord = viewModel::requestCustomWakeWord,
-                    onUseCustomWakeWord = viewModel::useCustomWakeWord,
-                    onClearCustomJob = viewModel::clearCustomJob,
-                )
-            }
-            item(key = "divider_wake") { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
-
-            item(key = "conversation") {
-                ConversationSection(
-                    personaPresetId = doc.personaPresetId,
-                    personaSystemInstructions = doc.personaSystemInstructions,
-                    personaPresets = state.personaPresets,
-                    displayVoice = doc.displayVoice,
-                    turnDetection = doc.turnDetection,
-                    voiceEngineDefault = doc.voiceEngineDefault,
-                    geminiVoice = doc.geminiVoice,
-                    geminiVoices = state.geminiVoices,
-                    onSetPersona = viewModel::setPersona,
-                    onSetCustomInstructions = viewModel::setCustomInstructions,
-                    onSetVoice = viewModel::setVoice,
-                    onVoicePreviewRequested = viewModel::onVoicePreviewRequested,
-                    onSetTurnDetection = viewModel::setTurnDetection,
-                    onSetVoiceEngine = viewModel::setVoiceEngine,
-                    onSetGeminiVoice = viewModel::setGeminiVoice,
-                )
-            }
-            item(key = "divider_conversation") { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
-
-            item(key = "audio") {
-                AudioSection(
-                    micDeviceId = doc.micDeviceId,
-                    micDevices = state.micDevices,
-                    onSetMicDevice = viewModel::setMicDevice,
-                    onExpandMicDevices = viewModel::refreshMicDevices,
-                )
-            }
-            item(key = "divider_audio") { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
-
-            item(key = "voice_screen") {
-                VoiceScreenSection(
-                    lockedSessions = doc.lockedSessions,
-                    wakeScreenOnWake = doc.wakeScreenOnWake,
-                    keepScreenOn = doc.keepScreenOn,
-                    batteryOptimizationIgnored = state.batteryOptimizationIgnored,
-                    onSetLockedSessions = viewModel::setLockedSessions,
-                    onSetWakeScreenOnWake = viewModel::setWakeScreenOnWake,
-                    onSetKeepScreenOn = viewModel::setKeepScreenOn,
-                    onExempt = { batteryLauncher.launch(viewModel.batteryExemptionIntent()) },
-                    onRecheck = viewModel::refreshBatteryStatus,
-                    onOpenAppInfo = {
-                        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                            .setData(Uri.fromParts("package", context.packageName, null))
-                        appInfoLauncher.launch(intent)
-                    },
-                )
-            }
-            item(key = "divider_voice_screen") { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
-
-            item(key = "appearance") {
-                AppearanceSection(
-                    appStyle = doc.appStyle,
-                    theme = doc.theme,
-                    onSetAppStyle = viewModel::setAppStyle,
-                    onSetTheme = viewModel::setTheme,
-                )
-            }
-            item(key = "divider_appearance") { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
-
-            item(key = "privacy") {
-                PrivacySection(
-                    storeTranscripts = doc.storeTranscripts,
-                    storeAudio = doc.storeAudio,
-                    retentionDays = doc.retentionDays,
-                    onSetStoreTranscripts = viewModel::setStoreTranscripts,
-                    onSetStoreAudio = viewModel::setStoreAudio,
-                    onSetRetentionDays = viewModel::setRetentionDays,
-                )
-            }
-            item(key = "divider_privacy") { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
-
-            item(key = "diagnostics") {
-                DiagnosticsSection(
-                    diagnostics = doc.diagnostics,
-                    onSetDiagnosticsEnabled = viewModel::setDiagnosticsEnabled,
-                    onSetDiagnosticsMinLevel = viewModel::setDiagnosticsMinLevel,
-                    onSetDiagnosticsCategory = viewModel::setDiagnosticsCategory,
-                    onSetAllDiagnosticsCategories = viewModel::setAllDiagnosticsCategories,
-                    onOpenLogViewer = onOpenLogViewer,
-                    onExportLogs = viewModel::exportLogs,
-                    onClearLogs = viewModel::clearLogs,
-                    snackbarHostState = snackbarHostState,
-                )
-            }
-            item(key = "divider_diagnostics") { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
-
-            item(key = "account") {
-                AccountSection(
-                    signedIn = state.signedIn,
-                    accountActionsAvailable = state.accountActionsAvailable,
-                    signOutInProgress = state.signOutInProgress,
-                    onSignOut = viewModel::signOut,
-                    onSignOutEverywhere = viewModel::signOutEverywhere,
-                )
+            sectionOrder.forEachIndexed { index, section ->
+                item(key = section.name) {
+                    val title = stringResource(section.titleRes)
+                    val description = stringResource(section.descriptionRes)
+                    val expandedLabel = stringResource(R.string.settings_accordion_expanded)
+                    val collapsedLabel = stringResource(R.string.settings_accordion_collapsed)
+                    val expandActionLabel =
+                        stringResource(R.string.settings_accordion_expand_action)
+                    val collapseActionLabel =
+                        stringResource(R.string.settings_accordion_collapse_action)
+                    SettingsAccordionCard(
+                        title = title,
+                        description = description,
+                        expanded = expandedSection == section,
+                        expandedStateDescription = expandedLabel,
+                        collapsedStateDescription = collapsedLabel,
+                        expandActionLabel = expandActionLabel,
+                        collapseActionLabel = collapseActionLabel,
+                        focusRequester = sectionFocusRequesters[index],
+                        onToggle = {
+                            onExpandedSectionChange(
+                                toggledSettingsSection(expandedSection, section),
+                            )
+                        },
+                        onHeaderKeyEvent = { event ->
+                            handleAccordionHeaderKey(
+                                event = event,
+                                currentIndex = index,
+                                sectionCount = sectionOrder.size,
+                                moveFocus = { targetIndex ->
+                                    sectionScope.launch {
+                                        listState.scrollToItem(targetIndex)
+                                        sectionFocusRequesters[targetIndex].requestFocus()
+                                    }
+                                },
+                            )
+                        },
+                    ) {
+                        when (section) {
+                            SettingsSection.ABOUT_YOU -> AboutYouSection()
+                            SettingsSection.WAKE_WORD -> {
+                                WakeSection(
+                                    wakeServiceEnabled = wakeServiceEnabled,
+                                    wakeServiceRunning = wakeServiceRunning,
+                                    wakeWord = doc.wakeWord,
+                                    wakeOptions = state.wakeOptions,
+                                    wakeCatalogOffline = state.wakeCatalogOffline,
+                                    wakeEngine = doc.wakeEngine,
+                                    porcupineAvailable = state.porcupineAvailable,
+                                    sensitivity = doc.sensitivity,
+                                    activeWakeWordId = state.activeWakeWordId,
+                                    customPhrase = state.customPhrase,
+                                    customPhraseValid = state.customPhraseValid,
+                                    customRequestInProgress = state.customRequestInProgress,
+                                    customJob = state.customJob,
+                                    onSetWakeWord = viewModel::setWakeWord,
+                                    onSetWakeEngine = viewModel::setWakeEngine,
+                                    onSetSensitivity = viewModel::setSensitivity,
+                                    onSetCustomPhrase = viewModel::setCustomPhrase,
+                                    onRequestCustomWakeWord = viewModel::requestCustomWakeWord,
+                                    onUseCustomWakeWord = viewModel::useCustomWakeWord,
+                                    onClearCustomJob = viewModel::clearCustomJob,
+                                )
+                                VoiceScreenSection(
+                                    lockedSessions = doc.lockedSessions,
+                                    wakeScreenOnWake = doc.wakeScreenOnWake,
+                                    keepScreenOn = doc.keepScreenOn,
+                                    batteryOptimizationIgnored = state.batteryOptimizationIgnored,
+                                    onSetLockedSessions = viewModel::setLockedSessions,
+                                    onSetWakeScreenOnWake = viewModel::setWakeScreenOnWake,
+                                    onSetKeepScreenOn = viewModel::setKeepScreenOn,
+                                    onExempt = {
+                                        batteryLauncher.launch(viewModel.batteryExemptionIntent())
+                                    },
+                                    onRecheck = viewModel::refreshBatteryStatus,
+                                    onOpenAppInfo = {
+                                        val intent =
+                                            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                                                .setData(
+                                                    Uri.fromParts(
+                                                        "package",
+                                                        context.packageName,
+                                                        null,
+                                                    ),
+                                                )
+                                        appInfoLauncher.launch(intent)
+                                    },
+                                )
+                            }
+                            SettingsSection.PERSONA -> PersonaSection(
+                                personaPresetId = doc.personaPresetId,
+                                personaSystemInstructions = doc.personaSystemInstructions,
+                                personaPresets = state.personaPresets,
+                                displayVoice = doc.displayVoice,
+                                onSetPersona = viewModel::setPersona,
+                                onSetCustomInstructions = viewModel::setCustomInstructions,
+                                onSetVoice = viewModel::setVoice,
+                                onVoicePreviewRequested = viewModel::onVoicePreviewRequested,
+                            )
+                            SettingsSection.VOICE_ENGINE -> VoiceEngineSection(
+                                voiceEngineDefault = doc.voiceEngineDefault,
+                                geminiVoice = doc.geminiVoice,
+                                geminiVoices = state.geminiVoices,
+                                onSetVoiceEngine = viewModel::setVoiceEngine,
+                                onSetGeminiVoice = viewModel::setGeminiVoice,
+                            )
+                            SettingsSection.TURN_DETECTION -> TurnDetectionSection(
+                                turnDetection = doc.turnDetection,
+                                onSetTurnDetection = viewModel::setTurnDetection,
+                            )
+                            SettingsSection.APPEARANCE -> AppearanceSection(
+                                appStyle = doc.appStyle,
+                                theme = doc.theme,
+                                onSetAppStyle = viewModel::setAppStyle,
+                                onSetTheme = viewModel::setTheme,
+                            )
+                            SettingsSection.MICROPHONE -> AudioSection(
+                                micDeviceId = doc.micDeviceId,
+                                micDevices = state.micDevices,
+                                onSetMicDevice = viewModel::setMicDevice,
+                                onExpandMicDevices = viewModel::refreshMicDevices,
+                            )
+                            SettingsSection.PRIVACY -> {
+                                PrivacySection(
+                                    storeTranscripts = doc.storeTranscripts,
+                                    storeAudio = doc.storeAudio,
+                                    retentionDays = doc.retentionDays,
+                                    onSetStoreTranscripts = viewModel::setStoreTranscripts,
+                                    onSetStoreAudio = viewModel::setStoreAudio,
+                                    onSetRetentionDays = viewModel::setRetentionDays,
+                                )
+                                DiagnosticsSection(
+                                    diagnostics = doc.diagnostics,
+                                    onSetDiagnosticsEnabled = viewModel::setDiagnosticsEnabled,
+                                    onSetDiagnosticsMinLevel = viewModel::setDiagnosticsMinLevel,
+                                    onSetDiagnosticsCategory = viewModel::setDiagnosticsCategory,
+                                    onSetAllDiagnosticsCategories =
+                                        viewModel::setAllDiagnosticsCategories,
+                                    onOpenLogViewer = onOpenLogViewer,
+                                    onExportLogs = viewModel::exportLogs,
+                                    onClearLogs = viewModel::clearLogs,
+                                    snackbarHostState = snackbarHostState,
+                                )
+                            }
+                            SettingsSection.ACCOUNT -> AccountSection(
+                                signedIn = state.signedIn,
+                                accountActionsAvailable = state.accountActionsAvailable,
+                                signOutInProgress = state.signOutInProgress,
+                                onSignOut = viewModel::signOut,
+                                onSignOutEverywhere = viewModel::signOutEverywhere,
+                            )
+                        }
+                    }
+                }
             }
 
             item(key = "version") {
@@ -331,6 +380,15 @@ fun SettingsScreen(
             }
         }
     }
+}
+
+@Composable
+private fun AboutYouSection() {
+    Text(
+        stringResource(R.string.settings_about_you_android),
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 /**
@@ -362,8 +420,6 @@ private fun WakeSection(
     onUseCustomWakeWord: () -> Unit,
     onClearCustomJob: () -> Unit,
 ) {
-    SectionHeader(stringResource(R.string.settings_section_wake))
-
     // Always-listening switch. This is the ONLY entry point that starts the wake
     // service for the first time: WakeBootReceiver and MainActivity's tap-to-resume
     // path are both gated on WakePreferences.serviceEnabled, and that flag is only
@@ -658,31 +714,18 @@ private fun CustomWakeJobCard(
     }
 }
 
-/**
- * Conversation group: persona picker (+ progressive-disclosure custom system
- * instructions), voice radio group, turn-detection radio, voice-engine
- * picker, and the Gemini voice picker revealed only for that engine.
- */
+/** Persona picker, custom instructions, and the OpenAI voice identity. */
 @Composable
-private fun ConversationSection(
+private fun PersonaSection(
     personaPresetId: String,
     personaSystemInstructions: String?,
     personaPresets: List<PersonaPreset>,
     displayVoice: String,
-    turnDetection: String,
-    voiceEngineDefault: String,
-    geminiVoice: String,
-    geminiVoices: List<GeminiVoiceOption>,
     onSetPersona: (String) -> Unit,
     onSetCustomInstructions: (String) -> Unit,
     onSetVoice: (String) -> Unit,
     onVoicePreviewRequested: () -> Unit,
-    onSetTurnDetection: (String) -> Unit,
-    onSetVoiceEngine: (String) -> Unit,
-    onSetGeminiVoice: (String) -> Unit,
 ) {
-    SectionHeader(stringResource(R.string.settings_section_conversation))
-
     // Persona select (IDs only; server resolves instructions).
     var personaExpanded by remember { mutableStateOf(false) }
     val selectedPersona =
@@ -807,7 +850,14 @@ private fun ConversationSection(
             }
         }
     }
+}
 
+/** Turn-boundary behavior, separated so the shared M30 bar has one concern. */
+@Composable
+private fun TurnDetectionSection(
+    turnDetection: String,
+    onSetTurnDetection: (String) -> Unit,
+) {
     // Turn detection radio.
     LabeledRadioGroup(
         label = stringResource(R.string.settings_turn_detection_label),
@@ -828,7 +878,17 @@ private fun ConversationSection(
         selected = turnDetection,
         onSelect = onSetTurnDetection,
     )
+}
 
+/** Realtime provider selection plus Gemini's provider-specific voice picker. */
+@Composable
+private fun VoiceEngineSection(
+    voiceEngineDefault: String,
+    geminiVoice: String,
+    geminiVoices: List<GeminiVoiceOption>,
+    onSetVoiceEngine: (String) -> Unit,
+    onSetGeminiVoice: (String) -> Unit,
+) {
     // Voice engine picker (M12 FR-VE-04). Sets voiceEngine.default —
     // the engine this device uses; all engines share tools, memory,
     // and transcripts, differing only in cost, latency, and quality.
@@ -944,7 +1004,6 @@ private fun AudioSection(
     onSetMicDevice: (String?) -> Unit,
     onExpandMicDevices: () -> Unit,
 ) {
-    SectionHeader(stringResource(R.string.settings_section_audio))
     var micExpanded by remember { mutableStateOf(false) }
     val selectedMic = micDevices.firstOrNull { it.id == micDeviceId } ?: micDevices.firstOrNull()
     ExposedDropdownMenuBox(
@@ -1001,7 +1060,7 @@ private fun VoiceScreenSection(
     onRecheck: () -> Unit,
     onOpenAppInfo: () -> Unit,
 ) {
-    SectionHeader(stringResource(R.string.settings_section_voice_screen))
+    SubsectionHeader(stringResource(R.string.settings_section_voice_screen))
     LabeledSwitchRow(
         label = stringResource(R.string.settings_locked_sessions_label),
         description = stringResource(R.string.settings_locked_sessions_desc),
@@ -1045,7 +1104,6 @@ private fun AppearanceSection(
     onSetAppStyle: (String) -> Unit,
     onSetTheme: (String) -> Unit,
 ) {
-    SectionHeader(stringResource(R.string.settings_section_appearance))
     val isHal = appStyle == "hal9000"
     // 4 options -> radio group (UI standard: 2-5 mutually-exclusive
     // options worth seeing at once). Each style ports its own
@@ -1129,7 +1187,50 @@ private fun PrivacySection(
     onSetStoreAudio: (Boolean) -> Unit,
     onSetRetentionDays: (Int) -> Unit,
 ) {
-    SectionHeader(stringResource(R.string.settings_section_privacy))
+    val context = LocalContext.current
+    var cameraGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    val cameraLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> cameraGranted = granted }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = androidx.compose.material3.CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+        ),
+    ) {
+        Column(
+            Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                stringResource(R.string.settings_camera_privacy_title),
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                stringResource(R.string.settings_camera_privacy_body),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            if (cameraGranted) {
+                Text(
+                    stringResource(R.string.settings_camera_permission_granted),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            } else {
+                OutlinedButton(
+                    onClick = { cameraLauncher.launch(Manifest.permission.CAMERA) },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) {
+                    Text(stringResource(R.string.settings_camera_permission_allow))
+                }
+            }
+        }
+    }
     LabeledSwitchRow(
         label = stringResource(R.string.settings_store_transcripts_label),
         description = stringResource(R.string.settings_store_transcripts_desc),
@@ -1183,7 +1284,7 @@ private fun DiagnosticsSection(
     var exportingLogs by remember { mutableStateOf(false) }
     var confirmClearLogs by remember { mutableStateOf(false) }
 
-    SectionHeader(stringResource(R.string.settings_section_diagnostics))
+    SubsectionHeader(stringResource(R.string.settings_section_diagnostics))
     LabeledSwitchRow(
         label = stringResource(R.string.settings_diagnostics_master_label),
         description = stringResource(R.string.settings_diagnostics_master_desc),
@@ -1337,7 +1438,6 @@ private fun AccountSection(
     var confirmSignOut by remember { mutableStateOf(false) }
     var confirmSignOutEverywhere by remember { mutableStateOf(false) }
 
-    SectionHeader(stringResource(R.string.settings_section_account))
     Text(
         if (signedIn) {
             stringResource(R.string.settings_account_signed_in)
@@ -1546,6 +1646,37 @@ private fun diagnosticsCategoryLabel(key: String): Int = when (key) {
     else -> R.string.settings_diagnostics_cat_general
 }
 
+private fun handleAccordionHeaderKey(
+    event: KeyEvent,
+    currentIndex: Int,
+    sectionCount: Int,
+    moveFocus: (Int) -> Unit,
+): Boolean {
+    val native: AndroidKeyEvent = event.nativeKeyEvent
+    if (
+        native.action != AndroidKeyEvent.ACTION_DOWN ||
+        native.isAltPressed ||
+        native.isCtrlPressed ||
+        native.isMetaPressed
+    ) {
+        return false
+    }
+    val move = when (native.keyCode) {
+        AndroidKeyEvent.KEYCODE_DPAD_DOWN -> SettingsHeaderMove.NEXT
+        AndroidKeyEvent.KEYCODE_DPAD_UP -> SettingsHeaderMove.PREVIOUS
+        AndroidKeyEvent.KEYCODE_MOVE_HOME -> SettingsHeaderMove.FIRST
+        AndroidKeyEvent.KEYCODE_MOVE_END -> SettingsHeaderMove.LAST
+        else -> return false
+    }
+    val target = targetSettingsHeaderIndex(
+        currentIndex = currentIndex,
+        sectionCount = sectionCount,
+        move = move,
+    )
+    moveFocus(target)
+    return true
+}
+
 private data class RadioOption(
     val value: String,
     val label: String,
@@ -1554,10 +1685,10 @@ private data class RadioOption(
 )
 
 @Composable
-private fun SectionHeader(text: String) {
+private fun SubsectionHeader(text: String) {
     Text(
         text,
-        style = MaterialTheme.typography.titleMedium,
+        style = MaterialTheme.typography.titleSmall,
         color = MaterialTheme.colorScheme.primary,
         modifier = Modifier.padding(top = 8.dp),
     )

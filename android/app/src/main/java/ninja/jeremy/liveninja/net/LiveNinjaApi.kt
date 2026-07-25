@@ -30,10 +30,10 @@ interface LiveNinjaApi {
     suspend fun exchangeLwaCode(@Body body: LwaExchangeRequest): TokenGrant
 
     /**
-     * Broker sign-in claim: exchange the one-shot handoff code (delivered to
-     * the app's custom scheme by /auth/lwa/callback) + PKCE verifier for the
-     * first token grant. This is the path the app actually uses — LWA never
-     * sees the custom scheme, so no portal redirect URI is required.
+     * Broker sign-in claim: exchange the one-shot handoff code (delivered via
+     * the verified App Link or custom-scheme fallback) + PKCE verifier for
+     * the first token grant. LWA sees only the server callback, so no app
+     * return URI needs registering in the Amazon portal.
      */
     @POST("auth/lwa/app-claim")
     suspend fun claimLwaAppCode(@Body body: LwaAppClaimRequest): TokenGrant
@@ -68,9 +68,25 @@ interface LiveNinjaApi {
     @POST("api/v1/deliverables/zip")
     suspend fun zipDeliverables(@Body body: DeliverableZipRequest): DeliverableZipResponse
 
+    /**
+     * Claim a Files name and mint one content-length/type-bound S3 PUT.
+     * Camera media goes directly to S3 instead of crossing API Gateway's
+     * request-size ceiling.
+     */
+    @POST("api/v1/deliverables/upload-intents")
+    suspend fun createMediaUploadIntent(
+        @Body body: MediaUploadIntentRequest,
+    ): MediaUploadIntentResponse
+
+    /** Promote a direct upload only after the backend verifies S3 metadata. */
+    @POST("api/v1/deliverables/{id}/upload-complete")
+    suspend fun completeMediaUpload(
+        @Path("id") id: String,
+    ): MediaUploadCompleteResponse
+
     /** Delete one deliverable (item + S3 object). */
     @DELETE("api/v1/deliverables/{id}")
-    suspend fun deleteDeliverable(@Path("id") id: String): DeliverableAck
+    suspend fun deleteDeliverable(@Path("id") id: String)
 
     // NOTE: GET api/v1/deliverables/{id}/download is intentionally NOT declared
     // here — it answers with a 302 presigned-URL redirect, and OkHttp would

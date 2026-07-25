@@ -55,13 +55,13 @@
                copy on the toggle itself. */}}
         {{- /* Owner 2026-07-18 (2): wake toggle LEFT (phrase shown under its
                label), mic RIGHT. */}}
-        {{- /* Owner 2026-07-18 (3): slider ABOVE "Use Wake Word" (+phrase),
+        {{- /* Owner 2026-07-18 (3): slider above the listening-state label (+phrase),
                all left-aligned; mic right-aligned with space between. */}}
         <div class="ptt-zone">
           <label class="ln-toggle ln-toggle--stacked" id="wakeToggleWrap">
             <input type="checkbox" id="wakeToggle" aria-describedby="wakeHint">
             <span class="ln-toggle-track" aria-hidden="true"><span class="ln-toggle-thumb"></span></span>
-            <span>Use Wake Word</span>
+            <span id="wakeToggleLabel">Always listening: Off</span>
             <span class="wakeword-phrase" id="wakePhrase" hidden></span>
           </label>
           <button class="ptt" id="pttBtn" type="button" data-state="idle"
@@ -163,28 +163,35 @@
   </div>
 </div>
 
-{{- /* Docked settings slide-out (owner spec 2026-07-19): a slim tab on the
-       right edge, vertically centered; opens a full-screen modal drawer
-       over the conversation column. Settings now live INLINE here (no more
+{{- /* Docked settings slide-out (M30 owner spec): a right-edge bar spanning
+       40% of the viewport height opens a full-screen modal drawer; the
+       matching left-edge bar inside the dialog closes it. Settings live
+       INLINE here (no more
        standalone /settings page — settings.mjs's initSettingsPanel() wires
        every control below, hydrating from GET /api/v1/settings client-side
        since there is no SSR data island). Native <dialog> supplies the
        focus trap + Escape; conversation.mjs closes on scrim click. */}}
 {{- /* The badge is a COUNT, not a colour cue (house a11y rule: never signal
        state by colour alone), and settings.mjs rewrites this button's
-       aria-label to "Settings — N suggestions to review" so a screen reader
+       aria-label to "Open settings — N suggestions to review" so a screen reader
        hears the same thing the number shows. Hidden when the queue is
        empty. */}}
 <button class="conv-settings-tab" type="button" id="settingsDrawerBtn"
-        aria-label="Settings" aria-haspopup="dialog">
-  <span aria-hidden="true">⚙</span>
+        aria-label="Open settings" aria-haspopup="dialog"
+        aria-controls="settingsDrawer" aria-expanded="false">
+  <span class="conv-settings-tab__icon" aria-hidden="true">⚙</span>
+  <span class="conv-settings-tab__label" aria-hidden="true">Settings</span>
   <span class="conv-settings-tab__badge" id="settingsTabBadge" aria-hidden="true" hidden></span>
 </button>
 <dialog class="conv-drawer" id="settingsDrawer" aria-labelledby="settingsDrawerTitle">
+  <button class="conv-settings-tab conv-settings-tab--close" type="button"
+          id="settingsDrawerClose" aria-label="Close settings" autofocus>
+    <span class="conv-settings-tab__icon" aria-hidden="true">‹</span>
+    <span class="conv-settings-tab__label" aria-hidden="true">Close</span>
+  </button>
   <div class="conv-drawer__inner">
     <div class="conv-drawer__head">
       <h2 class="conv-drawer__title" id="settingsDrawerTitle">Settings</h2>
-      <button class="ln-iconbtn" type="button" id="settingsDrawerClose" aria-label="Close settings">×</button>
     </div>
 
     {{- /* Full-screen drawer (owner 2026-07-19): everything below the head
@@ -207,11 +214,23 @@
          locations are pickers rather than text boxes: a stored place carries
          its resolved lat/lon + IANA timezone, so weather and time answers
          never depend on the model naming a place correctly. -->
-    <section class="ln-card set-section" aria-labelledby="sectionAbout">
+    <section class="ln-card set-section set-accordion" aria-labelledby="sectionAbout">
       <div class="set-section__intro">
-        <h2 class="ln-card__title" id="sectionAbout">About you</h2>
-        <p class="ln-muted">What Live Ninja knows before you say anything. It uses these in every conversation — so &ldquo;what&rsquo;s the weather&rdquo; needs no location and &ldquo;what&rsquo;s today&rdquo; has an answer.</p>
+        <h2 class="set-accordion__heading">
+          <button class="set-accordion__trigger" type="button" id="sectionAboutTrigger"
+                  data-settings-accordion-trigger aria-expanded="true"
+                  aria-controls="sectionAboutPanel" aria-labelledby="sectionAbout"
+                  aria-describedby="sectionAboutDescription">
+            <span class="set-accordion__copy">
+              <span class="ln-card__title" id="sectionAbout">About you</span>
+              <span class="ln-muted set-accordion__description" id="sectionAboutDescription">What Live Ninja knows before you say anything. It uses these in every conversation.</span>
+            </span>
+            <span class="set-accordion__icon" aria-hidden="true"></span>
+          </button>
+        </h2>
       </div>
+      <div class="set-accordion__panel" id="sectionAboutPanel" role="region"
+           aria-labelledby="sectionAboutTrigger">
 
       {{- /* ---- Suggestion queue (M16 Knowledge Refinement Loop) ----
              Rows come from GET /api/v1/profile/suggestions: proposals from the
@@ -321,14 +340,27 @@
         <button class="ln-btn ln-btn--ghost" type="button" id="profileSuggestBtn">Suggest from memory</button>
         <p class="ln-hint" id="profileSuggestStatus" role="status"></p>
       </div>
+      </div>
     </section>
 
     <!-- ============ Wake word ============ -->
-    <section class="ln-card set-section" aria-labelledby="sectionWakeWord">
+    <section class="ln-card set-section set-accordion" aria-labelledby="sectionWakeWord">
       <div class="set-section__intro">
-        <h2 class="ln-card__title" id="sectionWakeWord">Wake word</h2>
-        <p class="ln-muted">What Live Ninja listens for before it starts a conversation.</p>
+        <h2 class="set-accordion__heading">
+          <button class="set-accordion__trigger" type="button" id="sectionWakeWordTrigger"
+                  data-settings-accordion-trigger aria-expanded="false"
+                  aria-controls="sectionWakeWordPanel" aria-labelledby="sectionWakeWord"
+                  aria-describedby="sectionWakeWordDescription">
+            <span class="set-accordion__copy">
+              <span class="ln-card__title" id="sectionWakeWord">Wake word</span>
+              <span class="ln-muted set-accordion__description" id="sectionWakeWordDescription">What Live Ninja listens for before it starts a conversation.</span>
+            </span>
+            <span class="set-accordion__icon" aria-hidden="true"></span>
+          </button>
+        </h2>
       </div>
+      <div class="set-accordion__panel" id="sectionWakeWordPanel" role="region"
+           aria-labelledby="sectionWakeWordTrigger" hidden>
 
       <div class="ln-field ln-combobox" id="wakeWordCombobox">
         <label for="wakeWordInput">Wake phrase</label>
@@ -413,14 +445,27 @@
         </div>
         <p class="ln-hint">Higher values trigger more easily but may cause false wakes.</p>
       </div>
+      </div>
     </section>
 
     <!-- ============ Persona ============ -->
-    <section class="ln-card set-section" aria-labelledby="sectionPersona">
+    <section class="ln-card set-section set-accordion" aria-labelledby="sectionPersona">
       <div class="set-section__intro">
-        <h2 class="ln-card__title" id="sectionPersona">Persona</h2>
-        <p class="ln-muted">How Live Ninja speaks and behaves.</p>
+        <h2 class="set-accordion__heading">
+          <button class="set-accordion__trigger" type="button" id="sectionPersonaTrigger"
+                  data-settings-accordion-trigger aria-expanded="false"
+                  aria-controls="sectionPersonaPanel" aria-labelledby="sectionPersona"
+                  aria-describedby="sectionPersonaDescription">
+            <span class="set-accordion__copy">
+              <span class="ln-card__title" id="sectionPersona">Persona</span>
+              <span class="ln-muted set-accordion__description" id="sectionPersonaDescription">How Live Ninja speaks and behaves.</span>
+            </span>
+            <span class="set-accordion__icon" aria-hidden="true"></span>
+          </button>
+        </h2>
       </div>
+      <div class="set-accordion__panel" id="sectionPersonaPanel" role="region"
+           aria-labelledby="sectionPersonaTrigger" hidden>
 
       <div class="ln-field">
         <label for="personaPreset">Persona</label>
@@ -443,6 +488,7 @@
                   placeholder="e.g. Always answer in a calm, brief tone and call me Jeremy."></textarea>
         <div class="ln-charcount"><span id="instructionsCharCount">0 / 4000</span></div>
       </div>
+      </div>
     </section>
 
     <!-- ============ Voice engine (M12 FR-VE-04) ============ -->
@@ -454,11 +500,23 @@
          Per settings.schema.json, `default` is the engine used by this
          browser session and any device without its own pin; the broker
          resolves engine-for-session as devices[deviceId] ?? default. -->
-    <section class="ln-card set-section" aria-labelledby="sectionVoiceEngine">
+    <section class="ln-card set-section set-accordion" aria-labelledby="sectionVoiceEngine">
       <div class="set-section__intro">
-        <h2 class="ln-card__title" id="sectionVoiceEngine">Voice engine</h2>
-        <p class="ln-muted">Which speech-to-speech model powers your conversations. Applies to this browser and any device you haven't set separately.</p>
+        <h2 class="set-accordion__heading">
+          <button class="set-accordion__trigger" type="button" id="sectionVoiceEngineTrigger"
+                  data-settings-accordion-trigger aria-expanded="false"
+                  aria-controls="sectionVoiceEnginePanel" aria-labelledby="sectionVoiceEngine"
+                  aria-describedby="sectionVoiceEngineDescription">
+            <span class="set-accordion__copy">
+              <span class="ln-card__title" id="sectionVoiceEngine">Voice engine</span>
+              <span class="ln-muted set-accordion__description" id="sectionVoiceEngineDescription">Which speech-to-speech model powers your conversations.</span>
+            </span>
+            <span class="set-accordion__icon" aria-hidden="true"></span>
+          </button>
+        </h2>
       </div>
+      <div class="set-accordion__panel" id="sectionVoiceEnginePanel" role="region"
+           aria-labelledby="sectionVoiceEngineTrigger" hidden>
 
       <fieldset class="ln-fieldset">
         <legend class="ln-sr-only">Voice engine</legend>
@@ -510,15 +568,28 @@
         </select>
         <p class="ln-hint">Only used with Gemini Flash Live. "Persona default" follows each persona's own Gemini voice; picking a voice here overrides it for every persona.</p>
       </div>
+      </div>
     </section>
     <!-- ==================== voice-engine-section:END ==================== -->
 
     <!-- ============ Turn detection ============ -->
-    <section class="ln-card set-section" aria-labelledby="sectionTurn">
+    <section class="ln-card set-section set-accordion" aria-labelledby="sectionTurn">
       <div class="set-section__intro">
-        <h2 class="ln-card__title" id="sectionTurn">Turn detection</h2>
-        <p class="ln-muted">How Live Ninja decides you've finished speaking.</p>
+        <h2 class="set-accordion__heading">
+          <button class="set-accordion__trigger" type="button" id="sectionTurnTrigger"
+                  data-settings-accordion-trigger aria-expanded="false"
+                  aria-controls="sectionTurnPanel" aria-labelledby="sectionTurn"
+                  aria-describedby="sectionTurnDescription">
+            <span class="set-accordion__copy">
+              <span class="ln-card__title" id="sectionTurn">Turn detection</span>
+              <span class="ln-muted set-accordion__description" id="sectionTurnDescription">How Live Ninja decides you've finished speaking.</span>
+            </span>
+            <span class="set-accordion__icon" aria-hidden="true"></span>
+          </button>
+        </h2>
       </div>
+      <div class="set-accordion__panel" id="sectionTurnPanel" role="region"
+           aria-labelledby="sectionTurnTrigger" hidden>
 
       <fieldset class="ln-fieldset">
         <legend class="ln-sr-only">Turn detection</legend>
@@ -621,13 +692,27 @@
           </label>
         </div>
       </fieldset>
+      </div>
     </section>
 
     <!-- ============ Appearance ============ -->
-    <section class="ln-card set-section" aria-labelledby="sectionAppearance">
+    <section class="ln-card set-section set-accordion" aria-labelledby="sectionAppearance">
       <div class="set-section__intro">
-        <h2 class="ln-card__title" id="sectionAppearance">Appearance</h2>
+        <h2 class="set-accordion__heading">
+          <button class="set-accordion__trigger" type="button" id="sectionAppearanceTrigger"
+                  data-settings-accordion-trigger aria-expanded="false"
+                  aria-controls="sectionAppearancePanel" aria-labelledby="sectionAppearance"
+                  aria-describedby="sectionAppearanceDescription">
+            <span class="set-accordion__copy">
+              <span class="ln-card__title" id="sectionAppearance">Appearance</span>
+              <span class="ln-muted set-accordion__description" id="sectionAppearanceDescription">Theme and visual style across Live Ninja.</span>
+            </span>
+            <span class="set-accordion__icon" aria-hidden="true"></span>
+          </button>
+        </h2>
       </div>
+      <div class="set-accordion__panel" id="sectionAppearancePanel" role="region"
+           aria-labelledby="sectionAppearanceTrigger" hidden>
 
       <fieldset class="ln-fieldset">
         <legend>Theme</legend>
@@ -727,13 +812,27 @@
         </div>
         <p class="ln-hint">"Auto" follows the style's own color. Applies immediately on every device.</p>
       </fieldset>
+      </div>
     </section>
 
     <!-- ============ Microphone ============ -->
-    <section class="ln-card set-section" aria-labelledby="sectionMic">
+    <section class="ln-card set-section set-accordion" aria-labelledby="sectionMic">
       <div class="set-section__intro">
-        <h2 class="ln-card__title" id="sectionMic">Microphone</h2>
+        <h2 class="set-accordion__heading">
+          <button class="set-accordion__trigger" type="button" id="sectionMicTrigger"
+                  data-settings-accordion-trigger aria-expanded="false"
+                  aria-controls="sectionMicPanel" aria-labelledby="sectionMic"
+                  aria-describedby="sectionMicDescription">
+            <span class="set-accordion__copy">
+              <span class="ln-card__title" id="sectionMic">Microphone</span>
+              <span class="ln-muted set-accordion__description" id="sectionMicDescription">Which input this browser uses for voice conversations.</span>
+            </span>
+            <span class="set-accordion__icon" aria-hidden="true"></span>
+          </button>
+        </h2>
       </div>
+      <div class="set-accordion__panel" id="sectionMicPanel" role="region"
+           aria-labelledby="sectionMicTrigger" hidden>
 
       <div class="ln-field">
         <label for="micDevice">Input device</label>
@@ -750,14 +849,27 @@
         </button>
         <p class="ln-hint">Used for voice conversations in this browser.</p>
       </div>
+      </div>
     </section>
 
     <!-- ============ Privacy ============ -->
-    <section class="ln-card set-section" aria-labelledby="sectionPrivacy">
+    <section class="ln-card set-section set-accordion" aria-labelledby="sectionPrivacy">
       <div class="set-section__intro">
-        <h2 class="ln-card__title" id="sectionPrivacy">Privacy</h2>
-        <p class="ln-muted">What Live Ninja keeps, and for how long.</p>
+        <h2 class="set-accordion__heading">
+          <button class="set-accordion__trigger" type="button" id="sectionPrivacyTrigger"
+                  data-settings-accordion-trigger aria-expanded="false"
+                  aria-controls="sectionPrivacyPanel" aria-labelledby="sectionPrivacy"
+                  aria-describedby="sectionPrivacyDescription">
+            <span class="set-accordion__copy">
+              <span class="ln-card__title" id="sectionPrivacy">Privacy</span>
+              <span class="ln-muted set-accordion__description" id="sectionPrivacyDescription">What Live Ninja keeps, and for how long.</span>
+            </span>
+            <span class="set-accordion__icon" aria-hidden="true"></span>
+          </button>
+        </h2>
       </div>
+      <div class="set-accordion__panel" id="sectionPrivacyPanel" role="region"
+           aria-labelledby="sectionPrivacyTrigger" hidden>
 
       <div class="ln-field">
         <label class="ln-toggle">
@@ -797,13 +909,27 @@
           </label>
         </div>
       </fieldset>
+      </div>
     </section>
 
     <!-- ============ Account ============ -->
-    <section class="ln-card set-section set-danger-card" aria-labelledby="sectionAccount">
+    <section class="ln-card set-section set-accordion set-danger-card" aria-labelledby="sectionAccount">
       <div class="set-section__intro">
-        <h2 class="ln-card__title" id="sectionAccount">Account</h2>
+        <h2 class="set-accordion__heading">
+          <button class="set-accordion__trigger" type="button" id="sectionAccountTrigger"
+                  data-settings-accordion-trigger aria-expanded="false"
+                  aria-controls="sectionAccountPanel" aria-labelledby="sectionAccount"
+                  aria-describedby="sectionAccountDescription">
+            <span class="set-accordion__copy">
+              <span class="ln-card__title" id="sectionAccount">Account</span>
+              <span class="ln-muted set-accordion__description" id="sectionAccountDescription">Sign out on this browser or every device.</span>
+            </span>
+            <span class="set-accordion__icon" aria-hidden="true"></span>
+          </button>
+        </h2>
       </div>
+      <div class="set-accordion__panel" id="sectionAccountPanel" role="region"
+           aria-labelledby="sectionAccountTrigger" hidden>
 
       <div class="set-danger-row">
         <div class="set-danger-row__body">
@@ -832,6 +958,7 @@
           <button class="ln-btn ln-btn--ghost" id="signOutAllCancelBtn" type="button">Cancel</button>
         </div>
       </div>
+      </div>
     </section>
 
     <!-- Save status -->
@@ -846,7 +973,8 @@
     {{- /* Month-to-date estimated cost across saved conversations
            (GET /api/v1/costs, fetched by conversation.mjs on first open;
            links to /history where per-conversation costs live). */}}
-    <a class="conv-drawer__cost" id="drawerCost" href="/history" hidden>
+    <a class="conv-drawer__cost" id="drawerCost" href="/history"
+       aria-live="polite" aria-label="Monthly usage estimate" hidden>
       <span class="conv-drawer__cost-label">This month</span>
       <span class="conv-drawer__cost-value" id="drawerCostValue"></span>
       <span class="conv-drawer__cost-sub" id="drawerCostSub"></span>

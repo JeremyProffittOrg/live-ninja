@@ -17,6 +17,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/config"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	"github.com/JeremyProffittOrg/live-ninja/internal/testutil"
 )
@@ -24,7 +25,13 @@ import (
 func newHistoryAPIApp(t *testing.T) (*fiber.App, *store.Store) {
 	t.Helper()
 	st := store.NewWithClient(testutil.NewFakeDynamo(), "live-ninja")
-	deps := &Deps{Store: st, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	deps := &Deps{
+		Store: st,
+		Cfg: config.App{
+			OpenAIMonthlyBudgetUSD: 100,
+		},
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
 	app := fiber.New()
 	app.Use(func(c *fiber.Ctx) error {
 		c.Locals(localUserID, "u1")
@@ -533,7 +540,8 @@ func TestCostSummaryRoute(t *testing.T) {
 	now := time.Now().UTC()
 	monthTS := time.Date(now.Year(), now.Month(), 1, 6, 0, 0, 0, time.UTC).Format(time.RFC3339)
 	if err := st.CreateConversation(ctx, "u1", &store.Conversation{
-		SessionID: "cur", TS: monthTS, TurnCount: 4, CostUSD: 0.42,
+		SessionID: "cur", TS: monthTS, Engine: "gpt-realtime",
+		TurnCount: 4, CostUSD: 0.42,
 	}); err != nil {
 		t.Fatalf("seed current-month conversation: %v", err)
 	}
@@ -556,5 +564,14 @@ func TestCostSummaryRoute(t *testing.T) {
 	}
 	if n, _ := body["costed"].(float64); n != 1 {
 		t.Errorf("costed = %v, want 1", body["costed"])
+	}
+	if usd, _ := body["openAiTotalUsd"].(float64); usd != 0.42 {
+		t.Errorf("openAiTotalUsd = %v, want 0.42", body["openAiTotalUsd"])
+	}
+	if remaining, _ := body["openAiRemainingUsd"].(float64); remaining != 99.58 {
+		t.Errorf("openAiRemainingUsd = %v, want 99.58", body["openAiRemainingUsd"])
+	}
+	if warning, _ := body["openAiBudgetWarning"].(bool); warning {
+		t.Errorf("openAiBudgetWarning = true, want false")
 	}
 }

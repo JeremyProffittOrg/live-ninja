@@ -215,11 +215,13 @@ func TestListConversationsTurnsOverAndCostSummary(t *testing.T) {
 	require.NoError(t, st.CreateTopic(ctx, uid, &Topic{TopicID: "t1", Name: "Work"}))
 	seedConversation(t, st, uid, &Conversation{
 		SessionID: "short", TS: "2026-07-01T10:00:00Z", TurnCount: 3,
-		TopicIDs: []string{"t1"}, CostUSD: 0.05, CostTextTokens: 10, CostAudioTokens: 20,
+		TopicIDs: []string{"t1"}, Engine: "gpt-realtime",
+		CostUSD: 0.05, CostTextTokens: 10, CostAudioTokens: 20,
 	})
 	seedConversation(t, st, uid, &Conversation{
 		SessionID: "long", TS: "2026-07-02T10:00:00Z", TurnCount: 12,
-		TopicIDs: []string{"t1"}, CostUSD: 0.25, CostTextTokens: 100, CostAudioTokens: 200,
+		TopicIDs: []string{"t1"}, Engine: "gemini-flash-live",
+		CostUSD: 0.25, CostTextTokens: 100, CostAudioTokens: 200,
 	})
 	seedConversation(t, st, uid, &Conversation{
 		SessionID: "nocost", TS: "2026-07-03T10:00:00Z", TurnCount: 9,
@@ -262,6 +264,8 @@ func TestListConversationsTurnsOverAndCostSummary(t *testing.T) {
 	assert.InDelta(t, 0.30, sum.TotalUSD, 1e-9)
 	assert.Equal(t, 3, sum.Conversations)
 	assert.Equal(t, 2, sum.Costed)
+	assert.InDelta(t, 0.05, sum.OpenAIUSD, 1e-9)
+	assert.Equal(t, 1, sum.OpenAICosted)
 
 	// From bound trims older conversations out of the sum.
 	sum, err = st.SumConversationCosts(ctx, uid, "2026-07-02T00:00:00Z", "")
@@ -269,12 +273,15 @@ func TestListConversationsTurnsOverAndCostSummary(t *testing.T) {
 	assert.InDelta(t, 0.25, sum.TotalUSD, 1e-9)
 	assert.Equal(t, 2, sum.Conversations)
 	assert.Equal(t, 1, sum.Costed)
+	assert.Zero(t, sum.OpenAIUSD)
+	assert.Zero(t, sum.OpenAICosted)
 
 	// Another user's summary is empty.
 	sum, err = st.SumConversationCosts(ctx, "u2", "", "")
 	require.NoError(t, err)
 	assert.Zero(t, sum.TotalUSD)
 	assert.Zero(t, sum.Conversations)
+	assert.Zero(t, sum.OpenAIUSD)
 }
 
 func TestListConversationsPagination(t *testing.T) {

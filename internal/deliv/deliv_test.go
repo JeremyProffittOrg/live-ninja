@@ -73,6 +73,18 @@ func (f *fakeS3) GetObject(ctx context.Context, params *s3.GetObjectInput, optFn
 	}, nil
 }
 
+func (f *fakeS3) HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	key := aws.ToString(params.Key)
+	b, ok := f.objects[key]
+	if !ok {
+		return nil, errors.New("NoSuchKey: " + key)
+	}
+	return &s3.HeadObjectOutput{
+		ContentType:   aws.String(f.types[key]),
+		ContentLength: aws.Int64(int64(len(b))),
+	}, nil
+}
+
 func (f *fakeS3) DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
 	f.delCalls++
 	if f.deleteErr != nil {
@@ -85,8 +97,19 @@ func (f *fakeS3) DeleteObject(ctx context.Context, params *s3.DeleteObjectInput,
 }
 
 type fakePresign struct {
-	lastInput *s3.GetObjectInput
-	err       error
+	lastInput    *s3.GetObjectInput
+	lastPutInput *s3.PutObjectInput
+	err          error
+}
+
+func (f *fakePresign) PresignPutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.lastPutInput = params
+	return &v4.PresignedHTTPRequest{
+		URL: "https://signed-upload.example/" + aws.ToString(params.Key) + "?sig=abc",
+	}, nil
 }
 
 func (f *fakePresign) PresignGetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
@@ -203,6 +226,53 @@ func TestCreateRejectsBadInput(t *testing.T) {
 	_, err = h.svc.Create(ctx, "u1", "a.md", "text/plain", bytes.Repeat([]byte("x"), MaxContentBytes+1))
 	require.ErrorIs(t, err, ErrBadInput)
 	assert.Zero(t, h.s3.putCalls, "no invalid input may reach S3")
+}
+
+func TestMediaUploadIntentAndCompletion(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, nil)
+
+	intent, err := h.svc.BeginMediaUpload(ctx, "u1", "camera.jpg", "image/jpeg", 4)
+	require.NoError(t, err)
+	require.NotNil(t, intent.Deliverable)
+	assert.Equal(t, store.DeliverableStatusPending, intent.Deliverable.Status)
+	assert.Equal(t, "image/jpeg", intent.RequiredHeader["Content-Type"])
+	assert.Equal(t, "4", intent.RequiredHeader["Content-Length"])
+	require.NotNil(t, h.presign.lastPutInput)
+	assert.Equal(t, int64(4), aws.ToInt64(h.presign.lastPutInput.ContentLength))
+	assert.Equal(t, "image/jpeg", aws.ToString(h.presign.lastPutInput.ContentType))
+
+	key := intent.Deliverable.S3Key
+	h.s3.objects[key] = []byte{0xff, 0xd8, 0xff, 0xd9}
+	h.s3.types[key] = "image/jpeg"
+	completed, err := h.svc.CompleteMediaUpload(ctx, "u1", intent.Deliverable.DeliverableID)
+	require.NoError(t, err)
+	assert.Equal(t, store.DeliverableStatusReady, completed.Status)
+
+	got, err := h.st.GetDeliverable(ctx, "u1", completed.DeliverableID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, store.DeliverableStatusReady, got.Status)
+}
+
+func TestMediaUploadRejectsInvalidIntentAndMetadataDrift(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, nil)
+
+	_, err := h.svc.BeginMediaUpload(ctx, "u1", "bad.png", "image/png", 4)
+	require.ErrorIs(t, err, ErrBadInput)
+	_, err = h.svc.BeginMediaUpload(ctx, "u1", "empty.jpg", "image/jpeg", 0)
+	require.ErrorIs(t, err, ErrBadInput)
+	_, err = h.svc.BeginMediaUpload(ctx, "u1", "huge.mp4", "video/mp4", MaxMediaUploadBytes+1)
+	require.ErrorIs(t, err, ErrBadInput)
+
+	intent, err := h.svc.BeginMediaUpload(ctx, "u1", "short.mp4", "video/mp4", 5)
+	require.NoError(t, err)
+	key := intent.Deliverable.S3Key
+	h.s3.objects[key] = []byte{0, 1, 2, 3}
+	h.s3.types[key] = "video/mp4"
+	_, err = h.svc.CompleteMediaUpload(ctx, "u1", intent.Deliverable.DeliverableID)
+	require.ErrorIs(t, err, ErrBadInput)
 }
 
 func TestCreateCleansUpOrphanOnIndexFailure(t *testing.T) {

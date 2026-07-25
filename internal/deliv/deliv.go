@@ -55,6 +55,16 @@ const (
 	// realistic assistant output and bounds S3/DDB abuse).
 	MaxContentBytes = 1 << 20
 
+	// MaxMediaUploadBytes bounds direct camera uploads. A 60-second H.264
+	// capture is normally 50-100 MiB; 300 MiB leaves codec/device headroom
+	// without allowing an unbounded presigned PUT.
+	MaxMediaUploadBytes = 300 << 20
+
+	// UploadPresignTTL is intentionally shorter than download links: an upload
+	// starts immediately after capture and a lost phone should not retain a
+	// long-lived write capability.
+	UploadPresignTTL = 10 * time.Minute
+
 	// MaxZipSources bounds one zip request; each source costs a GSI1
 	// Query + an S3 GET, so this also bounds the zipper's work.
 	MaxZipSources = 50
@@ -94,12 +104,14 @@ var (
 type S3API interface {
 	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
 	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
 	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
 }
 
-// PresignAPI matches s3.PresignClient.PresignGetObject.
+// PresignAPI matches the GET/PUT subset of s3.PresignClient.
 type PresignAPI interface {
 	PresignGetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error)
+	PresignPutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error)
 }
 
 // LambdaAPI is the Invoke subset used for the async zipper dispatch.
@@ -245,6 +257,142 @@ func (s *Service) Create(ctx context.Context, userID, filename, contentType stri
 		return nil, fmt.Errorf("deliv: index deliverable: %w", err)
 	}
 	return d, nil
+}
+
+// UploadIntent is a bounded, caller-owned direct-to-S3 upload capability.
+// The pending deliverable is already indexed so completion can only promote
+// that exact user/id/key; RequiredHeaders are signed into the URL and must be
+// sent verbatim by the Android client.
+type UploadIntent struct {
+	Deliverable    *store.Deliverable
+	URL            string
+	ExpiresAt      time.Time
+	RequiredHeader map[string]string
+}
+
+// BeginMediaUpload claims a filename, creates a pending deliverable row, then
+// presigns one PUT for a camera photo/video. Large media never transits API
+// Gateway/Lambda (payload limits are far below a normal 60-second video).
+func (s *Service) BeginMediaUpload(
+	ctx context.Context,
+	userID, filename, contentType string,
+	sizeBytes int64,
+) (*UploadIntent, error) {
+	contentType = strings.ToLower(strings.TrimSpace(contentType))
+	if userID == "" {
+		return nil, fmt.Errorf("%w: user id is required", ErrBadInput)
+	}
+	if !IsCameraMediaContentType(contentType) {
+		return nil, fmt.Errorf("%w: content type must be image/jpeg or video/mp4", ErrBadInput)
+	}
+	if sizeBytes < 1 || sizeBytes > MaxMediaUploadBytes {
+		return nil, fmt.Errorf("%w: media size must be between 1 and %d bytes", ErrBadInput, MaxMediaUploadBytes)
+	}
+
+	name := SanitizeFilename(filename)
+	now := s.cfg.Now().UTC()
+	id := uuid.NewString()
+	key := UserPrefix(userID) + id + "/" + name
+	if err := s.claimName(ctx, userID, name, id); err != nil {
+		return nil, err
+	}
+	releaseClaim := func() {
+		if err := s.cfg.Store.ReleaseDeliverableName(ctx, userID, name); err != nil {
+			s.cfg.Log.Warn("deliv: release media name claim failed", "name", name, "error", err.Error())
+		}
+	}
+
+	d := &store.Deliverable{
+		DeliverableID: id,
+		UserID:        userID,
+		Name:          name,
+		ContentType:   contentType,
+		Kind:          store.DeliverableKindFile,
+		Status:        store.DeliverableStatusPending,
+		S3Key:         key,
+		SizeBytes:     sizeBytes,
+		CreatedAt:     now.Format(time.RFC3339),
+	}
+	if err := s.cfg.Store.CreateDeliverable(ctx, d); err != nil {
+		releaseClaim()
+		return nil, fmt.Errorf("deliv: index pending media: %w", err)
+	}
+
+	req, err := s.cfg.Presign.PresignPutObject(ctx, &s3.PutObjectInput{
+		Bucket:        aws.String(s.cfg.Bucket),
+		Key:           aws.String(key),
+		ContentType:   aws.String(contentType),
+		ContentLength: aws.Int64(sizeBytes),
+	}, func(o *s3.PresignOptions) { o.Expires = UploadPresignTTL })
+	if err != nil {
+		if derr := s.cfg.Store.DeleteDeliverable(ctx, userID, d.SK()); derr != nil {
+			s.cfg.Log.Warn("deliv: pending media rollback failed", "id", id, "error", derr.Error())
+		}
+		releaseClaim()
+		return nil, fmt.Errorf("deliv: presign media upload: %w", err)
+	}
+
+	return &UploadIntent{
+		Deliverable: d,
+		URL:         req.URL,
+		ExpiresAt:   now.Add(UploadPresignTTL),
+		RequiredHeader: map[string]string{
+			"Content-Type":   contentType,
+			"Content-Length": fmt.Sprintf("%d", sizeBytes),
+		},
+	}, nil
+}
+
+// CompleteMediaUpload verifies the object that arrived through the presigned
+// URL before promoting its pending row to ready. Client-reported success is
+// never sufficient: S3 is the source of truth for length/type.
+func (s *Service) CompleteMediaUpload(ctx context.Context, userID, deliverableID string) (*store.Deliverable, error) {
+	d, err := s.cfg.Store.GetDeliverable(ctx, userID, deliverableID)
+	if err != nil {
+		return nil, fmt.Errorf("deliv: resolve pending media: %w", err)
+	}
+	if d == nil {
+		return nil, ErrNotFound
+	}
+	if d.Status != store.DeliverableStatusPending || !IsCameraMediaContentType(d.ContentType) {
+		return nil, ErrNotReady
+	}
+	if !keyWithinUser(userID, d.S3Key) {
+		return nil, ErrKeyEscape
+	}
+
+	head, err := s.cfg.S3.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.cfg.Bucket),
+		Key:    aws.String(d.S3Key),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("deliv: head media upload: %w", err)
+	}
+	size := aws.ToInt64(head.ContentLength)
+	gotType := strings.ToLower(strings.TrimSpace(aws.ToString(head.ContentType)))
+	if size < 1 || size > MaxMediaUploadBytes || size != d.SizeBytes || gotType != d.ContentType {
+		return nil, fmt.Errorf("%w: uploaded media metadata does not match the signed intent", ErrBadInput)
+	}
+	if err := s.cfg.Store.UpdateDeliverableStatus(
+		ctx, userID, d.SK(), store.DeliverableStatusReady, size,
+	); err != nil {
+		return nil, fmt.Errorf("deliv: promote media upload: %w", err)
+	}
+	d.Status = store.DeliverableStatusReady
+	d.SizeBytes = size
+	return d, nil
+}
+
+// IsCameraMediaContentType is the upload-intent allowlist. Camera capture
+// currently emits JPEG photos and MP4 video only; widening this list is a
+// deliberate storage/API decision, never trust an arbitrary client MIME.
+func IsCameraMediaContentType(contentType string) bool {
+	switch strings.ToLower(strings.TrimSpace(contentType)) {
+	case "image/jpeg", "video/mp4":
+		return true
+	default:
+		return false
+	}
 }
 
 // claimName performs the atomic filename claim plus the legacy-corpus

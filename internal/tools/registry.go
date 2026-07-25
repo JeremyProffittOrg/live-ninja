@@ -301,10 +301,12 @@ type Definition struct {
 	// conditional-put guard before execution.
 	SideEffecting bool
 	// DeviceLocal marks a tool whose work happens on the user's device (stopping
-	// the microphone, recycling a realtime session) and which the client is
-	// expected to intercept before it reaches this router. It still appears in the
-	// manifest — that is what tells the model the capability exists — but reaching
-	// the server Handler means a surface that cannot perform it called it anyway.
+	// the microphone, recycling a realtime session, changing a local audio stream,
+	// or capturing camera media) and which the client is expected to intercept
+	// before it reaches this router.
+	// It still appears in the manifest — that is what tells the model the capability
+	// exists — but reaching the server Handler means a surface that cannot perform
+	// it called it anyway.
 	DeviceLocal bool
 	Handler     HandlerFunc
 }
@@ -522,6 +524,13 @@ func definitions() []*Definition {
 		// them, executed by the client (see devicesession.go).
 		stopListeningDefinition(),
 		startNewConversationDefinition(),
+		// Device-local volume control: Android owns AudioManager, so it intercepts
+		// this before the backend router just like the session controls above.
+		setVolumeDefinition(),
+		// Device-local camera capture: Android owns Camera2 and uploads the media
+		// through the authenticated deliverables upload-intent surface.
+		takePhotoDefinition(),
+		recordVideoDefinition(),
 	}
 }
 

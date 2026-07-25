@@ -92,8 +92,8 @@ func main() {
 	// both the public routes below and the authenticated route groups.
 	app.Use(webapp.VersionMiddleware(deps))
 
-	// Registered before the auth middleware: liveness, static assets, and
-	// the compat-negotiation route need neither auth context nor CSRF
+	// Registered before the auth middleware: liveness, static assets,
+	// compatibility, and Android distribution documents need neither auth context nor CSRF
 	// handling. /sw.js sits at the root so the service worker's scope is
 	// "/". /v1/compat must be reachable by a device that cannot yet
 	// authenticate (contracts/headers.md) — already in cmd/authorizer's
@@ -102,6 +102,7 @@ func main() {
 	app.Get("/static/*", assets.Handler())
 	app.Get("/sw.js", swHandler)
 	webapp.RegisterCompatRoute(app, deps)
+	webapp.RegisterAndroidDistributionRoutes(app, deps)
 
 	// Auth context extraction (authorizer passthrough header, Bearer JWT
 	// fallback) + CSRF double-submit enforcement for cookie-bearing POSTs,
@@ -192,20 +193,25 @@ func buildDeps(ctx context.Context, cfg config.App, logger *slog.Logger) (*webap
 	}
 
 	lambdaClient := lambdasvc.NewFromConfig(awsCfg)
+	s3Client := s3.NewFromConfig(awsCfg)
 	deps := &webapp.Deps{
-		Store:               st,
-		LWA:                 lwa,
-		Signer:              signer,
-		Cfg:                 cfg,
-		Secrets:             loader,
-		Log:                 logger,
-		BrokerFn:            os.Getenv("BROKER_FUNCTION_NAME"),
-		SQSEmailURL:         cfg.EmailQueueURL,
-		SQSRcaURL:           os.Getenv("RCA_QUEUE_URL"),
-		SQS:                 sqs.NewFromConfig(awsCfg),
-		Lambda:              lambdaClient,
-		Firehose:            firehose.NewFromConfig(awsCfg),
-		TelemetryStreamName: os.Getenv("TELEMETRY_FIREHOSE_STREAM_NAME"),
+		Store:                  st,
+		LWA:                    lwa,
+		Signer:                 signer,
+		Cfg:                    cfg,
+		Secrets:                loader,
+		Log:                    logger,
+		BrokerFn:               os.Getenv("BROKER_FUNCTION_NAME"),
+		SQSEmailURL:            cfg.EmailQueueURL,
+		SQSRcaURL:              os.Getenv("RCA_QUEUE_URL"),
+		SQS:                    sqs.NewFromConfig(awsCfg),
+		Lambda:                 lambdaClient,
+		Firehose:               firehose.NewFromConfig(awsCfg),
+		TelemetryStreamName:    os.Getenv("TELEMETRY_FIREHOSE_STREAM_NAME"),
+		AndroidArtifacts:       s3Client,
+		AndroidArtifactsBucket: os.Getenv("ANDROID_RELEASES_BUCKET"),
+		AndroidLatestKey:       os.Getenv("ANDROID_LATEST_KEY"),
+		AndroidAssetLinksKey:   os.Getenv("ANDROID_ASSETLINKS_KEY"),
 	}
 	if deps.TelemetryStreamName == "" {
 		logger.Warn("telemetry lake disabled (TELEMETRY_FIREHOSE_STREAM_NAME not set)")
@@ -224,10 +230,9 @@ func buildDeps(ctx context.Context, cfg config.App, logger *slog.Logger) (*webap
 	// template.yaml). Absent config degrades cleanly: deliverables routes
 	// answer 503 and the deliverable_* tools report not_configured.
 	if bucket := os.Getenv("DELIVERABLES_BUCKET"); bucket != "" {
-		s3c := s3.NewFromConfig(awsCfg)
 		svc, err := deliv.New(deliv.Config{
-			S3:           s3c,
-			Presign:      s3.NewPresignClient(s3c),
+			S3:           s3Client,
+			Presign:      s3.NewPresignClient(s3Client),
 			Lambda:       lambdaClient,
 			Store:        st,
 			Bucket:       bucket,

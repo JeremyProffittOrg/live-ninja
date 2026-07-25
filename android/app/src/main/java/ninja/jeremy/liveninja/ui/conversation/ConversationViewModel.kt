@@ -65,6 +65,8 @@ data class ConversationUiState(
      * unpriced engine would be a lie, not a zero.
      */
     val sessionCost: SessionCost? = null,
+    /** Nonfatal quota/budget notice supplied by session bootstrap. */
+    val sessionWarning: String? = null,
 )
 
 @HiltViewModel
@@ -166,6 +168,7 @@ class ConversationViewModel @Inject constructor(
                 // the first usage report, so the badge never shows the last
                 // conversation's cost against this one.
                 sessionCost = null,
+                sessionWarning = null,
             )
         }
         startJob?.cancel()
@@ -269,6 +272,10 @@ class ConversationViewModel @Inject constructor(
         _state.update { it.copy(micState = MicUiState.IDLE, error = null, errorDetail = null) }
     }
 
+    fun dismissSessionWarning() {
+        _state.update { it.copy(sessionWarning = null) }
+    }
+
     /** MainActivity lifecycle hooks — drive the floating overlay bubble. */
     fun onAppBackgrounded() {
         appInBackground = true
@@ -301,6 +308,9 @@ class ConversationViewModel @Inject constructor(
                         ),
                     )
                 }
+
+            is SessionUiEvent.SessionWarning ->
+                _state.update { it.copy(sessionWarning = event.message) }
 
             is SessionUiEvent.AssistantSpeaking -> {
                 _state.update { current ->

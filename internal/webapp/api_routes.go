@@ -72,6 +72,7 @@ func RegisterAPIRoutes(app *fiber.App, deps *Deps) {
 
 	api.Get("/realtime/session", handleRealtimeSession(deps))
 	api.Post("/tools/invoke", handleToolsInvoke(deps, registry))
+	api.Post("/rca/client-event", handleRCAClientEvent(deps))
 	api.Post("/transcript", handleTranscript(deps))
 
 	api.Post("/fallback/turn", handleFallbackTurn(deps, registry))
@@ -469,8 +470,19 @@ func handleRealtimeSession(deps *Deps) fiber.Handler {
 			return apiRespondBrokerError(c, resp)
 		}
 
-		if resp.QuotaWarning != "" {
-			c.Set("X-LN-Quota-Warning", resp.QuotaWarning)
+		sessionWarning := resp.QuotaWarning
+		if budget, berr := currentOpenAIBudgetStatus(
+			c.Context(), deps, userID, time.Now(),
+		); berr != nil {
+			// Budget visibility is advisory and must never turn a successful
+			// voice mint into a failed one.
+			deps.Log.Warn("api: OpenAI budget estimate unavailable",
+				slog.String("error", berr.Error()), slog.String("userId", userID))
+		} else {
+			sessionWarning = appendSessionWarning(sessionWarning, budget.warningText())
+		}
+		if sessionWarning != "" {
+			c.Set("X-LN-Quota-Warning", sessionWarning)
 		}
 
 		// Session bootstrap is engine-aware (FR-VE-03): a nova-pinned device

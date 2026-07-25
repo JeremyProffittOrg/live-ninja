@@ -1154,11 +1154,71 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
 .set-shell { padding: var(--ln-sp-6) var(--ln-sp-5) var(--ln-sp-8); max-width: 920px; margin: 0 auto; width: 100%; }
 .set-page-head { margin-bottom: var(--ln-sp-6); }
 .set-page-head p { margin-bottom: 0; }
-.set-section + .set-section { margin-top: var(--ln-sp-5); }
+.set-section + .set-section { margin-top: var(--ln-sp-3); }
 .set-section__intro { margin-bottom: var(--ln-sp-4); }
 .set-section__intro p { margin-bottom: 0; }
 .set-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--ln-sp-5); }
 @media (max-width: 720px) { .set-row { grid-template-columns: 1fr; } }
+
+/* M30 settings accordion. The SSR markup carries the expanded/hidden state;
+   settings-accordion.mjs keeps the pair synchronized and enforces one open
+   panel. The whole summary is the button, not just the chevron. */
+.set-accordion { padding: 0; }
+.set-accordion .set-section__intro { margin: 0; }
+.set-accordion__heading { margin: 0; font-size: inherit; }
+.set-accordion__trigger {
+  width: 100%;
+  min-height: var(--ln-touch);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ln-sp-4);
+  padding: var(--ln-sp-4) var(--ln-sp-5);
+  border: 0;
+  border-radius: var(--ln-r-lg);
+  background: transparent;
+  color: var(--ln-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background .12s ease;
+}
+.set-accordion__trigger:hover { background: var(--ln-surface-2); }
+.set-accordion__trigger:focus-visible {
+  outline: none;
+  box-shadow: var(--ln-focus);
+}
+.set-accordion__copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.set-accordion__trigger .ln-card__title { margin: 0; }
+.set-accordion__description {
+  font-size: var(--ln-fs-sm);
+  font-weight: 400;
+  line-height: var(--ln-lh);
+}
+.set-accordion__icon {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform .16s ease;
+}
+.set-accordion__trigger[aria-expanded="true"] .set-accordion__icon {
+  transform: rotate(225deg);
+}
+.set-accordion__panel {
+  padding: var(--ln-sp-5);
+  border-top: 1px solid var(--ln-border);
+}
+@media (prefers-reduced-motion: reduce) {
+  .set-accordion__icon { transition: none; }
+}
 
 /* Wake-word training studio (moved from settings.html's page-local <style>
    when settings moved into the conversation drawer — owner 2026-07-19). */
@@ -1709,8 +1769,8 @@ html[data-ln-style="hal9000"] .conv-main { background: #23232b; }
    (sp-5/24px -> sp-3/12px). */
 .ln-btn--compact { padding: 0 var(--ln-sp-3); }
 
-/* ---- docked settings slide-out: slim tab, right edge, vertically centered.
-   The tab and drawer sit in the APP style zone (outside #livePanel), so
+/* ---- M30 settings edge bars: matching 40%-viewport-height controls.
+   The opener and drawer sit in the APP style zone (outside #livePanel), so
    they follow the app theme tokens. ---- */
 .conv-settings-tab {
   position: fixed;
@@ -1719,13 +1779,15 @@ html[data-ln-style="hal9000"] .conv-main { background: #23232b; }
   transform: translateY(-50%);
   z-index: 40;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: var(--ln-sp-3);
   width: var(--ln-touch);
-  height: 56px;
+  height: 40vh;
+  height: 40dvh;
   padding: 0;
   font: inherit;
-  font-size: 22px;
   color: var(--ln-text);
   background: var(--ln-surface-raised);
   border: 1px solid var(--ln-border-strong);
@@ -1737,6 +1799,22 @@ html[data-ln-style="hal9000"] .conv-main { background: #23232b; }
 }
 .conv-settings-tab:hover { background: var(--ln-surface-2); }
 .conv-settings-tab:focus-visible { outline: none; box-shadow: var(--ln-focus); }
+.conv-settings-tab__icon { font-size: 22px; line-height: 1; }
+.conv-settings-tab__label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: var(--ln-fs-sm);
+  font-weight: 750;
+  letter-spacing: 0.04em;
+}
+.conv-settings-tab--close {
+  left: 0;
+  right: auto;
+  border-right: 1px solid var(--ln-border-strong);
+  border-left: none;
+  border-radius: 0 var(--ln-r-md) var(--ln-r-md) 0;
+  box-shadow: var(--ln-shadow-sm);
+}
 
 /* Native <dialog> drawer: showModal() supplies focus trap + Escape;
    conversation.mjs closes on scrim click. Padding lives on the inner
@@ -1776,7 +1854,8 @@ dialog.conv-drawer[open] {
   display: flex;
   flex-direction: column;
   gap: var(--ln-sp-3);
-  padding: var(--ln-sp-4) var(--ln-sp-5) var(--ln-sp-5);
+  padding: var(--ln-sp-4) var(--ln-sp-5) var(--ln-sp-5)
+           calc(var(--ln-sp-5) + var(--ln-touch));
   overflow-y: auto;
 }
 .conv-drawer__head {
@@ -1842,6 +1921,15 @@ dialog.conv-drawer[open] {
 }
 .conv-drawer__cost:hover { background: var(--ln-surface-2); text-decoration: none; }
 .conv-drawer__cost:focus-visible { outline: none; box-shadow: var(--ln-focus); }
+.conv-drawer__cost.is-budget-warning {
+  background: var(--ln-warn-tint);
+  border-top-color: var(--ln-warn-ink);
+  color: var(--ln-warn-ink);
+}
+.conv-drawer__cost.is-budget-warning .conv-drawer__cost-value,
+.conv-drawer__cost.is-budget-warning .conv-drawer__cost-sub {
+  color: var(--ln-warn-ink);
+}
 .conv-drawer__cost-label { font-weight: 700; text-transform: uppercase; font-size: var(--ln-fs-xs); letter-spacing: 0.05em; }
 .conv-drawer__cost-value { color: var(--ln-text); font-weight: 700; font-variant-numeric: tabular-nums; }
 .conv-drawer__cost-sub { font-size: var(--ln-fs-xs); color: var(--ln-text-dim); }
@@ -1956,7 +2044,7 @@ dialog.conv-drawer[open] {
    .conv-settings-tab is already position:fixed above, which is what anchors
    this absolute placement. */
 .conv-settings-tab__badge {
-  position: absolute; top: -6px; left: -8px;
+  position: absolute; top: var(--ln-sp-3); left: -8px;
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 20px; height: 20px; padding: 0 5px;
   font-size: var(--ln-fs-xs); font-weight: 800; line-height: 1;

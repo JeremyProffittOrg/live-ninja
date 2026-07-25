@@ -4,6 +4,7 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
     <!-- Load-bearing for M21.2's echo fix, and silent when absent: all three
          transports' configureAudioForCall() set AudioManager.mode =
          MODE_IN_COMMUNICATION (WebRtcTransport.kt:494, NovaBridgeTransport.kt:477,
@@ -22,6 +23,7 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <!-- Session FGS expands to microphone|mediaPlayback while a realtime call is live. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -37,6 +39,12 @@
          requested via Settings.ACTION_MANAGE_OVERLAY_PERMISSION in onboarding;
          LiveOverlayController no-ops without the user grant. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- Camera tools are optional capability: camera-less tablets may still
+         install and use every non-camera feature; the tools report unavailable. -->
+    <uses-feature
+        android:name="android.hardware.camera.any"
+        android:required="false" />
 
     <!-- Package visibility (API 30+): AssistantRoleController resolve-checks the
          OEM assistant-settings deep-link candidates before launching them. -->
@@ -71,9 +79,24 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- LWA broker return: /auth/lwa/callback 302s the one-shot handoff
-                 code here (ninja.jeremy.liveninja://lwa). LWA never sees this
-                 scheme, so no assetlinks.json / portal redirect URI is needed. -->
+            <!-- LWA broker return: the server-side /auth/lwa/callback redirects
+                 to this verified App Link after it has exchanged the LWA code.
+                 The exact path prevents the app from claiming unrelated site
+                 navigation. assetlinks.json binds this origin to the release
+                 signing certificate; LWA still sees only the server callback. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="live.jeremy.ninja"
+                    android:path="/auth/lwa/app-return" />
+            </intent-filter>
+
+            <!-- Compatibility fallback for debug builds or devices whose App
+                 Links verification has not completed. The HTTPS return handler
+                 redirects here if Android did not intercept the verified URL. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -126,6 +149,14 @@
             android:name=".wake.WakeWordService"
             android:exported="false"
             android:foregroundServiceType="microphone|mediaPlayback" />
+
+        <!-- Voice-command photo/video capture. Short-lived and camera-typed so
+             Android keeps the privacy indicator + visible notification active
+             from Camera2 open through the server-verified S3 upload. -->
+        <service
+            android:name=".realtime.CameraCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="camera" />
 
         <!-- Log export share flow (04-logging §A7): grants read access to the
              zipped log bundle in filesDir/logs/ via a content:// URI. Paths in

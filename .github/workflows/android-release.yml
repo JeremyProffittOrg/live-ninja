@@ -1,9 +1,9 @@
 name: Android Release
 
-# build-and-publish is manual-only: builds a debug APK (arm64-only, slim), publishes it to
-# the assets bucket under /static/models/downloads/ (the only /static/* subpaths CloudFront
-# routes to S3 — see template.yaml ~2126-2156), and emails the download link. Dispatch
-# happens in M7, not here.
+# build-and-publish is manual-only: builds and verifies a signed, arm64 release APK,
+# produces the matching AAB for Play Console, publishes the APK under
+# /static/models/downloads/, then atomically updates the metadata consumed by
+# GET /v1/app/android/latest and /.well-known/assetlinks.json.
 #
 # unit-tests and instrumented-tests (WS-5 M24.3) additionally run on every push touching
 # android/** — that's the actual CI signal ("regressions fail in CI today", plan.md M24.1);
@@ -11,12 +11,6 @@ name: Android Release
 # release.
 on:
   workflow_dispatch:
-    inputs:
-      variant:
-        description: "Gradle assemble task to run"
-        required: false
-        default: assembleDebug
-        type: string
   push:
     branches: [main]
     paths:
@@ -108,7 +102,7 @@ jobs:
 
   build-and-publish:
     # Manual releases only (see the top-level `on:` comment) — a push to main must never
-    # silently ship a new debug APK + email. Gated on unit-tests (fast, deterministic — a
+    # silently ship a new signed APK + email. Gated on unit-tests (fast, deterministic — a
     # real regression there should block a release) but deliberately NOT on
     # instrumented-tests: an emulator run is inherently less reliable than a JVM test (boot
     # timeouts, shared-runner KVM flakiness), and blocking the one physical tester's build on
@@ -134,43 +128,200 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      # Debug keystore is gitignored (android/.gitignore) so CI checkout never has it.
-      # Without it AGP would fall back to an auto-generated debug keystore, producing
-      # a signature mismatch against the build already installed on the phone
-      # (INSTALL_FAILED_UPDATE_INCOMPATIBLE). The stored secret is this exact
-      # android/keystores/debug.keystore, base64-encoded (well-known "android"
-      # store/key password — see android/app/build.gradle.kts signingConfigs.debug).
-      - name: Decode debug keystore
+      # Fail before touching the filesystem when the owner-managed signing inputs have
+      # not been configured. Only names are reported; values are never printed.
+      - name: Check release signing configuration
+        env:
+          ANDROID_RELEASE_KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -eu
+          missing=0
+          if [ -z "$ANDROID_RELEASE_KEYSTORE_B64" ]; then
+            echo "::error::Missing GitHub secret ANDROID_RELEASE_KEYSTORE_B64"
+            missing=1
+          fi
+          if [ -z "$ANDROID_RELEASE_STORE_PASSWORD" ]; then
+            echo "::error::Missing GitHub secret ANDROID_RELEASE_STORE_PASSWORD"
+            missing=1
+          fi
+          if [ -z "$ANDROID_RELEASE_KEY_ALIAS" ]; then
+            echo "::error::Missing GitHub secret ANDROID_RELEASE_KEY_ALIAS"
+            missing=1
+          fi
+          if [ -z "$ANDROID_RELEASE_KEY_PASSWORD" ]; then
+            echo "::error::Missing GitHub secret ANDROID_RELEASE_KEY_PASSWORD"
+            missing=1
+          fi
+          exit "$missing"
+
+      # The keystore exists only for this job and is removed in the always() cleanup step.
+      - name: Decode release keystore
+        env:
+          ANDROID_RELEASE_KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
         run: |
           set -eu
           mkdir -p android/keystores
-          echo "${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}" | base64 -d > android/keystores/debug.keystore
+          printf '%s' "$ANDROID_RELEASE_KEYSTORE_B64" | base64 --decode > android/keystores/release.keystore
+          test -s android/keystores/release.keystore
+          chmod 600 android/keystores/release.keystore
 
-      # -Pliveninja.arm64Only=true (android/app/build.gradle.kts) slims the DEBUG APK to
-      # arm64-v8a only (owner's phone is arm64) — 183MB all-ABI down to ~50-60MB. This flag
-      # only affects the debug variant; as of M22.3 the release variant is arm64-only
-      # unconditionally (buildTypes.release's own ndk.abiFilters), so a dispatch with
-      # `variant: assembleRelease` would come out slim too even without this flag — release
-      # would still be unsigned here regardless (no release-keystore secret in this repo;
-      # signing stays a local, owner-machine-only step until WS-4's signed-release task lands).
-      - name: Gradle build
+      - name: Build signed APK and Play bundle
         working-directory: android
-        run: ./gradlew ${{ inputs.variant }} -Pliveninja.arm64Only=true --no-daemon
+        env:
+          LIVENINJA_RELEASE_KEYSTORE: ${{ github.workspace }}/android/keystores/release.keystore
+          LIVENINJA_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          LIVENINJA_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          LIVENINJA_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        run: ./gradlew :app:assembleRelease :app:bundleRelease --no-daemon
 
-      - name: Locate built APK
-        id: apk
-        working-directory: android
+      # Refuse to publish an unsigned/mis-signed build. The signer digest is public
+      # certificate material and is used to derive assetlinks.json.
+      - name: Verify APK and prepare release documents
+        id: release
+        env:
+          # Optional, public certificate material. Once Play App Signing is enrolled,
+          # set this repository variable to the Play app-signing SHA-256 fingerprint
+          # so Play-installed builds verify the same HTTPS App Link as sideload builds.
+          ANDROID_PLAY_APP_SIGNING_SHA256: ${{ vars.ANDROID_PLAY_APP_SIGNING_SHA256 }}
         run: |
-          set -eu
-          APK_PATH="$(find app/build/outputs/apk -name '*.apk' | head -1)"
-          if [ -z "$APK_PATH" ]; then
-            echo "No APK produced by task '${{ inputs.variant }}'" >&2
+          set -euo pipefail
+          APK_PATH="android/app/build/outputs/apk/release/app-release.apk"
+          BUNDLE_PATH="android/app/build/outputs/bundle/release/app-release.aab"
+          OUTPUT_METADATA="android/app/build/outputs/apk/release/output-metadata.json"
+          if [ ! -s "$APK_PATH" ] || [ ! -s "$BUNDLE_PATH" ] || [ ! -s "$OUTPUT_METADATA" ]; then
+            echo "::error::Signed release APK, AAB, or output metadata was not produced"
             exit 1
           fi
+
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          if [ -z "$APKSIGNER" ]; then
+            echo "::error::apksigner was not found in the Android SDK"
+            exit 1
+          fi
+          "$APKSIGNER" verify "$APK_PATH"
+
+          CERT_DIGEST="$("$APKSIGNER" verify --print-certs "$APK_PATH" |
+            sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1)"
+          if [ "${#CERT_DIGEST}" -ne 64 ]; then
+            echo "::error::Could not derive the signing certificate SHA-256 digest"
+            exit 1
+          fi
+          case "$CERT_DIGEST" in
+            *[!0-9A-Fa-f]*)
+              echo "::error::Signing certificate digest was malformed"
+              exit 1
+              ;;
+          esac
+          CERT_SHA256="$(printf '%s' "$CERT_DIGEST" |
+            tr '[:lower:]' '[:upper:]' | sed 's/../&:/g; s/:$//')"
+
+          VERSION_NAME="$(jq -er '.elements[0].versionName' "$OUTPUT_METADATA")"
+          VERSION_CODE="$(jq -er '.elements[0].versionCode' "$OUTPUT_METADATA")"
+          if ! [[ "$VERSION_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
+            echo "::error::Android versionName is not safe for release metadata"
+            exit 1
+          fi
+          if ! [[ "$VERSION_CODE" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Android versionCode is invalid"
+            exit 1
+          fi
+          SAFE_VERSION="$VERSION_NAME"
           SHORT_SHA="${GITHUB_SHA:0:7}"
-          FILENAME="liveninja-${SHORT_SHA}.apk"
-          echo "path=android/${APK_PATH}" >> "$GITHUB_OUTPUT"
+          APK_SHA256="$(sha256sum "$APK_PATH" | cut -d ' ' -f 1)"
+          FILENAME="liveninja-${SAFE_VERSION}-${VERSION_CODE}-${APK_SHA256}.apk"
+          BUNDLE_FILENAME="liveninja-${SAFE_VERSION}-${VERSION_CODE}-${SHORT_SHA}.aab"
+          PUBLISHED_APK="$RUNNER_TEMP/$FILENAME"
+          PLAY_BUNDLE="$RUNNER_TEMP/$BUNDLE_FILENAME"
+          LATEST_JSON="$RUNNER_TEMP/android-latest.json"
+          ASSETLINKS_JSON="$RUNNER_TEMP/android-assetlinks.json"
+          cp "$APK_PATH" "$PUBLISHED_APK"
+          cp "$BUNDLE_PATH" "$PLAY_BUNDLE"
+
+          PLAY_CERT_SHA256=""
+          if [ -n "${ANDROID_PLAY_APP_SIGNING_SHA256:-}" ]; then
+            PLAY_CERT_DIGEST="$(printf '%s' "$ANDROID_PLAY_APP_SIGNING_SHA256" |
+              tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"
+            if [ "${#PLAY_CERT_DIGEST}" -ne 64 ]; then
+              echo "::error::ANDROID_PLAY_APP_SIGNING_SHA256 must contain exactly 64 hex digits"
+              exit 1
+            fi
+            case "$PLAY_CERT_DIGEST" in
+              *[!0-9A-F]*)
+                echo "::error::ANDROID_PLAY_APP_SIGNING_SHA256 is malformed"
+                exit 1
+                ;;
+            esac
+            PLAY_CERT_SHA256="$(printf '%s' "$PLAY_CERT_DIGEST" |
+              sed 's/../&:/g; s/:$//')"
+          fi
+          FINGERPRINTS_JSON="$(jq -nc \
+            --arg sideload "$CERT_SHA256" \
+            --arg play "$PLAY_CERT_SHA256" \
+            '[$sideload] + (if $play == "" then [] else [$play] end) | unique')"
+
+          APK_SIZE="$(stat -c '%s' "$PUBLISHED_APK")"
+          PUBLISHED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          APK_URL="https://live.jeremy.ninja/static/models/downloads/$FILENAME"
+
+          jq -n \
+            --arg packageName "ninja.jeremy.liveninja" \
+            --arg versionName "$VERSION_NAME" \
+            --argjson versionCode "$VERSION_CODE" \
+            --arg url "$APK_URL" \
+            --arg sha256 "$APK_SHA256" \
+            --argjson sizeBytes "$APK_SIZE" \
+            --arg certificateSha256 "$CERT_SHA256" \
+            --arg publishedAt "$PUBLISHED_AT" \
+            --arg gitSha "$GITHUB_SHA" \
+            '{
+              schemaVersion: 1,
+              packageName: $packageName,
+              versionName: $versionName,
+              versionCode: $versionCode,
+              url: $url,
+              sha256: $sha256,
+              sizeBytes: $sizeBytes,
+              certificateSha256: $certificateSha256,
+              publishedAt: $publishedAt,
+              gitSha: $gitSha
+            }' > "$LATEST_JSON"
+
+          jq -n \
+            --arg packageName "ninja.jeremy.liveninja" \
+            --argjson fingerprints "$FINGERPRINTS_JSON" \
+            '[{
+              relation: ["delegate_permission/common.handle_all_urls"],
+              target: {
+                namespace: "android_app",
+                package_name: $packageName,
+                sha256_cert_fingerprints: $fingerprints
+              }
+            }]' > "$ASSETLINKS_JSON"
+
+          echo "apk_path=$PUBLISHED_APK" >> "$GITHUB_OUTPUT"
+          echo "bundle_path=$PLAY_BUNDLE" >> "$GITHUB_OUTPUT"
+          echo "latest_path=$LATEST_JSON" >> "$GITHUB_OUTPUT"
+          echo "assetlinks_path=$ASSETLINKS_JSON" >> "$GITHUB_OUTPUT"
           echo "filename=${FILENAME}" >> "$GITHUB_OUTPUT"
+          echo "safe_version=${SAFE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "url=${APK_URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload signed release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: liveninja-android-${{ steps.release.outputs.safe_version }}-${{ steps.release.outputs.version_code }}
+          path: |
+            ${{ steps.release.outputs.apk_path }}
+            ${{ steps.release.outputs.bundle_path }}
+            ${{ steps.release.outputs.latest_path }}
+            ${{ steps.release.outputs.assetlinks_path }}
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -179,17 +330,25 @@ jobs:
           role-session-name: gha-live-ninja-android-release-${{ github.run_id }}
           aws-region: us-east-1
 
-      # CRITICAL: must land under static/models/* — CloudFront only routes
-      # /static/vendor/* and /static/models/* to this S3 bucket (template.yaml
-      # ~2126-2156); a bare /static/* key would 404 through the Lambda's embedded
-      # FS instead. Unique per-sha filename makes cache-control moot.
-      - name: Upload APK to S3
+      # Upload the immutable APK first. The stable documents move only after it
+      # succeeds, so /latest can never advertise a missing object.
+      - name: Publish signed APK and release documents
+        env:
+          ASSETS_BUCKET: live-ninja-assets-759775734231
         run: |
-          set -eu
-          aws s3 cp "${{ steps.apk.outputs.path }}" \
-            "s3://live-ninja-assets-759775734231/static/models/downloads/${{ steps.apk.outputs.filename }}" \
+          set -euo pipefail
+          aws s3 cp "${{ steps.release.outputs.apk_path }}" \
+            "s3://$ASSETS_BUCKET/static/models/downloads/${{ steps.release.outputs.filename }}" \
             --content-type application/vnd.android.package-archive \
-            --cache-control no-cache
+            --cache-control "public, max-age=31536000, immutable"
+          aws s3 cp "${{ steps.release.outputs.assetlinks_path }}" \
+            "s3://$ASSETS_BUCKET/static/models/downloads/android-assetlinks.json" \
+            --content-type application/json \
+            --cache-control "no-cache, max-age=0, must-revalidate"
+          aws s3 cp "${{ steps.release.outputs.latest_path }}" \
+            "s3://$ASSETS_BUCKET/static/models/downloads/android-latest.json" \
+            --content-type application/json \
+            --cache-control "no-cache, no-store, must-revalidate"
 
       # Best-effort only: the org-wide gha-deploy OIDC role likely lacks
       # ses:SendEmail (not granted in template.yaml). Primary delivery
@@ -199,19 +358,45 @@ jobs:
         continue-on-error: true
         run: |
           set -eu
-          LINK="https://live.jeremy.ninja/static/models/downloads/${{ steps.apk.outputs.filename }}"
+          MESSAGE_JSON="$RUNNER_TEMP/android-release-email.json"
+          trap 'rm -f "$MESSAGE_JSON"' EXIT
+          jq -n \
+            --arg link "${{ steps.release.outputs.url }}" \
+            --arg version "${{ steps.release.outputs.version_name }} (${{ steps.release.outputs.version_code }})" \
+            --arg commit "${{ github.sha }}" \
+            '{
+              FromEmailAddress: "Jeremy Proffitt <jeremy@jeremy.ninja>",
+              Destination: {ToAddresses: ["proffitt.jeremy@gmail.com"]},
+              ReplyToAddresses: ["proffitt.jeremy@gmail.com"],
+              Content: {
+                Simple: {
+                  Subject: {Data: "Live Ninja Android release ready", Charset: "UTF-8"},
+                  Body: {
+                    Text: {
+                      Data: ("APK download link:\n" + $link + "\n\nVersion: " + $version +
+                        "\nCommit: " + $commit),
+                      Charset: "UTF-8"
+                    }
+                  }
+                }
+              }
+            }' > "$MESSAGE_JSON"
           aws sesv2 send-email \
             --region us-east-1 \
-            --from-email-address "Jeremy Proffitt <jeremy@jeremy.ninja>" \
-            --destination "ToAddresses=proffitt.jeremy@gmail.com" \
-            --reply-to-addresses "proffitt.jeremy@gmail.com" \
-            --content "Simple={Subject={Data='Live Ninja Android build ready'},Body={Text={Data='APK download link:\n'$LINK'\n\nVariant: ${{ inputs.variant }}\nCommit: ${{ github.sha }}'}}}"
+            --cli-input-json "file://$MESSAGE_JSON"
 
       - name: Summary
         run: |
           {
-            echo "### Live Ninja Android build"
-            echo "- APK: https://live.jeremy.ninja/static/models/downloads/${{ steps.apk.outputs.filename }}"
-            echo "- Variant: ${{ inputs.variant }}"
+            echo "### Live Ninja Android signed release"
+            echo "- APK: ${{ steps.release.outputs.url }}"
+            echo "- Play AAB: attached to this workflow run"
+            echo "- Version: ${{ steps.release.outputs.version_name }} (${{ steps.release.outputs.version_code }})"
+            echo "- Metadata: https://live.jeremy.ninja/v1/app/android/latest"
+            echo "- Digital Asset Links: https://live.jeremy.ninja/.well-known/assetlinks.json"
             echo "- Commit: ${{ github.sha }}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove release keystore
+        if: always()
+        run: rm -f "${{ github.workspace }}/android/keystores/release.keystore"

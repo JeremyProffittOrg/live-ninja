@@ -1,7 +1,10 @@
 package ninja.jeremy.liveninja.realtime
 
 import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import java.io.IOException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
@@ -105,6 +108,8 @@ class RealtimeSessionCoordinatorTest {
     private val geminiTransport = FakeTransport()
     private val sessionApi = mockk<RealtimeSessionApi>()
     private val toolRouter = mockk<ToolCallRouter>()
+    private val deviceVolumeTool = mockk<DeviceVolumeToolExecutor>()
+    private val deviceCameraTool = mockk<DeviceCameraToolExecutor>()
 
     private fun coordinator(): RealtimeSessionCoordinator {
         coEvery { sessionApi.fetchSession() } returns RealtimeSession(
@@ -119,7 +124,8 @@ class RealtimeSessionCoordinatorTest {
             // Only used to stop the wake service for the device-local stop_listening
             // tool, which this suite does not exercise.
             mockk<android.content.Context>(relaxed = true),
-            transport, novaTransport, geminiTransport, sessionApi, toolRouter,
+            transport, novaTransport, geminiTransport, sessionApi, toolRouter, deviceVolumeTool,
+            deviceCameraTool,
             TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())),
         )
     }
@@ -156,6 +162,68 @@ class RealtimeSessionCoordinatorTest {
     }
 
     @Test
+    fun start_emitsQuotaWarningWithoutTurningItIntoSessionError() = runBlocking {
+        val coord = coordinator()
+        coEvery { sessionApi.fetchSession() } returns RealtimeSession(
+            clientSecret = "ephemeral-token",
+            expiresAt = null,
+            model = "gpt-realtime",
+            voice = "cedar",
+            sessionId = "rs-warning",
+            quotaWarning = "  OpenAI budget warning: estimated \$19.25 remaining this month.  ",
+        )
+        val seen = mutableListOf<SessionUiEvent>()
+        val job = collectInto(coord, seen)
+
+        coord.start()
+
+        awaitUntil("nonfatal quota warning") {
+            seen.any { it is SessionUiEvent.SessionWarning }
+        }
+        assertTrue(coord.connected.value)
+        assertEquals(
+            "OpenAI budget warning: estimated \$19.25 remaining this month.",
+            seen.filterIsInstance<SessionUiEvent.SessionWarning>().single().message,
+        )
+        assertTrue(seen.none { it is SessionUiEvent.SessionError })
+
+        coord.stop()
+        job.cancel()
+    }
+
+    @Test
+    fun deviceSessionActionWaitsForAcknowledgementResponseToFinish() = runBlocking {
+        val coord = coordinator()
+        coord.start()
+
+        transport.serverEvent(
+            RealtimeEvent.FunctionCall(
+                callId = "new-conversation-call",
+                name = DeviceSessionTool.NAME_START_NEW_CONVERSATION,
+                argumentsJson = "{}",
+            ),
+        )
+        awaitUntil("device tool result and acknowledgement request") {
+            transport.sentEvents.any { it.optString("type") == "response.create" }
+        }
+
+        // This ends the response that issued the function call. Acting here
+        // would tear down the session before the assistant can acknowledge it.
+        transport.serverEvent(RealtimeEvent.ResponseDone("calling-response"))
+        delay(50)
+        assertEquals(0, transport.disconnects)
+        assertEquals(1, transport.connectCalls.size)
+
+        transport.serverEvent(RealtimeEvent.ResponseStarted("ack-response"))
+        transport.serverEvent(RealtimeEvent.ResponseDone("ack-response"))
+        awaitUntil("fresh session after spoken acknowledgement") {
+            transport.disconnects == 1 && transport.connectCalls.size == 2
+        }
+
+        coord.stop()
+    }
+
+    @Test
     fun start_geminiDirect_routesToGeminiTransportAndPrimes() = runBlocking {
         val endpoint = "wss://generativelanguage.googleapis.com/ws/" +
             "google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained"
@@ -177,7 +245,8 @@ class RealtimeSessionCoordinatorTest {
         )
         val coord = RealtimeSessionCoordinator(
             mockk<android.content.Context>(relaxed = true),
-            transport, novaTransport, geminiTransport, sessionApi, toolRouter,
+            transport, novaTransport, geminiTransport, sessionApi, toolRouter, deviceVolumeTool,
+            deviceCameraTool,
             TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())),
         )
 
@@ -226,7 +295,8 @@ class RealtimeSessionCoordinatorTest {
         )
         val coord = RealtimeSessionCoordinator(
             mockk<android.content.Context>(relaxed = true),
-            transport, novaTransport, geminiTransport, sessionApi, toolRouter,
+            transport, novaTransport, geminiTransport, sessionApi, toolRouter, deviceVolumeTool,
+            deviceCameraTool,
             TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())),
         )
 
@@ -246,7 +316,8 @@ class RealtimeSessionCoordinatorTest {
         coEvery { sessionApi.fetchSession() } throws IOException("session mint failed")
         val coord = RealtimeSessionCoordinator(
             mockk<android.content.Context>(relaxed = true),
-            transport, novaTransport, geminiTransport, sessionApi, toolRouter,
+            transport, novaTransport, geminiTransport, sessionApi, toolRouter, deviceVolumeTool,
+            deviceCameraTool,
             TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())),
         )
         try {
@@ -365,6 +436,90 @@ class RealtimeSessionCoordinatorTest {
         val chip = seen.filterIsInstance<SessionUiEvent.ToolCall>().first()
         assertEquals("calc", chip.name)
         assertEquals("completed", chip.summary)
+        coord.stop()
+        job.cancel()
+    }
+
+    @Test
+    fun setVolume_isExecutedLocallyAndNeverReachesBackendRouter() = runBlocking {
+        val localOutput =
+            """{"tool":"set_volume","callId":"volume-1","ok":true,"output":{"stream":"media","level":60}}"""
+        val coord = coordinator()
+        every {
+            deviceVolumeTool.execute(
+                "volume-1",
+                """{"action":"set","level":60}""",
+            )
+        } returns localOutput
+        val seen = mutableListOf<SessionUiEvent>()
+        val job = collectInto(coord, seen)
+        coord.start()
+
+        transport.serverEvent(
+            RealtimeEvent.FunctionCall(
+                callId = "volume-1",
+                name = DEVICE_VOLUME_TOOL_NAME,
+                argumentsJson = """{"action":"set","level":60}""",
+            ),
+        )
+
+        awaitUntil("device-local volume output") { transport.sentEvents.size >= 2 }
+        verify(exactly = 1) {
+            deviceVolumeTool.execute(
+                "volume-1",
+                """{"action":"set","level":60}""",
+            )
+        }
+        coVerify(exactly = 0) { toolRouter.invoke(any()) }
+        val output = transport.sentEvents.first()
+            .getJSONObject("item")
+            .getString("output")
+        assertEquals(localOutput, output)
+        assertEquals("response.create", transport.sentEvents[1].getString("type"))
+
+        coord.stop()
+        job.cancel()
+    }
+
+    @Test
+    fun takePhoto_isExecutedLocallyAndNeverReachesBackendRouter() = runBlocking {
+        val localOutput =
+            """{"tool":"take_photo","callId":"photo-1","ok":true,"output":{"deliverableId":"d-1","name":"photo.jpg"}}"""
+        val coord = coordinator()
+        coEvery {
+            deviceCameraTool.execute(
+                TAKE_PHOTO_TOOL_NAME,
+                "photo-1",
+                """{"camera":"front"}""",
+            )
+        } returns localOutput
+        val seen = mutableListOf<SessionUiEvent>()
+        val job = collectInto(coord, seen)
+        coord.start()
+
+        transport.serverEvent(
+            RealtimeEvent.FunctionCall(
+                callId = "photo-1",
+                name = TAKE_PHOTO_TOOL_NAME,
+                argumentsJson = """{"camera":"front"}""",
+            ),
+        )
+
+        awaitUntil("device-local camera output") { transport.sentEvents.size >= 2 }
+        coVerify(exactly = 1) {
+            deviceCameraTool.execute(
+                TAKE_PHOTO_TOOL_NAME,
+                "photo-1",
+                """{"camera":"front"}""",
+            )
+        }
+        coVerify(exactly = 0) { toolRouter.invoke(any()) }
+        val output = transport.sentEvents.first()
+            .getJSONObject("item")
+            .getString("output")
+        assertEquals(localOutput, output)
+        assertEquals("response.create", transport.sentEvents[1].getString("type"))
+
         coord.stop()
         job.cancel()
     }

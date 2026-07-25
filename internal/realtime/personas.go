@@ -76,7 +76,13 @@ const coreInstructions = "Always speak and respond in English (US). Only switch 
 	"stop_listening when the user asks you to stop listening, to close or quit the app, " +
 	"or says they are done for now, and start_new_conversation when they want to start " +
 	"over or move to an unrelated subject with a clean slate (both act on the user's own " +
-	"device; neither deletes anything), " +
+	"device; neither deletes anything), set_volume for requests to set, raise, lower, mute, " +
+	"or unmute device audio — media is the default when the user does not identify a stream, " +
+	"and ring, notification, alarm, system, voice_call, dtmf, or accessibility should be " +
+	"targeted only when the user names it — take_photo to capture a JPEG photo and " +
+	"record_video to capture a silent MP4 video on the user's current device; the spoken request " +
+	"is the confirmation, back camera is the default unless the user asks for front, and " +
+	"record_video defaults to 60 seconds when no duration is stated — " +
 	"web_research for recent news and developments — cite " +
 	"the source date for anything time-sensitive — and, for documents and downloads, " +
 	"deliverable_create/file_create to make a file, file_list/file_read to browse or read " +

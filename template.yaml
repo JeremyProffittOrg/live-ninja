@@ -22,6 +22,14 @@ Parameters:
     Default: gpt-realtime
     Description: OpenAI Realtime model id the realtime broker mints client 
       secrets for.
+  OpenAIMonthlyBudgetUsd:
+    Type: Number
+    Default: 100
+    MinValue: 0
+    Description: >-
+      Owner-set monthly OpenAI budget used by the M29 estimated-remaining
+      warning. The web function compares this with persisted OpenAI CONV
+      costs and warns below $20; 0 disables the warning.
   GeminiLiveModel:
     Type: String
     Default: gemini-3.1-flash-live-preview
@@ -251,6 +259,14 @@ Resources:
           # custom-resource Lambdas.
           WAKEWORDS_BUCKET: !Ref WakewordsBucket
           DELIVERABLES_BUCKET: !Ref DeliverablesBucket
+          # Signed Android release CI writes these two stable JSON pointers
+          # after verifying the APK signature. The web function exposes them
+          # through public, pre-auth routes without permission to list or
+          # mutate the assets bucket.
+          ANDROID_RELEASES_BUCKET: !Ref AssetsBucket
+          ANDROID_LATEST_KEY: static/models/downloads/android-latest.json
+          ANDROID_ASSETLINKS_KEY: static/models/downloads/android-assetlinks.json
+          OPENAI_MONTHLY_BUDGET_USD: !Ref OpenAIMonthlyBudgetUsd
           BATCH_JOB_QUEUE: !Ref WakewordTrainJobQueue
           BATCH_JOB_DEFINITION: !Ref WakewordTrainJobDefinition
           ZIPPER_FUNCTION_NAME: !Ref DeliverablesZipperFunction
@@ -394,6 +410,13 @@ Resources:
                 # Model layout per contracts/wakeword-manifest.md:
                 # wakewords/<wwId>/<platform>/model.onnx + manifest.json
           - !Sub "${WakewordsBucket.Arn}/wakewords/*"
+        - Sid: AndroidReleaseDocumentsRead
+          Effect: Allow
+          Action:
+          - s3:GetObject
+          Resource:
+          - !Sub "${AssetsBucket.Arn}/static/models/downloads/android-latest.json"
+          - !Sub "${AssetsBucket.Arn}/static/models/downloads/android-assetlinks.json"
         - Sid: WakewordModelsList
           Effect: Allow
           Action:

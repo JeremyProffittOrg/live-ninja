@@ -36,6 +36,7 @@ func TestIsPublicRoutePathTable(t *testing.T) {
 		{"/auth/lwa/callback", true},
 		{"/auth/device/pair/start", true},
 		{"/.well-known/jwks.json", true},
+		{"/.well-known/assetlinks.json", true},
 		// Protected.
 		{"/api/v1/tools/invoke", false},
 		{"/api/v1/realtime/session", false},

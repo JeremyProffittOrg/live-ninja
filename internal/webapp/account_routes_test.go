@@ -62,6 +62,14 @@ func (f *exportCaptureS3) GetObject(ctx context.Context, params *s3.GetObjectInp
 	return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewReader(b)), ContentLength: aws.Int64(int64(len(b)))}, nil
 }
 
+func (f *exportCaptureS3) HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	b, ok := f.objects[aws.ToString(params.Key)]
+	if !ok {
+		return nil, errNoSuchKey
+	}
+	return &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(len(b)))}, nil
+}
+
 func (f *exportCaptureS3) DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
 	delete(f.objects, aws.ToString(params.Key))
 	return &s3.DeleteObjectOutput{}, nil

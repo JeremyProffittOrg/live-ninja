@@ -10,9 +10,11 @@ package webapp
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
+	"github.com/gofiber/fiber/v2"
 )
 
 // seedHandoff plants an authorized user + the APPHANDOFF row the broker
@@ -105,5 +107,39 @@ func TestAppClaimMissingFields(t *testing.T) {
 		map[string]any{"code": "code-only"})
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 (missing codeVerifier)", resp.StatusCode)
+	}
+}
+
+func TestAppReturnFallsBackToCustomScheme(t *testing.T) {
+	app := fiber.New()
+	r := &authRoutes{}
+	app.Get(appReturnPath, r.appReturn)
+
+	req := httptest.NewRequest(http.MethodGet,
+		appReturnPath+"?code=one-shot&state=state_value", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want 302", resp.StatusCode)
+	}
+	want := "ninja.jeremy.liveninja://lwa?code=one-shot&state=state_value"
+	if got := resp.Header.Get("Location"); got != want {
+		t.Fatalf("Location = %q, want %q", got, want)
+	}
+}
+
+func TestAppReturnRejectsIncompleteHandoff(t *testing.T) {
+	app := fiber.New()
+	r := &authRoutes{}
+	app.Get(appReturnPath, r.appReturn)
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, appReturnPath+"?code=only", nil))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
 }

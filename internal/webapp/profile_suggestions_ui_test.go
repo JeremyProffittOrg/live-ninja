@@ -90,7 +90,7 @@ func TestConversationPageCarriesTheSuggestionQueueMarkup(t *testing.T) {
 	// slice-out-of-range if the button ever moves near either end of the file,
 	// which would read as a crashed test rather than a failed assertion.
 	assert.Contains(t, html[max(0, tabIdx-260):min(len(html), tabIdx+260)],
-		`aria-label="Settings"`)
+		`aria-label="Open settings"`)
 }
 
 // The suggestion queue's styles must exist in the shipped stylesheet, in both

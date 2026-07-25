@@ -7,11 +7,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The device-local tool mapping (owner request 2026-07-25). These two tools are the only
- * ones the client must NOT forward to `POST /api/v1/tools/invoke`, so a regression that
- * dropped the interception would send them to a backend that cannot perform them and
- * return `not_configured` — the model would then tell the user listening stopped when
- * nothing stopped.
+ * The device-local session-tool mapping (owner request 2026-07-25). These tools must not
+ * be forwarded to `POST /api/v1/tools/invoke`, so a regression that dropped interception
+ * would send them to a backend that cannot perform them and return `not_configured` — the
+ * model would then tell the user listening stopped when nothing stopped. Device-local
+ * volume control has its own argument-aware mapping in DeviceVolumeToolsTest.
  */
 class DeviceSessionToolsTest {
 

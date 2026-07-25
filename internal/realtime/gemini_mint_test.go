@@ -1,16 +1,38 @@
 package realtime
 
 import (
+	"cloud.google.com/go/auth"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/genai"
 )
+
+type staticGeminiTokenProvider struct {
+	token *auth.Token
+	err   error
+}
+
+func (p staticGeminiTokenProvider) Token(context.Context) (*auth.Token, error) {
+	return p.token, p.err
+}
+
+type geminiRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f geminiRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 // TestGeminiMintBuildsConstrainedTokenAndSetup drives Mint through a fake
 // token creator and pins the M13 wire contract: single-use 30-min token,
@@ -103,6 +125,192 @@ func TestGeminiMintBuildsConstrainedTokenAndSetup(t *testing.T) {
 	assert.NotContains(t, lower, "bridgeurl")
 }
 
+func TestGeminiRESTTokenMintUsesBearerAndAPIKeyQuery(t *testing.T) {
+	t.Parallel()
+
+	// Synthetic markers only. No credential or service-account value is loaded
+	// by this test.
+	const apiKey = "unit-test-api-key"
+	const oauthToken = "unit-test-oauth-token"
+	expiresAt := time.Date(2026, 7, 25, 21, 30, 0, 0, time.UTC)
+	newSessionExpiresAt := time.Date(2026, 7, 25, 21, 2, 0, 0, time.UTC)
+	uses := int32(1)
+	setup := buildGeminiSetup("gemini-test-model", "Puck", "You are terse.")
+	cfg := &genai.CreateAuthTokenConfig{
+		ExpireTime:           expiresAt,
+		NewSessionExpireTime: newSessionExpiresAt,
+		Uses:                 &uses,
+	}
+
+	type capturedRequest struct {
+		method        string
+		path          string
+		apiKey        string
+		authorization string
+		apiKeyHeader  string
+		contentType   string
+		body          []byte
+	}
+	captured := make(chan capturedRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		captured <- capturedRequest{
+			method:        r.Method,
+			path:          r.URL.Path,
+			apiKey:        r.URL.Query().Get("key"),
+			authorization: r.Header.Get("Authorization"),
+			apiKeyHeader:  r.Header.Get("x-goog-api-key"),
+			contentType:   r.Header.Get("Content-Type"),
+			body:          body,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"name":"auth_tokens/fake-rest-token"}`)
+	}))
+	defer server.Close()
+
+	tok, err := createGeminiAuthTokenREST(
+		context.Background(),
+		server.Client(),
+		server.URL+"/v1alpha/auth_tokens",
+		apiKey,
+		staticGeminiTokenProvider{token: &auth.Token{Value: oauthToken}},
+		cfg,
+		setup,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, tok)
+	assert.Equal(t, "auth_tokens/fake-rest-token", tok.Name)
+
+	got := <-captured
+	assert.Equal(t, http.MethodPost, got.method)
+	assert.Equal(t, "/v1alpha/auth_tokens", got.path)
+	assert.Equal(t, apiKey, got.apiKey)
+	assert.Equal(t, "Bearer "+oauthToken, got.authorization)
+	assert.Empty(t, got.apiKeyHeader, "the API key must not be sent as an auth header")
+	assert.Equal(t, "application/json", got.contentType)
+
+	wantBody, err := json.Marshal(geminiAuthTokenRESTRequest{
+		ExpireTime:               expiresAt,
+		NewSessionExpireTime:     newSessionExpiresAt,
+		Uses:                     &uses,
+		BidiGenerateContentSetup: setup,
+	})
+	require.NoError(t, err)
+	assert.JSONEq(t, string(wantBody), string(got.body))
+
+	var wireBody map[string]any
+	require.NoError(t, json.Unmarshal(got.body, &wireBody))
+	require.Len(t, wireBody, 4)
+	assert.Equal(t, float64(1), wireBody["uses"])
+	assert.Equal(t, expiresAt.Format(time.RFC3339Nano), wireBody["expireTime"])
+	assert.Equal(t, newSessionExpiresAt.Format(time.RFC3339Nano), wireBody["newSessionExpireTime"])
+	assert.NotContains(t, wireBody, "authToken")
+	assert.NotContains(t, wireBody, "config")
+	wireSetup, ok := wireBody["bidiGenerateContentSetup"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "models/gemini-test-model", wireSetup["model"])
+}
+
+func TestGeminiMintFallsBackToSDKAPIKeyWithoutServiceAccount(t *testing.T) {
+	// Synthetic marker only. A whitespace value is intentionally treated as
+	// an absent optional service-account credential without reaching SSM.
+	const apiKey = "unit-test-fallback-api-key"
+	t.Setenv(config.EnvOverrideGeminiServiceAccountJSON, " ")
+	t.Setenv(config.EnvOverrideGeminiAPIKey, apiKey)
+	t.Setenv("GOOGLE_API_KEY", "")
+	t.Setenv("GOOGLE_GENAI_USE_VERTEXAI", "")
+
+	type capturedRequest struct {
+		path          string
+		apiKeyQuery   string
+		apiKeyHeader  string
+		authorization string
+	}
+	captured := make(chan capturedRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured <- capturedRequest{
+			path:          r.URL.Path,
+			apiKeyQuery:   r.URL.Query().Get("key"),
+			apiKeyHeader:  r.Header.Get("x-goog-api-key"),
+			authorization: r.Header.Get("Authorization"),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"name":"auth_tokens/fake-fallback-token"}`)
+	}))
+	defer server.Close()
+	t.Setenv("GOOGLE_GEMINI_BASE_URL", server.URL+"/")
+
+	minter := NewGeminiMinter(config.NewLoaderWithClient(nil), "gemini-test-model")
+	result, err := minter.Mint(context.Background(), "Puck", "You are terse.")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, "auth_tokens/fake-fallback-token", result.AccessToken.Value)
+
+	got := <-captured
+	assert.Equal(t, "/v1alpha/auth_tokens", got.path)
+	assert.Empty(t, got.apiKeyQuery)
+	assert.Equal(t, apiKey, got.apiKeyHeader)
+	assert.Empty(t, got.authorization)
+}
+
+func TestGeminiRESTTokenMintRedactsCredentialsFromErrors(t *testing.T) {
+	t.Parallel()
+
+	const apiKey = "unit-test-key+/="
+	const oauthToken = "unit-test-token+/="
+	uses := int32(1)
+	cfg := &genai.CreateAuthTokenConfig{
+		ExpireTime:           time.Now().Add(time.Hour),
+		NewSessionExpireTime: time.Now().Add(time.Minute),
+		Uses:                 &uses,
+	}
+	provider := staticGeminiTokenProvider{token: &auth.Token{Value: oauthToken}}
+
+	t.Run("API response", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"status": "UNAUTHENTICATED",
+					"message": fmt.Sprintf("rejected key %s (%s) and token %s",
+						apiKey, url.QueryEscape(apiKey), oauthToken),
+				},
+			})
+		}))
+		defer server.Close()
+
+		_, err := createGeminiAuthTokenREST(
+			context.Background(), server.Client(), server.URL+"/v1alpha/auth_tokens",
+			apiKey, provider, cfg, map[string]any{"model": "models/test"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "401 Unauthorized")
+		assert.Contains(t, err.Error(), "[REDACTED]")
+		assert.NotContains(t, err.Error(), apiKey)
+		assert.NotContains(t, err.Error(), url.QueryEscape(apiKey))
+		assert.NotContains(t, err.Error(), oauthToken)
+	})
+
+	t.Run("transport error", func(t *testing.T) {
+		client := &http.Client{
+			Transport: geminiRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				return nil, fmt.Errorf("failed URL %s with %s", req.URL, req.Header.Get("Authorization"))
+			}),
+		}
+		_, err := createGeminiAuthTokenREST(
+			context.Background(), client, geminiAuthTokensEndpoint,
+			apiKey, provider, cfg, map[string]any{"model": "models/test"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "[REDACTED]")
+		assert.NotContains(t, err.Error(), apiKey)
+		assert.NotContains(t, err.Error(), url.QueryEscape(apiKey))
+		assert.NotContains(t, err.Error(), oauthToken)
+	})
+}
+
 // TestGeminiToolDeclarationsMirrorManifest: every OpenAI-manifest tool
 // crosses to Gemini with name intact, description at least prefix-equal
 // (D-c), sanitized-but-equivalent parameters (D1), and the OpenAI "type"
@@ -163,11 +371,11 @@ func TestResolveGeminiVoiceChain(t *testing.T) {
 	cases := []struct {
 		setting, persona, want string
 	}{
-		{"Puck", "Kore", "Puck"},           // setting wins
-		{"bogus", "Kore", "Kore"},          // unknown setting falls through
+		{"Puck", "Kore", "Puck"},             // setting wins
+		{"bogus", "Kore", "Kore"},            // unknown setting falls through
 		{"", "Vindemiatrix", "Vindemiatrix"}, // persona mapping
-		{"", "bogus", "Kore"},              // unknown persona voice -> default
-		{"", "", "Kore"},                   // bottom of chain
+		{"", "bogus", "Kore"},                // unknown persona voice -> default
+		{"", "", "Kore"},                     // bottom of chain
 	}
 	for _, tc := range cases {
 		assert.Equal(t, tc.want, ResolveGeminiVoiceChain(tc.setting, tc.persona),

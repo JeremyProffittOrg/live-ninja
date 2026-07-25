@@ -106,6 +106,25 @@ const DUCK_RAMP_S = 0.03; // spec §2.2: ~30ms ramp, not an abrupt cut
 const BARGE_CONFIRM_MS = 350;
 const PENDING_DUCK_LEVEL = 0.15;
 
+// M26 device-local controls. They live in the canonical server manifest but
+// must be executed by the browser holding the microphone/session, never by
+// POST /tools/invoke. conversation.mjs defers the actual lifecycle action
+// until the assistant finishes acknowledging it.
+const WEB_DEVICE_TOOLS = new Set(['stop_listening', 'start_new_conversation']);
+
+function webDeviceToolResult(tool, callId) {
+  const instruction =
+    tool === 'stop_listening'
+      ? 'Listening will stop as soon as you finish this reply. Be brief and tell the user they can restart it from the page.'
+      : 'A fresh conversation will start as soon as you finish this reply. Acknowledge briefly and do not summarize the old conversation.';
+  return {
+    tool,
+    callId,
+    ok: true,
+    output: { acknowledged: true, instruction },
+  };
+}
+
 // Nova bridge: how long to wait for the bridge's `session.start` after the
 // WebSocket opens, and the PCM sample rates Nova Sonic uses when the bridge
 // doesn't override them in `session.start` (16 kHz in, 24 kHz out). The
@@ -425,6 +444,11 @@ export class RealtimeSession extends EventTarget {
     this.callsUrl = callsUrl;
     this.#tools = createToolDispatcher({
       sendEvent: (evt) => this.sendEvent(evt),
+      invokeLocal: ({ tool, callId, args }) => {
+        if (!WEB_DEVICE_TOOLS.has(tool)) return undefined;
+        this.#emit('devicetool', { tool, callId, args });
+        return webDeviceToolResult(tool, callId);
+      },
       onToolCall: (d) => this.#emit('toolcall', d),
       onToolResult: (d) => this.#emit('toolresult', d),
       // `d.error` is whatever createToolDispatcher's invoke caught — an
@@ -435,7 +459,12 @@ export class RealtimeSession extends EventTarget {
         const err = d.error;
         const message = (err && (err.message || String(err))) || 'The tool call failed.';
         const code = (err && err.code) || '';
-        this.#emit('toolerror', { tool: d.tool, callId: d.callId, error: { message, code } });
+        this.#emit('toolerror', {
+          tool: d.tool,
+          callId: d.callId,
+          args: d.args || {},
+          error: { message, code, txId: (err && err.txId) || '' },
+        });
       },
     });
   }

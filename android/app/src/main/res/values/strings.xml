@@ -30,6 +30,7 @@
     <!-- Live session cost badge. Args: formatted USD, text tokens, audio tokens.
          Says "estimate" out loud: it is list price computed on-device, not a bill. -->
     <string name="conversation_cost_badge_a11y">Session cost estimate %1$s, list price. %2$d text tokens, %3$d audio tokens.</string>
+    <string name="conversation_warning_dismiss">Dismiss warning</string>
     <string name="conversation_tap_to_talk">Tap to talk</string>
     <string name="conversation_idle_wake_caption">Or just say “%1$s”</string>
     <!-- In-app stop-listening control. The wake FGS notification carries a Stop action, but it
@@ -187,6 +188,13 @@
     <string name="onboarding_mic_grant">Allow microphone</string>
     <string name="onboarding_mic_not_now">Not now</string>
 
+    <string name="onboarding_camera_title">Camera capture</string>
+    <string name="onboarding_camera_body">Optional: let Live Ninja take a photo or record a video when you ask by voice.</string>
+    <string name="onboarding_camera_disclosure_title">How voice camera commands work</string>
+    <string name="onboarding_camera_disclosure_body">When you say a command such as “take a photo” or “record a 30 second video,” that voice command is the confirmation and capture starts without another prompt. The back camera is used unless you ask for the front camera. Photos and silent videos are uploaded to your private Files storage in S3, where the existing bucket lifecycle retains them for 180 days.</string>
+    <string name="onboarding_camera_granted">Camera access granted.</string>
+    <string name="onboarding_camera_grant">Allow camera</string>
+
     <string name="onboarding_notif_title">Notifications</string>
     <string name="onboarding_notif_body">A quiet, persistent notification shows when Live Ninja is listening for the wake word, so you\'re always in control.</string>
     <string name="onboarding_notif_granted">Notifications enabled.</string>
@@ -231,6 +239,31 @@
     <string name="wake_notification_watchdog_body">Wake-word listening was enabled but the service isn\'t running (likely stopped by Android or the OEM). Tap to open Live Ninja and resume.</string>
 
     <string name="dialog_cancel">Cancel</string>
+
+    <!-- ===== M30 settings drawer / accordion ===== -->
+    <string name="settings_edge_visible">Settings</string>
+    <string name="settings_edge_open">Open settings</string>
+    <string name="settings_edge_close_visible">Close</string>
+    <string name="settings_edge_close">Close settings</string>
+    <string name="settings_accordion_expanded">Expanded</string>
+    <string name="settings_accordion_collapsed">Collapsed</string>
+    <string name="settings_accordion_expand_action">Expand section</string>
+    <string name="settings_accordion_collapse_action">Collapse section</string>
+    <string name="settings_section_about_you">About you</string>
+    <string name="settings_section_about_you_desc">What Live Ninja knows before you say anything. It uses these in every conversation.</string>
+    <string name="settings_about_you_android">Your personal context is shared with this device. Profile details and pending suggestions are currently managed in the Live Ninja web app.</string>
+    <string name="settings_section_wake_desc">What Live Ninja listens for before it starts a conversation.</string>
+    <string name="settings_section_persona">Persona</string>
+    <string name="settings_section_persona_desc">How Live Ninja speaks and behaves.</string>
+    <string name="settings_section_voice_engine">Voice engine</string>
+    <string name="settings_section_voice_engine_desc">Which speech-to-speech model powers your conversations.</string>
+    <string name="settings_section_turn_detection">Turn detection</string>
+    <string name="settings_section_turn_detection_desc">How Live Ninja decides you\'ve finished speaking.</string>
+    <string name="settings_section_appearance_desc">Theme and visual style across Live Ninja.</string>
+    <string name="settings_section_microphone">Microphone</string>
+    <string name="settings_section_microphone_desc">Which input this device uses for voice conversations.</string>
+    <string name="settings_section_privacy_desc">What Live Ninja keeps, and for how long.</string>
+    <string name="settings_section_account_desc">Sign out on this device or every device.</string>
 
     <string name="settings_section_wake">Wake word</string>
     <string name="settings_wake_service_label">Always listening</string>
@@ -323,6 +356,16 @@
     <string name="settings_retention_label">Keep conversation data for</string>
     <string name="settings_retention_none">Don\'t retain — delete after each session</string>
     <string name="settings_retention_days">%1$d days</string>
+    <string name="settings_camera_privacy_title">Voice camera commands</string>
+    <string name="settings_camera_privacy_body">A request such as “take a photo” or “record video” is your confirmation, so capture starts without an extra dialog. Back camera is the default; ask for front to override it. Photos and silent MP4 videos are uploaded to private Files storage in S3 and retained by the existing 180-day bucket lifecycle.</string>
+    <string name="settings_camera_permission_granted">Camera access is on.</string>
+    <string name="settings_camera_permission_allow">Allow camera</string>
+
+    <string name="camera_notification_channel">Camera capture</string>
+    <string name="camera_notification_channel_description">Visible while a voice-requested photo or video is being captured and saved.</string>
+    <string name="camera_notification_title">Live Ninja camera active</string>
+    <string name="camera_notification_photo">Taking a photo with the %1$s camera and saving it to Files</string>
+    <string name="camera_notification_video">Recording up to %1$d seconds with the %2$s camera and saving it to Files</string>
 
     <string name="settings_section_account">Account</string>
     <string name="settings_account_signed_in">Signed in with Amazon</string>

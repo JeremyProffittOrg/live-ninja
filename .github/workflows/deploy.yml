@@ -395,6 +395,7 @@ jobs:
               CertificateArn=${{ vars.CERTIFICATE_ARN }} \
               HostedZoneId=${{ vars.HOSTED_ZONE_ID }} \
               OpenAIRealtimeModel=${{ vars.OPENAI_REALTIME_MODEL || 'gpt-realtime' }} \
+              OpenAIMonthlyBudgetUsd=${{ vars.OPENAI_MONTHLY_BUDGET_USD || '100' }} \
               NovaBridgeDesiredCount=${{ steps.nova.outputs.desired }} \
               NovaBridgeImageReady=${{ steps.nova.outputs.imageReady }} \
               NovaBridgeEnable=false

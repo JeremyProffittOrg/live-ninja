@@ -64,6 +64,9 @@ sealed interface SessionUiEvent {
     /** Fatal session error; the UI transitions to its error state. */
     data class SessionError(val message: String) : SessionUiEvent
 
+    /** Nonfatal server warning; the live session remains usable. */
+    data class SessionWarning(val message: String) : SessionUiEvent
+
     /**
      * Running list-price cost estimate for the live session, refreshed each time
      * the provider reports token usage. Never emitted for engines that surface

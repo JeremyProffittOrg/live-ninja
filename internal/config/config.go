@@ -9,7 +9,9 @@ package config
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -27,9 +29,10 @@ const (
 	ParamGeminiAPIKey = "/live-ninja/prod/gemini/api_key"
 	// ParamGeminiServiceAccountJSON holds a GCP service-account key JSON.
 	// Gemini Live's ephemeral-token endpoint (AuthTokenService.CreateToken)
-	// rejects API-key auth outright with ACCESS_TOKEN_TYPE_UNSUPPORTED, so the
-	// API key above can drive ordinary generateContent but can NEVER mint a Live
-	// token. OAuth2 from a service account is the only credential that works.
+	// rejects API-key-only auth with ACCESS_TOKEN_TYPE_UNSUPPORTED. The direct
+	// mint path supplies service-account OAuth2 plus ParamGeminiAPIKey as a query
+	// parameter; the API key also remains the legacy fallback when this optional
+	// service-account parameter is absent.
 	ParamGeminiServiceAccountJSON = "/live-ninja/prod/gemini/service_account_json"
 	ParamLWAClientID              = "/live-ninja/prod/lwa/client_id"
 	ParamLWAClientSecret          = "/live-ninja/prod/lwa/client_secret"
@@ -147,12 +150,13 @@ func (l *Loader) Invalidate(ssmName string) {
 // function). None of these values are secret, so they are read directly
 // from the environment rather than through the SSM-backed Loader above.
 type App struct {
-	TableName     string
-	LogLevel      string
-	DomainName    string
-	EmailQueueURL string
-	JWTKmsKeyID   string
-	AuthKmsKeyID  string
+	TableName              string
+	LogLevel               string
+	DomainName             string
+	EmailQueueURL          string
+	JWTKmsKeyID            string
+	AuthKmsKeyID           string
+	OpenAIMonthlyBudgetUSD float64
 }
 
 // FromEnv reads the App configuration from the process environment,
@@ -165,6 +169,9 @@ func FromEnv() App {
 		EmailQueueURL: os.Getenv("EMAIL_QUEUE_URL"),
 		JWTKmsKeyID:   os.Getenv("JWT_KMS_KEY_ID"),
 		AuthKmsKeyID:  os.Getenv("AUTH_KMS_KEY_ID"),
+		OpenAIMonthlyBudgetUSD: getenvPositiveFloat(
+			"OPENAI_MONTHLY_BUDGET_USD",
+		),
 	}
 }
 
@@ -173,4 +180,12 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func getenvPositiveFloat(key string) float64 {
+	value, err := strconv.ParseFloat(os.Getenv(key), 64)
+	if err != nil || value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0
+	}
+	return value
 }

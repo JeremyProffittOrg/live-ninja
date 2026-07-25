@@ -17,7 +17,7 @@ data class LwaExchangeRequest(
 
 /**
  * POST /auth/lwa/app-claim request body: the one-shot handoff code from the
- * broker's custom-scheme redirect plus the PKCE code_verifier that binds the
+ * broker's App Link/custom-scheme return plus the PKCE code_verifier that binds the
  * claim to this app instance (the backend checks S256(codeVerifier) against
  * the app_challenge sent at /auth/lwa/app-login).
  */

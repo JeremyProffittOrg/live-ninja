@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -49,6 +50,17 @@ func (f *routeFakeS3) GetObject(ctx context.Context, params *s3.GetObjectInput, 
 	return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewReader(b)), ContentLength: aws.Int64(int64(len(b)))}, nil
 }
 
+func (f *routeFakeS3) HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	b, ok := f.objects[aws.ToString(params.Key)]
+	if !ok {
+		return nil, errNoSuchKey
+	}
+	return &s3.HeadObjectOutput{
+		ContentLength: aws.Int64(int64(len(b))),
+		ContentType:   aws.String(mediaTypeForKey(aws.ToString(params.Key))),
+	}, nil
+}
+
 func (f *routeFakeS3) DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
 	f.deleted = append(f.deleted, aws.ToString(params.Key))
 	return &s3.DeleteObjectOutput{}, nil
@@ -63,11 +75,22 @@ func (routeFakePresign) PresignGetObject(ctx context.Context, params *s3.GetObje
 	return &v4.PresignedHTTPRequest{URL: "https://signed.example/" + aws.ToString(params.Key) + "?sig=abc"}, nil
 }
 
+func (routeFakePresign) PresignPutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
+	return &v4.PresignedHTTPRequest{URL: "https://signed-upload.example/" + aws.ToString(params.Key) + "?sig=abc"}, nil
+}
+
+func mediaTypeForKey(key string) string {
+	if strings.HasSuffix(strings.ToLower(key), ".mp4") {
+		return "video/mp4"
+	}
+	return "image/jpeg"
+}
+
 // newDeliverablesAPIApp mounts the deliverables handlers as user u1.
 func newDeliverablesAPIApp(t *testing.T) (*fiber.App, *deliv.Service, *store.Store, *routeFakeS3) {
 	t.Helper()
 	st := store.NewWithClient(testutil.NewFakeDynamo(), "live-ninja")
-	fakeS3 := &routeFakeS3{}
+	fakeS3 := &routeFakeS3{objects: map[string][]byte{}}
 	svc, err := deliv.New(deliv.Config{
 		S3:      fakeS3,
 		Presign: routeFakePresign{},
@@ -88,10 +111,63 @@ func newDeliverablesAPIApp(t *testing.T) (*fiber.App, *deliv.Service, *store.Sto
 		c.Locals(localUserID, "u1")
 		return c.Next()
 	})
+	app.Post("/api/v1/deliverables/upload-intents", handleCreateUploadIntent(deps))
+	app.Post("/api/v1/deliverables/:id/upload-complete", handleCompleteUpload(deps))
 	app.Get("/api/v1/deliverables", handleListDeliverables(deps))
 	app.Get("/api/v1/deliverables/:id/download", handleDownloadDeliverable(deps))
 	app.Delete("/api/v1/deliverables/:id", handleDeleteDeliverable(deps))
 	return app, svc, st, fakeS3
+}
+
+func TestMediaUploadIntentAndCompletionEndpoint(t *testing.T) {
+	app, _, st, fakeS3 := newDeliverablesAPIApp(t)
+
+	resp, body := doJSON(t, app, http.MethodPost, "/api/v1/deliverables/upload-intents", map[string]any{
+		"name": "camera-20260725.jpg", "contentType": "image/jpeg", "sizeBytes": 4,
+	})
+	if resp.StatusCode != fiber.StatusCreated {
+		t.Fatalf("status = %d, want 201; body = %#v", resp.StatusCode, body)
+	}
+	id, ok := body["deliverableId"].(string)
+	if !ok || id == "" {
+		t.Fatalf("deliverableId = %#v, want non-empty string", body["deliverableId"])
+	}
+	if body["status"] != store.DeliverableStatusPending {
+		t.Errorf("status = %#v, want pending", body["status"])
+	}
+	if uploadURL, _ := body["uploadUrl"].(string); !strings.Contains(uploadURL, id) {
+		t.Errorf("uploadUrl = %q, want it to contain id %q", uploadURL, id)
+	}
+	headers, ok := body["headers"].(map[string]any)
+	if !ok {
+		t.Fatalf("headers = %#v, want object", body["headers"])
+	}
+	if headers["Content-Type"] != "image/jpeg" || headers["Content-Length"] != "4" {
+		t.Errorf("headers = %#v, want signed JPEG/4-byte headers", headers)
+	}
+
+	d, err := st.GetDeliverable(context.Background(), "u1", id)
+	if err != nil || d == nil {
+		t.Fatalf("GetDeliverable: d=%#v err=%v", d, err)
+	}
+	fakeS3.objects[d.S3Key] = []byte{0xff, 0xd8, 0xff, 0xd9}
+
+	resp, body = doJSON(t, app, http.MethodPost,
+		"/api/v1/deliverables/"+id+"/upload-complete", map[string]any{})
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %#v", resp.StatusCode, body)
+	}
+	if body["status"] != store.DeliverableStatusReady {
+		t.Errorf("status = %#v, want ready", body["status"])
+	}
+
+	got, err := st.GetDeliverable(context.Background(), "u1", id)
+	if err != nil || got == nil {
+		t.Fatalf("GetDeliverable after completion: d=%#v err=%v", got, err)
+	}
+	if got.Status != store.DeliverableStatusReady {
+		t.Errorf("stored status = %q, want ready", got.Status)
+	}
 }
 
 func TestListDeliverablesEndpoint(t *testing.T) {

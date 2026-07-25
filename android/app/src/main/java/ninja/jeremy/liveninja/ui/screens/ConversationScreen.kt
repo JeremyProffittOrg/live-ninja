@@ -38,6 +38,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -101,6 +102,12 @@ fun ConversationScreen(modifier: Modifier = Modifier) {
 
     Column(modifier = modifier.fillMaxSize()) {
         MicStateBanner(state)
+        state.sessionWarning?.let { warning ->
+            SessionWarningBanner(
+                message = warning,
+                onDismiss = viewModel::dismissSessionWarning,
+            )
+        }
 
         if (state.transcript.isEmpty() && !sessionLive(state.micState)) {
             IdleHero(
@@ -149,6 +156,32 @@ fun ConversationScreen(modifier: Modifier = Modifier) {
             onMute = viewModel::toggleMute,
             onStop = viewModel::endSession,
         )
+    }
+}
+
+@Composable
+private fun SessionWarningBanner(
+    message: String,
+    onDismiss: () -> Unit,
+) {
+    Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .semantics { liveRegion = LiveRegionMode.Polite },
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                message,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.conversation_warning_dismiss))
+            }
+        }
     }
 }
 

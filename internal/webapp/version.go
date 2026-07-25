@@ -197,7 +197,7 @@ func handleCompat() fiber.Handler {
 var versionGateExemptPrefixes = []string{"/auth/", "/.well-known/", "/static/"}
 
 func versionGateExempt(path string) bool {
-	if path == "/v1/compat" || path == "/healthz" {
+	if path == "/v1/compat" || path == "/v1/app/android/latest" || path == "/healthz" {
 		return true
 	}
 	for _, p := range versionGateExemptPrefixes {

@@ -30,7 +30,7 @@
 //     when no session is connected (spec §2.5 "you can still type below");
 //   - wake-word toggle → WakeWordEngine lifecycle → mic.notifyWake().
 
-import { apiJSON, ApiError } from './toolclient.mjs';
+import { apiJSON, authFetch, ApiError } from './toolclient.mjs';
 import { prefetchSession } from './realtime.mjs';
 import { MicController, MicState } from './mic.mjs';
 import { createMicTest } from './mictest.mjs';
@@ -39,6 +39,8 @@ import { createTranscriptSink } from './transcriptsink.mjs';
 import { Visualizer } from './visualizer.mjs';
 import { createWakeWordEngine, isWakeWordSupported } from './wakeword.mjs';
 import { initSettingsPanel } from './settings.mjs';
+import { initSettingsAccordion } from './settings-accordion.mjs';
+import { createDeferredDeviceActionGate } from './deviceactions.mjs';
 import { openToolDetails } from './tooldetails.mjs';
 
 const SETTINGS_PATH = '/api/v1/settings';
@@ -560,11 +562,48 @@ function attachTranscriptRendering(session) {
   session.addEventListener('toolerror', (e) => {
     toolActivityEnd();
     const entry = bufferToolError(e.detail);
+    // M17 phase 2: best-effort breadcrumb for failures that may have happened
+    // before /tools/invoke reached the registry. The server re-derives the
+    // identity; failure to report diagnostics is intentionally silent.
+    const detail = e.detail || {};
+    void authFetch('/api/v1/rca/client-event', {
+      method: 'POST',
+      json: {
+        tool: detail.tool || '',
+        callId: detail.callId || '',
+        sessionId: session.sessionId || '',
+        engine: session.engine || '',
+        args: detail.args || {},
+        error: detail.error || { code: 'client_tool_error', message: 'The tool call failed.' },
+      },
+    }).catch(() => {});
     if (!showToolCalls()) return;
     renderToolCard(entry);
   });
-  session.addEventListener('closed', () => toolActivityReset());
-  session.addEventListener('connectionlost', () => toolActivityReset());
+  const deferredDeviceAction = createDeferredDeviceActionGate((action) => {
+    if (action === 'stop_listening') {
+      if (wakeToggle) {
+        wakeToggle.checked = false;
+        wakeToggle.dispatchEvent(new Event('change'));
+      }
+      mic.end();
+    } else if (action === 'start_new_conversation') {
+      session.addEventListener('closed', () => void mic.start(), { once: true });
+      startNewConversation();
+    }
+  });
+  session.addEventListener('devicetool', (e) => {
+    deferredDeviceAction.queue((e.detail && e.detail.tool) || '');
+  });
+  session.addEventListener('responsedone', () => deferredDeviceAction.responseDone());
+  session.addEventListener('closed', () => {
+    deferredDeviceAction.clear();
+    toolActivityReset();
+  });
+  session.addEventListener('connectionlost', () => {
+    deferredDeviceAction.clear();
+    toolActivityReset();
+  });
 }
 
 // ---- tool-call visibility toggle + in-flight activity badge --------------
@@ -1088,6 +1127,7 @@ mic.addEventListener('toast', (e) => toast(e.detail.message));
 // ---- wake word (hands-free mode) -----------------------------------------
 
 const wakeToggle = $('wakeToggle');
+const wakeToggleLabel = $('wakeToggleLabel');
 const wakeHint = $('wakeHint');
 const wakePhraseEl = $('wakePhrase');
 
@@ -1103,6 +1143,7 @@ function wakePhraseText() {
 
 function renderWakeUI() {
   const on = !!(wakeToggle && wakeToggle.checked);
+  if (wakeToggleLabel) wakeToggleLabel.textContent = `Always listening: ${on ? 'On' : 'Off'}`;
   const phrase = wakePhraseText();
   if (wakePhraseEl) {
     wakePhraseEl.textContent = phrase ? `“${phrase}”` : '';
@@ -1353,22 +1394,39 @@ for (const chip of micSensChips) {
 const settingsDrawer = $('settingsDrawer');
 const settingsDrawerBtn = $('settingsDrawerBtn');
 const settingsDrawerClose = $('settingsDrawerClose');
+const settingsTabBadge = $('settingsTabBadge');
+const settingsAccordion = settingsDrawer
+  ? initSettingsAccordion(settingsDrawer)
+  : null;
 
 if (settingsDrawer && settingsDrawerBtn && typeof settingsDrawer.showModal === 'function') {
-  settingsDrawerBtn.addEventListener('click', () => {
-    settingsDrawer.showModal();
+  const openSettingsDrawer = () => {
+    // The badge counts work in About you. Reveal that work instead of opening
+    // whichever panel happened to be used last.
+    if (settingsAccordion && settingsTabBadge && !settingsTabBadge.hidden) {
+      settingsAccordion.open('sectionAboutTrigger');
+    }
+    if (!settingsDrawer.open) settingsDrawer.showModal();
+    settingsDrawerBtn.setAttribute('aria-expanded', 'true');
+    if (settingsDrawerClose) settingsDrawerClose.focus({ preventScroll: true });
     void loadDrawerCost();
     // M16: the drawer may have been open for hours, or the badge may have
     // appeared from a background auto-apply — re-read the suggestion queue so
     // "About you" shows what the badge is counting (settings.mjs owns the
     // fetch; this is only the "you opened it" trigger).
     if (window.__lnRefreshProfileSuggestions) window.__lnRefreshProfileSuggestions();
-  });
+  };
+
+  settingsDrawerBtn.addEventListener('click', openSettingsDrawer);
   if (settingsDrawerClose) {
     settingsDrawerClose.addEventListener('click', () => settingsDrawer.close());
   }
   settingsDrawer.addEventListener('click', (e) => {
     if (e.target === settingsDrawer) settingsDrawer.close();
+  });
+  settingsDrawer.addEventListener('close', () => {
+    settingsDrawerBtn.setAttribute('aria-expanded', 'false');
+    settingsDrawerBtn.focus({ preventScroll: true });
   });
   // Owner 2026-07-19: settings moved inline into this drawer (the
   // standalone /settings page is gone) — wire every control once. The
@@ -1381,8 +1439,7 @@ if (settingsDrawer && settingsDrawerBtn && typeof settingsDrawer.showModal === '
   // deep-link into this dialog directly, so it points here with
   // ?openSettings=1 and this opens the drawer on load.
   if (new URLSearchParams(window.location.search).get('openSettings') === '1') {
-    settingsDrawer.showModal();
-    void loadDrawerCost();
+    openSettingsDrawer();
   }
 }
 
@@ -1404,18 +1461,45 @@ async function loadDrawerCost() {
     const usd = Number(resp && resp.totalUsd);
     const n = Number(resp && resp.conversations) || 0;
     const costed = Number(resp && resp.costed) || 0;
+    const openAiSpent = Number(resp && resp.openAiTotalUsd);
+    const openAiBudget = Number(resp && resp.openAiBudgetUsd);
+    const openAiRemaining = Number(resp && resp.openAiRemainingUsd);
+    const budgetWarning = resp && resp.openAiBudgetWarning === true;
     // Until at least one conversation carries a persisted cost, "$0.000
     // across N conversations" would read as "free" — stay hidden instead.
     if (!Number.isFinite(usd) || n === 0 || (costed === 0 && usd <= 0)) {
       drawerCostEl.hidden = true;
       return;
     }
-    drawerCostValue.textContent = formatCostUSD(usd);
-    if (drawerCostSub) {
-      drawerCostSub.textContent = `${n} conversation${n === 1 ? '' : 's'} · estimate`;
+    drawerCostEl.classList.toggle('is-budget-warning', budgetWarning);
+    if (
+      budgetWarning &&
+      Number.isFinite(openAiSpent) &&
+      Number.isFinite(openAiBudget) &&
+      Number.isFinite(openAiRemaining)
+    ) {
+      const remainingText = openAiRemaining < 0
+        ? `-$${Math.abs(openAiRemaining).toFixed(2)}`
+        : `$${openAiRemaining.toFixed(2)}`;
+      drawerCostValue.textContent = `${remainingText} left`;
+      if (drawerCostSub) {
+        drawerCostSub.textContent =
+          `${formatCostUSD(openAiSpent)} OpenAI spend · $${openAiBudget.toFixed(2)} budget`;
+      }
+      drawerCostEl.setAttribute(
+        'aria-label',
+        `OpenAI budget warning: estimated ${remainingText} remaining this month`,
+      );
+    } else {
+      drawerCostValue.textContent = formatCostUSD(usd);
+      if (drawerCostSub) {
+        drawerCostSub.textContent = `${n} conversation${n === 1 ? '' : 's'} · estimate`;
+      }
+      drawerCostEl.setAttribute('aria-label', 'Monthly usage estimate');
     }
     drawerCostEl.hidden = false;
   } catch {
+    drawerCostEl.classList.remove('is-budget-warning');
     drawerCostEl.hidden = true;
   }
 }

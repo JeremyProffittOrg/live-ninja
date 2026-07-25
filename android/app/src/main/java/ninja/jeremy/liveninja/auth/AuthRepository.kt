@@ -100,9 +100,9 @@ class AuthRepository @Inject constructor(
      * persist them for the round trip, and return the backend broker
      * kickoff URL to open in a Custom Tab. The backend runs the LWA
      * round-trip against its own whitelisted callback and hands a one-shot
-     * handoff code back to [BackendConfig.LWA_CUSTOM_SCHEME_REDIRECT] — so
-     * LWA never sees our custom scheme. Any previous pending attempt is
-     * superseded.
+     * handoff code back to [BackendConfig.LWA_APP_LINK_REDIRECT]. The backend
+     * falls back to the custom scheme if Android has not verified the link.
+     * Any previous pending attempt is superseded.
      */
     suspend fun beginLogin(): String = withContext(Dispatchers.IO) {
         val state = Pkce.newState()
@@ -111,7 +111,7 @@ class AuthRepository @Inject constructor(
             PendingLogin(
                 state = state,
                 codeVerifier = verifier,
-                redirectUri = BackendConfig.LWA_CUSTOM_SCHEME_REDIRECT,
+                redirectUri = BackendConfig.LWA_APP_LINK_REDIRECT,
                 createdAt = System.currentTimeMillis() / 1000,
             ),
         )
@@ -122,10 +122,15 @@ class AuthRepository @Inject constructor(
             .toString()
     }
 
-    /** True when [uri] is our custom-scheme broker return URI. */
+    /** True when [uri] is our verified App Link or custom-scheme fallback. */
     fun isAuthRedirect(uri: Uri): Boolean {
+        val appLink = Uri.parse(BackendConfig.LWA_APP_LINK_REDIRECT)
         val custom = Uri.parse(BackendConfig.LWA_CUSTOM_SCHEME_REDIRECT)
-        return uri.scheme == custom.scheme && uri.host == custom.host
+        val isAppLink = uri.scheme == appLink.scheme &&
+            uri.host == appLink.host &&
+            uri.path == appLink.path
+        val isCustomFallback = uri.scheme == custom.scheme && uri.host == custom.host
+        return isAppLink || isCustomFallback
     }
 
     /**

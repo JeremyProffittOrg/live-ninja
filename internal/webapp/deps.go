@@ -15,6 +15,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
@@ -36,6 +37,13 @@ type SQSSendAPI interface {
 // inject a fake.
 type LambdaInvokeAPI interface {
 	Invoke(ctx context.Context, params *lambda.InvokeInput, optFns ...func(*lambda.Options)) (*lambda.InvokeOutput, error)
+}
+
+// S3GetObjectAPI is the read-only subset used by the public Android
+// distribution routes. Release CI writes the signed-APK metadata and Digital
+// Asset Links document; the web function only reads those two exact objects.
+type S3GetObjectAPI interface {
+	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 }
 
 // Deps carries every dependency the webapp route registrars need. It is
@@ -69,6 +77,14 @@ type Deps struct {
 
 	SQS    SQSSendAPI
 	Lambda LambdaInvokeAPI
+
+	// AndroidArtifacts backs GET /v1/app/android/latest and
+	// /.well-known/assetlinks.json. The object keys are release-CI-owned and
+	// the Lambda role has read access only to those two keys.
+	AndroidArtifacts       S3GetObjectAPI
+	AndroidArtifactsBucket string
+	AndroidLatestKey       string
+	AndroidAssetLinksKey   string
 
 	// Deliv is the M9 deliverables service (S3-backed Download Center;
 	// internal/deliv). nil when DELIVERABLES_BUCKET is unset — the

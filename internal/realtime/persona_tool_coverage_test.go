@@ -46,6 +46,24 @@ func TestEveryManifestToolIsDiscoverableFromPersonaPrompt(t *testing.T) {
 	}
 }
 
+func TestSetVolumeInstructionsPinTheMediaDefaultAndNamedStreamRule(t *testing.T) {
+	assert.Contains(t, coreInstructions, "media is the default")
+	for _, stream := range []string{
+		"ring", "notification", "alarm", "system", "voice_call", "dtmf", "accessibility",
+	} {
+		assert.Containsf(t, coreInstructions, stream,
+			"set_volume instructions must tell the model how to address %s", stream)
+	}
+}
+
+func TestCameraInstructionsPinCaptureConsentAndDefaults(t *testing.T) {
+	assert.Contains(t, coreInstructions, "take_photo")
+	assert.Contains(t, coreInstructions, "record_video")
+	assert.Contains(t, coreInstructions, "spoken request is the confirmation")
+	assert.Contains(t, coreInstructions, "back camera is the default")
+	assert.Contains(t, coreInstructions, "defaults to 60 seconds")
+}
+
 // TestDeliberatelyUnmentionedToolsStaysNearEmpty keeps the allow-list from
 // quietly becoming the new dumping ground P3 was: it must reference only
 // real tool names (no stale entries surviving a rename) and must stay

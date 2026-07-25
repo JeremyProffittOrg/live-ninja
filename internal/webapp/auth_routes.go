@@ -41,13 +41,15 @@ const PairConfirmCookieName = "__Host-ln_pair"
 // with the terminal "failed" status after too many wrong user codes.
 const pairFailedReason = "user_code_attempts_exceeded"
 
-// appReturnScheme is the Android app's custom-scheme return target. The
-// broker callback 302s here with a one-shot handoff code; the app's
-// intent-filter (ninja.jeremy.liveninja://lwa) catches it. LWA itself never
-// sees this scheme — it only ever redirects to the whitelisted
-// /auth/lwa/callback, so no custom-scheme return URL has to be whitelisted
-// in the Amazon Developer Portal (which only accepts http/https anyway).
-const appReturnScheme = "ninja.jeremy.liveninja://lwa"
+// appReturnPath is the verified HTTPS App Link the broker callback targets.
+// When Android App Links verification is unavailable (for example a debug
+// build signed by a different certificate), the HTTP handler at that path
+// immediately redirects to appReturnScheme as a compatibility fallback.
+// LWA itself still sees only the server's ordinary /auth/lwa/callback.
+const (
+	appReturnPath   = "/auth/lwa/app-return"
+	appReturnScheme = "ninja.jeremy.liveninja://lwa"
+)
 
 // RegisterAuthRoutes mounts the M1 auth surface on app. Route names follow
 // the shared spec's M1+M2 route list; the contracts/api.md canonical
@@ -65,8 +67,10 @@ func RegisterAuthRoutes(app *fiber.App, deps *Deps) {
 
 	// Android broker sign-in: no LWA-portal redirect URI needed — the app
 	// rides the whitelisted /auth/lwa/callback and gets a one-shot handoff
-	// code back via its custom scheme, claimed here for a real session.
+	// code back via a verified App Link (with a custom-scheme fallback),
+	// claimed here for a real session.
 	app.Get("/auth/lwa/app-login", r.appLogin)
+	app.Get(appReturnPath, r.appReturn)
 	app.Post("/auth/lwa/app-claim", r.appClaim)
 
 	app.Post("/api/v1/auth/lwa/exchange", r.exchange)
@@ -211,7 +215,7 @@ func (r *authRoutes) callback(c *fiber.Ctx) error {
 	}
 
 	// Android broker leg: hand a one-shot, PKCE-bound handoff code back to
-	// the app via its custom scheme instead of opening a web session.
+	// the app via its verified App Link instead of opening a web session.
 	if st.AppChallenge != "" {
 		return r.completeAppHandoff(c, st, profile)
 	}
@@ -249,9 +253,9 @@ func (r *authRoutes) callback(c *fiber.Ctx) error {
 // passes its own S256 code_challenge (app_challenge) and a state nonce
 // (app_state). We run the ordinary web-callback flow against the
 // already-whitelisted /auth/lwa/callback; the callback then hands a
-// one-shot, PKCE-bound handoff code back to the app via its custom scheme
-// (completeAppHandoff). This keeps LWA blind to the app's custom scheme, so
-// nothing new has to be whitelisted in the Amazon Developer Portal.
+// one-shot, PKCE-bound handoff code back through the app's verified HTTPS
+// link (completeAppHandoff), with a custom-scheme fallback. LWA never sees
+// either app-return URI, so no new Amazon portal redirect is required.
 func (r *authRoutes) appLogin(c *fiber.Ctx) error {
 	appChallenge := c.Query("app_challenge")
 	appState := c.Query("app_state")
@@ -308,9 +312,9 @@ func (r *authRoutes) appLogin(c *fiber.Ctx) error {
 // completeAppHandoff runs after the LWA round-trip of an app broker leg: it
 // runs the same Authorize access gate every surface uses, then stores a
 // one-shot APPHANDOFF row (the authorized userId, PKCE-bound to the app's
-// code_challenge) and 302s the code back to the app via its custom scheme.
-// No session or tokens are minted here — that happens at appClaim, so no
-// credential ever travels through the custom-scheme URL.
+// code_challenge) and 302s the code back to the app via its verified HTTPS
+// App Link (whose server fallback redirects to the legacy custom scheme).
+// No session or tokens are minted here — that happens at appClaim.
 func (r *authRoutes) completeAppHandoff(c *fiber.Ctx, st *store.OAuthState, profile *auth.LWAProfile) error {
 	ctx := c.Context()
 
@@ -339,15 +343,44 @@ func (r *authRoutes) completeAppHandoff(c *fiber.Ctx, st *store.OAuthState, prof
 			"Something went wrong completing sign-in. Please try again.")
 	}
 
-	loc := appReturnScheme + "?code=" + url.QueryEscape(code) + "&state=" + url.QueryEscape(st.AppState)
+	loc := r.baseURL(c) + appReturnPath +
+		"?code=" + url.QueryEscape(code) + "&state=" + url.QueryEscape(st.AppState)
 	return c.Redirect(loc, fiber.StatusFound)
 }
 
+// appReturn is reached only when Android did not intercept the verified App
+// Link. Preserve compatibility with debug builds and devices whose domain
+// verification has not completed by handing the same PKCE-bound, one-shot
+// values to the existing custom-scheme intent filter.
+func (r *authRoutes) appReturn(c *fiber.Ctx) error {
+	code := c.Query("code")
+	state := c.Query("state")
+	if !validAppReturnValue(code) || !validAppReturnValue(state) {
+		return htmlMessage(c, fiber.StatusBadRequest, "Sign-in unavailable",
+			"The app sign-in return was incomplete. Please try again.")
+	}
+	loc := appReturnScheme + "?code=" + url.QueryEscape(code) + "&state=" + url.QueryEscape(state)
+	return c.Redirect(loc, fiber.StatusFound)
+}
+
+func validAppReturnValue(value string) bool {
+	if value == "" || len(value) > 512 {
+		return false
+	}
+	for _, ch := range value {
+		if (ch < 'A' || ch > 'Z') && (ch < 'a' || ch > 'z') &&
+			(ch < '0' || ch > '9') && ch != '-' && ch != '_' {
+			return false
+		}
+	}
+	return true
+}
+
 // appClaim completes the Android broker flow: the app presents the one-shot
-// handoff code from the custom-scheme redirect plus its PKCE code_verifier.
+// handoff code from the App Link/custom-scheme return plus its PKCE verifier.
 // We verify S256(verifier) == the stored challenge (proving this is the same
 // app instance that started the flow — an app that merely intercepted the
-// custom-scheme redirect cannot produce the verifier), then mint + return
+// return URI cannot produce the verifier), then mint + return
 // the Android session, identical in shape to /auth/lwa/exchange.
 func (r *authRoutes) appClaim(c *fiber.Ctx) error {
 	ctx := c.Context()
