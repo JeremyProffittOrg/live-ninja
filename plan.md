@@ -90,6 +90,27 @@ archived plans is either confirmed working or converted into a bug with a repro.
 > minter. The happy-path cascade is **not unit-covered** — `broker.minter` is a concrete
 > `*realtime.Minter`, not an interface.
 >
+> **ATTEMPTED 2026-07-25 (`9c989e8`) — credential wired, and it hit a HARD SDK LIMIT.**
+> The service-account key is in SSM, the broker's IAM grant covers it, and the mint now builds
+> `auth.Credentials` from it. The Go SDK rejects the result at client-init:
+> `api key is required for Google AI backend`. Reading `google.golang.org/genai@v1.64.0`:
+> `Credentials` and `APIKey` are **mutually exclusive** (client.go:214), and `Credentials` is
+> only ever wired for **`BackendVertexAI`** (client.go:369) — on `BackendGeminiAPI` the only
+> auth the SDK sends is the `x-goog-api-key` header. **The SDK cannot do service-account OAuth2
+> against the Gemini Developer API at all.**
+>
+> **Remaining options, owner's call:** (i) bypass the SDK for this one call — POST
+> `v1alpha/auth_tokens` directly with an OAuth2 bearer, hand-rolling the request/response
+> (small surface: one POST, and the repo already renders the constraints as raw JSON for the
+> setup frame, but it is a hand-maintained Google API call); (ii) move Gemini Live to
+> `BackendVertexAI`, which supports `Credentials` — but the Phase-0 spike found ephemeral
+> tokens only work on the v1alpha *generativelanguage* Constrained method, so this may not
+> exist there; (iii) drop Gemini Live to backlog and stay on `openai-realtime`.
+>
+> **Meanwhile the user is NOT blocked:** the broker fallback (`c1b302b`) is confirmed working in
+> production — log shows `pinned engine could not mint; falling back` → `session minted`. A
+> Gemini-pinned device now gets a working OpenAI session instead of a 502.
+>
 > **Credential SUPPLIED 2026-07-25** — `GEMINI_SERVICE_ACCOUNT_JSON` is set as a GitHub secret
 > (20:14:18Z). Remaining work is code, not owner action: (1) add an SSM put for it in
 > `.github/workflows/deploy.yml` alongside `/live-ninja/prod/gemini/api_key`, (2) swap
