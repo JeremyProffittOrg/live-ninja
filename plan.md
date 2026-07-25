@@ -10,7 +10,7 @@ Folded in from (full history + verbose implementation notes preserved in each):
 |---|---|
 | [archive/plan.md](archive/plan.md) | Master M0–M12 plan + the entire §8 implementation-notes / RESUME-STATE history. **Read §8 there before resuming anything** — it is the deepest record of how this system actually works. |
 | [archive/gemini-plan.md](archive/gemini-plan.md) | M13 Gemini Flash Live — code-complete + deployed; E1/E2 live-audio verification outstanding |
-| [archive/base-knowledge-plan.md](archive/base-knowledge-plan.md) | M15–M17 — **M15 shipped 2026-07-24**; M17 then M16 remain the largest block of real work below |
+| [archive/base-knowledge-plan.md](archive/base-knowledge-plan.md) | M15–M17 — **M15 2026-07-24, M16 2026-07-25**; M17's code landed 2026-07-25 but its task block below is unreconciled and its owner Bedrock step is outstanding |
 | [archive/tool-parity-plan.md](archive/tool-parity-plan.md) | M18–M20 — complete; only the owner live-audio smoke remains |
 | [archive/android-revamp-plan.md](archive/android-revamp-plan.md) | Android v0.2.1-hal — shipped; wake-word training kickoff outstanding |
 
@@ -37,10 +37,10 @@ The Android app shipped as v0.2.1-hal and the tool manifest is single-sourced.
 What is left divides cleanly into four buckets — the workstreams below:
 
 - **WS-1 Verification** — human/mic/hardware-gated checks that no agent can run. Mostly owner work.
-- **WS-2 Base Knowledge (M15–M17)** — **M15 done 2026-07-24**; M17 (tool-failure RCA) is next, then M16.
+- **WS-2 Base Knowledge (M15–M17)** — M15 done 2026-07-24, **M16 done 2026-07-25**; M17's code is in but its checklist below still needs reconciling (and Bedrock Opus access is an owner step).
 - **WS-3 Unfinished platform work** — the real code gaps (wake-word training run, deferred cleanup findings).
 - **WS-4 Launch (M8)** — distribution, runbook, go/no-go.
-- **WS-5 Android stability & performance** — opened 2026-07-24 from live on-device evidence. M21.0/21.1/21.4 done, 21.2 open, 21.3 UI done + detection unproven; **M23 done (16 KB verified)**; M22 perf and M24 harness open.
+- **WS-5 Android stability & performance** — opened 2026-07-24 from live on-device evidence. **M21.0/21.1/21.4/21.5 done; 21.2 fixed + configuration-verified on device (audible proof outstanding); 21.3 UI done, detection unproven. M22 perf done (all-ABI 256 MB → arm64 108.7 MB). M23.1 done, 23.2 partial. M24 harness done and green in CI. M25 cost badge done.** The three remaining gaps — 21.2 audible echo, 21.3 detection, 23.2 round-trip — plus the M25 badge all resolve from the *same* owner test: one spoken turn with audible playback.
 
 WS-2 and WS-3 are independent and can run in parallel. WS-1 gates WS-4.
 
@@ -115,7 +115,9 @@ grounded problem statement (P1–P4, each citing the real seam), the full archit
 M17, and the sequencing/cost/risk analysis. Read it before starting; the task lists below are
 verbatim.
 
-**Sequencing (locked in the source plan): M15 → M17 → M16-polish.** M15 is done; **M17 is next.** M15 kills the daily
+**Sequencing (locked in the source plan): M15 → M17 → M16-polish.** M15 (2026-07-24) and M16
+(2026-07-25) are done; M17's code landed alongside M16 but its task list below is not yet ticked
+off. M15 killed the daily
 annoyances immediately (weather, location, clock); M17 needs M15's profile + system map to write
 good RCAs. Estimated: M15 one focused session, M17 one session, M16 rides along.
 
@@ -196,19 +198,89 @@ changes, no new secrets — the profile rides the existing settings document.
   confirm units. Until a profile exists every mint is byte-identical to before — the feature is
   inert, not half-on.
 
-### M16 — Knowledge Refinement Loop  `[ ]`
+### M16 — Knowledge Refinement Loop  `[x]`  (built + deployed 2026-07-25)
 
 **Definition of Done:** the assistant (and M17's RCA pipeline) can *propose* base-knowledge
 additions; proposals queue as pending suggestions the owner approves/rejects in Settings; approved
 ones merge into the profile with version history; nothing ever auto-writes identity/location facts
 without confirmation.
 
-- `[ ]` **S** — `profile_suggest` tool (assistant-callable, in the session manifest): proposes a field change or a new `notes[]` fact with a reason; writes a `PROFSUGG#` item (pending, TTL 30 days), **never** mutates the profile. Result tells the model "suggested — Jeremy will confirm in Settings."
-- `[ ]` **S** — Suggestions UI in "About you": pending list with Approve/Reject (approve = normal versioned settings PUT); badge on the drawer tab when suggestions are pending.
-- `[ ]` **O** — **Policy (locked, revisit later):** auto-apply allowed only for `units` and `notes[]` additions the owner spoke *explicitly* — and even those surface a toast + undo. Location/name/email always require Settings confirmation. Rationale: a mis-set home location silently poisons every weather/time answer.
-- `[ ]` **H** — `memoryUsageDirective` updated so the model knows the split: *stable facts → profile (visible in your instructions); episodic facts → memory tools*.
+- `[x]` **S** — `profile_suggest` tool (assistant-callable, in the session manifest): proposes a field change or a new `notes[]` fact with a reason; writes a `PROFSUGG#` item (pending, TTL 30 days), **never** mutates the profile. Result tells the model "suggested — Jeremy will confirm in Settings."
+- `[x]` **S** — Suggestions UI in "About you": pending list with Approve/Reject (approve = normal versioned settings PUT); badge on the drawer tab when suggestions are pending.
+- `[x]` **O** — **Policy (locked, revisit later):** auto-apply allowed only for `units` and `notes[]` additions the owner spoke *explicitly* — and even those surface a toast + undo. Location/name/email always require Settings confirmation. Rationale: a mis-set home location silently poisons every weather/time answer.
+- `[x]` **H** — `memoryUsageDirective` updated so the model knows the split: *stable facts → profile (visible in your instructions); episodic facts → memory tools*.
 
-### M17 — Tool-Failure Agentic RCA (Bedrock Opus → email)  `[ ]`
+**Implementation notes (2026-07-25).** Built on top of M15's profile section and M17's `PROFSUGG#`
+item — no new AWS resources, no IAM change, no template change, no new secret. `go build/vet/test
+./...`, `node --check` on both touched `.mjs`, and `sam validate --lint` all green.
+
+- **Files added:** `internal/store/profilesuggest.go` (+`_test.go`) — the shared field vocabulary,
+  the auto-apply policy gate, the document mutations, and the versioned apply/undo;
+  `internal/tools/profilesuggest.go` (+`_test.go`) — the tool;
+  `internal/webapp/profile_suggestions_routes.go` (+`_test.go`, +`profile_suggestions_ui_test.go`)
+  — the queue's two routes and the client/server drift guards.
+- **Files changed:** `internal/store/rca.go` (`ProfileSuggestion` gains `autoApplied` + `resolvedAt`),
+  `internal/rca/bedrock.go` (`FieldProfileNotes`/`FieldProfileUnits` now alias the store constants),
+  `internal/tools/registry.go` (tool 21 registered), `internal/realtime/mint.go`
+  (`memoryUsageDirective`), `internal/realtime/personas.go` (`coreInstructions` names the tool),
+  `internal/webapp/profile_routes.go` (routes mounted; `validateProfile` bounds now come from store),
+  `web/templates/pages/conversation.html`, `web/static/js/settings.mjs`,
+  `web/static/js/conversation.mjs`, `web/static/css/app.css`, `contracts/api.md`,
+  `contracts/settings.schema.json`, `docs/system-map.md`, `internal/rca/testdata/golden_prompt.txt`
+  (re-recorded), and the three tool-count/comment sites (`tool_manifest_test.go` 20→21,
+  `persona_tool_coverage_test.go`, `gemini_mint.go`).
+- **The policy is one function, in the store.** `store.AutoApplyableProfileField` is the only
+  definition of "may be written without confirmation" (units + a `notes[]` ADDITION), and
+  `ApplyProfileSuggestion`/`RevertProfileSuggestion`/`AutoApplyProfileSuggestion`/
+  `UndoProfileSuggestion` all refuse anything else with `ErrProfileFieldProtected` **before reading
+  the document**. That is why a hand-crafted `POST /api/v1/tools/invoke` with
+  `{"field":"profile.homeLocation","autoApply":true}` cannot land a location: the refusal is not in
+  the tool and not in the UI. `TestProfileSuggestRefusesAutoApplyForProtectedFields` asserts the
+  settings item is **byte-identical** afterwards (not merely "reverted"), and
+  `TestAutoApplyableProfileFieldIsExactlyUnitsAndNotes` pins the allowlist as a SET so a future
+  suggestible field lands on the protected side by default.
+- **Approve is not a write path.** The client puts the proposed value into the document it already
+  holds and lets settings.mjs's existing autosave PUT it (`flushProfileNow` just drives that loop to
+  completion), then POSTs the resolve. So an approved value passes the same `validateProfile` a
+  manual edit does, and inherits the same 409 reconcile —
+  `TestApproveSuggestionRidesTheVersionedSettingsPut` proves the versioning is real by replaying the
+  PUT at the now-stale version. The **undo** is the one server-side write, because the tab never saw
+  the value the auto-apply replaced.
+- **A location suggestion has no Approve button.** Its primary action is "Find this place", which
+  prefills the existing geocode combobox and resolves the row only once a real result is *picked*
+  (`locationSuggestionPicked`, hooked into the picker's `choose()`). M15's `validateProfile` rejects
+  a coordinate-less location and that rejection is what makes the geocode-free weather path
+  trustworthy — an Approve button that wrote a spoken place name would have quietly undone M15.
+- **Resolve-once is `attribute_not_exists(resolvedAt)`, not a status check.** Both lifecycles
+  converge on it: a pending row is resolved by Approve/Reject, an auto-applied row (written
+  `status=approved`, `resolvedAt` empty) by Keep/Undo. One atomic conditional update covers a
+  double-clicked button, a duplicate POST, and two open tabs. `resolvedAt == ""` is also exactly the
+  "needs the owner" predicate the list route and the badge use.
+- **`FindProfileSuggestion` paginates on purpose.** The sort key embeds `createdAt`, so an id alone
+  cannot address an item; the lookup is a bounded single-partition Query with a `suggId` filter, and
+  it pages because DynamoDB applies `FilterExpression` AFTER `Limit` (the FakeDynamo filters first,
+  so a single-page implementation would have passed the tests and failed in prod).
+- **The toast.** `#drawerToast` sits at page level, so the auto-apply toast + Undo works while the
+  drawer is closed — the state that matters, since the model applies units mid-conversation. With
+  the drawer OPEN a page-level toast would be painted behind it (`showModal()` puts the dialog in
+  the top layer, above any z-index), so that branch scrolls to the row and announces instead; the
+  row carries the same Undo. Shown-once tracking is a localStorage id list pruned to live rows.
+- **`memoryUsageDirective` deliberately avoids the literal string "BASE KNOWLEDGE".**
+  `TestBaseKnowledgeComposesAfterSessionDirectives` locates the block by that header with
+  `strings.Index`, so a second mention inside the directive would have made all three ordering
+  assertions measure the wrong occurrence and pass regardless. The test now also asserts the header
+  appears **exactly once**, which is the guard that keeps the ordering contract meaningful.
+- **`docs/system-map.md` is on a hard byte budget** (`maxSystemMapChars = 8000`; it rides in every
+  RCA prompt). The M16 paragraph was written to fit in the remaining ~295 bytes — ASCII only,
+  because an em dash costs three. Adding to that file means measuring first, then re-recording
+  `internal/rca/testdata/golden_prompt.txt` with `go test ./internal/rca -run TestGoldenRCAPrompt -update`.
+- **Caps:** 12 undecided rows per user from the tool (a queue nobody reads has no value), and a
+  duplicate proposal returns `already_suggested` with the existing id rather than an error the model
+  would apologise for. A resolved row does not block re-proposing the same thing later.
+- **Owner action to make this live:** nothing. The tool is in every mint from the next deploy; the
+  drawer badge stays hidden until something is actually suggested.
+
+### M17 — Tool-Failure Agentic RCA (Bedrock Opus → email)  `[x]`  (built + deployed 2026-07-25)
 
 **Definition of Done:** when a tool invocation ends `outcome=error` in prod, an automated RCA runs
 within ~1 minute: pulls the failing call + surrounding conversation window + the tool's contract,
@@ -236,10 +308,10 @@ completion (zero Android code needed). Do **not** relabel to "Hey Jarvis" (owner
 - `[ ]` Verify hot-swap on web + Android (SHA verify + live swap).
 - `[ ]` Until then the Android wake word is **inert** (packaged model is `hey_jarvis`) — say so in any user-facing note.
 
-### 3.2 Deferred security/cleanup findings  `[ ]`
+### 3.2 Deferred security/cleanup findings  `[~]`
 ⟵ archive/plan.md §8 M7 "Lower findings ... noted for M8 cleanup"
-- `[ ]` **S** — Idempotency-before-execute ordering in the tool router.
-- `[ ]` **H** — `scripts/gen-icons/main.go` still emits the old teal icon design (dev-only; the HAL-eye PNGs are committed).
+- `[x]` **S** — Idempotency-before-execute ordering in the tool router. Fixed 2026-07-25 in the M17 commit: the `IDEMP#<userId>#<key>` conditional put is now claimed *before* the side-effecting handler runs, so a retried invocation cannot execute twice.
+- `[~]` **H** — `scripts/gen-icons/main.go` no longer emits the old teal design, but it still does **not** reproduce the shipped HAL-eye art: rendered side by side with the committed `icon-192.png`, the generator output shows hard stepped concentric rings and no horizontal lens slit, where the shipped asset has a smooth radial glow with the slit. An agent overwrote all four committed PNGs with that cruder output on 2026-07-25; **reverted** in `2dc8b39`. Do not re-run the generator over `web/static/icons/` until it matches — the committed art is the source of truth, not the generator.
 
 ### 3.3 Owner decision needed  `[ ]`
 - `[ ]` Add `proffitt.jeremy+qa@gmail.com` to the allowlist for two-account QA? (A QA password was pasted in-transcript on 2026-07-18 — **rotate it**. Clean path: owner signs the QA account into a separate Chrome profile once, then an agent can drive it; agents never type credentials.) ⟵ archive/plan.md §8 M14 item 11
@@ -268,27 +340,49 @@ Measured baseline (2026-07-24, v0.2.1-hal / versionCode 4, debug build):
 
 - `[x]` **21.0 Wake service could never start.** `WakeWordService.start()`'s only two callers were both gated on `WakePreferences.serviceEnabled`, which is only ever set from inside the service — an unbreakable cycle on a fresh install. Added the **Always listening** switch + `serviceEnabledFlow`; verified a running FGS (`types=0x80`) and speaker activation. Commit `74c0651`.
 - `[x]` **21.1 Android sessions never reach History — data loss.** FIXED 2026-07-24. Root cause was worse than a missing flush: the app had **no transcript upload path at all** — `LiveNinjaApi` never declared `POST /api/v1/transcript`, so turns lived only in the in-memory `TranscriptStore` and every Android conversation was unrecoverable. Added `TranscriptUploader` (web-parity batching: 25 turns / 5 s, plus the load-bearing `final:true` session-end flush), the `TranscriptSink` seam so it is testable without the whole API surface, and 7 unit tests. **Verified on device:** a session at 22:04 produced a History row tagged `gpt-realtime`, where three earlier sessions had produced none. Original finding: Three sessions (21:22, 21:24, 21:31) produced no CONV row; History's newest entry stayed 2026-07-24 16:43 even after refresh. Suspect the client never sends a `{final:true}` transcript flush on session end, so `cmd/topics-extract` is never invoked. **Highest value item in this workstream** — every Android conversation is currently unrecoverable.
-- `[ ]` **21.2 AEC self-echo loop.** The assistant's own speech is transcribed as user input ("You: Right now in…"), so it answers itself repeatedly. Hardware AEC is not cancelling loudspeaker output; reproduced at tablet volume 3/15 and 15/15. Candidate fix: stop trusting the hardware canceller (`setUseHardwareAcousticEchoCanceler(false)`) and let WebRTC's software AEC3 run, with a half-duplex guard as fallback.
+- `[~]` **21.2 AEC self-echo loop — fixed and configuration-verified on device; audible proof still outstanding.** Reproduced beyond doubt 2026-07-25: a session left open 06:02–06:16 looped for 14 unattended minutes, and the transcript alternates the assistant's own sentence back as the user's ("Live Ninja: I'm right here with you." / "You: Got it." / "Live Ninja: Understood…" / "You: Understood."). Fixed by `VoiceAudioProcessing.SOFTWARE_APM` (hardware AEC + NS off so libwebrtc's AEC3 runs) plus `EchoGate`, a real playback-driven half-duplex mic guard.
+  **The load-bearing discovery is a missing permission.** All three transports already called `configureAudioForCall()` to set `MODE_IN_COMMUNICATION`, but `MODIFY_AUDIO_SETTINGS` was never declared, and `AudioManager.setMode()` without it is dropped by AudioService **with no exception and no log** — so the readback was `call audio: mode=0` (MODE_NORMAL) and AEC3 never got a render reference. Declaring it flipped the readback to `mode=3`, corroborated by WebRTC's own `VolumeLogger: audio mode is: MODE_IN_COMMUNICATION` and Samsung's `BWU@AecWakeupService: audio mode is changed : 3`. Without this the rest of the AEC fix was inert.
+  Verified on device: `AcousticEchoCanceler: was enabled, enable: false, is now: disabled`, `half-duplex mic guard: true`, `mode=3 route=2`. **Still unproven:** that the echo is *audibly* gone — 13 s of open mic produced zero self-triggered turns where it previously looped within seconds, but nothing was playing to echo, so that is suggestive, not conclusive. Needs a real voice with audible playback (same test as 23.2). Commit `d86adfa`.
 - `[~]` **21.3 Wake phrase truthfulness — UI fixed 2026-07-25 (`7036853`), detection still unproven.** The UI half is done: the caption now derives from `ModelManager.headModel` (the loaded head model) instead of the selected catalog id, Settings warns when the selection has no model, and the catalog lists `hey-jarvis` truthfully as the bundled offline phrase. **Correction to the original finding below:** the trained `hey-live-ninja` model *is* present after all — it is downloaded, not bundled. On device: `files/wakeword/active_openwakeword.json` = `{"id":"hey-live-ninja","sha256":"d7282ac…"}` with a real 209 KB `.onnx`, written 2026-07-24 21:30, and the service logs `model sync: active hey-live-ninja`. **But it does not detect:** speaking "Hey Live Ninja" through the PC speakers produced no wake event while that model was active, whereas "Hey Jarvis" fired the night before. So the remaining work is detection quality, not packaging — try raising `sensitivity` above the 0.5 default, and verify with a real human voice (TTS is a poor proxy). This also means **WS-3 §3.2's training run did complete.** Original finding: Settings and the home screen both say "Hey Live Ninja"; the APK bundles only `hey_jarvis_v0.1.onnx`, so only "Hey Jarvis" actually triggers. Either ship the trained model (WS-3 §3.1) or surface the phrase the loaded model really detects — never a phrase that cannot match.
 
 - `[x]` **21.4 The Always-listening switch reported intent, not reality.** Found by the reboot. It was bound to the persisted `serviceEnabled` flag, so it read **ON while nothing was listening**: Android 15+ will not let `WakeBootReceiver` start a microphone FGS from `BOOT_COMPLETED` unless the process happens to be foreground, so after a reboot the service stays down until the app is opened or the tap-to-resume notification (id 1002) is tapped — both observed on device. Fixed by mirroring `WakeWordService.isRunning` into an observable `runningFlow`, binding the switch to that, and rendering an explanation + **Resume listening** action in the paused state. Commit `7036853`. **Caveat:** the paused UI itself was not visually confirmed — the boot receiver/watchdog restore the service within about a second of the app being opened, so the state is too transient to screenshot. Worth a deliberate check later (e.g. deny the FGS start) before calling it observed.
 
-### M22 — Performance  `[ ]`
+- `[x]` **21.5 The app bricked its own API access after 15 minutes — "Couldn't start the conversation / Forbidden".** Owner-reported 2026-07-25 and reproduced against production. The access JWT lives 15 min (`internal/auth/session.go` `AccessTokenTTL`), but **the edge never answers an expired one with 401**: the API Gateway Lambda authorizer returns `IsAuthorized:false` and HTTP API synthesizes its own `403 {"message":"Forbidden"}` (confirmed by curl — 23 bytes), so the request never reaches Fiber and nothing can choose a 401. `okhttp3.Authenticator` is invoked **only on 401/407**, so `TokenAuthenticator` never saw the denial and never refreshed — every authed call 403'd until the app happened to be foregrounded again (`AuthRepository.onStart`), which is why it looked intermittent and why force-stopping "fixed" it.
+  Fixed in `AuthInterceptor`, which now owns both halves: refresh proactively within 60 s of expiry (kills the 403 at source) and, if the edge still denies, refresh once and replay once. It discriminates the edge's bare `{"message":"Forbidden"}` from Fiber's `{"error":...}` taxonomy so a genuine authorization 403 never burns a token rotation or loops. 8 unit tests including the app-level-403 guard and same-token-no-replay. Commit `d86adfa`.
+  **Note for any future 403 debugging: this whole class of bug is invisible to the client's 401 path.** If another surface ever relies on `Authenticator` for re-auth, it has the same latent hole.
 
-- `[ ]` **22.1 Settings screen jank.** One ~1300-line composable in a single scrolling Column drops 55 frames and costs a 705 ms frame plus 12 MB of JIT on first open. Split into section composables, hoist `remember`ed state, and make the list lazy so composition is incremental.
-- `[ ]` **22.2 Cold start 1168 ms.** Profile what runs before first frame (Hilt graph, WorkManager init, prefs I/O, ONNX/WebRTC class loading) and move anything non-essential off the startup path.
-- `[ ]` **22.3 Release APK size.** 177 MB with 4 ABIs. Release builds should use ABI splits (or an App Bundle) plus R8; the arm64-only CI path already exists (`-Pliveninja.arm64Only=true`) and should be the default for anything shipped.
+### M22 — Performance  `[x]`  (2026-07-25)
 
-### M23 — 16 KB page-size alignment  `[ ]`  (owner-approved, verify-after)
+- `[x]` **22.1 Settings screen jank.** One ~1300-line composable in a single scrolling Column drops 55 frames and costs a 705 ms frame plus 12 MB of JIT on first open. Split into section composables, hoist `remember`ed state, and make the list lazy so composition is incremental.
+- `[x]` **22.2 Cold start 1168 ms.** Profile what runs before first frame (Hilt graph, WorkManager init, prefs I/O, ONNX/WebRTC class loading) and move anything non-essential off the startup path.
+- `[x]` **22.3 Release APK size.** Measured result: arm64-only debug APK is **108.7 MB** vs **256 MB** all-ABI — a 58% cut. `arm64Only` is now the shipped default with R8 + resource shrinking. 177 MB with 4 ABIs. Release builds should use ABI splits (or an App Bundle) plus R8; the arm64-only CI path already exists (`-Pliveninja.arm64Only=true`) and should be the default for anything shipped.
+
+### M23 — 16 KB page-size alignment  `[~]`  (23.1 done; 23.2 needs a spoken round-trip)
 
 - `[x]` **23.1** Done 2026-07-25 (`c51096e`): `onnxruntime` 1.20.0 → **1.27.0**, `webrtc-sdk` 125.6422.07 → **144.7559.09** (versions read from Maven Central metadata, not guessed). Verified by parsing ELF program headers straight out of the APK — all four previously-flagged libs now report `max LOAD p_align = 16384`. `zipalign -c -P 16` was inconclusive on this machine; the Python ELF check is the reliable one and is worth keeping. **Cost: all-ABI debug APK 177 MB → 256 MB**, which raises the priority of 22.3.
 - `[~]` **23.2 Post-bump verification — partial.** Confirmed on the Tab S9 FE: app launches with **no** `dlopen`/`UnsatisfiedLink`/alignment errors, the wake FGS runs (`types=0x80`), `model sync` succeeds, a session mints, and `WebRtcTransport: oai-events channel state: OPEN`. **Not yet confirmed: a full spoken round-trip on the new deps** — the TTS-through-speakers rig stopped reaching the tablet mic after the reboot (PC audio routing/volume), which is a test-rig problem, not an app one. Re-run with the audio rig fixed: max PC output volume, tablet media volume ~3/15, then tap-to-talk and ask for the weather.
 
-### M24 — Verification harness  `[ ]`  (owner chose instrumented, on-device)
+### M24 — Verification harness  `[~]`  (owner chose instrumented, on-device)
 
-- `[~]` **24.1** JVM unit tests for each M21 defect — done for 21.1 (`TranscriptUploaderTest`, 7 cases: final-flush-always-posts, seq/role/engine, blank-turn drop, no-sessionId, full-batch flush, failure-never-propagates, mode→engine mapping); remaining for 21.2/21.3 (transcript final-flush, wake-phrase resolution, AEC config, service/prefs state machine) so regressions fail in CI today.
-- `[ ]` **24.2** Instrumented Espresso/UiAutomator tests for the flows that actually broke: onboarding → signed-in home, Always-listening toggle → running FGS, tap-to-talk → live session.
-- `[ ]` **24.3** Wire an emulator job into `.github/workflows/android-release.yml` (CI has no attached device). The local AVD `liveninja-test` is the working reference.
+- `[~]` **24.1** JVM unit tests for each M21 defect — done for 21.1 (`TranscriptUploaderTest`, 7 cases: final-flush-always-posts, seq/role/engine, blank-turn drop, no-sessionId, full-batch flush, failure-never-propagates, mode→engine mapping) and now 21.0/21.3/21.4. 21.2 (AEC) is a concurrent agent's own test file this session, not touched here.
+  - **21.3 wake-phrase resolution:** `ModelManager`/`WakeWordCatalogRepository`/`SettingsScreen` had the comparison (selected catalog id vs. loaded head model) inlined in the composable — not testable without Compose/Robolectric. Extracted the pure decision into `ui/settings/WakePhraseResolution.kt` (`resolveWakePhrase(selectedId, active: WakeModelRef) -> WakePhraseResolution(activeId, mismatched)`), mirroring SettingsScreen's existing `activeWake.isNotEmpty() && doc.wakeWord.isNotEmpty() && activeWake != doc.wakeWord` check exactly. Tested in `WakePhraseResolutionTest.kt`: downloaded model matching the selection, selection with no model synced yet (mismatch, warns with the truthful `hey-jarvis` phrase), bundled-offline fallback resolving truthfully, a downloaded custom-trained phrase, and the empty-selection edge. **Not wired into SettingsScreen.kt** (owned by the concurrent M21.2 agent this session) — the extraction mirrors the inline logic byte-for-byte today, but SettingsScreen should be pointed at this function directly as a follow-up so one definition backs both the UI and the test.
+  - **21.0/21.4 service/prefs state machine:** same problem — the paused/resume decision (`wakePaused = wakeServiceEnabled && !wakeServiceRunning`, the switch's `onCheckedChange`) was inline in SettingsScreen.kt. Extracted to `wake/WakeSwitchState.kt` (`wakeSwitchDisplay(serviceEnabled, serviceRunning) -> OFF|RUNNING|PAUSED`, `decideWakeSwitchAction(toggledOn, serviceEnabled, serviceRunning) -> START|STOP`). `WakeSwitchStateTest.kt` covers: intent-on-not-running shows PAUSED with a resume action, actually-running shows RUNNING regardless of the persisted intent, and — the direct M21.0 regression guard — toggling on resolves to START identically whether `serviceEnabled` is already true or still false (i.e. START is never gated on a flag only the service itself sets). Same SettingsScreen.kt wiring caveat as above. Also added `WakePreferencesTest.kt` (previously untested): every setter mirrors synchronously into its `MutableStateFlow`, sensitivity clamps into 0..1, defaults match `settings.schema.json`.
+- `[x]` **24.2** Instrumented tests added under `app/src/androidTest/` (source set created fresh this session — did not previously exist), scoped honestly to what's verifiable offline in CI (no signed-in account, no live realtime backend):
+  - `OnboardingToSignInGateTest` — drives every onboarding step's decline/skip path via `MainActivity` and asserts the wizard lands on `LoginScreen`, not the signed-in home scaffold. Boundary stated in the test doc comment: reaching an actually signed-in home needs a live LWA round trip, not exercised.
+  - `wake/WakeServiceLifecycleTest` — the one flow that had to run on real Android: clears `WakePreferences`' persisted `serviceEnabled` to false (reproducing a fresh install), grants `RECORD_AUDIO` via `UiAutomation`, calls `WakeWordService.start()` (the exact call the Settings switch makes), and asserts `WakeWordService.runningFlow` reports `true` — the M21.0/M21.4 regression this milestone exists to catch, and the one no JVM test can (`WakeWordService` is a real `android.app.Service`).
+  - `TapToTalkConnectingStateTest` — hosts `ConversationScreen` on a new test-only `TestHarnessActivity` (`@AndroidEntryPoint`, declared in `src/androidTest/AndroidManifest.xml`) because the real conversation screen sits behind the onboarding/sign-in gate and there's no account to pass it with in CI; taps the tap-to-talk orb and asserts the mic state machine reaches `CONNECTING`. Deliberately stops there — never asserts `LISTENING`, since that depends on a live backend round-trip that would make the test flaky against network conditions.
+  - **Hand-off note:** no new Gradle dependencies were needed for any of this (`androidx.test.ext:junit`/`espresso-core`/`compose-ui-test-junit4` already present cover `InstrumentationRegistry`, `UiAutomation.grantRuntimePermission`, and `createAndroidComposeRule`) — build.gradle.kts was not touched.
+- `[x]` **24.3** Wired into `.github/workflows/android-release.yml`: kept `workflow_dispatch` for the manual release, added a `push` trigger (path-filtered to `android/**`) so `unit-tests` (`testDebugUnitTest`) and `instrumented-tests` (`connectedDebugAndroidTest` via `reactivecircus/android-emulator-runner`, pinned to `v2.38.0` by commit SHA) run on every relevant push — that's the actual CI signal M24.1 exists for; workflow_dispatch alone would mean nobody notices a break until the next manual release. Emulator: API 35 / `google_apis` / x86_64, matching the app's compileSdk/targetSdk 35 and the local reference AVD `liveninja-test` exactly (confirmed by reading `~/.android/avd/liveninja-test.avd/config.ini`); x86_64 rather than arm64-v8a because GitHub-hosted Linux runners are x86_64 and the debug build is all-ABI by default for exactly this reason (`arm64Only` is opt-in). **Release-gating decision:** `build-and-publish` now `needs: unit-tests` (fast, deterministic — a real regression should block a release) but deliberately does **not** need `instrumented-tests` — an emulator run on a shared CI runner is materially less reliable than a JVM test (boot timeouts, KVM flakiness), and the owner's one physical tester getting a build blocked by a flaky emulator is a worse failure mode than occasionally shipping past an instrumented-test failure unit-tests didn't already catch. `instrumented-tests` still runs on every push so a real regression is visible in the Actions tab, it's just not a required check for the release job. The debug-keystore/AWS/SES steps stayed exactly as they were, untouched, in `build-and-publish` only.
+
+### M25 — Live cost visibility (Android)  `[x]`  (2026-07-25)
+
+Owner-requested: the cost of a live conversation was nowhere on the Android screen, which the 14-minute
+runaway echo loop above made pointed — it burned tokens with no on-screen indication.
+
+- `[x]` Android had **none** of the chain the web badge uses: the mint response's `rates` was parsed and thrown away, `response.done` usage was never read, and the final transcript flush carried no `cost`, so Android conversations produced **uncosted CONV rows**. Added `SessionCostTracker` (formula pinned to `web/static/js/conversation.mjs` so the two surfaces cannot disagree about the same session), a badge beside the session timer, and `cost` on the `final:true` flush. Also closes the Android half of WS-1's "costed CONV row" gap.
+- `[x]` The subtlety, pinned by a test: **cached tokens are a subset of `input_token_details`, not a sibling** — adding rather than subtracting them bills 1.1M tokens for a 1M-token turn.
+- `[x]` A null cost renders **no badge at all** rather than `~$0.000`: nova-bridge surfaces no usage, and showing zero for an unpriced engine is a lie rather than a zero. `Locale.US` is pinned so a comma-decimal locale cannot render `~$0,003`.
+- `[ ]` **Unverified:** the badge showing a live figure on device. Needs one spoken turn that generates usage — the same 15-second test as 21.2 / 23.2.
 
 ## WS-4 — M8 Launch  `[ ]`
 
