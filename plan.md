@@ -90,7 +90,15 @@ archived plans is either confirmed working or converted into a bug with a repro.
 > minter. The happy-path cascade is **not unit-covered** — `broker.minter` is a concrete
 > `*realtime.Minter`, not an interface.
 >
-> **What the owner must supply for the real fix:** a **GCP service-account JSON key** with
+> **Credential SUPPLIED 2026-07-25** — `GEMINI_SERVICE_ACCOUNT_JSON` is set as a GitHub secret
+> (20:14:18Z). Remaining work is code, not owner action: (1) add an SSM put for it in
+> `.github/workflows/deploy.yml` alongside `/live-ninja/prod/gemini/api_key`, (2) swap
+> `internal/realtime/gemini_mint.go` from `genai.NewClient{APIKey, BackendGeminiAPI}` to
+> service-account OAuth2, keeping the API-key path as a fallback so nothing regresses if the
+> credential is absent, (3) deploy and retry a Gemini-pinned mint. Only then can E1/E2 be
+> attempted. **Not yet started.**
+>
+> **What the owner had to supply (now done):** a **GCP service-account JSON key** with
 > Generative Language API access, stored via `scripts/set-secret.sh` (SSM SecureString). Option
 > (b) is ruled out — owner will not run a 24x7 container, and option (a) needs none: it runs
 > entirely in the existing Lambda.
@@ -345,6 +353,21 @@ completion (zero Android code needed). Do **not** relabel to "Hey Jarvis" (owner
 ⟵ archive/plan.md §8 M7 "Lower findings ... noted for M8 cleanup"
 - `[x]` **S** — Idempotency-before-execute ordering in the tool router. Fixed 2026-07-25 in the M17 commit: the `IDEMP#<userId>#<key>` conditional put is now claimed *before* the side-effecting handler runs, so a retried invocation cannot execute twice.
 - `[x]` **H** — `scripts/gen-icons/main.go` now reproduces the shipped HAL-eye art (`c9bb28a`): all four assets to **MAE ~1/255 with 95–97% of pixels within 8/255**, residual being sub-pixel edge placement from integer-unit radii. Every value measured off the committed `icon-512.png`, not approximated: flat navy disc **r=199** (not 140), plate `#060d18`, navy `#16294a`, the eye as **translucent** red discs (alpha 0.167/0.36 over `#ff5f4a`) sitting **over** a lens band that darkens the navy, and the band a **stadium** (flat 51-unit half-height to x=106, then radius-51 caps) which predicts 51/38/26/14 at x=110/140/150/155 exactly as measured. **Correction:** at 192 px the shipped art reads as a smooth glow and I briefly rewrote the generator around gradients on that basis; at 512 px the shipped art is a hard-edged disc stack, so that was a redesign of the app icon, not a fix, and was reverted. Renders to a scratch cwd (the output path is relative), so the committed PNGs stay untouched.
+
+### 3.4 Secret tooling  `[x]`  (2026-07-25, `96b9462`)
+
+- `[x]` **`scripts/set-secret.bat` had two defects, both found by exercising the guards.**
+  (1) `findstr /r /x "[A-Z][A-Z0-9_]*"` is not reliably case-sensitive — findstr's character
+  ranges are collation-dependent — so a lowercase name passed the UPPER_SNAKE_CASE guard and a
+  secret was created under it. Now validated with PowerShell `-cmatch`. (2) The interactive path
+  piped stdin straight to `gh secret set`, so run without a console (agent, pipe, CI) `gh` read
+  EOF and set an **empty secret with no error**; the `.sh` has always guarded this with
+  `[ -t 0 ]`, the `.bat` never did. It now refuses without a real console.
+  **Implication worth remembering:** any secret set non-interactively with the old `.bat` could
+  have been silently blanked. The four live secrets all look intact, but an unexplained auth
+  failure should suspect this first.
+- `[x]` A stray `gemini_key` secret created during that discovery was deleted; it was referenced
+  by no workflow.
 
 ### 3.3 Owner decision needed  `[ ]`
 - `[ ]` Add `proffitt.jeremy+qa@gmail.com` to the allowlist for two-account QA? (A QA password was pasted in-transcript on 2026-07-18 — **rotate it**. Clean path: owner signs the QA account into a separate Chrome profile once, then an agent can drive it; agents never type credentials.) ⟵ archive/plan.md §8 M14 item 11
