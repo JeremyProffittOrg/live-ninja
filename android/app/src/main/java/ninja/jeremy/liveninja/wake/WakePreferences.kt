@@ -23,10 +23,27 @@ class WakePreferences @Inject constructor(@ApplicationContext context: Context) 
     private val prefs: SharedPreferences =
         context.getSharedPreferences("wake", Context.MODE_PRIVATE)
 
-    /** User has turned the always-listening service on (drives BOOT_COMPLETED restart). */
+    /**
+     * User has turned the always-listening service on (drives BOOT_COMPLETED restart).
+     *
+     * Defaults to false, so *something* has to turn it on for the very first time. That
+     * used to be nothing at all: the only two callers of [WakeWordService.start] — the boot
+     * receiver and MainActivity's tap-to-resume path — are both gated on this flag, while
+     * the flag itself is only ever set true from inside the service's own onStartCommand.
+     * A fresh install therefore had no reachable path to a running wake service, even
+     * though the conversation screen advertised "just say Hey Live Ninja". The Settings
+     * always-listening switch is the entry point that breaks that cycle.
+     */
     var serviceEnabled: Boolean
         get() = prefs.getBoolean(KEY_SERVICE_ENABLED, false)
-        set(value) = prefs.edit().putBoolean(KEY_SERVICE_ENABLED, value).apply()
+        set(value) {
+            prefs.edit().putBoolean(KEY_SERVICE_ENABLED, value).apply()
+            serviceEnabledFlow.value = value
+        }
+
+    /** Observable form of [serviceEnabled] so the Settings switch reflects reality. */
+    val serviceEnabledFlow: MutableStateFlow<Boolean> =
+        MutableStateFlow(prefs.getBoolean(KEY_SERVICE_ENABLED, false))
 
     /** Mic muted from the persistent notification; service stays up, engine stays stopped. */
     var muted: Boolean

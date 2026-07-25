@@ -123,6 +123,14 @@ class SettingsViewModel @Inject constructor(
     )
     val state: StateFlow<SettingsUiState> = _state
 
+    /**
+     * Always-listening switch state. Read straight off [WakePreferences] rather than
+     * mirrored into [SettingsUiState]: the wake service itself flips this flag when it
+     * starts or stops (including from its notification's Stop action), so the switch has
+     * to follow the service, not a copy of it.
+     */
+    val wakeServiceEnabled: StateFlow<Boolean> = wakePrefs.serviceEnabledFlow
+
     private val _notices = MutableSharedFlow<SettingsNotice>(extraBufferCapacity = 4)
     val notices: SharedFlow<SettingsNotice> = _notices
 

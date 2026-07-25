@@ -6,6 +6,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -72,6 +74,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -84,6 +87,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
+import ninja.jeremy.liveninja.wake.WakeWordService
 import ninja.jeremy.liveninja.R
 import ninja.jeremy.liveninja.ui.settings.SettingsNotice
 import ninja.jeremy.liveninja.ui.settings.SettingsViewModel
@@ -104,6 +108,7 @@ fun SettingsScreen(
 ) {
     val viewModel: SettingsViewModel = hiltViewModel()
     val state by viewModel.state.collectAsState()
+    val wakeServiceEnabled by viewModel.wakeServiceEnabled.collectAsState()
     val doc = state.doc
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
@@ -169,6 +174,40 @@ fun SettingsScreen(
         ) {
             // ---------- Wake word ----------
             SectionHeader(stringResource(R.string.settings_section_wake))
+
+            // Always-listening switch. This is the ONLY entry point that starts the wake
+            // service for the first time: WakeBootReceiver and MainActivity's tap-to-resume
+            // path are both gated on WakePreferences.serviceEnabled, and that flag is only
+            // ever set from inside the service — so without this control a fresh install
+            // could never reach a running wake service at all.
+            val micGranted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO,
+            ) == PackageManager.PERMISSION_GRANTED
+            val micLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestPermission(),
+            ) { granted -> if (granted) WakeWordService.start(context) }
+            LabeledSwitchRow(
+                label = stringResource(R.string.settings_wake_service_label),
+                description = stringResource(R.string.settings_wake_service_desc),
+                checked = wakeServiceEnabled,
+                onCheckedChange = { enable ->
+                    when {
+                        !enable -> WakeWordService.stop(context)
+                        // Starting a microphone foreground service without the permission
+                        // throws, so ask first and start from the grant callback.
+                        micGranted -> WakeWordService.start(context)
+                        else -> micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                },
+            )
+            if (!micGranted) {
+                Text(
+                    stringResource(R.string.settings_wake_service_needs_mic),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             // Wake-word combobox, populated from the shared catalog (never free text).
             var wakeExpanded by remember { mutableStateOf(false) }

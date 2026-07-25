@@ -217,6 +217,9 @@
     <string name="dialog_cancel">Cancel</string>
 
     <string name="settings_section_wake">Wake word</string>
+    <string name="settings_wake_service_label">Always listening</string>
+    <string name="settings_wake_service_desc">Listen for the wake phrase in the background so you can start a conversation without touching the tablet. Detection runs on this device; audio only streams once a conversation starts.</string>
+    <string name="settings_wake_service_needs_mic">Microphone access is needed before Live Ninja can listen for the wake phrase.</string>
     <string name="settings_wake_word_label">Wake phrase</string>
     <string name="settings_wake_catalog_offline">Showing built-in phrases — couldn\'t reach the online catalog.</string>
     <string name="settings_wake_engine_label">Detection engine</string>
