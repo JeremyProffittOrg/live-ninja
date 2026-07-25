@@ -11,6 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -174,5 +175,28 @@ func TestAndroidDistributionRoutesReportUnconfigured(t *testing.T) {
 		resp, err := app.Test(httptest.NewRequest(http.MethodGet, path, nil))
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode, path)
+	}
+}
+
+func TestAndroidDistributionRoutesMapMaskedMissingObjectsToNotFound(t *testing.T) {
+	fake := &androidDocumentS3{
+		err: &smithy.GenericAPIError{
+			Code:    "AccessDenied",
+			Message: "missing key is masked without s3:ListBucket",
+		},
+	}
+	app := fiber.New()
+	RegisterAndroidDistributionRoutes(app, &Deps{
+		AndroidArtifacts:       fake,
+		AndroidArtifactsBucket: "assets-test",
+	})
+
+	for _, path := range []string{"/v1/app/android/latest", "/.well-known/assetlinks.json"} {
+		resp, err := app.Test(httptest.NewRequest(http.MethodGet, path, nil))
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode, path)
+		body, readErr := io.ReadAll(resp.Body)
+		require.NoError(t, readErr)
+		assert.Contains(t, string(body), `"code":"release_not_available"`)
 	}
 }

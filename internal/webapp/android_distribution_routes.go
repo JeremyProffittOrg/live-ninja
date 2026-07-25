@@ -179,6 +179,12 @@ func isS3NotFound(err error) bool {
 	switch apiErr.ErrorCode() {
 	case "NoSuchKey", "NotFound":
 		return true
+	case "AccessDenied":
+		// This Lambda deliberately has GetObject on the two exact document
+		// keys, but not broad s3:ListBucket. S3 therefore masks a missing key
+		// as AccessDenied rather than NoSuchKey. Once release CI creates the
+		// object, the exact-key GetObject grant succeeds normally.
+		return true
 	default:
 		return false
 	}
