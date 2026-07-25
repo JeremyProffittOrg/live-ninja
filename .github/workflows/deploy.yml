@@ -573,3 +573,77 @@ jobs:
           else
             echo "nova-bridge service not created yet (image now pushed; next deploy brings it up)"
           fi
+
+  # ------------------------------------------------------------------
+  # Post-deploy web quality gates (plan.md WS-1 1.6 — the M3 remainder).
+  #
+  # Runs AFTER deploy against the real origin rather than a locally booted
+  # server: the Fiber app needs DynamoDB/KMS/SSM to start, so a local harness
+  # would only ever reach /healthz, and it could never catch a regression in the
+  # CloudFront -> API Gateway -> authorizer chain, which is exactly where this
+  # project's nastiest bugs have lived.
+  #
+  # Scope is the UNAUTHENTICATED surface. Every authed screen sits behind a
+  # Login-with-Amazon session CI has no credentials for, so those stay
+  # owner-verified under WS-1 1.4; what is asserted here is that they correctly
+  # redirect anonymous visitors instead of leaking the app shell.
+  #
+  # Advisory, not blocking: the deploy has already happened by this point, so
+  # failing the job cannot prevent a bad release — it exists to surface
+  # regressions in the Actions tab. Making it a required check would only mean
+  # a red X after the fact. Promote it to a pre-deploy gate the day the app can
+  # boot against a local stack.
+  # ------------------------------------------------------------------
+  web-quality:
+    needs: [deploy]
+    if: needs.deploy.result == 'success'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: tests/web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: tests/web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Wait for the deployed origin to answer
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' https://live.jeremy.ninja/healthz || true)
+            if [ "$code" = "200" ]; then echo "origin healthy after ${i} attempt(s)"; exit 0; fi
+            sleep 5
+          done
+          echo "origin did not become healthy" >&2
+          exit 1
+
+      - name: Playwright e2e + axe WCAG 2.1 AA
+        run: npx playwright test
+
+      - name: Lighthouse CI (accessibility / best-practices / SEO)
+        run: npx lhci autorun
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-quality-reports
+          path: |
+            tests/web/playwright-report
+            tests/web/lighthouse-report
+          retention-days: 14
+          if-no-files-found: ignore

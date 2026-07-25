@@ -885,7 +885,7 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
   font-size: 20px;
   margin-bottom: var(--ln-sp-1);
 }
-.landing-feature h3 { font-size: var(--ln-fs-md); margin-bottom: var(--ln-sp-1); }
+.landing-feature h2 { font-size: var(--ln-fs-md); margin-bottom: var(--ln-sp-1); }
 .landing-feature p { font-size: var(--ln-fs-sm); color: var(--ln-text-muted); margin-bottom: 0; }
 
 .landing-login-wrap {

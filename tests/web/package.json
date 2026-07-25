@@ -1,0 +1,16 @@
+{
+  "name": "live-ninja-web-quality",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Playwright e2e + axe WCAG-AA + Lighthouse gates for the public web surface (plan.md WS-1 1.6).",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "lighthouse": "lhci autorun"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.10.1",
+    "@lhci/cli": "0.14.0",
+    "@playwright/test": "1.49.1"
+  }
+}

@@ -6,6 +6,9 @@
 <meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#060d18">
 <title>{{pageTitle}}</title>
+{{- /* Site-wide description: crawlers and link unfurls both use it, and its
+       absence was the only thing holding the Lighthouse SEO gate under 1.0. */}}
+<meta name="description" content="Live Ninja is a private realtime voice assistant. Talk naturally on the web or on Android, with your own wake word, memory, and conversation history.">
 <link rel="manifest" href="/static/manifest.webmanifest">
 <link rel="icon" href="/static/icons/ninja.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">

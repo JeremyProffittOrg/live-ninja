@@ -1,0 +1,7 @@
+# Playwright / Lighthouse run artifacts — regenerated per run, never committed.
+node_modules/
+test-results/
+playwright-report/
+lighthouse-report/
+.lighthouseci/
+blob-report/
