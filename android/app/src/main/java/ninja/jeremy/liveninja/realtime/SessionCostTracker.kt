@@ -1,5 +1,6 @@
 package ninja.jeremy.liveninja.realtime
 
+import java.util.Locale
 import org.json.JSONObject
 
 /**
@@ -124,5 +125,11 @@ class SessionCostTracker {
  * Badge text for [SessionCost]. Three decimals because a whole conversation
  * routinely lands under a cent, and a "$0.00" badge would tell the user nothing
  * about a session that is actually accruing cost.
+ *
+ * [Locale.US] is pinned deliberately, not defensively: the default locale would render
+ * "~$0,003" wherever the comma is the decimal separator, which both misreads as a
+ * thousands-grouped figure next to a "$" and breaks the whole point of sharing web's
+ * formula — web/static/js/conversation.mjs formats this same number with a dot, and the
+ * two surfaces must not disagree about the same session.
  */
-fun SessionCost.badgeText(): String = "~$" + String.format("%.3f", usd)
+fun SessionCost.badgeText(): String = "~$" + String.format(Locale.US, "%.3f", usd)
