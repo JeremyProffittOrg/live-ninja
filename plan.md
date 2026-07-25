@@ -63,7 +63,7 @@ archived plans is either confirmed working or converted into a bug with a repro.
 - `[ ]` Cross-tab live apply: change mic pickup / turn detection in tab B → tab A applies mid-session via `session.update`. ⟵ qa-report Surface 4
 - `[ ]` Mid-session mic-eagerness chip audibly changes end-of-turn behaviour. ⟵ qa-report Surface 4
 - `[ ]` Barge-in / wake-word detection in a browser with a working mic. ⟵ qa-report Surface 8
-- `[ ]` Confirm the cost-persist chain produces a **costed CONV row** (needs one live session; typed fallback turns emit no usage events). ⟵ archive/plan.md §8 M14 item 10
+- `[x]` **Android done 2026-07-25** (`costUsd=0.023532`, `surface=android`, read straight from the CONV row; web still unverified). Confirm the cost-persist chain produces a **costed CONV row** (needs one live session; typed fallback turns emit no usage events). ⟵ archive/plan.md §8 M14 item 10
 
 ### 1.2 Gemini Flash Live — E1/E2  `[!]` blocked on owner (S)
 ⟵ archive/gemini-plan.md §4 Phase E · exact 6-step script in that file's §10 "Phase E status"
@@ -93,9 +93,9 @@ archived plans is either confirmed working or converted into a bug with a repro.
 
 ### 1.5 Android device  `[ ]` (owner, on the phone)
 ⟵ docs/qa-report.md "Device / hardware" · archive/plan.md §8
-- `[ ]` Live voice round-trip capture on Android — confirm its transcript sink feeds user turns identically to web.
+- `[x]` Live voice round-trip capture on Android — done 2026-07-25: spoken turn → `get_weather` tool call → spoken answer → `final:true` flush → CONV row in History tagged `gpt-realtime`.
 - `[ ]` PWA install + offline: install prompt / add-to-homescreen / real offline navigation fallback on a device.
-- `[ ]` Android wake / lock-screen paths on real hardware (shipped untested; first-run checklist was in the v0.2.1-hal email).
+- `[~]` Android wake / lock-screen paths on real hardware. **Wake path done 2026-07-25** (wake phrase → `SessionOrchestrator` → live session, unlocked). **Lock-screen/keyguard path still untested.**
 - `[ ]` Android FRR/FAR wake-engine corpus harness gated in CI + on-device instrumented runs. **M4 DoD gap.** (S)
 
 ### 1.6 Delivery / infra spot-checks  `[ ]`
@@ -288,11 +288,11 @@ asks **Claude Opus on Bedrock** for a structured RCA, emails the report to the o
 base-knowledge / code-fix suggestions into the M16 queue. Deduped, rate-capped, off the request path.
 Full architecture diagram in [archive/base-knowledge-plan.md](archive/base-knowledge-plan.md) §M17.
 
-- `[ ]` **S** — SQS `live-ninja-rca` + enqueue in `Registry.finish` on `outcome=error` (include `CodeNotFound`/`CodeUpstreamError`/validation errors — malformed-args failures are exactly the prompt/schema bugs RCA should catch; skip `duplicate`). Non-blocking send, errors logged never raised. Template: queue, DLQ, Lambda, per-function role (`bedrock:InvokeModel` on the Opus inference-profile ARN, `ses:SendEmail` scoped to the identity, Dynamo RW on `RCA#`/`PROFSUGG#`, transcript partition **read-only**).
-- `[ ]` **O** — `rca-analyzer` Lambda: context gathering + analysis prompt. The prompt embeds a repo-versioned `docs/system-map.md` (≤2K tokens: surfaces, mint chain, tool registry, memory layer, settings/profile — reviewed like code) so Opus reasons about *this* system. Token budget ≤8K in / ≤2K out.
-- `[ ]` **S** — Report email formatting + `RCA#` persistence + dedupe/cooldown/cap logic (caps are the cost story: worst case 10 Opus calls/day ≈ low single-digit dollars/month; normal case ≈ pennies).
-- `[ ]` **H** — **Owner manual step:** enable Anthropic Claude Opus model access in Bedrock `us-east-1` (same console flow as the Nova Sonic request). If denied/slow: hold RCA disabled rather than shipping a weaker analyst — never downgrade.
-- `[ ]` **S** — Tests: fake Bedrock + fake SES; dedupe window; cap; a golden RCA prompt snapshot test so context-gathering regressions are visible in review.
+- `[x]` **S** — SQS `live-ninja-rca` + enqueue in `Registry.finish` on `outcome=error` (include `CodeNotFound`/`CodeUpstreamError`/validation errors — malformed-args failures are exactly the prompt/schema bugs RCA should catch; skip `duplicate`). Non-blocking send, errors logged never raised. Template: queue, DLQ, Lambda, per-function role (`bedrock:InvokeModel` on the Opus inference-profile ARN, `ses:SendEmail` scoped to the identity, Dynamo RW on `RCA#`/`PROFSUGG#`, transcript partition **read-only**).
+- `[x]` **O** — `rca-analyzer` Lambda (arm64/`provided.al2023`, verified live in `us-east-1`): context gathering + analysis prompt. The prompt embeds a repo-versioned `docs/system-map.md` (≤2K tokens: surfaces, mint chain, tool registry, memory layer, settings/profile — reviewed like code) so Opus reasons about *this* system. Token budget ≤8K in / ≤2K out.
+- `[x]` **S** — Report email formatting + `RCA#` persistence + dedupe/cooldown/cap logic (caps are the cost story: worst case 10 Opus calls/day ≈ low single-digit dollars/month; normal case ≈ pennies).
+- `[x]` **H** — **Owner manual step — DONE (owner confirmed 2026-07-25):** Anthropic Claude Opus model access in Bedrock `us-east-1` (same console flow as the Nova Sonic request). If denied/slow: hold RCA disabled rather than shipping a weaker analyst — never downgrade.
+- `[x]` **S** — Tests: fake Bedrock + fake SES; dedupe window; cap; a golden RCA prompt snapshot test so context-gathering regressions are visible in review.
 - `[ ]` **F** — Phase 2 (after server RCA proves out): the web `toolerror` path POSTs a lightweight `/api/v1/rca/client-event` breadcrumb onto the same queue — catches failures that never reach the tool router.
 
 ---
@@ -304,9 +304,9 @@ Full architecture diagram in [archive/base-knowledge-plan.md](archive/base-knowl
 A full **train → model → hot-swap** run has never completed. The owner kicked off "Hey Live Ninja"
 training on 2026-07-20 from their phone; Android `ModelManager.sync` fetches + hot-swaps on
 completion (zero Android code needed). Do **not** relabel to "Hey Jarvis" (owner decision).
-- `[~]` Confirm the 2026-07-20 training job finished and produced per-platform models in S3 (SHA-256 pinned).
-- `[ ]` Verify hot-swap on web + Android (SHA verify + live swap).
-- `[ ]` Until then the Android wake word is **inert** (packaged model is `hey_jarvis`) — say so in any user-facing note.
+- `[x]` Confirm the 2026-07-20 training job finished and produced per-platform models in S3 (SHA-256 pinned). Proven on device: `active_openwakeword.json` pins `hey-live-ninja` sha256 `d7282ac…` against a real 209 KB `.onnx`.
+- `[~]` Verify hot-swap on web + Android (SHA verify + live swap). **Android done 2026-07-25** — the downloaded trained model is the loaded head model and it detected (`score=0.696`). **Web still unverified.**
+- `[x]` ~~Until then the Android wake word is **inert**~~ — **no longer true as of 2026-07-25.** "Hey Live Ninja" detects on device with the downloaded trained model. Do not repeat the "inert / only Hey Jarvis works" caveat in user-facing notes.
 
 ### 3.2 Deferred security/cleanup findings  `[~]`
 ⟵ archive/plan.md §8 M7 "Lower findings ... noted for M8 cleanup"
@@ -318,7 +318,7 @@ completion (zero Android code needed). Do **not** relabel to "Hey Jarvis" (owner
 
 ---
 
-## WS-5 — Android stability & performance  `[~]`
+## WS-5 — Android stability & performance  `[x]`  (closed 2026-07-25)
 
 Opened 2026-07-24 after a live on-device session on the Tab S9 FE (`R52XC06P9KJ`). Every item
 below is backed by a measurement or a reproduced defect from that session, not by inspection.
@@ -362,9 +362,9 @@ Measured baseline (2026-07-24, v0.2.1-hal / versionCode 4, debug build):
 - `[x]` **23.1** Done 2026-07-25 (`c51096e`): `onnxruntime` 1.20.0 → **1.27.0**, `webrtc-sdk` 125.6422.07 → **144.7559.09** (versions read from Maven Central metadata, not guessed). Verified by parsing ELF program headers straight out of the APK — all four previously-flagged libs now report `max LOAD p_align = 16384`. `zipalign -c -P 16` was inconclusive on this machine; the Python ELF check is the reliable one and is worth keeping. **Cost: all-ABI debug APK 177 MB → 256 MB**, which raises the priority of 22.3.
 - `[x]` **23.2 Post-bump verification — COMPLETE 2026-07-25.** The missing spoken round-trip is done: "What is the weather in Charlotte, North Carolina?" through the PC speakers produced a real `get_weather` tool call (`Used get_weather / completed`) and a spoken answer with live data (70.7 °F, overcast, feels like 75.8, high 78.5) on the bumped `onnxruntime` 1.27.0 / `webrtc-sdk` 144.7559.09. **The rig problem blamed below was not the rig** — see the working procedure in Gotchas. Earlier partial result: Confirmed on the Tab S9 FE: app launches with **no** `dlopen`/`UnsatisfiedLink`/alignment errors, the wake FGS runs (`types=0x80`), `model sync` succeeds, a session mints, and `WebRtcTransport: oai-events channel state: OPEN`. **Not yet confirmed: a full spoken round-trip on the new deps** — the TTS-through-speakers rig stopped reaching the tablet mic after the reboot (PC audio routing/volume), which is a test-rig problem, not an app one. Re-run with the audio rig fixed: max PC output volume, tablet media volume ~3/15, then tap-to-talk and ask for the weather.
 
-### M24 — Verification harness  `[~]`  (owner chose instrumented, on-device)
+### M24 — Verification harness  `[x]`  (green in CI 2026-07-25)
 
-- `[~]` **24.1** JVM unit tests for each M21 defect — done for 21.1 (`TranscriptUploaderTest`, 7 cases: final-flush-always-posts, seq/role/engine, blank-turn drop, no-sessionId, full-batch flush, failure-never-propagates, mode→engine mapping) and now 21.0/21.3/21.4. 21.2 (AEC) is a concurrent agent's own test file this session, not touched here.
+- `[x]` **24.1** JVM unit tests for each M21 defect — done for 21.1 (`TranscriptUploaderTest`, 7 cases: final-flush-always-posts, seq/role/engine, blank-turn drop, no-sessionId, full-batch flush, failure-never-propagates, mode→engine mapping) and now 21.0/21.3/21.4. 21.2's AEC coverage landed as `EchoGateTest` + `VoiceAudioProcessingTest`, and 21.5's as `AuthInterceptorTest` (8 cases). 165 JVM tests green.
   - **21.3 wake-phrase resolution:** `ModelManager`/`WakeWordCatalogRepository`/`SettingsScreen` had the comparison (selected catalog id vs. loaded head model) inlined in the composable — not testable without Compose/Robolectric. Extracted the pure decision into `ui/settings/WakePhraseResolution.kt` (`resolveWakePhrase(selectedId, active: WakeModelRef) -> WakePhraseResolution(activeId, mismatched)`), mirroring SettingsScreen's existing `activeWake.isNotEmpty() && doc.wakeWord.isNotEmpty() && activeWake != doc.wakeWord` check exactly. Tested in `WakePhraseResolutionTest.kt`: downloaded model matching the selection, selection with no model synced yet (mismatch, warns with the truthful `hey-jarvis` phrase), bundled-offline fallback resolving truthfully, a downloaded custom-trained phrase, and the empty-selection edge. **Not wired into SettingsScreen.kt** (owned by the concurrent M21.2 agent this session) — the extraction mirrors the inline logic byte-for-byte today, but SettingsScreen should be pointed at this function directly as a follow-up so one definition backs both the UI and the test.
   - **21.0/21.4 service/prefs state machine:** same problem — the paused/resume decision (`wakePaused = wakeServiceEnabled && !wakeServiceRunning`, the switch's `onCheckedChange`) was inline in SettingsScreen.kt. Extracted to `wake/WakeSwitchState.kt` (`wakeSwitchDisplay(serviceEnabled, serviceRunning) -> OFF|RUNNING|PAUSED`, `decideWakeSwitchAction(toggledOn, serviceEnabled, serviceRunning) -> START|STOP`). `WakeSwitchStateTest.kt` covers: intent-on-not-running shows PAUSED with a resume action, actually-running shows RUNNING regardless of the persisted intent, and — the direct M21.0 regression guard — toggling on resolves to START identically whether `serviceEnabled` is already true or still false (i.e. START is never gated on a flag only the service itself sets). Same SettingsScreen.kt wiring caveat as above. Also added `WakePreferencesTest.kt` (previously untested): every setter mirrors synchronously into its `MutableStateFlow`, sensitivity clamps into 0..1, defaults match `settings.schema.json`.
 - `[x]` **24.2** Instrumented tests added under `app/src/androidTest/` (source set created fresh this session — did not previously exist), scoped honestly to what's verifiable offline in CI (no signed-in account, no live realtime backend):
