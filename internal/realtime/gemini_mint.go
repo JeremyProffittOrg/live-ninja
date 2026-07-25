@@ -17,6 +17,7 @@ package realtime
 //     protocol does not).
 
 import (
+	"cloud.google.com/go/auth/credentials"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -394,18 +395,49 @@ func sdkFunctionDeclarations() []*genai.FunctionDeclaration {
 func (m *GeminiMinter) Mint(ctx context.Context, voice, instructions string) (*GeminiMintResult, error) {
 	create := m.create
 	if create == nil {
-		apiKey, err := m.loader.Get(ctx, config.ParamGeminiAPIKey, config.EnvOverrideGeminiAPIKey)
-		if err != nil {
-			return nil, fmt.Errorf("realtime: resolve gemini key: %w", err)
-		}
-		client, err := genai.NewClient(ctx, &genai.ClientConfig{
-			APIKey:  apiKey,
+		cfg := &genai.ClientConfig{
 			Backend: genai.BackendGeminiAPI,
 			// Ephemeral tokens exist only on v1alpha (Phase 0 spike: minting
 			// through the default surface yields a token every WSS method
 			// rejects as an unregistered caller).
 			HTTPOptions: genai.HTTPOptions{APIVersion: "v1alpha"},
-		})
+		}
+
+		// Service-account OAuth2 is the ONLY credential that can mint a Live
+		// token. AuthTokenService.CreateToken rejects an API key outright:
+		//
+		//   401 UNAUTHENTICATED ... reason: ACCESS_TOKEN_TYPE_UNSUPPORTED
+		//   "Expected OAuth 2 access token, login cookie or other valid credential"
+		//
+		// That is why every Gemini-pinned mint 502'd from M13 until 2026-07-25 —
+		// the feature could never have worked, and E1/E2 were never a test gap.
+		saJSON, saErr := m.loader.Get(ctx, config.ParamGeminiServiceAccountJSON,
+			config.EnvOverrideGeminiServiceAccountJSON)
+		if saErr == nil && strings.TrimSpace(saJSON) != "" {
+			creds, err := credentials.DetectDefault(&credentials.DetectOptions{
+				CredentialsJSON: []byte(saJSON),
+				// generative-language is the narrow scope for this API;
+				// cloud-platform would work but grants far more than minting a
+				// short-lived voice token needs.
+				Scopes: []string{"https://www.googleapis.com/auth/generative-language"},
+			})
+			if err != nil {
+				return nil, fmt.Errorf("realtime: gemini service-account credentials: %w", err)
+			}
+			cfg.Credentials = creds
+		} else {
+			// Fall back to the API key so a missing/unset service account behaves
+			// exactly as before rather than turning into a new failure mode. It
+			// will still be rejected by CreateToken — the error is the honest one
+			// above, not a silent misconfiguration.
+			apiKey, err := m.loader.Get(ctx, config.ParamGeminiAPIKey, config.EnvOverrideGeminiAPIKey)
+			if err != nil {
+				return nil, fmt.Errorf("realtime: resolve gemini credential: %w", err)
+			}
+			cfg.APIKey = apiKey
+		}
+
+		client, err := genai.NewClient(ctx, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("realtime: gemini client init: %w", err)
 		}

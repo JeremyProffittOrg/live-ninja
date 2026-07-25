@@ -578,6 +578,13 @@ Resources:
           - ssm:GetParameter
           Resource:
           - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/gemini/api_key"
+          # Service-account key: the ONLY credential that can mint a Gemini Live
+          # ephemeral token (CreateToken rejects an API key with
+          # ACCESS_TOKEN_TYPE_UNSUPPORTED). Without this ARN the broker gets
+          # AccessDenied reading it and silently falls back to the api_key above,
+          # which fails the same way it always has — so the grant is load-bearing,
+          # not incidental.
+          - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/gemini/service_account_json"
         - Sid: SsmSecureStringDecrypt
           Effect: Allow
           Action:
