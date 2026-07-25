@@ -42,6 +42,7 @@ class RealtimeSessionCoordinator @Inject constructor(
     private val sessionApi: RealtimeSessionApi,
     private val toolRouter: ToolCallRouter,
     private val transcriptStore: TranscriptStore,
+    private val transcriptUploader: TranscriptUploader,
 ) : RealtimeSessionController {
 
     /**
@@ -99,6 +100,14 @@ class RealtimeSessionCoordinator @Inject constructor(
                 webRtcTransport.abortPrepare()
                 throw t
             }
+
+            // Start shipping turns to POST /api/v1/transcript for this session
+            // (WS-5 M21.1). Must come after the fetch: the broker-issued
+            // sessionId is what the server keys LOG#/CONV rows against.
+            transcriptUploader.begin(
+                session.sessionId,
+                TranscriptUploader.engineForMode(session.mode),
+            )
 
             // Route by the resolved engine pin. connect()'s two string params
             // are reused engine-agnostically: (credential, endpointUrl).
@@ -164,6 +173,9 @@ class RealtimeSessionCoordinator @Inject constructor(
             _connected.value = false
             transport.disconnect()
             emittedChars.clear()
+            // Session-end seam: the final:true flush is what makes the backend
+            // run topics-extract and persist the CONV record for History.
+            transcriptUploader.finish()
         }
     }
 
@@ -266,6 +278,9 @@ class RealtimeSessionCoordinator @Inject constructor(
         val remainder = if (fullText.length > sent) fullText.substring(sent) else ""
         transcriptStore.appendDelta(itemId, role, remainder, done = true)
         emit(SessionUiEvent.TranscriptDelta(itemId, role, remainder, done = true))
+        // Upload the whole finished turn (not the remainder) so the stored row
+        // matches what the user actually said/heard.
+        transcriptUploader.record(role, fullText)
     }
 
     private fun keyFor(itemId: String, role: TranscriptRole) = "$itemId/$role"

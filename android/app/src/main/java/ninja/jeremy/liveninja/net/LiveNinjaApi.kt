@@ -147,6 +147,15 @@ interface LiveNinjaApi {
      * for device; never Scan). [topic] carries comma-joined stable topicIds
      * for the multi-select filter; [from]/[to] are ISO-8601 instants.
      */
+    /**
+     * Ship finished transcript turns for the live session (WS-5 M21.1). Batched
+     * during the session; the `final:true` call at session end is what makes the
+     * backend write the CONV record via topics-extract. Without this the whole
+     * Android conversation was lost.
+     */
+    @POST("api/v1/transcript")
+    suspend fun uploadTranscript(@Body body: TranscriptUploadRequest)
+
     @GET("api/v1/conversations")
     suspend fun listConversations(
         @Query("topic") topic: String? = null,

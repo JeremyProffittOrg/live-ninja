@@ -7,6 +7,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -114,7 +115,10 @@ class RealtimeSessionCoordinatorTest {
             sessionId = "rs-1",
             quotaWarning = null,
         )
-        return RealtimeSessionCoordinator(transport, novaTransport, geminiTransport, sessionApi, toolRouter, TranscriptStore())
+        return RealtimeSessionCoordinator(
+            transport, novaTransport, geminiTransport, sessionApi, toolRouter,
+            TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())),
+        )
     }
 
     /** Collect coordinator UI events into [sink] and wait until [predicate] matches one. */
@@ -168,7 +172,10 @@ class RealtimeSessionCoordinatorTest {
             ),
             sessionConfig = JSONObject().put("model", "models/gemini-3.1-flash-live-preview"),
         )
-        val coord = RealtimeSessionCoordinator(transport, novaTransport, geminiTransport, sessionApi, toolRouter, TranscriptStore())
+        val coord = RealtimeSessionCoordinator(
+            transport, novaTransport, geminiTransport, sessionApi, toolRouter,
+            TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())),
+        )
 
         coord.start()
 
@@ -213,7 +220,10 @@ class RealtimeSessionCoordinatorTest {
             accessToken = GeminiAccessToken("auth_tokens/abc", null, null),
             sessionConfig = JSONObject().put("model", "models/gemini"),
         )
-        val coord = RealtimeSessionCoordinator(transport, novaTransport, geminiTransport, sessionApi, toolRouter, TranscriptStore())
+        val coord = RealtimeSessionCoordinator(
+            transport, novaTransport, geminiTransport, sessionApi, toolRouter,
+            TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())),
+        )
 
         coord.start()
 
@@ -229,7 +239,10 @@ class RealtimeSessionCoordinatorTest {
         // A session-fetch failure must abort the speculative WebRTC bootstrap and
         // surface the identical error (02-voice §D.2, failure-path parity).
         coEvery { sessionApi.fetchSession() } throws IOException("session mint failed")
-        val coord = RealtimeSessionCoordinator(transport, novaTransport, geminiTransport, sessionApi, toolRouter, TranscriptStore())
+        val coord = RealtimeSessionCoordinator(
+            transport, novaTransport, geminiTransport, sessionApi, toolRouter,
+            TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())),
+        )
         try {
             coord.start()
             fail("expected fetch failure to propagate")
@@ -365,5 +378,13 @@ class RealtimeSessionCoordinatorTest {
         }
         coord.stop()
         job.cancel()
+    }
+
+    /**
+     * The coordinator tests are about event mapping, not transcript upload; this keeps the
+     * uploader inert so they don't need a network fake.
+     */
+    private object NoopTranscriptSink : TranscriptSink {
+        override suspend fun upload(body: ninja.jeremy.liveninja.net.TranscriptUploadRequest) = Unit
     }
 }

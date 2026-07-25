@@ -69,4 +69,10 @@ object NetModule {
     @Singleton
     fun provideLiveNinjaApi(retrofit: Retrofit): LiveNinjaApi =
         retrofit.create(LiveNinjaApi::class.java)
+
+    /** WS-5 M21.1: the transcript-upload seam used by TranscriptUploader. */
+    @Provides
+    @Singleton
+    fun provideTranscriptSink(api: LiveNinjaApi): ninja.jeremy.liveninja.realtime.TranscriptSink =
+        ninja.jeremy.liveninja.realtime.ApiTranscriptSink(api)
 }

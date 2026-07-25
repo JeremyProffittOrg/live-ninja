@@ -40,6 +40,7 @@ What is left divides cleanly into four buckets — the workstreams below:
 - **WS-2 Base Knowledge (M15–M17)** — **M15 done 2026-07-24**; M17 (tool-failure RCA) is next, then M16.
 - **WS-3 Unfinished platform work** — the real code gaps (wake-word training run, deferred cleanup findings).
 - **WS-4 Launch (M8)** — distribution, runbook, go/no-go.
+- **WS-5 Android stability & performance** — opened 2026-07-24 from live on-device evidence; M21 defects, M22 perf, M23 16 KB alignment, M24 test harness.
 
 WS-2 and WS-3 are independent and can run in parallel. WS-1 gates WS-4.
 
@@ -244,6 +245,48 @@ completion (zero Android code needed). Do **not** relabel to "Hey Jarvis" (owner
 - `[ ]` Add `proffitt.jeremy+qa@gmail.com` to the allowlist for two-account QA? (A QA password was pasted in-transcript on 2026-07-18 — **rotate it**. Clean path: owner signs the QA account into a separate Chrome profile once, then an agent can drive it; agents never type credentials.) ⟵ archive/plan.md §8 M14 item 11
 
 ---
+
+## WS-5 — Android stability & performance  `[~]`
+
+Opened 2026-07-24 after a live on-device session on the Tab S9 FE (`R52XC06P9KJ`). Every item
+below is backed by a measurement or a reproduced defect from that session, not by inspection.
+Owner decisions taken up front: **16 KB alignment is in scope** (with a mandatory voice re-verify
+after the dependency bumps), and verification goes as far as an **instrumented on-device harness**.
+
+Measured baseline (2026-07-24, v0.2.1-hal / versionCode 4, debug build):
+
+| Signal | Value |
+|---|---|
+| Cold start, `am start -W` | 1168 ms (WaitTime 1176 ms) |
+| Debug APK | 177 MB, native libs for 4 ABIs |
+| Crashes in buffer | 0 · one stale ANR (2026-07-02) |
+| Main-thread jank | `Skipped 55 frames`, `Davey! duration=705ms` on Settings; 12 MB spent JIT-compiling one composable |
+| Lint | 1 error (`RemoveWorkManagerInitializer`, pre-existing via merged manifest), 92 warnings |
+| 16 KB page alignment | Android 16 flagged `libonnxruntime.so`, `libonnxruntime4j_jni.so`, `libjingle_peerconnection_so.so`, `libandroidx.graphics.path.so` |
+
+### M21 — Correctness defects reproduced on hardware  `[~]`
+
+- `[x]` **21.0 Wake service could never start.** `WakeWordService.start()`'s only two callers were both gated on `WakePreferences.serviceEnabled`, which is only ever set from inside the service — an unbreakable cycle on a fresh install. Added the **Always listening** switch + `serviceEnabledFlow`; verified a running FGS (`types=0x80`) and speaker activation. Commit `74c0651`.
+- `[x]` **21.1 Android sessions never reach History — data loss.** FIXED 2026-07-24. Root cause was worse than a missing flush: the app had **no transcript upload path at all** — `LiveNinjaApi` never declared `POST /api/v1/transcript`, so turns lived only in the in-memory `TranscriptStore` and every Android conversation was unrecoverable. Added `TranscriptUploader` (web-parity batching: 25 turns / 5 s, plus the load-bearing `final:true` session-end flush), the `TranscriptSink` seam so it is testable without the whole API surface, and 7 unit tests. **Verified on device:** a session at 22:04 produced a History row tagged `gpt-realtime`, where three earlier sessions had produced none. Original finding: Three sessions (21:22, 21:24, 21:31) produced no CONV row; History's newest entry stayed 2026-07-24 16:43 even after refresh. Suspect the client never sends a `{final:true}` transcript flush on session end, so `cmd/topics-extract` is never invoked. **Highest value item in this workstream** — every Android conversation is currently unrecoverable.
+- `[ ]` **21.2 AEC self-echo loop.** The assistant's own speech is transcribed as user input ("You: Right now in…"), so it answers itself repeatedly. Hardware AEC is not cancelling loudspeaker output; reproduced at tablet volume 3/15 and 15/15. Candidate fix: stop trusting the hardware canceller (`setUseHardwareAcousticEchoCanceler(false)`) and let WebRTC's software AEC3 run, with a half-duplex guard as fallback.
+- `[ ]` **21.3 Wake phrase advertised but not shipped.** Settings and the home screen both say "Hey Live Ninja"; the APK bundles only `hey_jarvis_v0.1.onnx`, so only "Hey Jarvis" actually triggers. Either ship the trained model (WS-3 §3.1) or surface the phrase the loaded model really detects — never a phrase that cannot match.
+
+### M22 — Performance  `[ ]`
+
+- `[ ]` **22.1 Settings screen jank.** One ~1300-line composable in a single scrolling Column drops 55 frames and costs a 705 ms frame plus 12 MB of JIT on first open. Split into section composables, hoist `remember`ed state, and make the list lazy so composition is incremental.
+- `[ ]` **22.2 Cold start 1168 ms.** Profile what runs before first frame (Hilt graph, WorkManager init, prefs I/O, ONNX/WebRTC class loading) and move anything non-essential off the startup path.
+- `[ ]` **22.3 Release APK size.** 177 MB with 4 ABIs. Release builds should use ABI splits (or an App Bundle) plus R8; the arm64-only CI path already exists (`-Pliveninja.arm64Only=true`) and should be the default for anything shipped.
+
+### M23 — 16 KB page-size alignment  `[ ]`  (owner-approved, verify-after)
+
+- `[ ]` **23.1** Bump `onnxruntime-android` and the WebRTC artifact to 16 KB-aligned releases; confirm with `zipalign -c -P 16`.
+- `[ ]` **23.2** Re-run the on-device wake → session → weather test after the bump. The voice loop is the thing most likely to break; commit the bump on its own so it can be reverted cleanly.
+
+### M24 — Verification harness  `[ ]`  (owner chose instrumented, on-device)
+
+- `[~]` **24.1** JVM unit tests for each M21 defect — done for 21.1 (`TranscriptUploaderTest`, 7 cases: final-flush-always-posts, seq/role/engine, blank-turn drop, no-sessionId, full-batch flush, failure-never-propagates, mode→engine mapping); remaining for 21.2/21.3 (transcript final-flush, wake-phrase resolution, AEC config, service/prefs state machine) so regressions fail in CI today.
+- `[ ]` **24.2** Instrumented Espresso/UiAutomator tests for the flows that actually broke: onboarding → signed-in home, Always-listening toggle → running FGS, tap-to-talk → live session.
+- `[ ]` **24.3** Wire an emulator job into `.github/workflows/android-release.yml` (CI has no attached device). The local AVD `liveninja-test` is the working reference.
 
 ## WS-4 — M8 Launch  `[ ]`
 

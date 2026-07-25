@@ -137,3 +137,28 @@ data class DeviceDto(
 data class DeviceListResponse(
     val items: List<DeviceDto> = emptyList(),
 )
+
+// ---- transcript upload (WS-5 M21.1) ----
+
+/**
+ * One finished transcript turn, matching `POST /api/v1/transcript`'s `turns[]` element (`internal/webapp/api_routes.go` handleTranscript).
+ */
+@Serializable
+data class TranscriptUploadTurnDto(
+    val seq: Int,
+    val role: String,
+    val text: String,
+    val engine: String,
+)
+
+/**
+ * Body for `POST /api/v1/transcript`. [final] is the session-end seam: it
+ * triggers the async topics-extract invoke that writes the CONV record, and is
+ * valid with an empty [turns] list.
+ */
+@Serializable
+data class TranscriptUploadRequest(
+    val sessionId: String,
+    val final: Boolean = false,
+    val turns: List<TranscriptUploadTurnDto> = emptyList(),
+)
