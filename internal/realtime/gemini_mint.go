@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"reflect"
 	"sort"
@@ -443,6 +444,18 @@ func (m *GeminiMinter) Mint(ctx context.Context, voice, instructions string) (*G
 			if err != nil {
 				return nil, fmt.Errorf("realtime: gemini oauth2 transport: %w", err)
 			}
+			// Strip the SDK's api-key header on the way out. Sending the bearer
+			// AND the key gets an explicit refusal from Google:
+			//
+			//   401 "API key for authentication is used with other authentication
+			//        credentials. Expected only one form of authentication."
+			//
+			// which also proves the bearer arrives and is recognised — the pair is
+			// the problem, not the credential. The SDK requires APIKey non-empty on
+			// this backend (client.go:345) and sets the header whenever it is set
+			// (api_client.go:325), so removing it here is the only place left that
+			// can leave exactly one form of authentication on the wire.
+			authedClient.Transport = stripAPIKeyHeader{authedClient.Transport}
 			cfg.HTTPClient = authedClient
 
 			// Still required non-empty by the Gemini backend's own validation
@@ -507,4 +520,20 @@ func (m *GeminiMinter) Mint(ctx context.Context, voice, instructions string) (*G
 		SessionConfig: cfgJSON,
 		ToolManifest:  toolManifestJSON,
 	}, nil
+}
+
+// stripAPIKeyHeader removes x-goog-api-key so an OAuth2-authenticated Gemini
+// request carries exactly one credential. See the call site for why both cannot
+// be sent together.
+type stripAPIKeyHeader struct{ base http.RoundTripper }
+
+func (t stripAPIKeyHeader) RoundTrip(req *http.Request) (*http.Response, error) {
+	// RoundTrippers must not mutate the request they are given.
+	clone := req.Clone(req.Context())
+	clone.Header.Del("x-goog-api-key")
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(clone)
 }
