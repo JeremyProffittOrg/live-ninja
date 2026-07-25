@@ -40,6 +40,8 @@ What is left divides cleanly into four buckets — the workstreams below:
 - **WS-2 Base Knowledge (M15–M17)** — M15 done 2026-07-24, **M16 done 2026-07-25**; M17's code is in but its checklist below still needs reconciling (and Bedrock Opus access is an owner step).
 - **WS-3 Unfinished platform work** — the real code gaps (wake-word training run, deferred cleanup findings).
 - **WS-4 Launch (M8)** — distribution, runbook, go/no-go.
+- **WS-6 Owner-requested capabilities** — opened 2026-07-25 from live use. M26 device session
+  control done; M27 volume, M28 camera/video, M29 budget warning and M30 settings revamp open.
 - **WS-5 Android stability & performance** — opened 2026-07-24 from live on-device evidence, and **closed 2026-07-25**: M21 all verified on hardware (21.2 echo audibly gone at 4x the reproducing volume, 21.3 wake detection proven at stock sensitivity, 21.5 auth deadlock fixed), M22 perf done (all-ABI 256 MB → arm64 108.7 MB), M23 verified end to end with a spoken tool-calling round-trip, M24 harness green in CI, M25 cost badge verified on screen *and* in the persisted CONV row.
 
 WS-2 and WS-3 are independent and can run in parallel. WS-1 gates WS-4.
@@ -77,6 +79,21 @@ archived plans is either confirmed working or converted into a bug with a repro.
 > accept API-key auth**. So E1/E2 were never a verification gap; the feature could not have
 > passed. Owner decision required — see backlog/decision note below. Observed txIds:
 > `BE8YPi-HoAMEPkQ=`, `BE8YSgrMoAMEQ0Q=`, `BE8ZCjrdoAMEPpA=`.
+>
+> **Mitigated 2026-07-25 (`c1b302b`), but not fixed.** A device pinned to Gemini could not start
+> a conversation at all — every mint returned 502. The mint errors have always said *"use the
+> fallback cascade"*, and a broker test even asserted "the clients' fallback cascade already
+> handles" it — **no client has ever implemented one** (no cascade exists in `web/realtime.mjs`
+> or the Android coordinator). The cascade now lives in the broker, which is the only component
+> that knows which engines are configured and covers every surface at once; the user is told
+> once via the warnings channel rather than having the voice silently change. Guarded on a nil
+> minter. The happy-path cascade is **not unit-covered** — `broker.minter` is a concrete
+> `*realtime.Minter`, not an interface.
+>
+> **What the owner must supply for the real fix:** a **GCP service-account JSON key** with
+> Generative Language API access, stored via `scripts/set-secret.sh` (SSM SecureString). Option
+> (b) is ruled out — owner will not run a 24x7 container, and option (a) needs none: it runs
+> entirely in the existing Lambda.
 >
 > **Options:** (a) OAuth2 service-account credentials for `CreateToken` (SSM SecureString, no
 > secrets manager); (b) proxy Gemini Live through the backend like `nova-bridge` so the key
@@ -402,6 +419,86 @@ runaway echo loop above made pointed — it burned tokens with no on-screen indi
 - `[x]` A null cost renders **no badge at all** rather than `~$0.000`: nova-bridge surfaces no usage, and showing zero for an unpriced engine is a lie rather than a zero. `Locale.US` is pinned so a comma-decimal locale cannot render `~$0,003`.
 - `[x]` **Verified on device 2026-07-25.** The badge rendered `~$0.040` beside the `0:28` timer during a live spoken session. The persistence half is confirmed straight from DynamoDB: the CONV row for that session carries `costUsd=0.023532`, `costTextTokens=4434`, `costAudioTokens=95`, `surface=android` — while today's **earlier** CONV rows (02:04Z, 10:16Z) have no cost attributes at all, which is exactly the before/after. **This also closes WS-1's "confirm the cost-persist chain produces a costed CONV row" for Android.**
 
+## WS-6 — Owner-requested capabilities  `[~]`
+
+Opened 2026-07-25 from live use. Everything here was asked for directly by the owner during
+the session that closed WS-5, so it is scheduled work, not backlog.
+
+### M26 — Device session control  `[x]`  (2026-07-25, `54b95c9`)
+
+**Definition of Done:** the user can stop listening and start a fresh conversation both by
+hand and by voice, from wherever they are.
+
+- `[x]` **In-app stop control.** The wake FGS notification always had a Stop action, but it is
+  `PRIORITY_LOW`/`CATEGORY_SERVICE` and is **not visible while the app is open** — so from
+  inside the app the only off switch was the toggle buried in Settings. The Conversation screen
+  now shows "Always listening is on" + **Turn off listening** whenever something really is
+  listening (bound to `runningFlow`, never the persisted intent). **Verified on hardware:**
+  service stops, `serviceEnabled=false` persists, still stopped 25 s later.
+- `[x]` **Stop actually sticks.** `onStartCommand` returned `START_STICKY`, so after an OEM
+  task-kill Android recreated the service with a **null intent** — which was treated as an
+  explicit start and re-wrote `serviceEnabled = true`. Listening the user had switched off came
+  back on its own, which is why the owner had to reboot the tablet. A sticky restart now
+  honours the stored intent (`wake/WakeStartDecision.kt`, 6 tests).
+- `[x]` **`stop_listening` + `start_new_conversation` voice tools.** Declared server-side with
+  the new `Definition.DeviceLocal` flag so the manifest advertises them, executed by the
+  Android client, which intercepts before `POST /api/v1/tools/invoke` — the backend cannot stop
+  a microphone it does not hold. The action is deferred until the assistant finishes speaking,
+  because stopping the session when the tool fires cuts off the reply explaining what happened.
+  `start_new_conversation` is a real stop/start, not a transcript clear: the session id is what
+  the backend keys `LOG#`/`CONV` on, so only a new session earns its own History row.
+- `[ ]` **Not yet verified by voice** — the tools are wired and unit-tested, but nobody has
+  said "stop listening" to a live session yet.
+- `[ ]` **Web parity.** Web has no equivalent of the tools. Its manual control exists but is
+  labelled **"Use Wake Word"** beside the mic, which is why the owner could not find it —
+  relabel to read as a listening state. (S)
+
+### M27 — Volume control  `[ ]`
+
+- `[ ]` **S** — Voice-controllable volume. **Owner decision taken:** all streams are
+  addressable, **media is the default** when unspecified. Device-local like M26, so it routes
+  through the same `DeviceLocal` interception rather than the backend.
+
+### M28 — Camera: photo + video capture  `[ ]`
+
+**Owner decisions taken 2026-07-25:** back camera by default and overridable per request
+("record a 30 second video on back camera"); **no confirmation before capture — the voice
+command IS the confirmation**; stored in the existing **S3** user bucket; and surfaced in
+**Files** alongside deliverables.
+
+- `[ ]` **O** — `CAMERA` permission (the app holds none today) + onboarding/settings copy. The
+  privacy posture changes materially: an assistant that captures on command without a
+  confirmation step is a deliberate choice and must be stated plainly in-app.
+- `[ ]` **F** — Capture path: photo, and video defaulting to **60 s** unless the user states a
+  duration. Camera selection parsed from the request, defaulting to back.
+- `[ ]` **S** — Upload to the user bucket + a `FILE#` row so it appears in Files and in the
+  conversation. **Cost note:** 60 s of video is roughly 50–100 MB, which changes the storage
+  profile — worth a retention decision before this ships.
+- `[ ]` **S** — Tools declared in the manifest (`take_photo`, `record_video`) so the model can
+  discover them.
+
+### M29 — OpenAI budget warning  `[ ]`
+
+- `[ ]` **Owner decision needed.** Warn when the OpenAI budget drops under **$20**. OpenAI
+  spend is not visible from the AWS account and their billing API exposes no reliable
+  remaining-credit figure, so there are two shapes: **(a)** sum the `costUsd` this project
+  already persists on every `CONV` row against an owner-set budget — self-contained, no new
+  credential, and it reuses the M25 chain; or **(b)** poll OpenAI's billing endpoint, needing
+  an admin API key in SSM and possibly not returning the wanted number. **Recommendation: (a).**
+
+### M30 — Settings revamp (web + Android)  `[ ]`  (owner: **both** surfaces)
+
+- `[ ]` **Owner spec, verbatim:** each settings section becomes a bar you tap to drop down the
+  options beneath it (accordion). The settings affordance stops being a circle on the right and
+  becomes a **vertical bar covering 40% of the window height** on the right; when open, a
+  matching **40% vertical bar on the left** closes it.
+- `[ ]` **O** — Mandatory multi-persona design pass BEFORE code (house rule: non-trivial UI).
+  Produce the terse flow spec first — section grouping, expand/collapse behaviour, keyboard and
+  screen-reader semantics for the accordion, and what the open/close bars announce.
+- `[ ]` **S** — Web implementation. `[ ]` **S** — Android implementation. Android's Settings was
+  just restructured into lazy sections under M22.1, which is a good base for the accordion but
+  means the two surfaces must be kept deliberately consistent rather than drifting.
+
 ## WS-4 — M8 Launch  `[ ]`
 
 **Definition of Done:** SES production access granted; Cost Allocation Tags confirmed active; the
@@ -439,5 +536,21 @@ emailing (**no CloudWatch alerts — owner decision 2026-07-19; alarms stay remo
 - **The PC-speakers → tablet-mic voice rig works; use this exact procedure.** Windows master volume ~95% (it was already 100%), tablet media volume **12/30 set with `cmd media_session volume --stream 3 --set 12`** — note `media volume ...` does **not** exist on this device and fails silently, so verify with `dumpsys audio` (`streamVolume:` in the `STREAM_MUSIC` block). Speak with `System.Speech.Synthesis.SpeechSynthesizer` at `Volume=100, Rate=-2`. Allow ~7 s after tapping the mic for the session to connect before speaking. **Always end the session** — tap the stop control (≈`input tap 1089 1993`), not `am force-stop`, because force-stop kills the process before the `final:true` flush and you lose the costed CONV row.
 - **A wake-word test needs a freshly started wake service.** Detection failed three times in a row when the service had been running through a preceding WebRTC session, then succeeded immediately after an app restart — Samsung's stack logs `BWU@ApWakeupService: isRecognitionAllowed? false` in that window. Restart the app before concluding a wake model does not work.
 - **A post-deploy job in `deploy.yml` MUST use `if: always() && needs.deploy.result == 'success'`.** `deploy`'s own upstream container jobs are normally skipped, so `deploy` only runs because of its own `always()`; GitHub then propagates "skipped" down the chain and a dependent job **without** `always()` is silently skipped even though deploy succeeded — zero steps, job reports `skipped`, nothing fails. Cost one round trip on the new `web-quality` job. Also: `continue-on-error: true` makes a job report **success even when its steps failed**, so check step conclusions, not the job badge, before believing a gate passed.
+- **A zero-parameter tool used to break the Gemini schema contract.** `renderManifest` emitted
+  `"properties":{}`, and the Gemini Go SDK omits an empty property map when it marshals the same
+  schema into a minted token's constraints — so the raw wire setup frame and the SDK-typed
+  constraints disagreed about a tool the model must see identically. Fixed at the source in
+  `renderManifest` (omit `properties` when empty), NOT in the Gemini sanitizer, because
+  `gemini_mint_test.go` asserts the sanitized copy stays exactly equal to the manifest and its
+  own comment says divergence is drift to fix upstream. Surfaced the moment the catalog gained
+  its first parameterless tools.
+- **Adding a tool trips three guards on purpose.** `tool_manifest_test.go` pins the catalog
+  count, `persona_tool_coverage_test.go` requires the tool be named in `coreInstructions` (or
+  explicitly allow-listed as unmentioned), and the Gemini schema tests require both Gemini paths
+  to agree. Budget for all three; they are the reason a new tool cannot be silently
+  undiscoverable to the model.
+- **`aws` CLI under git-bash mangles a leading-slash argument** into a Windows path — a log group
+  like `/live-ninja/lambda/web` fails validation. Prefix the command with `MSYS_NO_PATHCONV=1`.
+  Also note the log groups are `/live-ninja/lambda/<fn>`, NOT `/aws/lambda/<fn>`.
 - **Broker mint slots:** 3 concurrent sessions, ~10-min TTL. Burned slots make retests wait — budget for it.
 - **GitHub "cancelled" runs** = queue replacement by a newer push, not a failure.
