@@ -54,7 +54,9 @@ class TapToTalkConnectingStateTest {
         }
 
         composeTestRule
-            .onNodeWithContentDescription("Tap to talk. Starts a live voice conversation.")
+            .onNodeWithContentDescription(
+                composeTestRule.activity.getString(R.string.conversation_mic_button_cd),
+            )
             .performClick()
 
         composeTestRule.waitForIdle()

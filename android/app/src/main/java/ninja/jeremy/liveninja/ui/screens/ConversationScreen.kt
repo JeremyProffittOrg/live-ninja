@@ -294,6 +294,7 @@ private fun IdleHero(
             }
 
             else -> {
+                val orbCd = stringResource(R.string.conversation_orb_cd)
                 // Persistent HAL orb (200dp) as the idle tap-to-talk affordance;
                 // the eye is decorative, the whole 200dp circle is the tap target
                 // (well over the 48dp minimum) and the caption below labels it.
@@ -308,7 +309,7 @@ private fun IdleHero(
                             onClick = onTapToTalk,
                         )
                         .semantics {
-                            contentDescription = "Tap to talk. Starts a live voice conversation."
+                            contentDescription = orbCd
                             role = Role.Button
                         },
                 )
@@ -462,6 +463,8 @@ private fun ControlBar(
     onStop: () -> Unit,
 ) {
     val live = sessionLive(state.micState)
+    val micIdleCd = stringResource(R.string.conversation_mic_button_cd)
+    val micLiveCd = stringResource(R.string.conversation_mic_button_live_cd)
     Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh) {
         Column(Modifier.fillMaxWidth()) {
             if (live) {
@@ -509,11 +512,7 @@ private fun ControlBar(
                     modifier = Modifier
                         .size(72.dp)
                         .semantics {
-                            contentDescription = if (live) {
-                                "Push to talk. Interrupts the assistant and listens."
-                            } else {
-                                "Tap to talk. Starts a live voice conversation."
-                            }
+                            contentDescription = if (live) micLiveCd else micIdleCd
                         },
                     shape = CircleShape,
                     colors = IconButtonDefaults.filledIconButtonColors(

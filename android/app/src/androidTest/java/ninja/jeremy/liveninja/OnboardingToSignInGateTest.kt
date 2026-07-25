@@ -4,35 +4,40 @@ import android.content.Context
 // NB: assertExists() is a member of SemanticsNodeInteraction, not a top-level extension,
 // so it must NOT be imported — importing it is an unresolved reference.
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import ninja.jeremy.liveninja.ui.state.OnboardingStore
+import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * WS-5 M24.2 instrumented test for "onboarding -> signed-in home".
+ * WS-5 M24.2: the sign-in gate in [ninja.jeremy.liveninja.ui.LiveNinjaRoot].
  *
- * Boundary: reaching an actually signed-in home screen needs a live Login-with-Amazon
- * round trip, which does not exist in CI. What this test verifies instead — the part of the
- * flow that is real and offline-verifiable — is that walking through every onboarding step
- * (skipping sign-in, permissions, and the assistant role, exactly as a user declining each
- * prompt would) reaches [ninja.jeremy.liveninja.ui.onboarding.LoginScreen], not a crash and
- * not (incorrectly) the signed-in home scaffold. That routing decision
- * (`OnboardingScreen -> LoginScreen -> home`) lives in
- * [ninja.jeremy.liveninja.ui.LiveNinjaRoot] and is exactly the kind of gate that a regression
- * could silently bypass (showing home to a signed-out user).
+ * The invariant under test is the routing decision, which is the part that could regress
+ * dangerously: **once onboarding is complete and no session exists, the app must show
+ * LoginScreen — never the signed-in home scaffold.** A regression there would expose the home
+ * UI to a signed-out user.
  *
- * The instrumentation process may already have `onboarding_completed_v1` set from a prior
- * run on the same emulator (no reinstall between local runs); the onboarding prefs file is
- * cleared in `@BeforeClass` — deliberately NOT `@Before` — so the test is reproducible
- * regardless of prior state. `createAndroidComposeRule`'s `ActivityScenarioRule` launches
- * `MainActivity` (reading that prefs file) as part of applying the `@Rule`, which happens
- * before any `@Before` method runs; only a class-level `@BeforeClass` is guaranteed to run
- * ahead of it.
+ * Deliberately asserted from persisted state rather than by driving the seven wizard screens.
+ * An earlier version of this test walked the wizard clicking each decline button in a fixed
+ * order, and it failed twice for reasons that were not defects: the permission steps (mic,
+ * notifications, battery) are skipped when the permission is already held, so the step order
+ * legitimately differs between `adb install -g`, a plain Gradle install, and the CI emulator —
+ * CI died looking for "Skip for now" while the local emulator got two steps further and died
+ * looking for "Not now". Worse, declining the mic step can raise a real system permission
+ * dialog, which is a different window that Compose's semantics tree cannot see or dismiss, so
+ * every later interaction silently targets the window behind it. A test that reports defects
+ * that do not exist is worse than no test, and driving system dialogs is what
+ * [WakeServiceLifecycleTest]-style instrumentation is for, not this gate.
+ *
+ * Onboarding prefs are written in `@BeforeClass`, not `@Before`: `createAndroidComposeRule`'s
+ * `ActivityScenarioRule` launches `MainActivity` (which reads that file) while the `@Rule` is
+ * being applied, and that happens before any `@Before` method runs.
  */
 @RunWith(AndroidJUnit4::class)
 class OnboardingToSignInGateTest {
@@ -43,44 +48,38 @@ class OnboardingToSignInGateTest {
     companion object {
         @BeforeClass
         @JvmStatic
-        fun resetOnboardingState() {
+        fun markOnboardingCompleteAndSignedOut() {
             val context: Context = InstrumentationRegistry.getInstrumentation().targetContext
-            // Mirrors ninja.jeremy.liveninja.ui.state.OnboardingStore's backing file/key.
-            context.getSharedPreferences("liveninja_onboarding", Context.MODE_PRIVATE)
+            // Both the file name and the key come from OnboardingStore's own constants, so a
+            // rename breaks the build rather than silently making this test vacuous.
+            context.getSharedPreferences(OnboardingStore.PREFS_NAME, Context.MODE_PRIVATE)
                 .edit()
-                .clear()
+                .putBoolean(OnboardingStore.KEY_COMPLETED, true)
                 .commit()
         }
     }
 
     @Test
-    fun skippingEveryStepReachesTheSignInScreen() {
+    fun onboardingCompleteButSignedOutShowsLoginNotHome() {
         val strings = composeTestRule.activity.resources
+        composeTestRule.waitForIdle()
 
-        // WELCOME
-        composeTestRule.onNodeWithText(strings.getString(R.string.onboarding_get_started)).performClick()
-
-        // SIGN_IN (declined — a fresh install has no Amazon session to reuse)
-        composeTestRule.onNodeWithText(strings.getString(R.string.onboarding_skip_for_now)).performClick()
-
-        // MIC_PERMISSION (declined)
-        composeTestRule.onNodeWithText(strings.getString(R.string.onboarding_mic_not_now)).performClick()
-
-        // NOTIFICATIONS (declined)
-        composeTestRule.onNodeWithText(strings.getString(R.string.onboarding_skip_for_now)).performClick()
-
-        // ASSISTANT_ROLE (declined)
-        composeTestRule.onNodeWithText(strings.getString(R.string.onboarding_role_skip)).performClick()
-
-        // BATTERY (declined)
-        composeTestRule.onNodeWithText(strings.getString(R.string.onboarding_skip_for_now)).performClick()
-
-        // WAKE_WORD -> Finish setup (default selection is fine; this screen never broke).
-        composeTestRule.onNodeWithText(strings.getString(R.string.onboarding_finish)).performClick()
-
-        // The wizard is done and the user is signed out: LoginScreen, never the home scaffold.
         composeTestRule
             .onNodeWithText(strings.getString(R.string.login_tagline))
             .assertExists()
+
+        // And explicitly NOT the home scaffold: its bottom-nav destinations must be absent.
+        // Asserting the positive alone would still pass if both were somehow rendered.
+        for (destination in listOf(
+            R.string.destination_conversation,
+            R.string.destination_history,
+            R.string.destination_settings,
+        )) {
+            val label = strings.getString(destination)
+            assertTrue(
+                "signed-out user must not see the home destination \"$label\"",
+                composeTestRule.onAllNodesWithText(label).fetchSemanticsNodes().isEmpty(),
+            )
+        }
     }
 }

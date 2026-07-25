@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.StateFlow
 class OnboardingStore @Inject constructor(
     @ApplicationContext context: Context,
 ) {
-    private val prefs = context.getSharedPreferences("liveninja_onboarding", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     private val _completed = MutableStateFlow(prefs.getBoolean(KEY_COMPLETED, false))
     val completed: StateFlow<Boolean> = _completed
@@ -22,7 +22,13 @@ class OnboardingStore @Inject constructor(
         _completed.value = true
     }
 
-    private companion object {
+    /**
+     * `internal`, not `private`: the instrumented sign-in-gate test seeds this flag directly, and
+     * referencing these constants means renaming either one breaks the build instead of quietly
+     * making that test vacuous (it would seed a key nothing reads and still "pass").
+     */
+    internal companion object {
+        const val PREFS_NAME = "liveninja_onboarding"
         const val KEY_COMPLETED = "onboarding_completed_v1"
     }
 }

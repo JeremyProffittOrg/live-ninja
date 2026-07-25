@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    WS-5 M24.2. Declares TestHarnessActivity for instrumented tests.
+
+    It lives in the *debug* source set, not androidTest, and that placement is
+    load-bearing rather than a matter of taste. Instrumentation runs inside the
+    target app's process (ninja.jeremy.liveninja), so an activity that belongs to
+    the test APK (ninja.jeremy.liveninja.test) cannot be launched from it —
+    ActivityScenario fails with "Intent in process ninja.jeremy.liveninja resolved
+    to different process ninja.jeremy.liveninja.test". Hosting it in the debug
+    variant puts it in the same process the instrumentation targets, which is the
+    documented pattern for a custom @AndroidEntryPoint Compose test host.
+
+    Debug-only: this manifest is never merged into a release build, so the harness
+    cannot ship.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name="ninja.jeremy.liveninja.TestHarnessActivity"
+            android:exported="false" />
+    </application>
+</manifest>
