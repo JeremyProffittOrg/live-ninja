@@ -17,8 +17,11 @@ securityCrypto = "1.1.0-alpha06"
 okhttp = "4.12.0"
 retrofit = "2.11.0"
 kotlinxSerialization = "1.8.0"
-webrtc = "125.6422.07"
-onnxruntime = "1.20.0"
+# 144.x ships 16 KB-page-aligned native libs (WS-5 M23); 125.x did not, and Android 16
+# flagged libjingle_peerconnection_so.so as "LOAD segment not aligned".
+webrtc = "144.7559.09"
+# 1.27.0 ships 16 KB-page-aligned .so files (WS-5 M23); 1.20.0 did not.
+onnxruntime = "1.27.0"
 junit = "4.13.2"
 orgJson = "20240303"
 mockk = "1.13.16"
