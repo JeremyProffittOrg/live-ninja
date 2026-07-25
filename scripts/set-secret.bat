@@ -27,7 +27,11 @@ if "%NAME%"=="" (
   echo usage: %~nx0 SECRET_NAME [--file PATH ^| --generate] 1>&2
   exit /b 2
 )
-echo %NAME%| findstr /r /x "[A-Z][A-Z0-9_]*" >nul || (
+REM findstr's character ranges are NOT reliably case-sensitive (collation
+REM dependent), so `findstr /r /x "[A-Z][A-Z0-9_]*"` happily accepted a
+REM lowercase name and this script went on to set a real secret under it.
+REM PowerShell's -cmatch is explicitly case-sensitive; use that instead.
+powershell -NoProfile -Command "if ($env:NAME -cmatch '^[A-Z][A-Z0-9_]*$') { exit 0 } else { exit 1 }" || (
   echo ERROR: secret names are UPPER_SNAKE_CASE 1>&2
   exit /b 2
 )
@@ -47,6 +51,14 @@ echo ERROR: unknown option '%MODE%' 1>&2
 exit /b 2
 
 :mode_prompt
+REM Refuse to run the interactive path without a real console. gh reads the
+REM value from stdin, so when this is piped or run by an agent it sees EOF and
+REM silently sets an EMPTY secret - which is exactly what happened once.
+powershell -NoProfile -Command "if ([Console]::IsInputRedirected) { exit 1 } else { exit 0 }" || (
+  echo ERROR: interactive prompt needs a terminal. Agents: run this in the user's 1>&2
+  echo        terminal, or use --file / --generate. Do NOT pipe a value in. 1>&2
+  exit /b 1
+)
 echo Enter/paste the value for %NAME% at gh's hidden prompt (input is not echoed):
 gh secret set "%NAME%" -R "%REPO%" || goto fail
 goto verify
