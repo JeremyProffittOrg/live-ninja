@@ -30,13 +30,18 @@ import (
 	"path/filepath"
 )
 
-// Design tokens (mockups/web/*.html --ln-* custom properties).
+// Design tokens: HAL 9000 head with red eye (modern design, Theme.kt colors).
 var (
-	colBg    = color.NRGBA{R: 0x06, G: 0x0d, B: 0x18, A: 0xff} // --ln-navy-900
-	colHead  = color.NRGBA{R: 0x14, G: 0x25, B: 0x44, A: 0xff} // --ln-surface-raised
-	colBand  = color.NRGBA{R: 0x0a, G: 0x14, B: 0x24, A: 0xff} // --ln-navy
-	colTeal  = color.NRGBA{R: 0x22, G: 0xe0, B: 0xd0, A: 0xff} // --ln-teal
-	colTeal2 = color.NRGBA{R: 0x22, G: 0xe0, B: 0xd0, A: 0xd9} // headband, 85% alpha
+	colBg   = color.NRGBA{R: 0x05, G: 0x05, B: 0x07, A: 0xff} // HalBackground #050507
+	colHead = color.NRGBA{R: 0x0d, G: 0x1f, B: 0x3a, A: 0xff} // Navy head (approx #0d1f3a)
+	// colHeadShade (#09162d) is intentionally absent: the shipped art shades the head with a
+	// radial falloff from colHead rather than a second flat tone. Reintroduce it only if this
+	// generator gains real two-tone shading — see the fidelity gap noted at drawHalEye.
+	colRed       = color.NRGBA{R: 0xe3, G: 0x26, B: 0x36, A: 0xff} // HalRed #e32636
+	colRedDark   = color.NRGBA{R: 0x7a, G: 0x0f, B: 0x18, A: 0xff} // Dark red (eye outline)
+	colRedBright = color.NRGBA{R: 0xff, G: 0x5a, B: 0x4a, A: 0xff} // Bright red iris
+	colWhiteWarm = color.NRGBA{R: 0xff, G: 0xf8, B: 0xf2, A: 0xff} // Warm white center highlight
+	colCream     = color.NRGBA{R: 0xff, G: 0xd9, B: 0xc4, A: 0xff} // Cream mid-tone
 )
 
 // shape is an analytic inside-test in the 512x512 unit design space.
@@ -75,19 +80,36 @@ func insideRoundedRect(rx0, ry0, w, h, rad float64) func(x, y float64) bool {
 	}
 }
 
-// glyphShapes returns the layered glyph in the 512-unit design space.
-// scale shrinks the foreground glyph about the center (1.0 = as drawn in
-// ninja.svg); bgRadius is the background corner radius (0 = full bleed).
+// glyphShapes returns the layered HAL 9000 head glyph in the 512-unit design space.
+// scale shrinks the foreground glyph about the center (1.0 = as drawn);
+// bgRadius is the background corner radius (0 = full bleed).
+// The design is a navy head with a red incandescent eye in the center.
 func glyphShapes(scale, bgRadius float64) []shape {
 	s := func(v float64) float64 { return 256 + (v-256)*scale }
 	r := func(v float64) float64 { return v * scale }
+	headCx, headCy := s(256), s(256)
+	headRadius := r(140)
+
 	return []shape{
+		// Background.
 		{insideRoundedRect(0, 0, 512, 512, bgRadius), colBg},
-		{insideCircle(s(256), s(264), r(148)), colHead},
-		{insideRoundedRect(s(108), s(200), r(296), r(96), r(48)), colBand},
-		{insideRoundedRect(s(126), s(184), r(260), r(14), r(7)), colTeal2},
-		{insideCircle(s(204), s(248), r(24)), colTeal},
-		{insideCircle(s(308), s(248), r(24)), colTeal},
+		// Navy head (outer).
+		{insideCircle(headCx, headCy, headRadius), colHead},
+		// Darker red iris background (main surround).
+		{insideCircle(headCx, headCy, r(95)), colRedDark},
+		// Dark red pupils/eye shadows (left and right, very prominent).
+		{insideCircle(headCx-r(58), headCy, r(56)), colRedDark},
+		{insideCircle(headCx+r(58), headCy, r(56)), colRedDark},
+		// Red iris shading layers.
+		{insideCircle(headCx, headCy, r(75)), colRed},
+		// Mid iris: bright red (main iris color).
+		{insideCircle(headCx, headCy, r(58)), colRedBright},
+		// Inner iris: red for depth.
+		{insideCircle(headCx, headCy, r(44)), colRed},
+		// Cream-colored mid-tone (warmth, simulates gradient).
+		{insideCircle(headCx, headCy, r(30)), colCream},
+		// Warm white center highlight (incandescent core).
+		{insideCircle(headCx, headCy, r(15)), colWhiteWarm},
 	}
 }
 
