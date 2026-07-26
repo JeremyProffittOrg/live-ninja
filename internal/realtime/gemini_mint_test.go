@@ -164,13 +164,23 @@ func TestGeminiMintUsesCurrentV1BetaRESTContract(t *testing.T) {
 	assert.Equal(t, float64(1), wireBody["uses"])
 	assert.NotContains(t, wireBody, "authToken")
 	assert.NotContains(t, wireBody, "config")
-	assert.NotContains(t, wireBody, "bidiGenerateContentSetup")
-	wireSetup, ok := wireBody["liveConnectConstraints"].(map[string]any)
+	assert.NotContains(t, wireBody, "liveConnectConstraints")
+	assert.NotContains(t, wireBody, "fieldMask")
+	wireSetup, ok := wireBody["bidiGenerateContentSetup"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, "models/gemini-test-model", wireSetup["model"])
-	wireConfig, ok := wireSetup["config"].(map[string]any)
+	wireConfig, ok := wireSetup["generationConfig"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, []any{"AUDIO"}, wireConfig["responseModalities"])
+	assert.Contains(t, wireSetup, "tools")
+	assert.Contains(t, wireSetup, "sessionResumption")
+	assert.Contains(t, wireSetup, "inputAudioTranscription")
+	assert.Contains(t, wireSetup, "outputAudioTranscription")
+
+	var returnedSetup map[string]any
+	require.NoError(t, json.Unmarshal(result.SessionConfig, &returnedSetup))
+	assert.Equal(t, returnedSetup, wireSetup,
+		"the token-locked setup and client-returned SessionConfig must be identical")
 }
 
 func TestGeminiProvisioningClientDoesNotFollowCredentialRedirect(t *testing.T) {
@@ -201,6 +211,7 @@ func TestGeminiProvisioningClientDoesNotFollowCredentialRedirect(t *testing.T) {
 		origin.URL,
 		apiKey,
 		&genai.CreateAuthTokenConfig{},
+		json.RawMessage(`{"model":"models/unit-test"}`),
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "307 Temporary Redirect")
@@ -226,6 +237,7 @@ func TestGeminiProvisioningTransportRedactsCredentialFromErrors(t *testing.T) {
 		"https://generativelanguage.googleapis.com/v1beta/auth_tokens",
 		apiKey,
 		&genai.CreateAuthTokenConfig{},
+		json.RawMessage(`{"model":"models/unit-test"}`),
 	)
 	require.Error(t, err)
 	assert.Equal(t, "realtime: Gemini auth-token transport failed", err.Error())

@@ -87,17 +87,17 @@ type GeminiMintResult struct {
 	Voice       string
 	// SessionConfig is the exact raw `setup` frame BODY the client must send
 	// on open (wire shape, generationConfig nesting). The same config is also
-	// locked into the token via liveConnectConstraints; sending it client-side
-	// too is the documented workaround for the known Google bug where a
+	// locked into the token via the REST wire's bidiGenerateContentSetup field
+	// (called LiveConnectConstraints by the Go SDK); sending it client-side too
+	// is the documented workaround for the known Google bug where a
 	// constraints-only systemInstruction is intermittently ignored.
 	SessionConfig json.RawMessage
 	ToolManifest  json.RawMessage
 }
 
 // geminiTokenCreator is the token call injectable for tests. Production uses
-// the current v1beta REST shape directly because genai v1.64 still converts
-// LiveConnectConstraints to the superseded v1alpha bidiGenerateContentSetup
-// field.
+// a small REST adapter that performs the same input-to-wire conversion as the
+// SDK while retaining stricter redirect and credential-redaction behavior.
 type geminiTokenCreator func(ctx context.Context, cfg *genai.CreateAuthTokenConfig) (*genai.AuthToken, error)
 
 // GeminiMinter mints config-constrained Gemini Live ephemeral tokens. Its
@@ -122,11 +122,23 @@ func geminiProvisioningHTTPClient() *http.Client {
 	}
 }
 
+// geminiAuthTokenRequest is the final REST wire shape emitted by the official
+// Go SDK after it converts the ergonomic LiveConnectConstraints input and
+// flattens the nested setup object. It deliberately contains no fieldMask:
+// omitting one locks the complete provisioned Live setup.
+type geminiAuthTokenRequest struct {
+	Uses                     *int32          `json:"uses,omitempty"`
+	ExpireTime               *time.Time      `json:"expireTime,omitempty"`
+	NewSessionExpireTime     *time.Time      `json:"newSessionExpireTime,omitempty"`
+	BidiGenerateContentSetup json.RawMessage `json:"bidiGenerateContentSetup"`
+}
+
 func createGeminiAuthToken(
 	ctx context.Context,
 	client *http.Client,
 	endpoint, apiKey string,
 	cfg *genai.CreateAuthTokenConfig,
+	setupJSON json.RawMessage,
 ) (*genai.AuthToken, error) {
 	if strings.TrimSpace(apiKey) == "" {
 		return nil, fmt.Errorf("realtime: Gemini provisioning credential is empty")
@@ -134,7 +146,22 @@ func createGeminiAuthToken(
 	if cfg == nil {
 		return nil, fmt.Errorf("realtime: Gemini provisioning config is empty")
 	}
-	body, err := json.Marshal(cfg)
+	if len(setupJSON) == 0 {
+		return nil, fmt.Errorf("realtime: Gemini provisioning setup is empty")
+	}
+	wireCfg := geminiAuthTokenRequest{
+		Uses:                     cfg.Uses,
+		BidiGenerateContentSetup: setupJSON,
+	}
+	if !cfg.ExpireTime.IsZero() {
+		expireTime := cfg.ExpireTime
+		wireCfg.ExpireTime = &expireTime
+	}
+	if !cfg.NewSessionExpireTime.IsZero() {
+		newSessionExpireTime := cfg.NewSessionExpireTime
+		wireCfg.NewSessionExpireTime = &newSessionExpireTime
+	}
+	body, err := json.Marshal(wireCfg)
 	if err != nil {
 		return nil, fmt.Errorf("realtime: marshal Gemini auth-token request: %w", err)
 	}
@@ -513,6 +540,10 @@ func (m *GeminiMinter) MintForSurface(ctx context.Context, voice, instructions, 
 	newSessionExpiresAt := now.Add(geminiNewSessionWindow)
 	uses := int32(1)
 	setup := buildGeminiSetupForSurface(m.model, voice, instructions, surface)
+	setupJSON, err := json.Marshal(setup)
+	if err != nil {
+		return nil, fmt.Errorf("realtime: marshal gemini session config: %w", err)
+	}
 	tokenCfg := &genai.CreateAuthTokenConfig{
 		Uses:                   &uses,
 		ExpireTime:             expiresAt,
@@ -521,15 +552,15 @@ func (m *GeminiMinter) MintForSurface(ctx context.Context, voice, instructions, 
 	}
 
 	var tok *genai.AuthToken
-	var err error
 	if m.create != nil {
 		tok, err = m.create(ctx, tokenCfg)
 	} else {
 		// The provisioning service accepts exactly one authentication form.
 		// Follow the current v1beta REST contract exactly: x-goog-api-key only
-		// and liveConnectConstraints in the body. The pinned Go SDK still
-		// rewrites that field to v1alpha's bidiGenerateContentSetup, so the
-		// small REST adapter above owns this one provisioning call.
+		// and bidiGenerateContentSetup in the body. LiveConnectConstraints is
+		// the Go SDK's input-only convenience field; the small REST adapter
+		// above performs the SDK's conversion without weakening redirect or
+		// credential-redaction safeguards.
 		apiKey, keyErr := m.loader.Get(ctx, config.ParamGeminiAPIKey, config.EnvOverrideGeminiAPIKey)
 		if keyErr != nil {
 			return nil, fmt.Errorf("realtime: resolve gemini credential: %w", keyErr)
@@ -542,18 +573,13 @@ func (m *GeminiMinter) MintForSurface(ctx context.Context, voice, instructions, 
 		if endpoint == "" {
 			endpoint = geminiAuthTokensEndpoint
 		}
-		tok, err = createGeminiAuthToken(ctx, client, endpoint, apiKey, tokenCfg)
+		tok, err = createGeminiAuthToken(ctx, client, endpoint, apiKey, tokenCfg, setupJSON)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("realtime: gemini auth token mint: %w", err)
 	}
 	if tok == nil || tok.Name == "" {
 		return nil, fmt.Errorf("realtime: gemini auth token mint returned no token name")
-	}
-
-	cfgJSON, err := json.Marshal(setup)
-	if err != nil {
-		return nil, fmt.Errorf("realtime: marshal gemini session config: %w", err)
 	}
 
 	return &GeminiMintResult{
@@ -564,7 +590,7 @@ func (m *GeminiMinter) MintForSurface(ctx context.Context, voice, instructions, 
 		},
 		Model:         m.model,
 		Voice:         voice,
-		SessionConfig: cfgJSON,
+		SessionConfig: setupJSON,
 		ToolManifest:  ToolManifestJSONForSurface(surface),
 	}, nil
 }
