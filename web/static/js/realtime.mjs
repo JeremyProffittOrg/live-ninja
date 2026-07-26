@@ -1470,12 +1470,21 @@ export class RealtimeSession extends EventTarget {
 
     if (evt.sessionResumptionUpdate) {
       const u = evt.sessionResumptionUpdate;
+      const wasResumable = this.#geminiCanResume;
+      const hadSafeHandle = !!this.#geminiResumeHandle;
       this.#geminiCanResume = u.resumable === true && !!u.newHandle;
       this.#geminiResumeHandle = this.#geminiCanResume ? u.newHandle : '';
-      debugGeminiLifecycle('resumption-update', {
-        resumable: this.#geminiCanResume,
-        safeHandlePresent: !!this.#geminiResumeHandle,
-      });
+      // Handles rotate frequently while the session is idle. Log only the
+      // safe-checkpoint state transition so diagnostics remain low-volume.
+      if (
+        this.#geminiCanResume !== wasResumable ||
+        !!this.#geminiResumeHandle !== hadSafeHandle
+      ) {
+        debugGeminiLifecycle('resumption-update', {
+          resumable: this.#geminiCanResume,
+          safeHandlePresent: !!this.#geminiResumeHandle,
+        });
+      }
     }
 
     if (evt.goAway) {
@@ -1500,6 +1509,9 @@ export class RealtimeSession extends EventTarget {
         // The model is now waiting on new client-side state that the prior
         // checkpoint cannot contain. Retire that handle before considering a
         // pending goAway; only a later server update may authorize resumption.
+        if (this.#geminiCanResume || this.#geminiResumeHandle) {
+          debugGeminiLifecycle('checkpoint-invalidated', { reason: 'tool-call' });
+        }
         this.#geminiCanResume = false;
         this.#geminiResumeHandle = '';
       }

@@ -10,7 +10,7 @@ Folded in from (full history + verbose implementation notes preserved in each):
 | Archived plan | What it contributed |
 |---|---|
 | [archive/plan.md](archive/plan.md) | Master M0–M12 plan + the entire §8 implementation-notes / RESUME-STATE history. **Read §8 there before resuming anything** — it is the deepest record of how this system actually works. |
-| [archive/gemini-plan.md](archive/gemini-plan.md) | M13 Gemini Flash Live — historical design record; production v1beta mint/audio/tool/cost now work, E1 is partial, and real post-fix E2 lifecycle verification remains |
+| [archive/gemini-plan.md](archive/gemini-plan.md) | M13 Gemini Flash Live — historical design record; production v1beta mint/audio/tool/cost and one real within-token recycle now work, E1 is partial, and >30-minute continuation remains policy/implementation-blocked |
 | [archive/base-knowledge-plan.md](archive/base-knowledge-plan.md) | M15–M17 — M15/M16 and the core M17 pipeline deployed; M17 browser-client failure capture implemented in this pass |
 | [archive/tool-parity-plan.md](archive/tool-parity-plan.md) | M18–M20 — complete; only the owner live-audio smoke remains |
 | [archive/android-revamp-plan.md](archive/android-revamp-plan.md) | Android v0.2.1-hal revamp history; training completed and Android hot-swap/detection were later verified |
@@ -25,23 +25,29 @@ verification checklist), [SETUP.md](SETUP.md) (one-time owner setup checklist).
 
 ## Where the project actually stands (2026-07-26)
 
-Production at `live.jeremy.ninja` currently serves `0.7.0+4dbaa6f`; the deploy, Go, Android
-JVM/instrumented, Playwright, and Lighthouse jobs for that revision are green. M0–M12 are
-deployed. M13's v1beta auth-token wire contract was corrected in `19e79c7`, the configured
-Gemini authorization key now mints successfully, and a real production Gemini audio/tool/cost
-session completed. E1 is only partial, however, and the first real E2 session dropped after
-about 15 minutes instead of resuming. A field-mask/within-token reconnect fix and deterministic
-regression now pass the full local Go, web, SAM, and Android gates; commit/push, deployment, and
-a real post-fix recycle remain pending. The requested >30-minute continuation is explicitly blocked:
-it conflicts with FR-V08's 10-minute hard logical-session cap, the broker has no same-session
-renewal contract, and its daily/monthly usage counters are not accrued in production. Android
-v0.2.2-hal/code 5 is installed on the connected tablet; M26–M28 passed their hardware checks.
-The launch audit also found that the `openai-realtime-mini` setting resolved and was labeled as a
-distinct engine while the broker still used the single global `OPENAI_REALTIME_MODEL` minter.
-The current tree now gives that pin a dedicated `gpt-realtime-mini` minter and tests the exact
-request model, response, ledger, metrics, and logs; deploy/live verification remains.
-Remaining blockers and unverified checks are recorded explicitly below rather than summarized
-as zero.
+Production acceptance ran against `0.7.0+c0fa76e`; Deploy run `30215330844` is green through
+Go tests, OIDC/SAM deployment, health smoke, production Playwright/axe, and Lighthouse. The
+only runtime follow-up after that canary throttles duplicate lifecycle diagnostics. The preceding
+Android-affecting revision `100dddc` also has
+green Deploy and Android Release runs (`30212999381` and `30212999362`). The current local
+suite reports 92 web project executions (71 passed/21 intentionally skipped), and Go
+build/vet/test plus SAM lint pass.
+
+M13's v1beta auth-token wire contract and provisioning mask are corrected. A real production
+Gemini session now minted, completed three priced/transcribed turns, received `goAway` after
+nine minutes, resumed with a safe handle on the original ephemeral token, completed replacement
+setup in about 1.15 seconds, and answered again after the recycle. Its three-turn History row
+persisted at `~$0.027`, and broker logs show no second web mint. E1 is still partial. The
+requested >30-minute continuation remains explicitly blocked: it conflicts with FR-V08's
+10-minute logical-session cap, the broker has no same-session lease renewal contract, and its
+daily/monthly seconds/tokens counters are not accrued in production.
+
+Android v0.2.2-hal/code 5 is installed on the connected tablet; M26–M28 passed their hardware
+checks. The dedicated `openai-realtime-mini` minter is deployed and a real pinned response
+passed; a persisted mini attribution/cost proof remains. The legacy-row normalization is
+deployed and web reads those rows successfully, while the Android sync retest remains blocked
+by the owner-secured device. Remaining blockers and unverified checks are recorded explicitly
+below rather than summarized as zero.
 
 > **Scope decision (2026-07-24): the M5Stack Tab5 surface is OUT of this plan.** All Tab5 /
 > firmware / IoT-provisioning work — including the `ProvisionIoT` hook, device pairing, OTA,
@@ -56,9 +62,9 @@ What is left divides into six workstreams:
 - **WS-3 Unfinished platform work** — the wake-word train/hot-swap run is complete; the
   two-account QA decision and credential rotation remain owner-only.
 - **WS-4 Launch (M8)** — release automation and runbook are built; signed publication, Play
-  Console work, physical PWA verification, Gemini lifecycle retests, and owner sign-off remain.
+  Console work, physical PWA verification, long-session policy/metering, and owner sign-off remain.
 - **WS-6 Owner-requested capabilities** — M26–M28 passed on hardware. M31's legacy-device
-  null-collection fix awaits deploy and a production settings-sync retest.
+  null-collection fix is deployed; its Android production settings-sync retest remains.
 - **WS-5 Android stability & performance** — opened 2026-07-24 from live on-device evidence, and **closed 2026-07-25**: M21 all verified on hardware (21.2 echo audibly gone at 4x the reproducing volume, 21.3 wake detection proven at stock sensitivity, 21.5 auth deadlock fixed), M22 perf done (all-ABI 256 MB → arm64 108.7 MB), M23 verified end to end with a spoken tool-calling round-trip, M24 harness green in CI, M25 cost badge verified on screen *and* in the persisted CONV row.
 
 WS-2 and WS-3 are independent and can run in parallel. WS-1 gates WS-4.
@@ -99,25 +105,28 @@ archived plans is either confirmed working or converted into a bug with a repro.
 >
 > **Production result 2026-07-26:** a Gemini-pinned browser minted, connected, transcribed a
 > spoken turn, returned audio, invoked a device-local tool, and persisted a correctly tagged and
-> priced CONV row. Topics extraction also completed. The session was then kept open for E2 and
-> failed at about 15 minutes with "Connection to the voice service dropped" rather than
-> recycling.
+> priced CONV row. Topics extraction also completed. The first genuine long-session canary then
+> dropped at about 6:21 with "Connection to the voice service dropped"; the configured
+> keep-listening setting was zero, so this was not the client's idle timer.
 >
-> **Local E2 safety fix awaiting deploy:** constrained tokens now carry a field mask that
-> locks the provisioned setup except `sessionResumption`, allowing the client to add the latest
-> safe handle. Web and Android reconnect with that handle after `goAway` or an unexpected close
-> only while the original token remains valid, respect `resumable:false`, and fail closed at
-> token expiry. They deliberately do **not** call the ordinary mint endpoint at expiry: that
-> endpoint creates a new `sessionId`, `LOG#` marker, and concurrency slot, which would split one
-> Google model session across two broker identities. Deterministic coverage pins the safe
-> reconnect, missed-`goAway`, non-resumable, duplicate-reconnect, and expired-token paths.
+> **Deployed E2 result:** token provisioning omits the client-controlled `sessionResumption`
+> field and masks every field it does provision; the client setup retains resumption and adds
+> only the latest server-declared safe handle. Web and Android reconnect only while the original
+> token remains valid, respect `resumable:false`, and fail closed at token expiry. A production
+> web canary received `goAway` at nine minutes with a safe handle, resumed on the same token,
+> completed replacement setup in about 1.15 seconds, and returned the exact requested
+> post-resume response. The conversation remained live past ten minutes, then closed
+> deliberately and persisted three turns at `~$0.027`; broker logs contain exactly one web mint
+> for that canary.
+> Deterministic coverage also pins missed-`goAway`, non-resumable, duplicate-reconnect, and
+> expired-token paths. The client deliberately does **not** call the ordinary mint endpoint at
+> expiry because that would create a second `sessionId`, `LOG#` marker, and concurrency slot.
 ⟵ archive/gemini-plan.md §4 Phase E · exact 6-step script in that file's §10 "Phase E status"
 - `[~]` **E1 cross-engine parity:** Gemini transcript persistence, `engine`/`surface` tags,
   tool invocation, topics extraction, audio, and Gemini-rate cost are verified. Still outstanding:
   paired-device OpenAI comparison, memory extraction evidence, barge-in, persona→Gemini voice
   mapping, and a user `geminiVoice` override.
-- `[!]` **E2 lifecycle:** pre-fix production failed at ~15 minutes. After the locally-green fix
-  deploys, a real provider recycle can verify the within-token transport behavior.
+- `[~]` **E2 lifecycle:** real web within-token recycle and post-resume continuity are verified.
   The requested >30-minute logical session cannot be truthfully tested against the current
   contract: PRD Q-16 and `contracts/metering.md` require a 10-minute hard session cap, while
   `RecordMint` expires the only broker identity/slot at 10 minutes and no continuation endpoint
@@ -159,11 +168,15 @@ archived plans is either confirmed working or converted into a bug with a repro.
 ### 1.5 Android device  `[~]` (connected physical tablet)
 ⟵ docs/qa-report.md "Device / hardware" · archive/plan.md §8
 - `[x]` Live voice round-trip capture on Android — done 2026-07-25: spoken turn → `get_weather` tool call → spoken answer → `final:true` flush → CONV row in History tagged `gpt-realtime`.
-- `[~]` PWA install + offline. Cache correctness was hardened 2026-07-25: `sw.js` v3 keeps
-  network-first HTML and stale-while-revalidate assets, awaits cache writes for worker lifetime,
-  removes older shells on activate, stays network-available if Cache Storage itself fails, and
-  continues to bypass API/auth/live traffic. Automated regression coverage is green; install
-  prompt / add-to-homescreen / real offline navigation fallback on a physical device remains.
+- `[~]` PWA install + offline. Cache correctness was hardened again after a real already-stale
+  Chrome profile kept an old logical `realtime.mjs`: `sw.js` v4 retains network-first HTML and
+  stale-while-revalidate assets, reload-backed revalidates only unfingerprinted JavaScript
+  modules, keeps fingerprinted/model/vendor assets on normal immutable cache semantics, awaits
+  cache writes for worker lifetime, removes older shells on activate, stays network-available
+  if Cache Storage fails, and bypasses API/auth/live traffic. The same profile picked up v4 and
+  the new module through ordinary navigations with no hard refresh. Automated regression
+  coverage is green; install prompt / add-to-homescreen / real offline navigation fallback on
+  a physical device remains.
   The connected tablet is behind its secure owner PIN; an owner unlock is required before this
   objective test can continue, and no credential will be handled by an agent.
 - `[x]` Android wake / lock-screen paths on real hardware. With the display off and keyguard
@@ -186,7 +199,7 @@ archived plans is either confirmed working or converted into a bug with a repro.
 - `[x]` M9/M10/M11 (deliverables, memory/guides, topics/history) exercised with **real data**,
   not just deployed. The archived M9/M10/M11 acceptance notes and 2026-07-25 QA evidence record
   real deliverable, memory, topic, and conversation rows plus authenticated history rendering.
-- `[x]` Playwright e2e + Lighthouse/axe WCAG-AA gates wired into CI — done 2026-07-25 (`b21ed31`, `52c8d44`). The current tree's `npm test -- --list` reports **86 project executions across six specs** (desktop and Pixel/mobile), including axe WCAG 2.1 AA in **both colour schemes**, focus-ring, no-cache HTML, sw.js root scope, manifest icons actually fetched, 1.4.10 reflow at 320 px and 200 % zoom, no console errors, device-scoped settings/actions, and runtime regressions for wake/cache/Nova/Gemini lifecycle behavior. The complete local run is green at **68 passed / 18 intentionally skipped**; `go build ./...`, `go vet ./...`, `go test ./...`, `sam validate --lint`, and the Android `testDebugUnitTest`/`assembleDebug` gates are also green (**249 JVM tests**). Lighthouse CI asserts **accessibility ≥ 1.0** / best-practices ≥ 0.9 / SEO ≥ 0.9. The deployed revision's gates are green; the current uncommitted Gemini/camera/settings/transcript fixes still require the post-push production run. **The gates found and fixed two real defects:** Lighthouse accessibility was 0.98 (`heading-order` — the landing page's feature cards were `h3` directly under the `h1`) and SEO 0.90 (no meta description). **Scope limit, deliberate:** unauthenticated surface only — the authed screens have no CI credentials, so the suite asserts they *redirect* anonymous visitors rather than faking a session; their authed behaviour stays owner-gated under 1.4. Runs **after** deploy and is advisory (`continue-on-error`), because the Fiber app needs Dynamo/KMS/SSM to boot so a local pre-deploy harness could only reach `/healthz`.
+- `[x]` Playwright e2e + Lighthouse/axe WCAG-AA gates wired into CI — done 2026-07-25 (`b21ed31`, `52c8d44`). The current tree's `npm test -- --list` reports **92 project executions across six specs** (desktop and Pixel/mobile), including axe WCAG 2.1 AA in **both colour schemes**, focus-ring, no-cache HTML, sw.js root scope, manifest icons actually fetched, 1.4.10 reflow at 320 px and 200 % zoom, no console errors, device-scoped settings/actions, and runtime regressions for wake/cache/Nova/Gemini lifecycle behavior. The complete local run is green at **71 passed / 21 intentionally skipped**; `go build ./...`, `go vet ./...`, `go test ./...`, `sam validate --lint`, and the last Android-affecting revision's `testDebugUnitTest`/`assembleDebug` gates are also green (**249 JVM tests**). Lighthouse CI asserts **accessibility ≥ 1.0** / best-practices ≥ 0.9 / SEO ≥ 0.9. Production `0.7.0+c0fa76e` and Deploy run `30215330844` are green. The cache regressions now prove logical JavaScript modules revalidate past the browser HTTP/module cache while fingerprinted and large model/vendor assets retain normal caching; an already-stale production Chrome profile upgraded through ordinary navigations and loaded the new module without a hard refresh. **Earlier gates found and fixed two real defects:** Lighthouse accessibility was 0.98 (`heading-order` — the landing page's feature cards were `h3` directly under the `h1`) and SEO 0.90 (no meta description). **Scope limit, deliberate:** unauthenticated surface only — the authed screens have no CI credentials, so the suite asserts they *redirect* anonymous visitors rather than faking a session; their authed behaviour stays owner-gated under 1.4. Runs **after** deploy and is advisory (`continue-on-error`), because the Fiber app needs Dynamo/KMS/SSM to boot so a local pre-deploy harness could only reach `/healthz`.
 
 ---
 
@@ -623,7 +636,7 @@ command IS the confirmation**; stored in the existing **S3** user bucket; and su
   JVM and instrumented Compose contract tests cover accordion state, navigation, semantics and
   the matching 40% bars.
 
-### M31 — Named devices + per-device settings  `[~]`  (legacy-row production retest pending)
+### M31 — Named devices + per-device settings  `[~]`  (Android legacy-row retest pending)
 
 **Definition of Done:** every web, Android, and paired hardware installation has a safe,
 human-readable, user-editable device name; every configurable Settings section can show its
@@ -652,8 +665,9 @@ or all devices without silently changing unrelated hosts.
   gates passed for the deployed implementation. **Live regression found 2026-07-26:** old
   production device rows returned `null` metadata/capabilities, the strict Android decoder
   rejected the section envelope, and Settings showed "Couldn't sync settings. Local settings
-  were kept." The current local fix normalizes legacy nulls to empty JSON collections and adds
-  a green route regression test. Deployment and a production Android sync retest remain.
+  were kept." The deployed fix normalizes legacy nulls to empty JSON collections and has a green
+  route regression. The authenticated web client now loads the legacy rows successfully. The
+  production Android sync retest still requires the owner-secured tablet to be unlocked.
 
 ## WS-4 — M8 Launch  `[!]`
 
@@ -668,8 +682,9 @@ emailing (**no CloudWatch alerts — owner decision 2026-07-19; alarms stay remo
   `get_weather` tool call were both completed on production 2026-07-25; the Android final flush
   produced the costed CONV row recorded under WS-1/WS-5. The 2026-07-26 pass additionally
   verified web wake-model hot-swap/restore, a basic Gemini production session, Android locked
-  wake, and M26–M28. Gemini lifecycle and M31 settings sync still require post-fix production
-  retests; physical PWA install/offline still requires an owner-unlocked device.
+  wake, and M26–M28. The post-fix web Gemini provider recycle and post-resume response now pass,
+  and the canary persisted its priced three-turn History row. M31's web legacy-row path passes;
+  its Android retest and physical PWA install/offline still require an owner-unlocked device.
 - `[!]` **S** — Distribution: web live ✅. The v0.2.2-hal/code-5 release workflow now requires
   owner-managed signing inputs, builds a signed APK plus a Play-ready AAB, verifies the APK
   signer, publishes the immutable APK, derives `assetlinks.json`, and writes the validated
@@ -698,12 +713,14 @@ emailing (**no CloudWatch alerts — owner decision 2026-07-19; alarms stay remo
 - `[~]` **FR-VE-02 mini routing:** the audit found both OpenAI pins called one global-model
   minter even though responses/accounting labeled the mini pin separately. The current tree
   maps `openai-realtime-mini` to a dedicated `gpt-realtime-mini` minter and regression-tests the
-  outbound session model plus response/ledger/log attribution. Deploy and run one real pinned
-  session before marking the cheaper client-direct engine reachable.
-- `[~]` **Final delivery gates for the current local fixes:** the required Go, web, Android,
-  schema/SAM, and local regression checks are green. Commit and push `main`, watch every
-  triggered GitHub Actions workflow, then perform the listed post-deploy Gemini, M31, and
-  production health retests.
+  outbound session model plus response/ledger/log attribution. The mapping is deployed and a
+  real mini-pinned response passed. One persisted mini row/log attribution proof remains before
+  the full route-and-accounting gate closes.
+- `[x]` **Final delivery gates for this implementation pass:** commits through `c0fa76e` are on
+  `main`; required Go/web/schema/SAM and Android-affecting gates are green; every triggered
+  workflow was watched; acceptance `/healthz` served `0.7.0+c0fa76e`; and the web Gemini recycle, cache
+  migration, settings deep link, mini response, and M31 web legacy-row checks ran in production.
+  Remaining Android/PWA/distribution/policy checks are separately and truthfully blocked above.
 
 ---
 
