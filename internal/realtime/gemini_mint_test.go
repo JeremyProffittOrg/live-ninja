@@ -49,15 +49,19 @@ func TestGeminiMintBuildsConstrainedTokenAndSetup(t *testing.T) {
 	assert.Equal(t, int32(1), *gotCfg.Uses)
 	assert.InDelta(t, geminiTokenTTL, time.Until(gotCfg.ExpireTime), float64(time.Minute))
 	assert.InDelta(t, geminiNewSessionWindow, time.Until(gotCfg.NewSessionExpireTime), float64(time.Minute))
+	require.NotNil(t, gotCfg.LockAdditionalFields)
+	assert.Empty(t, gotCfg.LockAdditionalFields,
+		"an explicit empty slice locks only the supplied constraints and leaves client-only resumption unlocked")
 
-	// Constraints lock the exact session the client is allowed to open.
+	// Constraints lock every server-controlled field. Session resumption stays
+	// client-controlled so reconnects can supply the latest handle.
 	require.NotNil(t, gotCfg.LiveConnectConstraints)
 	assert.Equal(t, "models/gemini-3.1-flash-live-preview", gotCfg.LiveConnectConstraints.Model)
 	cc := gotCfg.LiveConnectConstraints.Config
 	require.NotNil(t, cc)
 	assert.Equal(t, "Puck", cc.SpeechConfig.VoiceConfig.PrebuiltVoiceConfig.VoiceName)
 	assert.Equal(t, "You are terse.", cc.SystemInstruction.Parts[0].Text)
-	assert.NotNil(t, cc.SessionResumption)
+	assert.Nil(t, cc.SessionResumption)
 	assert.NotNil(t, cc.ContextWindowCompression.SlidingWindow)
 	assert.NotNil(t, cc.InputAudioTranscription)
 	assert.NotNil(t, cc.OutputAudioTranscription)
@@ -187,14 +191,29 @@ func TestGeminiMintUsesCurrentV1BetaRESTContract(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, []any{"AUDIO"}, wireConfig["responseModalities"])
 	assert.Contains(t, wireSetup, "tools")
-	assert.Contains(t, wireSetup, "sessionResumption")
+	assert.NotContains(t, wireSetup, "sessionResumption",
+		"a provisioned field omitted from fieldMask is rejected; resumption belongs only in the client setup")
 	assert.Contains(t, wireSetup, "inputAudioTranscription")
 	assert.Contains(t, wireSetup, "outputAudioTranscription")
+	for field, value := range wireSetup {
+		nested, ok := value.(map[string]any)
+		if !ok || len(nested) == 0 {
+			assert.Contains(t, maskFields, field, "provisioned field %q must be masked", field)
+			continue
+		}
+		for child := range nested {
+			assert.Contains(t, maskFields, field+"."+child,
+				"provisioned field %q must be masked", field+"."+child)
+		}
+	}
 
 	var returnedSetup map[string]any
 	require.NoError(t, json.Unmarshal(result.SessionConfig, &returnedSetup))
+	assert.Contains(t, returnedSetup, "sessionResumption",
+		"the client setup enables resumption and later carries the latest handle")
+	delete(returnedSetup, "sessionResumption")
 	assert.Equal(t, returnedSetup, wireSetup,
-		"the token-locked setup and client-returned SessionConfig must be identical")
+		"apart from client-controlled resumption, the token-locked and returned setups must be identical")
 }
 
 func TestGeminiProvisioningClientDoesNotFollowCredentialRedirect(t *testing.T) {

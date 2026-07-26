@@ -124,11 +124,12 @@ func geminiProvisioningHTTPClient() *http.Client {
 
 // geminiAuthTokenRequest is the final REST wire shape emitted by the official
 // Go SDK after it converts the ergonomic LiveConnectConstraints input and
-// flattens the nested setup object. The field mask locks every provisioned
-// setup field except sessionResumption: the client must be allowed to add the
-// latest server-issued handle when the Live connection recycles. With an
-// empty fieldMask Google ignores the client's entire setup frame, including
-// that handle, and a uses:1 token cannot resume.
+// flattens the nested setup object. Every field present here must also be in
+// FieldMask or the provisioning service rejects the request. The setup omits
+// sessionResumption entirely: that is the one client-controlled field, so a
+// reconnect can add the latest server-issued handle. With an empty fieldMask
+// Google ignores the client's entire setup frame, including that handle, and
+// a uses:1 token cannot resume.
 type geminiAuthTokenRequest struct {
 	Uses                     *int32          `json:"uses,omitempty"`
 	ExpireTime               *time.Time      `json:"expireTime,omitempty"`
@@ -138,9 +139,11 @@ type geminiAuthTokenRequest struct {
 }
 
 // geminiSetupFieldMask mirrors the official SDK's one-level field-mask
-// expansion while deliberately leaving sessionResumption client-controlled.
-// Empty message fields (for example inputAudioTranscription:{}) still need a
-// top-level mask entry because their presence enables the feature.
+// expansion. Every provisioned setup field is represented: Google returns
+// INVALID_ARGUMENT if bidiGenerateContentSetup contains a field absent from
+// this mask. Empty message fields (for example inputAudioTranscription:{})
+// still need a top-level mask entry because their presence enables the
+// feature.
 func geminiSetupFieldMask(setupJSON json.RawMessage) (string, error) {
 	var setup map[string]any
 	if err := json.Unmarshal(setupJSON, &setup); err != nil {
@@ -148,9 +151,6 @@ func geminiSetupFieldMask(setupJSON json.RawMessage) (string, error) {
 	}
 	fields := make([]string, 0, len(setup))
 	for field, value := range setup {
-		if field == "sessionResumption" {
-			continue
-		}
 		if nested, ok := value.(map[string]any); ok && len(nested) > 0 {
 			for child := range nested {
 				fields = append(fields, field+"."+child)
@@ -164,6 +164,28 @@ func geminiSetupFieldMask(setupJSON json.RawMessage) (string, error) {
 		return "", fmt.Errorf("realtime: Gemini provisioning setup has no lockable fields")
 	}
 	return strings.Join(fields, ","), nil
+}
+
+// geminiProvisioningSetup derives the server-locked portion of the setup
+// frame. sessionResumption must not merely be absent from FieldMask: Google
+// requires every provisioned field to be masked. Omitting it from the
+// provisioned object lets the client's first setup enable resumption and lets
+// later connections supply the newest handle while every other field remains
+// server-controlled.
+func geminiProvisioningSetup(setupJSON json.RawMessage) (json.RawMessage, error) {
+	var setup map[string]any
+	if err := json.Unmarshal(setupJSON, &setup); err != nil {
+		return nil, fmt.Errorf("realtime: decode Gemini provisioning setup: %w", err)
+	}
+	delete(setup, "sessionResumption")
+	if len(setup) == 0 {
+		return nil, fmt.Errorf("realtime: Gemini provisioning setup has no lockable fields")
+	}
+	provisioningJSON, err := json.Marshal(setup)
+	if err != nil {
+		return nil, fmt.Errorf("realtime: marshal Gemini provisioning setup: %w", err)
+	}
+	return provisioningJSON, nil
 }
 
 func createGeminiAuthToken(
@@ -182,14 +204,18 @@ func createGeminiAuthToken(
 	if len(setupJSON) == 0 {
 		return nil, fmt.Errorf("realtime: Gemini provisioning setup is empty")
 	}
-	fieldMask, err := geminiSetupFieldMask(setupJSON)
+	provisioningSetup, err := geminiProvisioningSetup(setupJSON)
+	if err != nil {
+		return nil, err
+	}
+	fieldMask, err := geminiSetupFieldMask(provisioningSetup)
 	if err != nil {
 		return nil, err
 	}
 	wireCfg := geminiAuthTokenRequest{
 		Uses:                     cfg.Uses,
 		FieldMask:                fieldMask,
-		BidiGenerateContentSetup: setupJSON,
+		BidiGenerateContentSetup: provisioningSetup,
 	}
 	if !cfg.ExpireTime.IsZero() {
 		expireTime := cfg.ExpireTime
@@ -511,10 +537,11 @@ func buildGeminiSetupForSurface(model, voice, instructions, surface string) map[
 	}
 }
 
-// buildGeminiConstraints mirrors buildGeminiSetup as the SDK-typed
-// LiveConnectConstraints locked into the token at mint, so a client cannot
-// substitute its own model/voice/instructions even though it sends the
-// setup frame itself.
+// buildGeminiConstraints mirrors the server-locked subset of
+// buildGeminiSetup as SDK-typed LiveConnectConstraints. SessionResumption is
+// deliberately nil here and present only in the client setup frame, so a
+// reconnect can supply the newest handle. The client cannot substitute its
+// own model/voice/instructions even though it sends the setup frame itself.
 func buildGeminiConstraints(model, voice, instructions string) *genai.LiveConnectConstraints {
 	return buildGeminiConstraintsForSurface(model, voice, instructions, "")
 }
@@ -532,7 +559,6 @@ func buildGeminiConstraintsForSurface(model, voice, instructions, surface string
 			},
 			SystemInstruction: &genai.Content{Parts: []*genai.Part{{Text: instructions}}},
 			Tools:             tools,
-			SessionResumption: &genai.SessionResumptionConfig{},
 			ContextWindowCompression: &genai.ContextWindowCompressionConfig{
 				SlidingWindow: &genai.SlidingWindow{},
 			},
@@ -587,6 +613,10 @@ func (m *GeminiMinter) MintForSurface(ctx context.Context, voice, instructions, 
 		ExpireTime:             expiresAt,
 		NewSessionExpireTime:   newSessionExpiresAt,
 		LiveConnectConstraints: buildGeminiConstraintsForSurface(m.model, voice, instructions, surface),
+		// A non-nil empty slice tells the SDK to lock exactly the fields in
+		// LiveConnectConstraints. Nil means a global lock, which would ignore
+		// the client-only sessionResumption field.
+		LockAdditionalFields: []string{},
 	}
 
 	var tok *genai.AuthToken
