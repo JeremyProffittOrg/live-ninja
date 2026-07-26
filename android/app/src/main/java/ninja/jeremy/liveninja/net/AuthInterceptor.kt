@@ -3,6 +3,7 @@ package ninja.jeremy.liveninja.net
 import javax.inject.Inject
 import javax.inject.Singleton
 import ninja.jeremy.liveninja.BuildConfig
+import ninja.jeremy.liveninja.auth.DeviceIdentityStore
 import ninja.jeremy.liveninja.auth.TokenStore
 import okhttp3.Interceptor
 import okhttp3.Request
@@ -56,6 +57,7 @@ object ClientId {
 class AuthInterceptor @Inject constructor(
     private val tokenStore: TokenStore,
     private val refresher: TokenRefresher,
+    private val deviceIdentity: DeviceIdentityStore,
 ) : Interceptor {
 
     override fun intercept(chain: Interceptor.Chain): Response {
@@ -96,6 +98,9 @@ class AuthInterceptor @Inject constructor(
         val builder = request.newBuilder().header("X-LN-Client", ClientId.HEADER_VALUE)
         if (token != null && request.header("Authorization") == null) {
             builder.header("Authorization", "Bearer $token")
+            // Random app-instance id, never a hardware identifier. The backend
+            // validates ownership before using it as a settings/device target.
+            builder.header("X-LN-Device-ID", deviceIdentity.deviceId)
         }
         return builder.build()
     }

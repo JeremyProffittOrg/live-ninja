@@ -126,8 +126,8 @@ func TestResolveEngine(t *testing.T) {
 		if got != voiceengine.EngineNovaSonic {
 			t.Fatalf("got %q, want nova-sonic", got)
 		}
-		if g.gotProjection != "voiceEngine" {
-			t.Fatalf("expected a projected read of voiceEngine, got %q", g.gotProjection)
+		if g.gotProjection != "voiceEngine, deviceOverrides" {
+			t.Fatalf("expected a projected read of voiceEngine + overrides, got %q", g.gotProjection)
 		}
 	})
 
@@ -139,6 +139,34 @@ func TestResolveEngine(t *testing.T) {
 		}
 		if got != voiceengine.EngineOpenAIRealtimeMini {
 			t.Fatalf("got %q, want openai-realtime-mini", got)
+		}
+	})
+
+	t.Run("section override outranks a legacy pin", func(t *testing.T) {
+		item := settingsItem(t, "openai-realtime", map[string]string{"dev-1": "nova-sonic"})
+		overrides, err := attributevalue.Marshal(map[string]any{
+			"dev-1": map[string]any{
+				"sections": map[string]any{
+					"voiceEngine": map[string]any{
+						"voiceEngine": map[string]any{
+							"default": "gemini-flash-live",
+							"devices": map[string]any{},
+						},
+					},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("marshal overrides: %v", err)
+		}
+		item["deviceOverrides"] = overrides
+		g := &fakeSettingsGetter{item: item}
+		got, err := ResolveEngine(ctx, g, "tbl", "u1", "dev-1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != voiceengine.EngineGeminiFlashLive {
+			t.Fatalf("got %q, want gemini-flash-live", got)
 		}
 	})
 

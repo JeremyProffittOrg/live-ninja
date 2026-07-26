@@ -270,7 +270,7 @@ const histStorageOffEl = $('histStorageOff');
  * history itself must never depend on settings loading. */
 async function loadStorageHint() {
   try {
-    const doc = await apiJSON('/api/v1/settings');
+    const doc = await apiJSON('/api/v1/settings?effective=true');
     transcriptsOff = !!(doc && doc.privacy && doc.privacy.storeTranscripts === false);
   } catch {
     transcriptsOff = false;

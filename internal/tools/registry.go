@@ -130,6 +130,7 @@ type Invocation struct {
 	UserID    string `json:"-"`
 	SessionID string `json:"-"`
 	Surface   string `json:"-"`
+	DeviceID  string `json:"-"`
 	Role      string `json:"-"`
 }
 
@@ -405,6 +406,11 @@ type Deps struct {
 	// profile is per-user: the invocation's verified UserID picks the row, so
 	// one user's profile can never leak into another's tool call.
 	Profile func(ctx context.Context, userID string) store.Profile
+	// DeviceProfile is the device-effective counterpart used when an
+	// invocation carries a verified DeviceID. It is optional so external
+	// registry constructors remain source-compatible; profileFor falls back
+	// to Profile when it is absent.
+	DeviceProfile func(ctx context.Context, userID, deviceID string) store.Profile
 
 	// RCA enqueues failed invocations onto the RCA queue (M17,
 	// internal/rca.SQSEnqueuer). nil — the default, and the case for every
@@ -436,6 +442,16 @@ func (d *Deps) profileFor(ctx context.Context, userID string) store.Profile {
 		return store.Profile{}
 	}
 	return d.Profile(ctx, userID)
+}
+
+func (d *Deps) profileForInvocation(ctx context.Context, inv Invocation) store.Profile {
+	if d == nil || inv.UserID == "" {
+		return store.Profile{}
+	}
+	if inv.DeviceID != "" && d.DeviceProfile != nil {
+		return d.DeviceProfile(ctx, inv.UserID, inv.DeviceID)
+	}
+	return d.profileFor(ctx, inv.UserID)
 }
 
 // Registry holds the tool catalog and runs the invocation pipeline.
@@ -483,6 +499,16 @@ func NewRegistry(deps *Deps) (*Registry, error) {
 		st := deps.Store
 		deps.Profile = func(ctx context.Context, userID string) store.Profile {
 			p, err := st.GetProfile(ctx, userID)
+			if err != nil {
+				return store.Profile{}
+			}
+			return p
+		}
+	}
+	if deps.DeviceProfile == nil {
+		st := deps.Store
+		deps.DeviceProfile = func(ctx context.Context, userID, deviceID string) store.Profile {
+			p, err := st.GetProfileForDevice(ctx, userID, deviceID)
 			if err != nil {
 				return store.Profile{}
 			}

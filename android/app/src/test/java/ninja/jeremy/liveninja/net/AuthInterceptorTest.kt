@@ -5,6 +5,7 @@ import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
 import ninja.jeremy.liveninja.auth.StoredSession
+import ninja.jeremy.liveninja.auth.DeviceIdentityStore
 import ninja.jeremy.liveninja.auth.TokenStore
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
@@ -31,7 +32,10 @@ class AuthInterceptorTest {
 
     private val tokenStore = mockk<TokenStore>(relaxed = true)
     private val refresher = mockk<TokenRefresher>()
-    private val interceptor = AuthInterceptor(tokenStore, refresher)
+    private val deviceIdentity = mockk<DeviceIdentityStore> {
+        every { deviceId } returns "18c93d91-579a-4dc9-9f13-62e847d981dc"
+    }
+    private val interceptor = AuthInterceptor(tokenStore, refresher, deviceIdentity)
 
     private fun nowSeconds() = System.currentTimeMillis() / 1000
 
@@ -88,6 +92,7 @@ class AuthInterceptorTest {
         assertEquals(1, seen.size)
         assertEquals("Bearer fresh", seen[0].header("Authorization"))
         assertEquals(ClientId.HEADER_VALUE, seen[0].header("X-LN-Client"))
+        assertEquals(deviceIdentity.deviceId, seen[0].header("X-LN-Device-ID"))
         verify(exactly = 0) { refresher.refreshBlocking(any()) }
     }
 
@@ -170,6 +175,7 @@ class AuthInterceptorTest {
             val (chain, seen) = chain(apiRequest(path), edgeDenial)
             interceptor.intercept(chain)
             assertNull(seen[0].header("Authorization"))
+            assertNull(seen[0].header("X-LN-Device-ID"))
         }
         verify(exactly = 0) { refresher.refreshBlocking(any()) }
     }
@@ -188,6 +194,7 @@ class AuthInterceptorTest {
 
         assertEquals(1, seen.size)
         assertEquals("Bearer ephemeral", seen[0].header("Authorization"))
+        assertNull(seen[0].header("X-LN-Device-ID"))
         verify(exactly = 0) { refresher.refreshBlocking(any()) }
     }
 }

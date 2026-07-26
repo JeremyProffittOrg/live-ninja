@@ -12,7 +12,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	"github.com/gofiber/fiber/v2"
 )
@@ -107,6 +109,52 @@ func TestAppClaimMissingFields(t *testing.T) {
 		map[string]any{"code": "code-only"})
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 (missing codeVerifier)", resp.StatusCode)
+	}
+}
+
+func TestRefreshRejectsAndDeletesRevokedDeviceSession(t *testing.T) {
+	app, st := newPairingApp(t)
+	ctx := context.Background()
+	requireNoError := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	requireNoError(st.CreateUser(ctx, &store.User{
+		UserID: "refresh-user", AmazonUserID: "amzn1.account.refresh",
+		Email: "owner@example.com", Name: "Owner", Status: store.UserStatusActive,
+	}))
+	deviceID := "019c8dc7-0a68-7bd8-93a0-a39deeb7e2cf"
+	_, err := st.UpsertClientDevice(ctx, &store.Device{
+		DeviceID: deviceID, UserID: "refresh-user", Name: "Browser",
+		Surface: store.SurfaceAndroid, FamilyID: "family-1",
+	})
+	requireNoError(err)
+	secret := "known-refresh-secret"
+	now := time.Now()
+	requireNoError(st.CreateSession(ctx, &store.Session{
+		SessionID: "session-revoked", UserID: "refresh-user", FamilyID: "family-1",
+		Surface: store.SurfaceAndroid, DeviceID: deviceID,
+		RefreshHash: auth.HashRefreshToken(secret),
+		CreatedAt:   now.Unix(), LastUsedAt: now.Unix(),
+		ExpiresAt: now.Add(time.Hour).Unix(), TTL: now.Add(time.Hour).Unix(),
+	}))
+	requireNoError(st.RevokeDevice(ctx, deviceID))
+
+	resp, body := doJSON(t, app, http.MethodPost, "/auth/refresh",
+		map[string]any{"refreshToken": "session-revoked." + secret})
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (%v)", resp.StatusCode, body)
+	}
+	errBody, _ := body["error"].(map[string]any)
+	if errBody["code"] != "session_revoked" {
+		t.Fatalf("error code = %v, want session_revoked", errBody["code"])
+	}
+	session, err := st.GetSessionForUser(ctx, "refresh-user", "session-revoked")
+	requireNoError(err)
+	if session != nil {
+		t.Fatal("revoked bound refresh session must be deleted")
 	}
 }
 

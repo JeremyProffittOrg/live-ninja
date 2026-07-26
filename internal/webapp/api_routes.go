@@ -63,6 +63,8 @@ func RegisterAPIRoutes(app *fiber.App, deps *Deps) {
 	api.Get("/me", handleGetMe(deps))
 
 	api.Get("/devices", handleListDevices(deps))
+	api.Put("/devices/current", handleRegisterCurrentDevice(deps))
+	api.Patch("/devices/:id", handleRenameDevice(deps))
 	api.Delete("/devices/:id", handleRevokeDevice(deps))
 
 	api.Get("/admin/allowlist", RequireOwner(), handleListAllowlist(deps))
@@ -124,21 +126,23 @@ func handleGetMe(deps *Deps) fiber.Handler {
 func handleListDevices(deps *Deps) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID := UserID(c)
+		currentID, responseErr := ownedRequestDeviceID(c, deps, false)
+		if responseErr != nil {
+			return responseErr
+		}
 
 		devices, err := deps.Store.ListDevices(c.Context(), userID)
 		if err != nil {
 			return apiInternalError(c, deps, "list devices", err)
 		}
+		devices, responseErr = includeCurrentDevice(c, deps, devices, currentID)
+		if responseErr != nil {
+			return responseErr
+		}
 
 		out := make([]fiber.Map, 0, len(devices))
 		for _, d := range devices {
-			out = append(out, fiber.Map{
-				"deviceId":  d.DeviceID,
-				"name":      d.Name,
-				"status":    d.Status,
-				"thingName": d.ThingName,
-				"createdAt": d.CreatedAt,
-			})
+			out = append(out, deviceResponse(d, d.DeviceID == currentID))
 		}
 		return c.JSON(fiber.Map{"devices": out})
 	}
@@ -162,20 +166,40 @@ func handleRevokeDevice(deps *Deps) fiber.Handler {
 			return errorJSON(c, fiber.StatusNotFound, "not_found", "Device not found.")
 		}
 
-		if d.FamilyID != "" {
-			if err := deps.Store.RevokeFamily(c.Context(), userID, d.FamilyID); err != nil {
-				deps.Log.Error("api: revoke device session family failed",
-					slog.String("error", err.Error()), slog.String("deviceId", deviceID))
-				// Continue: still revoke the device row below so a
-				// partial failure doesn't leave the device looking active.
-			}
-		}
-
+		// The status flip is the revocation barrier. Registration/rebind
+		// transactions condition on the old device remaining active, so no
+		// session can switch identities after this point to evade the sweep.
 		if err := deps.Store.RevokeDevice(c.Context(), deviceID); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				return errorJSON(c, fiber.StatusNotFound, "not_found", "Device not found.")
 			}
 			return apiInternalError(c, deps, "revoke device", err)
+		}
+
+		if err := deps.Store.RevokeSessionsForDevice(c.Context(), userID, deviceID); err != nil {
+			deps.Log.Error("api: revoke device sessions failed",
+				slog.String("error", err.Error()), slog.String("deviceId", deviceID))
+		}
+		if d.FamilyID != "" {
+			if err := deps.Store.RevokeFamily(c.Context(), userID, d.FamilyID); err != nil {
+				deps.Log.Error("api: revoke device session family failed",
+					slog.String("error", err.Error()), slog.String("deviceId", deviceID))
+			}
+		}
+		// Repeat the strongly-consistent device sweep after the family sweep.
+		// The active-device transaction barrier means this should normally be
+		// empty; repetition closes a narrow in-flight write/delete window.
+		if err := deps.Store.RevokeSessionsForDevice(c.Context(), userID, deviceID); err != nil {
+			deps.Log.Error("api: revoke device sessions failed",
+				slog.String("error", err.Error()), slog.String("deviceId", deviceID))
+		}
+		if doc, version, changed, err := deps.Store.PurgeDeviceSettingsOverride(
+			c.Context(), userID, deviceID,
+		); err != nil {
+			deps.Log.Error("api: purge revoked device settings failed",
+				slog.String("error", err.Error()), slog.String("deviceId", deviceID))
+		} else if changed {
+			publishSettingsShadow(c.Context(), deps, userID, doc, version)
 		}
 
 		// IoT cert detachment is deliberately not attempted here: the
@@ -419,14 +443,18 @@ func apiRespondBrokerError(c *fiber.Ctx, resp *brokerResponse) error {
 
 func handleRealtimeSession(deps *Deps) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		userID, surface, deviceID := UserID(c), Surface(c), DeviceID(c)
+		userID, surface := UserID(c), Surface(c)
+		deviceID, responseErr := ownedRequestDeviceID(c, deps, false)
+		if responseErr != nil {
+			return responseErr
+		}
 
 		// Resolve session preferences from the settings document (query
 		// params win). Before this read, the user's saved voice was never
 		// applied — every mint fell back to the default (prod, 2026-07-18:
 		// user had Ballad selected, logs showed voice=cedar).
 		voice, persona, eagerness := c.Query("voice"), c.Query("persona"), ""
-		if doc, derr := deps.Store.GetSettings(c.Context(), userID); derr == nil {
+		if doc, derr := deps.Store.GetEffectiveSettings(c.Context(), userID, deviceID); derr == nil {
 			if voice == "" {
 				if v, ok := doc["voice"].(string); ok {
 					voice = v
@@ -691,6 +719,10 @@ func apiReauthorize(deps *Deps) tools.ReauthorizeFunc {
 func handleToolsInvoke(deps *Deps, registry *tools.Registry) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID, sessionID, surface := UserID(c), SessionID(c), Surface(c)
+		deviceID, responseErr := ownedRequestDeviceID(c, deps, false)
+		if responseErr != nil {
+			return responseErr
+		}
 		if registry == nil {
 			return errorJSON(c, fiber.StatusServiceUnavailable, "not_configured", "the tool router is not configured")
 		}
@@ -717,6 +749,7 @@ func handleToolsInvoke(deps *Deps, registry *tools.Registry) fiber.Handler {
 			UserID:         userID,
 			SessionID:      sessionID,
 			Surface:        surface,
+			DeviceID:       deviceID,
 		})
 		return c.Status(res.StatusCode()).JSON(res)
 	}
@@ -743,6 +776,10 @@ const activeUserMarkerTTL = 48 * time.Hour
 func handleTranscript(deps *Deps) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID, surface := UserID(c), Surface(c)
+		deviceID, responseErr := ownedRequestDeviceID(c, deps, false)
+		if responseErr != nil {
+			return responseErr
+		}
 
 		var body struct {
 			SessionID string `json:"sessionId"`
@@ -784,26 +821,48 @@ func handleTranscript(deps *Deps) fiber.Handler {
 		}
 
 		now := time.Now().UTC()
+		storeTranscripts := true
 		ttl := now.Add(transcriptTTL).Unix()
+		if settings, settingsErr := deps.Store.GetEffectiveSettings(c.Context(), userID, deviceID); settingsErr == nil {
+			if privacy, ok := settings["privacy"].(map[string]any); ok {
+				if value, present := privacy["storeTranscripts"].(bool); present {
+					storeTranscripts = value
+				}
+				if days, ok := numberVal(privacy["retentionDays"]); ok {
+					if days == 0 {
+						storeTranscripts = false
+					} else if days > 0 {
+						ttl = now.Add(time.Duration(days) * 24 * time.Hour).Unix()
+					}
+				}
+			}
+		} else {
+			deps.Log.Warn("api: privacy settings read for transcript failed; suppressing transcript persistence",
+				slog.String("error", settingsErr.Error()), slog.String("userId", userID))
+			storeTranscripts = false
+		}
 		written := 0
-		for _, t := range body.Turns {
-			if strings.TrimSpace(t.Role) == "" || strings.TrimSpace(t.Text) == "" {
-				continue // skip malformed turns rather than failing the whole batch
+		if storeTranscripts {
+			for _, t := range body.Turns {
+				if strings.TrimSpace(t.Role) == "" || strings.TrimSpace(t.Text) == "" {
+					continue // skip malformed turns rather than failing the whole batch
+				}
+				sk := fmt.Sprintf("LOG#%s#%06d", body.SessionID, t.Seq)
+				err := deps.Store.ConditionalPut(c.Context(), "USER#"+userID, sk, map[string]any{
+					"role":     t.Role,
+					"text":     t.Text,
+					"surface":  surface,
+					"deviceId": deviceID,
+					"engine":   t.Engine,
+					"ts":       now.Format(time.RFC3339Nano),
+				}, ttl)
+				if err != nil && !errors.Is(err, store.ErrAlreadyExists) {
+					deps.Log.Error("api: transcript turn write failed",
+						slog.String("error", err.Error()), slog.String("userId", userID), slog.Int("seq", t.Seq))
+					continue
+				}
+				written++
 			}
-			sk := fmt.Sprintf("LOG#%s#%06d", body.SessionID, t.Seq)
-			err := deps.Store.ConditionalPut(c.Context(), "USER#"+userID, sk, map[string]any{
-				"role":    t.Role,
-				"text":    t.Text,
-				"surface": surface,
-				"engine":  t.Engine,
-				"ts":      now.Format(time.RFC3339Nano),
-			}, ttl)
-			if err != nil && !errors.Is(err, store.ErrAlreadyExists) {
-				deps.Log.Error("api: transcript turn write failed",
-					slog.String("error", err.Error()), slog.String("userId", userID), slog.Int("seq", t.Seq))
-				continue
-			}
-			written++
 		}
 
 		// ACTIVEUSER marker: lets usage-rollup find today's active users
@@ -832,7 +891,9 @@ func handleTranscript(deps *Deps) fiber.Handler {
 			if body.Cost != nil {
 				cost = sanitizeSessionCost(body.Cost.USD, body.Cost.TextTokens, body.Cost.AudioTokens)
 			}
-			enqueueTopicExtraction(c.Context(), deps, userID, body.SessionID, DeviceID(c), surface, now, cost)
+			if storeTranscripts {
+				enqueueTopicExtraction(c.Context(), deps, userID, body.SessionID, deviceID, surface, now, cost)
+			}
 		}
 
 		return c.JSON(fiber.Map{"ok": true, "written": written})
@@ -916,7 +977,11 @@ const fallbackToolLimitText = "I hit the limit of tool calls I can run for a sin
 
 func handleFallbackTurn(deps *Deps, registry *tools.Registry) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		userID, surface, deviceID := UserID(c), Surface(c), DeviceID(c)
+		userID, surface := UserID(c), Surface(c)
+		deviceID, responseErr := ownedRequestDeviceID(c, deps, false)
+		if responseErr != nil {
+			return responseErr
+		}
 		sessionID := SessionID(c)
 
 		var body struct {
@@ -982,7 +1047,7 @@ func handleFallbackTurn(deps *Deps, registry *tools.Registry) fiber.Handler {
 				Role: "assistant", Content: resp.Text, ToolCalls: resp.ToolCalls,
 			})
 			for i, tc := range resp.ToolCalls {
-				res := executeFallbackToolCall(c, registry, tc, iter, i, userID, sessionID, surface)
+				res := executeFallbackToolCall(c, registry, tc, iter, i, userID, sessionID, surface, deviceID)
 				executed = append(executed, res)
 				out, merr := json.Marshal(res)
 				if merr != nil {
@@ -1013,7 +1078,7 @@ func handleFallbackTurn(deps *Deps, registry *tools.Registry) fiber.Handler {
 // JSON become an invalid_args Result so the model can recover
 // conversationally, mirroring the live datachannel dispatcher's posture.
 func executeFallbackToolCall(c *fiber.Ctx, registry *tools.Registry, tc brokerChatToolCall,
-	iter, idx int, userID, sessionID, surface string) *tools.Result {
+	iter, idx int, userID, sessionID, surface, deviceID string) *tools.Result {
 	var args map[string]any
 	if strings.TrimSpace(tc.Arguments) != "" {
 		if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
@@ -1040,12 +1105,17 @@ func executeFallbackToolCall(c *fiber.Ctx, registry *tools.Registry, tc brokerCh
 		UserID:         userID,
 		SessionID:      sessionID,
 		Surface:        surface,
+		DeviceID:       deviceID,
 	})
 }
 
 func handleFallbackSTT(deps *Deps) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		userID, surface, deviceID := UserID(c), Surface(c), DeviceID(c)
+		userID, surface := UserID(c), Surface(c)
+		deviceID, responseErr := ownedRequestDeviceID(c, deps, false)
+		if responseErr != nil {
+			return responseErr
+		}
 
 		fh, err := c.FormFile("audio")
 		if err != nil {
@@ -1088,7 +1158,11 @@ func handleFallbackSTT(deps *Deps) fiber.Handler {
 
 func handleFallbackTTS(deps *Deps) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		userID, surface, deviceID := UserID(c), Surface(c), DeviceID(c)
+		userID, surface := UserID(c), Surface(c)
+		deviceID, responseErr := ownedRequestDeviceID(c, deps, false)
+		if responseErr != nil {
+			return responseErr
+		}
 
 		var body struct {
 			Text  string `json:"text"`

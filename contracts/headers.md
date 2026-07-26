@@ -52,6 +52,28 @@ Example:
 X-LN-Server: 1.12.0+9b7e156
 ```
 
+## `X-LN-Device-ID` (authenticated app-install identity)
+
+```
+X-LN-Device-ID: 019c8dc7-0a68-7bd8-93a0-a39deeb7e2cf
+```
+
+Web and Android send this header on authenticated requests after generating and persisting one
+random installation UUID. It lets a newly registered client receive device-effective settings
+immediately, including during the access-token transition before a refreshed JWT carries the same
+value in `did`. M5Stack clients may omit it because their provisioned JWT already has `did`.
+
+The server accepts the header only after confirming that the device belongs to the authenticated
+user. It never treats the header alone as identity or authorization. A header that conflicts
+with a non-empty JWT `did` is accepted only for web/Android when the current base-table session
+row is already bound to the header value (the short registration-to-refresh transition);
+otherwise it is rejected. If registration reports `device_conflict` or `device_revoked`, the
+client rotates the random installation UUID and retries once. A replacement for a revoked UUID
+is accepted only after fresh authentication with an unbound session; a session already bound to
+the revoked device remains rejected, so rotation cannot bypass revocation. Clients must never
+derive the value from a hostname, Android ID, serial number, IMEI, MAC address, IP address, or
+browser fingerprint.
+
 ## `GET /v1/compat` (Public route)
 
 ```

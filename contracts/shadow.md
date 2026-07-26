@@ -23,7 +23,8 @@ spec)
 
 The shadow document nests everything under `state.desired` / `state.reported` per the
 standard AWS IoT Shadow envelope; the payload **inside** each is the M5Stack-relevant subset
-of `settings.schema.json`, plus two shadow-only bookkeeping fields (`settingsVersion`,
+of that named device's effective `settings.schema.json` view (account defaults overlaid by
+`deviceOverrides[deviceId].sections`), plus two shadow-only bookkeeping fields (`settingsVersion`,
 `deviceReportedAt`) that never appear in the DynamoDB settings item itself.
 
 ```jsonc
@@ -36,7 +37,7 @@ of `settings.schema.json`, plus two shadow-only bookkeeping fields (`settingsVer
       "sensitivity": 0.5,              // settings.schema.json#/properties/sensitivity
       "voice": "cedar",                // settings.schema.json#/properties/voice
       "turnDetection": "semantic_vad", // settings.schema.json#/properties/turnDetection
-      "voiceEngine": "openai-realtime",// resolved value for THIS device: settings.schema.json#/properties/voiceEngine/devices/<thisDeviceId> ?? .../default
+      "voiceEngine": "openai-realtime",// resolved value for THIS device: its voiceEngine section override, then deprecated voiceEngine.devices pin, then account default
       "wakeModel": {
         "url": null,                  // filled in by the device from wakeword-manifest.md when wakeWord/wakeEngine changes; shadow only ever carries the wakeWord ID, never the asset
         "sha256": null
@@ -64,8 +65,8 @@ Notes:
   `headers.md` — and trims accordingly); this keeps `desired` deltas small and avoids
   spamming a 10-year-old firmware build with fields it can't act on. This is a **transport
   optimization**, not a schema restriction — the canonical settings document in DynamoDB
-  always carries the full `settings.schema.json` shape regardless of what any one device
-  understands.
+  always carries the full `settings.schema.json` shape (account defaults plus every sparse
+  device override) regardless of what any one device understands.
 - `persona.systemInstructions` and `micDeviceId` are **not** shadowed — they are not
   meaningful to M5Stack firmware (persona resolves server-side at session mint; there is no
   selectable mic device on a fixed-hardware terminal).

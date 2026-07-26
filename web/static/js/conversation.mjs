@@ -10,7 +10,7 @@
 //   wakeword.mjs       — WASM openWakeWord engine (hands-free mode)
 //   settings.mjs       — settings-panel controller for the docked drawer
 //     (owner 2026-07-19: the standalone /settings page is gone; its own
-//     optimistic-concurrency PUT loop is independent of this file's
+//     optimistic-concurrency section-PATCH loop is independent of this file's
 //     settingsDoc/putSettings below — see settings.mjs's header comment)
 //
 // This file only wires them to the page DOM (ids from
@@ -25,7 +25,7 @@
 //     live-applied via session.updateAudioInput;
 //   - docked settings drawer (native <dialog>: focus trap + Escape free),
 //     now full-screen and hosting the settings panel (settings.mjs) inline;
-//   - optimistic PUT /api/v1/settings with the §3.6 409 retry-once rule;
+//   - optimistic current-device section PATCH with the §3.6 409 retry-once rule;
 //   - composer → live session sendUserText, or POST /api/v1/fallback/turn
 //     when no session is connected (spec §2.5 "you can still type below");
 //   - wake-word toggle → WakeWordEngine lifecycle → mic.notifyWake().
@@ -44,10 +44,16 @@ import {
 } from './wakeword.mjs';
 import { initSettingsPanel } from './settings.mjs';
 import { initSettingsAccordion } from './settings-accordion.mjs';
+import {
+  applySectionSettings,
+  ensureCurrentDeviceRegistered,
+  sectionSettings,
+  withSettingsOperation,
+} from './device-settings.mjs';
 import { createDeferredDeviceActionGate } from './deviceactions.mjs';
 import { openToolDetails } from './tooldetails.mjs';
 
-const SETTINGS_PATH = '/api/v1/settings';
+const SETTINGS_PATH = '/api/v1/settings?effective=true';
 const VOICES_PATH = '/api/v1/realtime/voices';
 // Full grouped persona library (Built-in / Mine / Shared) — the quick-
 // switch select renders it as <optgroup>s (personas platform feature).
@@ -240,56 +246,79 @@ if (toastEl) {
 
 // ---- settings document (single source of truth for both quick-switches) --
 
-let settingsDoc = null; // full canonical document, including `version`
+let settingsDoc = null; // current device's effective document, including `version`
 let wakeCatalog = null; // {wakewords:[{id, phrase, ...}]}
 
 function settingsVersion() {
   return Number(settingsDoc && settingsDoc.version) || 1;
 }
 
-function docCopyWithoutVersion() {
-  const copy = structuredClone(settingsDoc);
-  delete copy.version;
-  return copy;
-}
-
 /**
- * Optimistic PUT with the spec §3.6 conflict rule: on 409 re-GET, re-apply
+ * Optimistic section PATCH with the spec §3.6 conflict rule: on 409 re-GET, re-apply
  * the same mutation on the fresh document, retry once; a second 409 means
  * remote wins — adopt it and tell the caller so the UI re-syncs.
  * @returns {Promise<{ok: boolean, conflict?: boolean}>}
  */
-async function putSettings(mutate) {
-  const attempt = async () => {
-    const body = docCopyWithoutVersion();
-    mutate(body);
-    const resp = await apiJSON(SETTINGS_PATH, {
-      method: 'PUT',
-      json: { settings: body, version: settingsVersion() },
-    });
-    settingsDoc = resp.settings;
-    settingsDoc.version = resp.version;
-    pingSettingsChanged(); // cross-tab channel (see the storage section below)
-  };
+async function putSettings(section, mutate) {
+  return withSettingsOperation(async () => {
+    const attempt = async () => {
+      const body = structuredClone(settingsDoc);
+      mutate(body);
+      const resp = await apiJSON(
+        `/api/v1/settings/sections/${encodeURIComponent(section)}`,
+        {
+          method: 'PATCH',
+          json: {
+            version: settingsVersion(),
+            operation: 'set',
+            target: { mode: 'current', deviceIds: [] },
+            settings: sectionSettings(body, section),
+          },
+        },
+      );
+      const responseVersion = Number(resp.version) || 0;
+      if (responseVersion >= settingsVersion()) {
+        const current = (resp.devices || []).find(
+          (device) => device.isCurrent || device.deviceId === resp.currentDeviceId,
+        );
+        applySectionSettings(
+          settingsDoc,
+          section,
+          current?.settings || sectionSettings(body, section),
+        );
+        settingsDoc.version = responseVersion || settingsVersion();
+      }
+      pingSettingsChanged(); // cross-tab channel (see the storage section below)
+    };
 
-  try {
-    await attempt();
-    return { ok: true };
-  } catch (err) {
-    if (!(err instanceof ApiError) || err.code !== 'version_conflict') throw err;
-  }
-  // Conflict: refresh, retry once with the same mutation on top.
-  settingsDoc = await apiJSON(SETTINGS_PATH);
-  try {
-    await attempt();
-    return { ok: true };
-  } catch (err) {
-    if (err instanceof ApiError && err.code === 'version_conflict') {
-      settingsDoc = await apiJSON(SETTINGS_PATH);
-      return { ok: false, conflict: true };
+    const adoptFreshDocument = (fresh) => {
+      if (
+        !settingsDoc
+        || (Number(fresh?.version) || 0) >= settingsVersion()
+      ) {
+        settingsDoc = fresh;
+      }
+    };
+
+    try {
+      await attempt();
+      return { ok: true };
+    } catch (err) {
+      if (!(err instanceof ApiError) || err.code !== 'version_conflict') throw err;
     }
-    throw err;
-  }
+    // Conflict: refresh, retry once with the same mutation on top.
+    adoptFreshDocument(await apiJSON(SETTINGS_PATH));
+    try {
+      await attempt();
+      return { ok: true };
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'version_conflict') {
+        adoptFreshDocument(await apiJSON(SETTINGS_PATH));
+        return { ok: false, conflict: true };
+      }
+      throw err;
+    }
+  });
 }
 
 // ---- persona quick-switch select (populated from the real catalog) -------
@@ -370,9 +399,9 @@ function isLive() {
   return !!(mic.session && mic.session.isConnected);
 }
 
-async function saveQuickSwitch({ mutate, revert, appliedToast, appliedBanner }) {
+async function saveQuickSwitch({ section, mutate, revert, appliedToast, appliedBanner }) {
   try {
-    const res = await putSettings(mutate);
+    const res = await putSettings(section, mutate);
     if (res.conflict) {
       toast('Someone updated your settings from another device — refreshed.');
       syncQuickSwitchesFromDoc();
@@ -1306,6 +1335,7 @@ if (personaSelect) {
     const next = personaSelect.value;
     if (next === prev) return;
     void saveQuickSwitch({
+      section: 'persona',
       mutate: (doc) => {
         if (!doc.persona || typeof doc.persona !== 'object') doc.persona = {};
         doc.persona.presetId = next;
@@ -1377,6 +1407,7 @@ for (const chip of micSensChips) {
     // Optimistic press; revert re-syncs from the (unchanged) doc.
     for (const c of micSensChips) c.setAttribute('aria-pressed', c === chip ? 'true' : 'false');
     void saveQuickSwitch({
+      section: 'turnDetection',
       mutate: (doc) => {
         doc.micEagerness = next;
       },
@@ -1517,12 +1548,12 @@ async function loadDrawerCost() {
 // There is NO server-side settings fan-out to the web client (the web
 // WebSocket/settings.updated frame does not exist — only the device shadow
 // path has push), so this is the documented minimal channel: every
-// successful settings PUT — here (quick-switches) and in settings.mjs
-// (the /settings page autosave) — writes the new document version to
+// successful settings section save — here (quick-switches) and in settings.mjs
+// (the inline drawer autosave) — writes the new document version to
 // localStorage under 'ln.settings.version'. The browser fires 'storage'
 // in every OTHER same-origin tab; the inline settings drawer also emits a
-// same-tab event after a successful save. Both paths re-GET the canonical
-// document and apply the delta:
+// same-tab event after a successful save. Both paths re-GET this device's
+// effective document and apply the delta:
 //   - Mic pickup (micEagerness) / turn detection → applied to the LIVE
 //     session via RealtimeSession.updateAudioInput (session.update,
 //     mirroring internal/realtime/mint.go) — owner request 2026-07-18;
@@ -1607,16 +1638,24 @@ async function adoptRemoteSettings() {
   }
   adoptInFlight = true;
   try {
-    const fresh = await apiJSON(SETTINGS_PATH);
-    const prev = settingsDoc;
-    settingsDoc = fresh;
-    syncQuickSwitchesFromDoc();
-    if (window.__lnApplyAppearance && settingsDoc.appearance) {
-      window.__lnApplyAppearance(settingsDoc.appearance);
-    }
-    const privacy = settingsDoc.privacy;
-    sink.setEnabled(!(privacy && privacy.storeTranscripts === false));
-    await applySettingsDelta(prev, fresh);
+    let adoption = null;
+    await withSettingsOperation(async () => {
+      const fresh = await apiJSON(SETTINGS_PATH);
+      if ((Number(fresh?.version) || 0) < settingsVersion()) {
+        adoptQueued = true;
+        return;
+      }
+      const prev = settingsDoc;
+      settingsDoc = fresh;
+      syncQuickSwitchesFromDoc();
+      if (window.__lnApplyAppearance && settingsDoc.appearance) {
+        window.__lnApplyAppearance(settingsDoc.appearance);
+      }
+      const privacy = settingsDoc.privacy;
+      sink.setEnabled(!(privacy && privacy.storeTranscripts === false));
+      adoption = { prev, fresh };
+    });
+    if (adoption) await applySettingsDelta(adoption.prev, adoption.fresh);
   } catch {
     /* offline or auth redirect — the next ping (or a reload) re-syncs */
   } finally {
@@ -1644,6 +1683,12 @@ window.addEventListener(SETTINGS_LOCAL_EVENT, () => {
 // ---- bootstrap -----------------------------------------------------------
 
 async function bootstrap() {
+  try {
+    await ensureCurrentDeviceRegistered();
+  } catch (err) {
+    if (err && err.name === 'AuthLostError') return;
+    toast("Couldn't register this browser's device name yet.", { error: true });
+  }
   // Settings first (drives everything else); catalogs in parallel.
   const [settings, voices, personas, catalog] = await Promise.allSettled([
     apiJSON(SETTINGS_PATH),

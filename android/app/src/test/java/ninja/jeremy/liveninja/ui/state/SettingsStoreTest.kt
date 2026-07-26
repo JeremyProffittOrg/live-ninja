@@ -49,6 +49,18 @@ class SettingsStoreTest {
         JSONObject(backing.storage["settings_document_v1"]!!)
 
     @Test
+    fun persistedDocumentEvidenceExcludesSynthesizedFreshDefaults() {
+        val backing = FakeBacking()
+        val fresh = backing.store()
+
+        assertFalse(fresh.hasPersistedDocument)
+        fresh.setTheme("dark")
+
+        assertTrue(fresh.hasPersistedDocument)
+        assertTrue(backing.store().hasPersistedDocument)
+    }
+
+    @Test
     fun defaults_carryOwnerBakedValues() {
         val store = FakeBacking().store()
         val doc = store.document.value
@@ -149,7 +161,8 @@ class SettingsStoreTest {
         store.setAppStyle("ninja")
         val persisted = stored(backing)
         assertEquals("keep-me", persisted.optString("futureFlag"))
-        assertEquals("ninja", persisted.optString("appStyle"))
+        assertEquals("ninja", persisted.getJSONObject("appearance").optString("appStyle"))
+        assertFalse(persisted.has("appStyle"))
         assertTrue(
             persisted.getJSONObject("diagnostics")
                 .getJSONObject("categories")
@@ -157,5 +170,33 @@ class SettingsStoreTest {
         )
         // Version bumped by the write path.
         assertEquals(8, persisted.optInt("version"))
+    }
+
+    @Test
+    fun serverEffectiveSettingsReplacePortableValuesButKeepAndroidOnlyControls() {
+        val backing = FakeBacking()
+        val store = backing.store()
+        store.setLockedSessions(false)
+        store.setWakeScreenOnWake(false)
+        store.setKeepScreenOn(true)
+        store.setDiagnosticsMinLevel("WARN")
+
+        store.replaceFromServer(
+            JSONObject()
+                .put("version", 44)
+                .put("wakeWord", "computer")
+                .put("theme", "dark")
+                .put("appearance", JSONObject().put("appStyle", "terminal")),
+        )
+
+        val doc = store.document.value
+        assertEquals(44, doc.version)
+        assertEquals("computer", doc.wakeWord)
+        assertEquals("dark", doc.theme)
+        assertEquals("terminal", doc.appStyle)
+        assertFalse(doc.lockedSessions)
+        assertFalse(doc.wakeScreenOnWake)
+        assertTrue(doc.keepScreenOn)
+        assertEquals("WARN", doc.diagnostics.minLevel)
     }
 }

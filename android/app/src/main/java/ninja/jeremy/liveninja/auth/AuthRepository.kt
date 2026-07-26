@@ -39,6 +39,7 @@ class AuthRepository @Inject constructor(
     private val tokenStore: TokenStore,
     private val api: LiveNinjaApi,
     private val refresher: TokenRefresher,
+    private val deviceRegistration: DeviceRegistrationManager,
 ) : DefaultLifecycleObserver {
 
     /**
@@ -67,6 +68,7 @@ class AuthRepository @Inject constructor(
             if (session != null) {
                 _state.value = AuthState.SignedIn(session.sessionId)
                 refreshIfNeeded()
+                registerCurrentDeviceIfDue()
             }
         }
         scope.launch {
@@ -90,7 +92,10 @@ class AuthRepository @Inject constructor(
 
     /** Silent sliding refresh whenever the app returns to the foreground. */
     override fun onStart(owner: LifecycleOwner) {
-        scope.launch { refreshIfNeeded() }
+        scope.launch {
+            refreshIfNeeded()
+            if (_state.value is AuthState.SignedIn) registerCurrentDeviceIfDue()
+        }
     }
 
     // ---- sign-in (Custom Tabs + PKCE) ----
@@ -180,6 +185,7 @@ class AuthRepository @Inject constructor(
                     ),
                 )
                 _state.value = AuthState.SignedIn(grant.sessionId.orEmpty())
+                registerCurrentDeviceIfDue(force = true)
             } catch (e: HttpException) {
                 LNLog.w(LogCategory.AUTH, TAG, "Code exchange rejected: HTTP ${e.code()}")
                 _state.value = AuthState.SignedOut(
@@ -273,6 +279,24 @@ class AuthRepository @Inject constructor(
 
     private fun nowSeconds(): Long = System.currentTimeMillis() / 1000
 
+    /**
+     * Best-effort named-device registration. Authentication succeeds even when
+     * this metadata refresh is offline; Settings retries it before sync.
+     */
+    private suspend fun registerCurrentDeviceIfDue(force: Boolean = false) {
+        val now = nowSeconds()
+        if (!force && now - lastDeviceRegistrationAt < DEVICE_REGISTRATION_INTERVAL_SECONDS) return
+        try {
+            deviceRegistration.registerCurrentDevice()
+            lastDeviceRegistrationAt = now
+        } catch (e: Exception) {
+            LNLog.w(LogCategory.AUTH, TAG, "Current-device registration deferred", e)
+        }
+    }
+
+    @Volatile
+    private var lastDeviceRegistrationAt: Long = 0
+
     private companion object {
         const val TAG = "AuthRepository"
 
@@ -287,5 +311,8 @@ class AuthRepository @Inject constructor(
 
         /** Pending PKCE round trips older than this are rejected (backend uses 10 min). */
         const val PENDING_LOGIN_TTL_SECONDS = 10 * 60L
+
+        /** Refresh display metadata occasionally without writing on every foreground. */
+        const val DEVICE_REGISTRATION_INTERVAL_SECONDS = 6 * 60 * 60L
     }
 }

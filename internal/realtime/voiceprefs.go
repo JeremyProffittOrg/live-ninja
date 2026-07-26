@@ -27,6 +27,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+
+	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 )
 
 // SessionVoice is the per-mint resolved voice identity.
@@ -125,29 +127,13 @@ type GeminiSessionVoice struct {
 // with the same lenient degrade-to-the-chain posture: any read failure or
 // unknown candidate falls through, so the result is always mintable.
 func ResolveSessionGeminiVoice(ctx context.Context, g SettingsGetter, table, userID, personaRef string) GeminiSessionVoice {
-	var doc struct {
-		GeminiVoice  string                      `dynamodbav:"geminiVoice"`
-		VoiceAccent  string                      `dynamodbav:"voiceAccent"`
-		PersonaPrefs map[string]personaPrefEntry `dynamodbav:"personaPrefs"`
-	}
-	if g != nil && userID != "" {
-		out, err := g.GetItem(ctx, &dynamodb.GetItemInput{
-			TableName: aws.String(table),
-			Key: map[string]ddbtypes.AttributeValue{
-				"pk": &ddbtypes.AttributeValueMemberS{Value: "USER#" + userID},
-				"sk": &ddbtypes.AttributeValueMemberS{Value: settingsSK},
-			},
-			ProjectionExpression: aws.String("#g, #a, #p"),
-			ExpressionAttributeNames: map[string]string{
-				"#g": "geminiVoice",
-				"#a": "voiceAccent",
-				"#p": "personaPrefs",
-			},
-		})
-		if err == nil && len(out.Item) > 0 {
-			_ = attributevalue.UnmarshalMap(out.Item, &doc)
-		}
-	}
+	return ResolveSessionGeminiVoiceForDevice(ctx, g, table, userID, "", personaRef)
+}
+
+// ResolveSessionGeminiVoiceForDevice resolves the same chain from the named
+// host's effective settings view.
+func ResolveSessionGeminiVoiceForDevice(ctx context.Context, g SettingsGetter, table, userID, deviceID, personaRef string) GeminiSessionVoice {
+	doc := loadEffectiveVoiceSettings(ctx, g, table, userID, deviceID)
 
 	var prefAccent *string
 	if pref, ok := doc.PersonaPrefs[PersonaPrefsKey(personaRef)]; ok {
@@ -170,31 +156,13 @@ func ResolveSessionGeminiVoice(ctx context.Context, g SettingsGetter, table, use
 // document, unmarshal trouble — degrades to the remaining candidates, so
 // the result is always a mintable voice.
 func ResolveSessionVoice(ctx context.Context, g SettingsGetter, table, userID, personaRef, voiceOverride string) SessionVoice {
-	var doc struct {
-		Voice        string                      `dynamodbav:"voice"`
-		VoiceAccent  string                      `dynamodbav:"voiceAccent"`
-		PersonaPrefs map[string]personaPrefEntry `dynamodbav:"personaPrefs"`
-	}
-	if g != nil && userID != "" {
-		out, err := g.GetItem(ctx, &dynamodb.GetItemInput{
-			TableName: aws.String(table),
-			Key: map[string]ddbtypes.AttributeValue{
-				"pk": &ddbtypes.AttributeValueMemberS{Value: "USER#" + userID},
-				"sk": &ddbtypes.AttributeValueMemberS{Value: settingsSK},
-			},
-			ProjectionExpression: aws.String("#v, #a, #p"),
-			ExpressionAttributeNames: map[string]string{
-				"#v": "voice",
-				"#a": "voiceAccent",
-				"#p": "personaPrefs",
-			},
-		})
-		if err == nil && len(out.Item) > 0 {
-			// Best-effort: a malformed item leaves doc zero-valued and the
-			// chain falls through to the persona/override/default candidates.
-			_ = attributevalue.UnmarshalMap(out.Item, &doc)
-		}
-	}
+	return ResolveSessionVoiceForDevice(ctx, g, table, userID, "", personaRef, voiceOverride)
+}
+
+// ResolveSessionVoiceForDevice resolves voice identity from the named host's
+// effective persona section while retaining the legacy wrapper above.
+func ResolveSessionVoiceForDevice(ctx context.Context, g SettingsGetter, table, userID, deviceID, personaRef, voiceOverride string) SessionVoice {
+	doc := loadEffectiveVoiceSettings(ctx, g, table, userID, deviceID)
 
 	var prefVoice string
 	var prefAccent *string
@@ -208,4 +176,61 @@ func ResolveSessionVoice(ctx context.Context, g SettingsGetter, table, userID, p
 		Voice:    ResolveVoiceChain(prefVoice, persona.Voice, voiceOverride, doc.Voice),
 		AccentID: ResolveAccentChain(prefAccent, persona.SuggestedAccent, doc.VoiceAccent),
 	}
+}
+
+type effectiveVoiceSettings struct {
+	Voice        string
+	GeminiVoice  string
+	VoiceAccent  string
+	PersonaPrefs map[string]personaPrefEntry
+}
+
+func loadEffectiveVoiceSettings(ctx context.Context, g SettingsGetter, table, userID, deviceID string) effectiveVoiceSettings {
+	var doc effectiveVoiceSettings
+	if g == nil || userID == "" {
+		return doc
+	}
+	out, err := g.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(table),
+		Key: map[string]ddbtypes.AttributeValue{
+			"pk": &ddbtypes.AttributeValueMemberS{Value: "USER#" + userID},
+			"sk": &ddbtypes.AttributeValueMemberS{Value: settingsSK},
+		},
+		ProjectionExpression: aws.String("#v, #g, #a, #p, #o"),
+		ExpressionAttributeNames: map[string]string{
+			"#v": "voice",
+			"#g": "geminiVoice",
+			"#a": "voiceAccent",
+			"#p": "personaPrefs",
+			"#o": "deviceOverrides",
+		},
+	})
+	if err != nil || len(out.Item) == 0 {
+		return doc
+	}
+	var raw map[string]any
+	if attributevalue.UnmarshalMap(out.Item, &raw) != nil {
+		return doc
+	}
+	effective := store.EffectiveSettings(raw, deviceID)
+	doc.Voice, _ = effective["voice"].(string)
+	doc.GeminiVoice, _ = effective["geminiVoice"].(string)
+	doc.VoiceAccent, _ = effective["voiceAccent"].(string)
+	doc.PersonaPrefs = map[string]personaPrefEntry{}
+	prefs, _ := effective["personaPrefs"].(map[string]any)
+	for id, value := range prefs {
+		entry, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		pref := personaPrefEntry{}
+		pref.Voice, _ = entry["voice"].(string)
+		if accent, present := entry["accent"]; present {
+			if value, ok := accent.(string); ok {
+				pref.Accent = &value
+			}
+		}
+		doc.PersonaPrefs[id] = pref
+	}
+	return doc
 }

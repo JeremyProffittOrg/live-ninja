@@ -7,13 +7,10 @@
 // once; there is no more SSR data island (#settings-data/#catalogs-data) —
 // the settings document and the persona catalog are both fetched client-side
 // here, exactly like conversation.mjs's own settingsDoc bootstrap. This
-// module keeps its OWN optimistic-concurrency PUT loop (doc/version/
-// baseline/pendingKeys below), independent of conversation.mjs's separate
-// settingsDoc/putSettings — the two are two writers of the same whole-
-// document PUT /api/v1/settings, exactly as two browser tabs already were
-// before this move; the existing 409 version-conflict reconcile (below)
-// is the same mechanism that already covers that case, so this is not a new
-// failure mode, just a same-tab instance of an already-handled one.
+// module keeps its own optimistic-concurrency loop (doc/version/baseline/
+// pendingKeys below), independent of conversation.mjs. Both writers use the
+// current named device's section PATCH API, so unrelated sections and other
+// device overrides cannot be overwritten by an autosave.
 //
 // Network access goes through toolclient.mjs (authFetch/apiJSON): the
 // in-memory access JWT, refresh-once-on-401, and the X-LN-CSRF header all
@@ -21,7 +18,15 @@
 // routes directly. The only raw fetch is the public static wake-word
 // catalog (/static/wakewords/catalog.json).
 
-import { apiJSON, authFetch, ApiError } from './toolclient.mjs';
+import { apiJSON, ApiError } from './toolclient.mjs';
+import {
+  SETTINGS_SECTIONS,
+  ensureCurrentDeviceRegistered,
+  initDeviceSettingsControls,
+  sectionForKey,
+  sectionSettings,
+  withSettingsOperation,
+} from './device-settings.mjs';
 
 const $ = (id) => document.getElementById(id);
 
@@ -44,7 +49,8 @@ const deepEq = (a, b) => JSON.stringify(stable(a)) === JSON.stringify(stable(b))
 export async function initSettingsPanel() {
 // ---- state --------------------------------------------------------------
 
-const doc = await apiJSON('/api/v1/settings'); // canonical settings document
+await ensureCurrentDeviceRegistered();
+const doc = await apiJSON('/api/v1/settings?effective=true');
 let version = Number(doc.version) || 1;
 let baseline = clone(doc); // last server-confirmed document
 const pendingKeys = new Set(); // top-level keys edited since last confirm
@@ -119,6 +125,7 @@ toastActionBtn.addEventListener('click', () => {
 let saveTimer = 0;
 let inFlight = false;
 let queuedFlush = false;
+let scopeWriteBarrier = false;
 
 function markChanged(key, { debounce = 0 } = {}) {
   pendingKeys.add(key);
@@ -128,7 +135,7 @@ function markChanged(key, { debounce = 0 } = {}) {
 }
 
 /** Cross-tab ping on the shared version key. Every path that adopts a new
- * document version calls this — the autosave PUT, the 409 reconcile, and the
+ * document version calls this — autosave, the 409 reconcile, and the
  * M16 undo (which is written by the SERVER, so this tab's own doc is stale
  * until it re-reads). Storage being blocked (private mode) degrades cross-tab
  * sync, never the write. */
@@ -147,6 +154,10 @@ function pingSettingsVersion() {
 }
 
 async function flush() {
+  if (scopeWriteBarrier) {
+    queuedFlush = true;
+    return;
+  }
   if (inFlight) {
     queuedFlush = true;
     return;
@@ -159,42 +170,72 @@ async function flush() {
   const sent = clone(doc);
   const sentKeys = new Set(pendingKeys);
   try {
-    const resp = await apiJSON('/api/v1/settings', {
-      method: 'PUT',
-      json: { settings: sent, version },
-    });
-    version = Number(resp.version);
-    baseline = clone(resp.settings);
-    baseline.version = version;
-    // A field is confirmed unless the user changed it again mid-flight.
-    for (const k of sentKeys) {
-      if (deepEq(doc[k], sent[k])) pendingKeys.delete(k);
-    }
-    // Adopt server normalizations (e.g. instructions nulled on a preset
-    // switch) for everything not still locally pending.
-    for (const k of Object.keys(resp.settings)) {
-      if (!pendingKeys.has(k) && !deepEq(doc[k], resp.settings[k])) {
-        doc[k] = clone(resp.settings[k]);
-        renderField(k);
-      }
-    }
-    doc.version = version;
-    // Cross-tab ping: an open /conversation tab listens for 'storage' on
-    // this key and re-GETs the doc so Mic pickup / turn detection changes
-    // apply to its LIVE session (conversation.mjs, SETTINGS_PING_KEY).
-    pingSettingsVersion();
-    if (pendingKeys.size > 0) queuedFlush = true;
-    else setStatus('saved');
-  } catch (err) {
-    if (err instanceof ApiError && err.status === 409) {
+    await withSettingsOperation(async () => {
       try {
+        const sections = [...new Set([...sentKeys].map(sectionForKey).filter(Boolean))];
+        for (const section of sections) {
+          const sectionKeys = new Set(
+            [...sentKeys].filter((key) => sectionForKey(key) === section),
+          );
+          const resp = await apiJSON(
+            `/api/v1/settings/sections/${encodeURIComponent(section)}`,
+            {
+              method: 'PATCH',
+              json: {
+                version,
+                operation: 'set',
+                target: { mode: 'current', deviceIds: [] },
+                settings: sectionSettings(sent, section),
+              },
+            },
+          );
+          const responseVersion = Number(resp.version) || version;
+          if (responseVersion < version) {
+            queuedFlush = true;
+            continue;
+          }
+          version = responseVersion;
+          const current = (resp.devices || []).find(
+            (device) => device.isCurrent || device.deviceId === resp.currentDeviceId,
+          );
+          const confirmed = current?.settings || sectionSettings(sent, section);
+          for (const key of SETTINGS_SECTIONS[section]) {
+            if (Object.prototype.hasOwnProperty.call(confirmed, key)) {
+              baseline[key] = clone(confirmed[key]);
+            }
+          }
+          // A field is confirmed unless the user changed it again mid-flight.
+          for (const key of sectionKeys) {
+            if (deepEq(doc[key], sent[key])) pendingKeys.delete(key);
+          }
+          // Adopt server normalizations after clearing fields whose sent value
+          // was confirmed, while preserving edits made during the request.
+          for (const key of SETTINGS_SECTIONS[section]) {
+            if (
+              Object.prototype.hasOwnProperty.call(confirmed, key)
+              && !pendingKeys.has(key)
+              && !deepEq(doc[key], confirmed[key])
+            ) {
+              doc[key] = clone(confirmed[key]);
+              renderField(key);
+            }
+          }
+        }
+        doc.version = version;
+        baseline.version = version;
+        // Cross-tab ping: an open /conversation tab listens for 'storage' on
+        // this key and re-GETs the effective doc so Mic pickup / turn detection changes
+        // apply to its LIVE session (conversation.mjs, SETTINGS_PING_KEY).
+        pingSettingsVersion();
+        if (pendingKeys.size > 0) queuedFlush = true;
+        else setStatus('saved');
+      } catch (err) {
+        if (!(err instanceof ApiError) || err.status !== 409) throw err;
         await reconcile409();
-      } catch {
-        failSave(sentKeys, sent);
       }
-    } else {
-      failSave(sentKeys, sent);
-    }
+    });
+  } catch {
+    failSave(sentKeys, sent);
   } finally {
     inFlight = false;
     if (queuedFlush) {
@@ -208,7 +249,7 @@ async function flush() {
 // 409: another surface wrote first. Re-read, let the remote win any field
 // we both touched, re-apply unrelated local edits, retry once (§3.6).
 async function reconcile409() {
-  const fresh = await apiJSON('/api/v1/settings');
+  const fresh = await apiJSON('/api/v1/settings?effective=true');
   let remoteWon = false;
   for (const k of [...pendingKeys]) {
     if (!deepEq(fresh[k], baseline[k])) {
@@ -272,12 +313,31 @@ function failSave(sentKeys, sent) {
 
 // Best-effort flush of anything still pending when the tab goes away.
 window.addEventListener('pagehide', () => {
-  if (pendingKeys.size === 0 || inFlight) return;
-  authFetch('/api/v1/settings', {
-    method: 'PUT',
-    json: { settings: doc, version },
-    keepalive: true,
-  }).catch(() => {});
+  if (pendingKeys.size === 0 || inFlight || scopeWriteBarrier) return;
+  const sections = [...new Set([...pendingKeys].map(sectionForKey).filter(Boolean))];
+  void (async () => {
+    let pageVersion = version;
+    for (const section of sections) {
+      try {
+        const resp = await apiJSON(
+          `/api/v1/settings/sections/${encodeURIComponent(section)}`,
+          {
+            method: 'PATCH',
+            json: {
+              version: pageVersion,
+              operation: 'set',
+              target: { mode: 'current', deviceIds: [] },
+              settings: sectionSettings(doc, section),
+            },
+            keepalive: true,
+          },
+        );
+        pageVersion = Number(resp.version) || pageVersion;
+      } catch {
+        break;
+      }
+    }
+  })();
 });
 
 // ---- per-field re-render (used by reconcile/revert paths) -------------
@@ -1042,7 +1102,7 @@ instructionsArea.addEventListener('paste', (e) => {
 // the unit of voice identity (settings.schema.json personaPrefs), edited in
 // the conversation page's persona editor (personaeditor.mjs). The doc's
 // top-level voice/voiceAccent fields survive as the fallback default and
-// are preserved untouched by the whole-document autosave PUT.
+// are preserved untouched until the persona section is explicitly saved.
 
 // ---- turn detection ----------------------------------------------------
 
@@ -1153,13 +1213,13 @@ if (accentCustom) {
 // ==================== voice-engine-section:BEGIN ====================
 // M12 secondary-voice-engine picker (FR-VE-04) + M13 Gemini voice picker,
 // owned by the voice-engine workstream — edit only inside these markers.
-// Bound to voiceEngine.default (the engine this browser session and any
-// un-pinned device use; the broker resolves devices[deviceId] ?? default).
+// Bound to voiceEngine.default inside this browser's effective voice-engine
+// section.
 // The segmented radios render without a checked attribute — the current
 // value is hydrated from the fetched doc via renderField('voiceEngine') at
 // the bottom of init(). Unknown forward-compat fields (e.g.
 // voiceEngine.devices) are preserved untouched by the spread + the autosave
-// engine's whole-document PUT. The radio wiring is value-generic: the M13
+// engine's section PATCH. The radio wiring is value-generic: the M13
 // gemini-flash-live radio needs no per-value code, only the engine-scoped
 // Gemini voice picker below.
 for (const r of document.querySelectorAll('input[name="voiceEngine"]')) {
@@ -2103,15 +2163,17 @@ async function decideSuggestion(id, action, announcement) {
   setRowBusy(id, true);
   suggestionRowError(id, '');
   try {
-    const resp = await apiJSON(`${SUGGESTIONS_PATH}/${encodeURIComponent(id)}/resolve`, {
-      method: 'POST',
-      json: { action },
+    await withSettingsOperation(async () => {
+      const resp = await apiJSON(`${SUGGESTIONS_PATH}/${encodeURIComponent(id)}/resolve`, {
+        method: 'POST',
+        json: { action },
+      });
+      if (resp && resp.version) {
+        // An undo wrote the settings document server-side, so this tab's copy
+        // is stale — re-read before its next PATCH can 409 against the revert.
+        await adoptServerSettingsRaw(Number(resp.version));
+      }
     });
-    if (resp && resp.version) {
-      // An undo wrote the settings document server-side, so this tab's copy
-      // is stale — re-read before its next PUT can 409 against the revert.
-      await adoptServerSettings(Number(resp.version));
-    }
     suggestions = suggestions.filter((s) => s.id !== id);
     renderSuggestions();
     announceSuggestion(announcement || decisionAnnouncement(action));
@@ -2144,10 +2206,13 @@ function decisionAnnouncement(action) {
 /** Re-read the settings document after a server-side write and adopt it,
  * keeping any field still pending locally. Same rule as the 409 reconcile:
  * the server's copy is authoritative for everything we are not mid-edit on. */
-async function adoptServerSettings(newVersion) {
+async function adoptServerSettingsRaw(newVersion) {
   try {
-    const fresh = await apiJSON('/api/v1/settings');
-    version = Number(fresh.version) || newVersion || version;
+    const fresh = await apiJSON('/api/v1/settings?effective=true');
+    const fetchedVersion = Number(fresh.version) || 0;
+    const requiredVersion = Math.max(Number(newVersion) || 0, version);
+    if (fetchedVersion < requiredVersion) return false;
+    version = fetchedVersion || newVersion || version;
     for (const k of Object.keys(fresh)) {
       if (k === 'version' || pendingKeys.has(k)) continue;
       if (!deepEq(doc[k], fresh[k])) {
@@ -2159,11 +2224,12 @@ async function adoptServerSettings(newVersion) {
     baseline = clone(fresh);
     baseline.version = version;
     pingSettingsVersion();
+    return true;
   } catch {
-    // The version is still advanced here, so the next PUT 409s and the
-    // existing reconcile path recovers — never a silent stale write.
-    version = newVersion || version;
-    doc.version = version;
+    // Do not advance the shared version without the corresponding effective
+    // document. A later write keeps the old version and must 409/reconcile
+    // instead of writing stale sibling fields at a newer version.
+    return false;
   }
 }
 
@@ -2232,6 +2298,26 @@ renderField('appearance');
 renderField('voiceEngine');
 wireProfile();
 renderField('profile');
+initDeviceSettingsControls({
+  getDocument: () => doc,
+  getVersion: () => version,
+  prepareWrite: async () => {
+    clearTimeout(saveTimer);
+    await flush();
+    if (pendingKeys.size > 0) await flush();
+    return pendingKeys.size === 0 && !statusEl.classList.contains('is-error');
+  },
+  setWriteBarrier: (blocked) => {
+    scopeWriteBarrier = blocked;
+    if (!blocked && (queuedFlush || pendingKeys.size > 0)) {
+      queuedFlush = false;
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(flush, 0);
+    }
+  },
+  // Device-scoped Apply already owns the shared settings operation lane.
+  reconcileEffective: adoptServerSettingsRaw,
+});
 void refreshSuggestions(); // M16 queue + drawer-tab badge; a failed read is silent
 loadWakeCatalog();
 refreshMicDevices();

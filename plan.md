@@ -577,6 +577,34 @@ command IS the confirmation**; stored in the existing **S3** user bucket; and su
   JVM and instrumented Compose contract tests cover accordion state, navigation, semantics and
   the matching 40% bars.
 
+### M31 — Named devices + per-device settings  `[x]`
+
+**Definition of Done:** every web, Android, and paired hardware installation has a safe,
+human-readable, user-editable device name; every configurable Settings section can show its
+effective values per device and explicitly apply changes to this device, selected owned devices,
+or all devices without silently changing unrelated hosts.
+
+- `[x]` **O** — Multi-persona interaction and privacy pass completed first in
+  `docs/m31-device-scoped-settings-spec.md`. Account defaults remain the compatibility base;
+  sparse section overrides carry only host differences. Browser labels use browser/platform,
+  Android labels use configured name or manufacturer/model, and neither surface collects
+  serial/MAC/IMEI/Android ID/raw UA/fingerprint inputs.
+- `[x]` **S** — Device registry and settings contract: idempotent current-install registration,
+  rename, safe metadata/capabilities and last-seen; `X-LN-Device-ID`; effective-settings reads;
+  atomic current/selected/all/inherit section writes under the existing optimistic-concurrency
+  version; ownership checks and legacy `voiceEngine.devices` compatibility.
+- `[x]` **S** — Web: persist/register the browser installation, attach its device identity,
+  add an accessible device viewer/target picker to all eight configurable accordions, and put
+  rename management beside the existing confirmed sign-out controls in Account. Remote preview
+  must not mutate this browser's runtime.
+- `[x]` **S** — Android: persist/register an app-install identity, migrate local-only settings
+  into this-device overrides without losing them, sync effective settings, and expose the same
+  current/selected/all/inherit actions in every configurable accordion plus Account management.
+- `[x]` **H** — Serving-path parity and verification: realtime engine/voice/persona/Base
+  Knowledge, transcript privacy, and IoT desired shadows resolve the calling device's effective
+  document; non-default microphone IDs cannot be copied; Go, web, Android, schema, and deploy
+  gates pass.
+
 ## WS-4 — M8 Launch  `[~]`
 
 **Definition of Done:** SES production access granted; Cost Allocation Tags confirmed active; the

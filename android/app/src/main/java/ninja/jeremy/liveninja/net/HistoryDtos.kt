@@ -1,6 +1,7 @@
 package ninja.jeremy.liveninja.net
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 /**
  * Wire DTOs for the M11 Conversation Topics & Filterable History REST surface
@@ -126,17 +127,30 @@ data class DeviceDto(
     /** Surface hint: android | web | m5stack | ... */
     val platform: String? = null,
     val type: String? = null,
+    val surface: String? = null,
+    val status: String? = null,
+    val isCurrent: Boolean = false,
+    val metadata: JsonObject = JsonObject(emptyMap()),
+    val capabilities: List<String> = emptyList(),
+    val createdAt: Long? = null,
     val lastSeenAt: String? = null,
 ) {
     val deviceKey: String? get() = id ?: deviceId
-    val displayName: String get() = name ?: label ?: platform ?: type ?: deviceKey.orEmpty()
+    val displayName: String
+        get() = name ?: label ?: platform ?: surface ?: type ?: deviceKey.orEmpty()
 }
 
 /** GET /api/v1/devices response. */
 @Serializable
 data class DeviceListResponse(
+    /** Canonical backend envelope (the web client also reads this name). */
+    val devices: List<DeviceDto> = emptyList(),
+    /** Additive compatibility with list APIs that use the shared `items` name. */
     val items: List<DeviceDto> = emptyList(),
-)
+) {
+    val resolvedItems: List<DeviceDto>
+        get() = if (items.isNotEmpty()) items else devices
+}
 
 // ---- transcript upload (WS-5 M21.1) ----
 

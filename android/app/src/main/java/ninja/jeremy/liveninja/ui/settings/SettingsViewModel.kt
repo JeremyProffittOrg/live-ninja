@@ -14,6 +14,9 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.Optional
 import javax.inject.Inject
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -22,6 +25,9 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import ninja.jeremy.liveninja.log.LogExporter
 import ninja.jeremy.liveninja.log.LogSink
 import ninja.jeremy.liveninja.net.LiveNinjaApi
@@ -36,6 +42,7 @@ import ninja.jeremy.liveninja.ui.state.WakeWordOption
 import ninja.jeremy.liveninja.wake.ModelManager
 import ninja.jeremy.liveninja.wake.ModelSyncResult
 import ninja.jeremy.liveninja.wake.WakePreferences
+import org.json.JSONObject
 import retrofit2.HttpException
 
 /** One persona catalog entry (server resolves the actual instructions by ID). */
@@ -70,6 +77,38 @@ enum class SettingsNotice {
     WAKE_TRAIN_LIMIT,
     WAKE_TRAIN_INVALID,
     WAKE_TRAIN_REQUEST_FAILED,
+    SETTINGS_SYNC_FAILED,
+    SETTINGS_APPLIED,
+    SETTINGS_INHERITED,
+    MICROPHONE_TARGET_LOCAL_ONLY,
+    DEVICE_RENAMED,
+    DEVICE_RENAME_FAILED,
+}
+
+data class SettingsHostUi(
+    val id: String,
+    val name: String,
+    val surface: String? = null,
+    val metadata: Map<String, String> = emptyMap(),
+    val capabilities: Set<String> = emptySet(),
+    val isCurrent: Boolean = false,
+    val inherited: Boolean = true,
+    val settings: JSONObject = JSONObject(),
+) {
+    fun supports(section: SettingsSection): Boolean =
+        capabilities.isEmpty() || section.apiId in capabilities
+}
+
+data class SettingsSectionScopeUi(
+    val version: Int = 0,
+    val hosts: List<SettingsHostUi> = emptyList(),
+    val viewedDeviceId: String? = null,
+    val loading: Boolean = false,
+) {
+    val viewedHost: SettingsHostUi?
+        get() = hosts.firstOrNull { it.id == viewedDeviceId }
+            ?: hosts.firstOrNull { it.isCurrent }
+            ?: hosts.firstOrNull()
 }
 
 data class SettingsUiState(
@@ -96,15 +135,46 @@ data class SettingsUiState(
     val customRequestInProgress: Boolean = false,
     /** True when Live Ninja is exempt from Doze battery optimization (01-platform §C). */
     val batteryOptimizationIgnored: Boolean = false,
+    /** Named hosts and per-host values keyed by configurable accordion. */
+    val sectionScopes: Map<SettingsSection, SettingsSectionScopeUi> = emptyMap(),
+    /** Remote previews; current runtime [doc] remains untouched while browsing. */
+    val sectionDocuments: Map<SettingsSection, SettingsDocument> = emptyMap(),
+    val devices: List<SettingsHostUi> = emptyList(),
+    val settingsSyncing: Boolean = false,
 ) {
     val customPhraseValid: Boolean
         get() = SettingsViewModel.isValidWakePhrase(customPhrase)
+
+    fun documentFor(section: SettingsSection): SettingsDocument =
+        if (sectionScopes[section]?.viewedHost?.isCurrent == false) {
+            sectionDocuments[section] ?: doc
+        } else {
+            doc
+    }
 }
+
+private data class SectionSaveKey(
+    val section: SettingsSection,
+    val deviceId: String,
+)
+
+private data class PendingSectionSave(
+    val mutations: List<(JSONObject) -> Unit>,
+    val optimisticSettings: JSONObject,
+    val editingCurrent: Boolean,
+)
+
+private fun mergePendingSectionSaves(
+    older: PendingSectionSave,
+    newer: PendingSectionSave,
+): PendingSectionSave =
+    newer.copy(mutations = older.mutations + newer.mutations)
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val settingsStore: SettingsStore,
+    private val settingsRepository: SettingsRepository,
     private val catalog: WakeWordCatalogRepository,
     private val api: LiveNinjaApi,
     private val modelManager: ModelManager,
@@ -159,6 +229,18 @@ class SettingsViewModel @Inject constructor(
 
     private var modelSyncJob: Job? = null
     private var pollJob: Job? = null
+    private val settingsWrites = SettingsWriteCoordinator()
+    private val sectionSaveQueue = LatestSaveQueue<SectionSaveKey, PendingSectionSave>(
+        scope = viewModelScope,
+        debounceMillis = SECTION_SAVE_DEBOUNCE_MILLIS,
+        merge = ::mergePendingSectionSaves,
+        save = ::saveQueuedSection,
+        onDrained = { key ->
+            if (key.deviceId == settingsRepository.currentDeviceId) {
+                settingsRepository.clearSectionPending(key.section)
+            }
+        },
+    )
 
     init {
         viewModelScope.launch {
@@ -182,6 +264,559 @@ class SettingsViewModel @Inject constructor(
         // Resume polling a training job that outlived the previous process
         // (Batch jobs run up to 20 min; the SES "ready" email is the backstop).
         startPollingCustomJob()
+        initializeDeviceSettings()
+    }
+
+    // ---- named devices + per-section settings ----
+
+    /**
+     * Register this random app-instance id, upload the pre-existing local
+     * settings as current-device overrides exactly once, and only then adopt
+     * the server's effective document. A failed migration leaves the local
+     * document authoritative and retries on the next Settings ViewModel.
+     */
+    private fun initializeDeviceSettings() {
+        viewModelScope.launch {
+            _state.update { it.copy(settingsSyncing = true) }
+            try {
+                settingsRepository.registerCurrentDevice()
+                loadDeviceDirectory()
+
+                val migrationMode = initialSettingsMigrationMode(
+                    migrationComplete = settingsRepository.migrationComplete,
+                    hasPersistedDocument = settingsStore.hasPersistedDocument,
+                )
+                if (migrationMode == InitialSettingsMigrationMode.FRESH_INSTALL) {
+                    // No legacy document exists: inherit the account's
+                    // effective values instead of uploading synthesized
+                    // Android defaults as per-device overrides.
+                    settingsRepository.clearPendingSections()
+                    settingsRepository.markMigrationComplete()
+                }
+                val migratingAllLocalSettings =
+                    migrationMode == InitialSettingsMigrationMode.LEGACY_DOCUMENT
+                val migrationSections = SettingsSection.entries
+                    .filter { section ->
+                        section.apiId != null &&
+                            (
+                                migratingAllLocalSettings ||
+                                    (
+                                        migrationMode == InitialSettingsMigrationMode.NONE &&
+                                            section.apiId in
+                                            settingsRepository.pendingSettingsSections
+                                        )
+                                )
+                    }
+                if (migrationSections.isNotEmpty()) {
+                    val local = settingsStore.rawSnapshot()
+                    for (section in migrationSections) {
+                        val values = extractSectionSettings(section, local)
+                        if (values.length() == 0) {
+                            if (!migratingAllLocalSettings) {
+                                settingsRepository.clearSectionPending(section)
+                            }
+                            continue
+                        }
+                        settingsWrites.write {
+                            val envelope = settingsRepository.getSection(section)
+                            patchWithConflictRetry(
+                                section = section,
+                                envelope = envelope,
+                                operation = "set",
+                                target = SettingsApplyTarget(SettingsTargetMode.CURRENT),
+                                settingsFor = { values },
+                            )
+                        }
+                        if (!migratingAllLocalSettings) {
+                            settingsRepository.clearSectionPending(section)
+                        }
+                    }
+                }
+                if (migrationMode == InitialSettingsMigrationMode.LEGACY_DOCUMENT) {
+                    settingsRepository.markMigrationComplete()
+                }
+
+                refreshEffectiveSettings()
+                SettingsSection.entries
+                    .filter { it.apiId != null }
+                    .map { section -> async { loadSectionNow(section) } }
+                    .awaitAll()
+            } catch (_: Exception) {
+                _notices.tryEmit(SettingsNotice.SETTINGS_SYNC_FAILED)
+            } finally {
+                _state.update { it.copy(settingsSyncing = false) }
+            }
+        }
+    }
+
+    fun loadSection(section: SettingsSection) {
+        sectionSaveQueue.retryWhere { it.section == section }
+        if (section.apiId == null) {
+            viewModelScope.launch { loadDeviceDirectory() }
+            return
+        }
+        if (_state.value.sectionScopes[section]?.hosts?.isNotEmpty() == true) return
+        viewModelScope.launch {
+            runCatching { loadSectionNow(section) }
+                .onFailure { _notices.tryEmit(SettingsNotice.SETTINGS_SYNC_FAILED) }
+        }
+    }
+
+    private suspend fun loadSectionNow(section: SettingsSection) {
+        _state.update { state ->
+            state.copy(
+                sectionScopes = state.sectionScopes +
+                    (section to (state.sectionScopes[section] ?: SettingsSectionScopeUi()).copy(loading = true)),
+            )
+        }
+        consumeSectionEnvelope(section, settingsRepository.getSection(section))
+    }
+
+    private suspend fun loadDeviceDirectory() {
+        val currentId = settingsRepository.currentDeviceId
+        val devices = settingsRepository.listDevices().mapNotNull { dto ->
+            val id = dto.deviceKey ?: return@mapNotNull null
+            SettingsHostUi(
+                id = id,
+                name = dto.displayName.ifBlank { id },
+                surface = dto.surface ?: dto.platform ?: dto.type,
+                metadata = dto.metadata.toStringMap(),
+                capabilities = dto.capabilities.toSet(),
+                isCurrent = dto.isCurrent || id == currentId,
+            )
+        }
+        _state.update { it.copy(devices = devices) }
+    }
+
+    private fun consumeSectionEnvelope(
+        section: SettingsSection,
+        envelope: ninja.jeremy.liveninja.net.SettingsSectionEnvelope,
+    ) {
+        val currentId = envelope.currentDeviceId ?: settingsRepository.currentDeviceId
+        val directoryHosts = envelope.devices.map { dto ->
+            SettingsHostUi(
+                id = dto.deviceId,
+                name = dto.name.ifBlank { dto.deviceId },
+                surface = dto.surface,
+                metadata = dto.metadata.toStringMap(),
+                capabilities = dto.capabilities.toSet(),
+                isCurrent = dto.isCurrent || dto.deviceId == currentId,
+                inherited = dto.inherited,
+                settings = JSONObject(dto.settings.toString()),
+            )
+        }
+        _state.update { state ->
+            val existing = state.sectionScopes[section]
+            if (!shouldAcceptSectionEnvelope(envelope.version, existing?.version)) {
+                state.copy(
+                    sectionScopes = state.sectionScopes +
+                        (section to requireNotNull(existing).copy(loading = false)),
+                )
+            } else {
+                val hosts = directoryHosts
+                val viewedId = supportedSettingsHostId(
+                    section = section,
+                    hosts = hosts,
+                    previousDeviceId = existing?.viewedDeviceId,
+                )
+                val viewedSettings =
+                    hosts.firstOrNull { it.id == viewedId }?.settings ?: JSONObject()
+                state.copy(
+                    sectionScopes = state.sectionScopes +
+                        (
+                            section to SettingsSectionScopeUi(
+                                version = envelope.version,
+                                hosts = hosts,
+                                viewedDeviceId = viewedId,
+                                loading = false,
+                            )
+                        ),
+                    sectionDocuments = state.sectionDocuments +
+                        (section to settingsStore.preview(viewedSettings)),
+                    devices = if (state.devices.isEmpty()) directoryHosts else state.devices,
+                )
+            }
+        }
+    }
+
+    fun viewSettingsFor(section: SettingsSection, deviceId: String) {
+        val scope = _state.value.sectionScopes[section] ?: return
+        val host = scope.hosts.firstOrNull { it.id == deviceId } ?: return
+        if (!host.supports(section)) return
+        _state.update { state ->
+            state.copy(
+                sectionScopes = state.sectionScopes +
+                    (section to scope.copy(viewedDeviceId = deviceId)),
+                sectionDocuments = state.sectionDocuments +
+                    (section to settingsStore.preview(host.settings)),
+            )
+        }
+    }
+
+    fun applySection(
+        section: SettingsSection,
+        target: SettingsApplyTarget,
+        inherit: Boolean,
+    ) {
+        if (inherit && target.mode == SettingsTargetMode.ALL) return
+        val scope = _state.value.sectionScopes[section] ?: return
+        val viewed = scope.viewedHost
+        val settings = settingsForApply(
+            section = section,
+            currentDocument = _state.value.documentFor(section).raw,
+            viewedSettings = viewed?.settings,
+            viewedIsCurrent = viewed?.isCurrent == true,
+        )
+        if (!inherit &&
+            section == SettingsSection.MICROPHONE &&
+            !microphoneSettingsCanApply(
+                settings = settings,
+                sourceIsCurrent = viewed?.isCurrent == true,
+                targetMode = target.mode,
+            )
+        ) {
+            _notices.tryEmit(SettingsNotice.MICROPHONE_TARGET_LOCAL_ONLY)
+            return
+        }
+        val destinationIds = when (target.mode) {
+            SettingsTargetMode.CURRENT -> setOf(settingsRepository.currentDeviceId)
+            SettingsTargetMode.SELECTED -> target.deviceIds
+            SettingsTargetMode.ALL ->
+                scope.hosts.mapTo(mutableSetOf()) { it.id } + settingsRepository.currentDeviceId
+        }
+        val supersededSaves = destinationIds.mapNotNull { deviceId ->
+            val key = SectionSaveKey(section, deviceId)
+            sectionSaveQueue.discard(key)?.let { pending -> key to pending }
+        }.toMap()
+        viewModelScope.launch {
+            var patchCommitted = false
+            try {
+                settingsWrites.write {
+                    val envelope = settingsRepository.getSection(section)
+                    val refreshed = patchWithConflictRetry(
+                        section = section,
+                        envelope = envelope,
+                        operation = if (inherit) "inherit" else "set",
+                        target = target,
+                        settingsFor = {
+                            if (inherit) JSONObject() else JSONObject(settings.toString())
+                        },
+                    )
+                    patchCommitted = true
+                    consumeSectionEnvelope(section, refreshed)
+                    val currentKey = SectionSaveKey(section, settingsRepository.currentDeviceId)
+                    if (targetIncludesCurrent(target) &&
+                        !sectionSaveQueue.hasPending(currentKey)
+                    ) {
+                        refreshEffectiveSettings()
+                    }
+                }
+                val currentKey = SectionSaveKey(section, settingsRepository.currentDeviceId)
+                if (targetIncludesCurrent(target) &&
+                    !sectionSaveQueue.hasPending(currentKey)
+                ) {
+                    settingsRepository.clearSectionPending(section)
+                }
+                _notices.tryEmit(
+                    if (inherit) SettingsNotice.SETTINGS_INHERITED else SettingsNotice.SETTINGS_APPLIED,
+                )
+            } catch (_: Exception) {
+                if (!patchCommitted) {
+                    destinationIds.forEach { deviceId ->
+                        val key = SectionSaveKey(section, deviceId)
+                        val newer = sectionSaveQueue.discard(key)
+                        val older = supersededSaves[key]
+                        val restored = when {
+                            older != null && newer != null ->
+                                mergePendingSectionSaves(older, newer)
+                            older != null -> older
+                            else -> newer
+                        }
+                        restored?.let { pending ->
+                            sectionSaveQueue.submit(key, pending)
+                            if (pending.editingCurrent) {
+                                settingsRepository.markSectionPending(section)
+                            }
+                        }
+                    }
+                } else {
+                    val currentKey = SectionSaveKey(section, settingsRepository.currentDeviceId)
+                    if (targetIncludesCurrent(target) &&
+                        !sectionSaveQueue.hasPending(currentKey)
+                    ) {
+                        settingsRepository.clearSectionPending(section)
+                    }
+                }
+                _notices.tryEmit(SettingsNotice.SETTINGS_SYNC_FAILED)
+            }
+        }
+    }
+
+    private suspend fun patchWithConflictRetry(
+        section: SettingsSection,
+        envelope: ninja.jeremy.liveninja.net.SettingsSectionEnvelope,
+        operation: String,
+        target: SettingsApplyTarget,
+        settingsFor: (ninja.jeremy.liveninja.net.SettingsSectionEnvelope) -> JSONObject,
+    ): ninja.jeremy.liveninja.net.SettingsSectionEnvelope {
+        return try {
+            settingsRepository.patchSection(
+                section,
+                envelope.version,
+                operation,
+                target,
+                settingsFor(envelope),
+            )
+        } catch (e: HttpException) {
+            if (e.code() != 409) throw e
+            val fresh = settingsRepository.getSection(section)
+            settingsRepository.patchSection(
+                section,
+                fresh.version,
+                operation,
+                target,
+                settingsFor(fresh),
+            )
+        }
+    }
+
+    private suspend fun refreshEffectiveSettings() {
+        val previous = settingsStore.document.value
+        settingsStore.replaceFromServer(settingsRepository.getEffectiveSettings())
+        reconcileEffectiveRuntime(previous, settingsStore.document.value)
+    }
+
+    private fun reconcileEffectiveRuntime(
+        previous: SettingsDocument,
+        effective: SettingsDocument,
+    ) {
+        wakePrefs.wakeWordId = effective.wakeWord
+        wakePrefs.wakeEngine = effective.wakeEngine
+        wakePrefs.sensitivity = effective.sensitivity
+        if (previous.wakeWord != effective.wakeWord ||
+            previous.wakeEngine != effective.wakeEngine
+        ) {
+            syncWakeModel(effective.wakeWord, effective.wakeEngine)
+        }
+    }
+
+    private fun targetIncludesCurrent(target: SettingsApplyTarget): Boolean =
+        targetIncludesDevice(target, settingsRepository.currentDeviceId)
+
+    private fun targetIncludesDevice(target: SettingsApplyTarget, deviceId: String): Boolean =
+        when (target.mode) {
+            SettingsTargetMode.CURRENT -> deviceId == settingsRepository.currentDeviceId
+            SettingsTargetMode.SELECTED -> deviceId in target.deviceIds
+            SettingsTargetMode.ALL -> true
+        }
+
+    fun renameDevice(deviceId: String, name: String) {
+        if (name.isBlank()) return
+        viewModelScope.launch {
+            try {
+                settingsRepository.renameDevice(deviceId, name)
+                loadDeviceDirectory()
+                SettingsSection.entries.filter { it.apiId != null }.forEach { section ->
+                    runCatching { loadSectionNow(section) }
+                }
+                _notices.tryEmit(SettingsNotice.DEVICE_RENAMED)
+            } catch (_: Exception) {
+                _notices.tryEmit(SettingsNotice.DEVICE_RENAME_FAILED)
+            }
+        }
+    }
+
+    /**
+     * Apply one portable edit to the host currently being viewed for this
+     * section. Current-host edits update runtime state immediately; remote
+     * previews are updated independently and never flow into WakeWordService,
+     * theme, logging, or the active conversation.
+     */
+    private fun editPortableSection(
+        section: SettingsSection,
+        afterCurrentEdit: () -> Unit = {},
+        mutate: (JSONObject) -> Unit,
+    ) {
+        val state = _state.value
+        val scope = state.sectionScopes[section]
+        val viewed = scope?.viewedHost
+        if (viewed != null && !viewed.supports(section)) return
+        val editingCurrent = viewed == null || viewed.isCurrent ||
+            viewed.id == settingsRepository.currentDeviceId
+        val targetDeviceId = viewed?.id ?: settingsRepository.currentDeviceId
+
+        val sectionValues: JSONObject
+        if (editingCurrent) {
+            settingsStore.update(mutate)
+            afterCurrentEdit()
+            sectionValues = extractSectionSettings(section, settingsStore.rawSnapshot())
+        } else {
+            val previewRaw = JSONObject(state.documentFor(section).raw.toString())
+            mutate(previewRaw)
+            sectionValues = extractSectionSettings(section, previewRaw)
+        }
+
+        if (scope != null) {
+            val updatedHosts = scope.hosts.map { host ->
+                if (host.id == targetDeviceId) {
+                    host.copy(
+                        settings = JSONObject(sectionValues.toString()),
+                        inherited = false,
+                    )
+                } else {
+                    host
+                }
+            }
+            _state.update {
+                it.copy(
+                    sectionScopes = it.sectionScopes +
+                        (section to scope.copy(hosts = updatedHosts)),
+                    sectionDocuments = if (editingCurrent) {
+                        it.sectionDocuments
+                    } else {
+                        it.sectionDocuments +
+                            (section to settingsStore.preview(sectionValues))
+                    },
+                )
+            }
+        }
+
+        val key = SectionSaveKey(section, targetDeviceId)
+        sectionSaveQueue.submit(
+            key,
+            PendingSectionSave(
+                mutations = listOf(mutate),
+                optimisticSettings = JSONObject(sectionValues.toString()),
+                editingCurrent = editingCurrent,
+            ),
+        )
+        if (editingCurrent) {
+            settingsRepository.markSectionPending(section)
+        }
+    }
+
+    /**
+     * Save the coalesced mutations against a freshly-read host baseline. A
+     * 409 performs the same rebase again, so unknown concurrent fields survive
+     * and an older full section can never overwrite a newer server edit.
+     */
+    private suspend fun saveQueuedSection(
+        key: SectionSaveKey,
+        pending: PendingSectionSave,
+    ): Boolean {
+        return try {
+            settingsWrites.write {
+                val envelope = settingsRepository.getSection(key.section)
+                val target = if (pending.editingCurrent) {
+                    SettingsApplyTarget(SettingsTargetMode.CURRENT)
+                } else {
+                    SettingsApplyTarget(SettingsTargetMode.SELECTED, setOf(key.deviceId))
+                }
+                val refreshed = patchWithConflictRetry(
+                    section = key.section,
+                    envelope = envelope,
+                    operation = "set",
+                    target = target,
+                    settingsFor = { fresh ->
+                        rebaseSectionMutations(key, pending, fresh)
+                    },
+                )
+                val drained = !sectionSaveQueue.hasWaiting(key)
+                val confirmedSettings = if (drained) {
+                    deviceSectionSettingsAfterSave(
+                        deviceId = key.deviceId,
+                        refreshed = refreshed,
+                        optimisticSettings = pending.optimisticSettings,
+                    )
+                } else {
+                    null
+                }
+                _state.update { state ->
+                    val scope = state.sectionScopes[key.section]
+                    if (scope == null) {
+                        state
+                    } else {
+                        val viewingSavedRemote =
+                            confirmedSettings != null &&
+                                !pending.editingCurrent &&
+                                scope.viewedDeviceId == key.deviceId
+                        state.copy(
+                            sectionScopes = state.sectionScopes +
+                                (
+                                    key.section to scope.copy(
+                                        version = refreshed.version,
+                                        hosts = if (confirmedSettings == null) {
+                                            scope.hosts
+                                        } else {
+                                            scope.hosts.map { host ->
+                                                if (host.id == key.deviceId) {
+                                                    host.copy(
+                                                        settings = JSONObject(
+                                                            confirmedSettings.toString(),
+                                                        ),
+                                                        inherited = false,
+                                                    )
+                                                } else {
+                                                    host
+                                                }
+                                            }
+                                        },
+                                    )
+                                ),
+                            sectionDocuments = if (viewingSavedRemote) {
+                                state.sectionDocuments +
+                                    (
+                                        key.section to settingsStore.preview(
+                                            requireNotNull(confirmedSettings),
+                                        )
+                                    )
+                            } else {
+                                state.sectionDocuments
+                            },
+                        )
+                    }
+                }
+                if (confirmedSettings != null && pending.editingCurrent) {
+                    val previous = settingsStore.document.value
+                    settingsStore.applySyncedSection(confirmedSettings)
+                    reconcileEffectiveRuntime(previous, settingsStore.document.value)
+                }
+            }
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            _notices.tryEmit(SettingsNotice.SETTINGS_SYNC_FAILED)
+            false
+        }
+    }
+
+    private fun rebaseSectionMutations(
+        key: SectionSaveKey,
+        pending: PendingSectionSave,
+        envelope: ninja.jeremy.liveninja.net.SettingsSectionEnvelope,
+    ): JSONObject {
+        val base = envelope.devices
+            .firstOrNull { it.deviceId == key.deviceId }
+            ?.settings
+            ?: envelope.accountDefaults
+        return applySectionMutations(
+            section = key.section,
+            baseline = JSONObject(base.toString()),
+            mutations = pending.mutations,
+        )
+    }
+
+    private fun editCurrentHostOnly(
+        section: SettingsSection,
+        edit: () -> Unit,
+    ) {
+        val viewed = _state.value.sectionScopes[section]?.viewedHost
+        if (viewed != null && !viewed.isCurrent && viewed.id != settingsRepository.currentDeviceId) {
+            _notices.tryEmit(SettingsNotice.MICROPHONE_TARGET_LOCAL_ONLY)
+            return
+        }
+        edit()
     }
 
     // ---- Wake word ----
@@ -194,22 +829,37 @@ class SettingsViewModel @Inject constructor(
      * model keeps listening — never a gap.
      */
     fun setWakeWord(id: String) {
-        settingsStore.setWakeWord(id)
-        wakePrefs.wakeWordId = id
-        syncWakeModel(id, wakePrefs.wakeEngine)
+        editPortableSection(
+            section = SettingsSection.WAKE_WORD,
+            mutate = { it.put("wakeWord", id) },
+            afterCurrentEdit = {
+                wakePrefs.wakeWordId = id
+                syncWakeModel(id, wakePrefs.wakeEngine)
+            },
+        )
     }
 
     fun setWakeEngine(engine: String) {
-        settingsStore.setWakeEngine(engine)
-        wakePrefs.wakeEngine = engine
-        syncWakeModel(wakePrefs.wakeWordId, engine)
+        editPortableSection(
+            section = SettingsSection.WAKE_WORD,
+            mutate = { it.put("wakeEngine", engine) },
+            afterCurrentEdit = {
+                wakePrefs.wakeEngine = engine
+                syncWakeModel(wakePrefs.wakeWordId, engine)
+            },
+        )
     }
 
     fun setSensitivity(value: Float) {
         val clamped = value.coerceIn(0f, 1f)
-        settingsStore.setSensitivity(clamped)
-        // Write-through: the engine consumes sensitivityFlow live.
-        wakePrefs.sensitivity = clamped
+        editPortableSection(
+            section = SettingsSection.WAKE_WORD,
+            mutate = { it.put("sensitivity", clamped.toDouble()) },
+            afterCurrentEdit = {
+                // Write-through: the engine consumes sensitivityFlow live.
+                wakePrefs.sensitivity = clamped
+            },
+        )
     }
 
     private fun syncWakeModel(id: String, engine: String) {
@@ -352,18 +1002,29 @@ class SettingsViewModel @Inject constructor(
 
     // ---- Conversation ----
     fun setPersona(presetId: String) {
-        val doc = _state.value.doc
-        settingsStore.setPersona(
-            presetId,
-            if (presetId == "custom") doc.personaSystemInstructions.orEmpty() else null,
-        )
+        val doc = _state.value.documentFor(SettingsSection.PERSONA)
+        editPortableSection(SettingsSection.PERSONA) {
+            val persona = it.optJSONObject("persona") ?: JSONObject()
+            persona.put("presetId", presetId)
+            persona.put(
+                "systemInstructions",
+                if (presetId == "custom") doc.personaSystemInstructions.orEmpty() else JSONObject.NULL,
+            )
+            it.put("persona", persona)
+        }
     }
 
     fun setCustomInstructions(text: String) {
-        settingsStore.setPersona("custom", text.take(CUSTOM_INSTRUCTIONS_MAX))
+        editPortableSection(SettingsSection.PERSONA) {
+            val persona = it.optJSONObject("persona") ?: JSONObject()
+            persona.put("presetId", "custom")
+            persona.put("systemInstructions", text.take(CUSTOM_INSTRUCTIONS_MAX))
+            it.put("persona", persona)
+        }
     }
 
-    fun setVoice(voice: String) = settingsStore.setVoice(voice)
+    fun setVoice(voice: String) =
+        editPortableSection(SettingsSection.PERSONA) { it.put("voice", voice) }
 
     fun onVoicePreviewRequested() {
         // No bundled samples ship with the app and the backend TTS preview
@@ -371,11 +1032,18 @@ class SettingsViewModel @Inject constructor(
         _notices.tryEmit(SettingsNotice.VOICE_PREVIEW_UNAVAILABLE)
     }
 
-    fun setTurnDetection(value: String) = settingsStore.setTurnDetection(value)
+    fun setTurnDetection(value: String) =
+        editPortableSection(SettingsSection.TURN_DETECTION) { it.put("turnDetection", value) }
 
     /** Voice engine picker (M12 FR-VE-04): sets voiceEngine.default. */
     fun setVoiceEngine(engine: String) {
-        settingsStore.setVoiceEngineDefault(engine)
+        editPortableSection(SettingsSection.VOICE_ENGINE) {
+            val voiceEngine = it.optJSONObject("voiceEngine")
+                ?: JSONObject().apply { put("devices", JSONObject()) }
+            voiceEngine.put("default", engine)
+            if (!voiceEngine.has("devices")) voiceEngine.put("devices", JSONObject())
+            it.put("voiceEngine", voiceEngine)
+        }
         // The Gemini voice picker appears with this selection; retry the
         // catalog fetch if the init-time attempt failed (e.g. offline).
         if (engine == GEMINI_ENGINE && _state.value.geminiVoices.isEmpty()) {
@@ -384,7 +1052,8 @@ class SettingsViewModel @Inject constructor(
     }
 
     /** Gemini voice picker (M13, D4): sets the top-level `geminiVoice` key. */
-    fun setGeminiVoice(voiceId: String) = settingsStore.setGeminiVoice(voiceId)
+    fun setGeminiVoice(voiceId: String) =
+        editPortableSection(SettingsSection.VOICE_ENGINE) { it.put("geminiVoice", voiceId) }
 
     /**
      * Fetch the Gemini Live voice catalog (`geminiVoices` on
@@ -411,9 +1080,12 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ---- Voice & Screen (01-platform §B-iv) ----
-    fun setLockedSessions(enabled: Boolean) = settingsStore.setLockedSessions(enabled)
-    fun setWakeScreenOnWake(enabled: Boolean) = settingsStore.setWakeScreenOnWake(enabled)
-    fun setKeepScreenOn(enabled: Boolean) = settingsStore.setKeepScreenOn(enabled)
+    fun setLockedSessions(enabled: Boolean) =
+        editCurrentHostOnly(SettingsSection.WAKE_WORD) { settingsStore.setLockedSessions(enabled) }
+    fun setWakeScreenOnWake(enabled: Boolean) =
+        editCurrentHostOnly(SettingsSection.WAKE_WORD) { settingsStore.setWakeScreenOnWake(enabled) }
+    fun setKeepScreenOn(enabled: Boolean) =
+        editCurrentHostOnly(SettingsSection.WAKE_WORD) { settingsStore.setKeepScreenOn(enabled) }
 
     // ---- Battery optimization health (01-platform §C) ----
 
@@ -439,17 +1111,23 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ---- Diagnostics / verbose logging (04-logging §A5) ----
-    fun setDiagnosticsEnabled(enabled: Boolean) = settingsStore.setDiagnosticsEnabled(enabled)
-    fun setDiagnosticsMinLevel(level: String) = settingsStore.setDiagnosticsMinLevel(level)
+    fun setDiagnosticsEnabled(enabled: Boolean) =
+        editCurrentHostOnly(SettingsSection.PRIVACY) { settingsStore.setDiagnosticsEnabled(enabled) }
+    fun setDiagnosticsMinLevel(level: String) =
+        editCurrentHostOnly(SettingsSection.PRIVACY) { settingsStore.setDiagnosticsMinLevel(level) }
     fun setDiagnosticsCategory(category: String, enabled: Boolean) =
-        settingsStore.setDiagnosticsCategory(category, enabled)
+        editCurrentHostOnly(SettingsSection.PRIVACY) {
+            settingsStore.setDiagnosticsCategory(category, enabled)
+        }
 
     /** Select-all / select-none for the eight capture categories, preserving enabled + minLevel. */
     fun setAllDiagnosticsCategories(enabled: Boolean) {
-        val current = _state.value.doc.diagnostics
-        settingsStore.setDiagnostics(
-            current.copy(categories = DiagnosticsConfig.CATEGORY_KEYS.associateWith { enabled }),
-        )
+        editCurrentHostOnly(SettingsSection.PRIVACY) {
+            val current = _state.value.doc.diagnostics
+            settingsStore.setDiagnostics(
+                current.copy(categories = DiagnosticsConfig.CATEGORY_KEYS.associateWith { enabled }),
+            )
+        }
     }
 
     /** Flush + zip the logs and return an ACTION_SEND share Intent (null = nothing to export). */
@@ -459,28 +1137,55 @@ class SettingsViewModel @Inject constructor(
     fun clearLogs() = logSink.clear()
 
     // ---- Audio ----
-    fun setMicDevice(id: String?) = settingsStore.setMicDeviceId(id)
+    fun setMicDevice(id: String?) {
+        val viewed = _state.value.sectionScopes[SettingsSection.MICROPHONE]?.viewedHost
+        val remote = viewed != null && !viewed.isCurrent &&
+            viewed.id != settingsRepository.currentDeviceId
+        if (remote && id != null) {
+            _notices.tryEmit(SettingsNotice.MICROPHONE_TARGET_LOCAL_ONLY)
+            return
+        }
+        editPortableSection(SettingsSection.MICROPHONE) {
+            it.put("micDeviceId", id ?: JSONObject.NULL)
+        }
+    }
 
     fun refreshMicDevices() = _state.update { it.copy(micDevices = enumerateMicDevices()) }
 
     // ---- Appearance ----
-    fun setTheme(theme: String) = settingsStore.setTheme(theme)
+    fun setTheme(theme: String) =
+        editPortableSection(SettingsSection.APPEARANCE) { it.put("theme", theme) }
 
     /** Style picker (M8.1/M8.2, 03-theme): hal9000/ninja/minimal/terminal. */
-    fun setAppStyle(style: String) = settingsStore.setAppStyle(style)
+    fun setAppStyle(style: String) =
+        editPortableSection(SettingsSection.APPEARANCE) {
+            val appearance = it.optJSONObject("appearance") ?: JSONObject()
+            appearance.put("appStyle", style)
+            it.put("appearance", appearance)
+            it.remove("appStyle")
+        }
 
     // ---- Privacy ----
-    fun setStoreAudio(enabled: Boolean) = with(_state.value.doc) {
-        settingsStore.setPrivacy(enabled, storeTranscripts, retentionDays)
-    }
+    fun setStoreAudio(enabled: Boolean) =
+        editPortableSection(SettingsSection.PRIVACY) {
+            val privacy = it.optJSONObject("privacy") ?: JSONObject()
+            privacy.put("storeAudio", enabled)
+            it.put("privacy", privacy)
+        }
 
-    fun setStoreTranscripts(enabled: Boolean) = with(_state.value.doc) {
-        settingsStore.setPrivacy(storeAudio, enabled, retentionDays)
-    }
+    fun setStoreTranscripts(enabled: Boolean) =
+        editPortableSection(SettingsSection.PRIVACY) {
+            val privacy = it.optJSONObject("privacy") ?: JSONObject()
+            privacy.put("storeTranscripts", enabled)
+            it.put("privacy", privacy)
+        }
 
-    fun setRetentionDays(days: Int) = with(_state.value.doc) {
-        settingsStore.setPrivacy(storeAudio, storeTranscripts, days)
-    }
+    fun setRetentionDays(days: Int) =
+        editPortableSection(SettingsSection.PRIVACY) {
+            val privacy = it.optJSONObject("privacy") ?: JSONObject()
+            privacy.put("retentionDays", days)
+            it.put("privacy", privacy)
+        }
 
     // ---- Account ----
     fun signOut() = performSignOut(everywhere = false)
@@ -493,6 +1198,7 @@ class SettingsViewModel @Inject constructor(
             try {
                 if (everywhere) actions.signOutEverywhere() else actions.signOut()
                 settingsStore.resetToDefaults()
+                settingsRepository.clearPendingSections()
                 _notices.tryEmit(
                     if (everywhere) SettingsNotice.SIGNED_OUT_EVERYWHERE else SettingsNotice.SIGNED_OUT,
                 )
@@ -556,6 +1262,7 @@ class SettingsViewModel @Inject constructor(
 
         /** Poll cadence for an in-flight training job (jobs run minutes, not seconds). */
         const val POLL_INTERVAL_MS = 15_000L
+        private const val SECTION_SAVE_DEBOUNCE_MILLIS = 300L
 
         /**
          * Cheap client-side gate for the training form (backend re-validates
@@ -584,3 +1291,8 @@ class SettingsViewModel @Inject constructor(
         )
     }
 }
+
+private fun JsonObject.toStringMap(): Map<String, String> =
+    entries.mapNotNull { (key, value) ->
+        value.jsonPrimitive.contentOrNull?.let { key to it }
+    }.toMap()

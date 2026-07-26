@@ -32,9 +32,10 @@ class LogSinkTest {
     )
 
     @Test
-    fun `ring buffer caps at capacity and keeps the most recent entries`() {
+    fun `ring buffer caps at capacity and keeps the most recent entries`() = runBlocking {
         val core = LogSinkCore(logDir = tempFolder.newFolder("logs"), ringCapacity = 5)
         repeat(8) { i -> core.log(entry(message = "msg-$i")) }
+        core.awaitIdle()
         val snapshot = core.ringSnapshot
         assertEquals(5, snapshot.size)
         assertEquals(listOf("msg-3", "msg-4", "msg-5", "msg-6", "msg-7"), snapshot.map { it.message })
@@ -56,11 +57,12 @@ class LogSinkTest {
     }
 
     @Test
-    fun `entries for a disabled category are dropped`() {
+    fun `entries for a disabled category are dropped`() = runBlocking {
         val core = LogSinkCore(logDir = tempFolder.newFolder("logs"))
         core.categoryEnabled = LogCategory.entries.associateWith { it != LogCategory.NET }
         core.log(entry(category = LogCategory.NET, message = "net entry"))
         core.log(entry(category = LogCategory.WAKE, message = "wake entry"))
+        core.awaitIdle()
 
         assertEquals(1, core.ringSnapshot.size)
         assertEquals(LogCategory.WAKE, core.ringSnapshot.single().category)

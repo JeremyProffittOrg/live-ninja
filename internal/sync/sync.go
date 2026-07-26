@@ -28,8 +28,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"reflect"
 	"strings"
 	stdsync "sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -218,6 +220,7 @@ func (p *Publisher) PublishToDevices(ctx context.Context, targets []store.Device
 // fills it from the wake-word manifest, the shadow only ever carries
 // the wake-word ID.
 func BuildDesired(doc map[string]any, deviceID string, version int64) map[string]any {
+	doc = store.EffectiveSettings(doc, deviceID)
 	desired := map[string]any{
 		"settingsVersion": version,
 		"wakeWord":        stringField(doc, "wakeWord", "hey-live-ninja"),
@@ -314,6 +317,71 @@ func MergeDeviceReported(canonical, reported map[string]any) (map[string]any, bo
 		}
 	}
 	return merged, changed
+}
+
+// MergeDeviceReportedForDevice folds an M5Stack change into that device's
+// sparse overrides instead of rewriting the account defaults seen by every
+// host. The legacy helper remains account-global for callers without a
+// device identity.
+func MergeDeviceReportedForDevice(canonical map[string]any, deviceID string, reported map[string]any) (map[string]any, bool) {
+	if deviceID == "" {
+		return MergeDeviceReported(canonical, reported)
+	}
+	effective := store.EffectiveSettings(canonical, deviceID)
+	mergedEffective, changed := MergeDeviceReported(effective, reported)
+	if !changed {
+		return canonical, false
+	}
+
+	out := cloneDocument(canonical)
+	for _, section := range []string{
+		store.SettingsSectionWakeWord,
+		store.SettingsSectionPersona,
+		store.SettingsSectionTurnDetection,
+	} {
+		before, _ := store.ExtractSettingsSection(effective, section)
+		after, _ := store.ExtractSettingsSection(mergedEffective, section)
+		if reflect.DeepEqual(before, after) {
+			continue
+		}
+		if err := store.ApplySettingsSection(
+			out, section, after, []string{deviceID}, false, false, time.Now().UTC(),
+		); err != nil {
+			return canonical, false
+		}
+	}
+	return out, true
+}
+
+func cloneDocument(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = cloneDocumentValue(value)
+	}
+	return out
+}
+
+func cloneDocumentValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneDocument(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneDocumentValue(item)
+		}
+		return out
+	case []string:
+		return append([]string(nil), typed...)
+	case map[string]string:
+		out := make(map[string]string, len(typed))
+		for key, item := range typed {
+			out[key] = item
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 // DocVersion extracts the settings document's integer version (0 when

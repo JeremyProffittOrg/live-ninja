@@ -85,6 +85,14 @@ func handleProfileSuggest(ctx context.Context, deps *Deps, inv Invocation, args 
 	field := args["field"].(string)
 	reason := strings.TrimSpace(args["reason"].(string))
 	autoApplyAsked, _ := args["autoApply"].(bool)
+	deviceAutoApplyRefused := autoApplyAsked && inv.DeviceID != ""
+	if deviceAutoApplyRefused {
+		// AutoApplyProfileSuggestion is intentionally account-global. A
+		// device-effective conversation must not silently write through to
+		// every host, so leave this proposal pending for an explicit scoped
+		// Settings choice.
+		autoApplyAsked = false
+	}
 
 	// One validator for the value, shared with the apply path, so a proposal
 	// the owner later approves can never be one the settings PUT rejects.
@@ -122,7 +130,7 @@ func handleProfileSuggest(ctx context.Context, deps *Deps, inv Invocation, args 
 				"ask the user to approve or dismiss those before suggesting more", len(pending))
 	}
 
-	profile := deps.profileFor(ctx, inv.UserID)
+	profile := deps.profileForInvocation(ctx, inv)
 	rec := &store.ProfileSuggestion{
 		SuggID:        randHex(6), // 12 lowercase hex chars, server-generated — never model output
 		Status:        store.SuggestionStatusPending,
@@ -225,6 +233,12 @@ func handleProfileSuggest(ctx context.Context, deps *Deps, inv Invocation, args 
 			store.ProfileFieldLabel(field) + " always needs confirmation in Settings → About you, " +
 			"because a wrong value there would quietly affect every future answer. Tell the user " +
 			"you have suggested it and that they need to confirm it."
+	}
+	if deviceAutoApplyRefused {
+		out["autoApplyRefused"] = true
+		out["note"] = "Suggested, but it was not applied automatically because this conversation " +
+			"uses device-specific About you settings. Review it in Settings and choose this device, " +
+			"selected devices, or all devices."
 	}
 	if store.LocationProfileField(field) {
 		out["note"] = "Suggested — it is confirmed in Settings → About you by picking the exact " +

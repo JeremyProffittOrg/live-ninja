@@ -206,7 +206,7 @@
       <a class="conv-drawer__link" href="/personas">Personas</a>
     </nav>
 
-    <p class="ln-muted conv-drawer__intro">Changes save automatically and apply on every device you use Live Ninja on.</p>
+    <p class="ln-muted conv-drawer__intro">Changes save automatically for this named device. Open Device settings in any section to compare devices or apply that section elsewhere.</p>
 
     <!-- ============ About you (M15 Base Knowledge) ============
          These facts are injected into EVERY session's instructions
@@ -214,7 +214,8 @@
          locations are pickers rather than text boxes: a stored place carries
          its resolved lat/lon + IANA timezone, so weather and time answers
          never depend on the model naming a place correctly. -->
-    <section class="ln-card set-section set-accordion" aria-labelledby="sectionAbout">
+    <section class="ln-card set-section set-accordion" aria-labelledby="sectionAbout"
+             data-device-settings-root="aboutYou">
       <div class="set-section__intro">
         <h2 class="set-accordion__heading">
           <button class="set-accordion__trigger" type="button" id="sectionAboutTrigger"
@@ -344,7 +345,8 @@
     </section>
 
     <!-- ============ Wake word ============ -->
-    <section class="ln-card set-section set-accordion" aria-labelledby="sectionWakeWord">
+    <section class="ln-card set-section set-accordion" aria-labelledby="sectionWakeWord"
+             data-device-settings-root="wakeWord">
       <div class="set-section__intro">
         <h2 class="set-accordion__heading">
           <button class="set-accordion__trigger" type="button" id="sectionWakeWordTrigger"
@@ -449,7 +451,8 @@
     </section>
 
     <!-- ============ Persona ============ -->
-    <section class="ln-card set-section set-accordion" aria-labelledby="sectionPersona">
+    <section class="ln-card set-section set-accordion" aria-labelledby="sectionPersona"
+             data-device-settings-root="persona">
       <div class="set-section__intro">
         <h2 class="set-accordion__heading">
           <button class="set-accordion__trigger" type="button" id="sectionPersonaTrigger"
@@ -500,7 +503,8 @@
          Per settings.schema.json, `default` is the engine used by this
          browser session and any device without its own pin; the broker
          resolves engine-for-session as devices[deviceId] ?? default. -->
-    <section class="ln-card set-section set-accordion" aria-labelledby="sectionVoiceEngine">
+    <section class="ln-card set-section set-accordion" aria-labelledby="sectionVoiceEngine"
+             data-device-settings-root="voiceEngine">
       <div class="set-section__intro">
         <h2 class="set-accordion__heading">
           <button class="set-accordion__trigger" type="button" id="sectionVoiceEngineTrigger"
@@ -573,7 +577,8 @@
     <!-- ==================== voice-engine-section:END ==================== -->
 
     <!-- ============ Turn detection ============ -->
-    <section class="ln-card set-section set-accordion" aria-labelledby="sectionTurn">
+    <section class="ln-card set-section set-accordion" aria-labelledby="sectionTurn"
+             data-device-settings-root="turnDetection">
       <div class="set-section__intro">
         <h2 class="set-accordion__heading">
           <button class="set-accordion__trigger" type="button" id="sectionTurnTrigger"
@@ -696,7 +701,8 @@
     </section>
 
     <!-- ============ Appearance ============ -->
-    <section class="ln-card set-section set-accordion" aria-labelledby="sectionAppearance">
+    <section class="ln-card set-section set-accordion" aria-labelledby="sectionAppearance"
+             data-device-settings-root="appearance">
       <div class="set-section__intro">
         <h2 class="set-accordion__heading">
           <button class="set-accordion__trigger" type="button" id="sectionAppearanceTrigger"
@@ -810,13 +816,14 @@
           <label for="accentCustom">Custom color</label>
           <input type="color" class="ln-color" id="accentCustom" value="#e32636">
         </div>
-        <p class="ln-hint">"Auto" follows the style's own color. Applies immediately on every device.</p>
+        <p class="ln-hint">"Auto" follows the style's own color. Applies immediately on this device.</p>
       </fieldset>
       </div>
     </section>
 
     <!-- ============ Microphone ============ -->
-    <section class="ln-card set-section set-accordion" aria-labelledby="sectionMic">
+    <section class="ln-card set-section set-accordion" aria-labelledby="sectionMic"
+             data-device-settings-root="microphone">
       <div class="set-section__intro">
         <h2 class="set-accordion__heading">
           <button class="set-accordion__trigger" type="button" id="sectionMicTrigger"
@@ -853,7 +860,8 @@
     </section>
 
     <!-- ============ Privacy ============ -->
-    <section class="ln-card set-section set-accordion" aria-labelledby="sectionPrivacy">
+    <section class="ln-card set-section set-accordion" aria-labelledby="sectionPrivacy"
+             data-device-settings-root="privacy">
       <div class="set-section__intro">
         <h2 class="set-accordion__heading">
           <button class="set-accordion__trigger" type="button" id="sectionPrivacyTrigger"
@@ -922,7 +930,7 @@
                   aria-describedby="sectionAccountDescription">
             <span class="set-accordion__copy">
               <span class="ln-card__title" id="sectionAccount">Account</span>
-              <span class="ln-muted set-accordion__description" id="sectionAccountDescription">Sign out on this browser or every device.</span>
+              <span class="ln-muted set-accordion__description" id="sectionAccountDescription">Name your devices or sign out on this browser or every device.</span>
             </span>
             <span class="set-accordion__icon" aria-hidden="true"></span>
           </button>
@@ -930,6 +938,13 @@
       </div>
       <div class="set-accordion__panel" id="sectionAccountPanel" role="region"
            aria-labelledby="sectionAccountTrigger" hidden>
+
+      <section class="set-account-devices" aria-labelledby="accountDevicesTitle">
+        <h3 id="accountDevicesTitle">Device names</h3>
+        <p class="ln-hint">Live Ninja stores only a name and coarse host information. It does not store a raw browser user agent or hardware fingerprint.</p>
+        <div class="set-account-devices__list" data-account-devices-list></div>
+        <p class="set-device-scope__status" data-account-devices-status role="status" aria-live="polite"></p>
+      </section>
 
       <div class="set-danger-row">
         <div class="set-danger-row__body">

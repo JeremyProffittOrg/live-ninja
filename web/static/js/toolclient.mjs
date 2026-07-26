@@ -22,6 +22,8 @@
 // this machinery it can re-export from here — the semantics match the spec's
 // `apiFetch` contract (CSRF header, typed error on non-2xx).
 
+import { getDeviceID } from './device-identity.mjs';
+
 const REFRESH_PATH = '/api/v1/auth/refresh';
 const CSRF_COOKIE = '__Host-ln_csrf';
 const CSRF_HEADER = 'X-LN-CSRF';
@@ -122,7 +124,7 @@ async function parseJsonSafe(resp) {
 function refreshAccessToken() {
   if (refreshInFlight) return refreshInFlight;
   refreshInFlight = (async () => {
-    const headers = {};
+    const headers = { 'X-LN-Device-ID': getDeviceID() };
     const csrf = readCsrfToken();
     if (csrf) headers[CSRF_HEADER] = csrf;
 
@@ -192,7 +194,11 @@ export async function authFetch(path, options = {}) {
   } = options;
 
   const doFetch = async (token) => {
-    const h = { ...headers, Authorization: 'Bearer ' + token };
+    const h = {
+      ...headers,
+      Authorization: 'Bearer ' + token,
+      'X-LN-Device-ID': getDeviceID(),
+    };
     if (method !== 'GET' && method !== 'HEAD') {
       const csrf = readCsrfToken();
       if (csrf) h[CSRF_HEADER] = csrf;

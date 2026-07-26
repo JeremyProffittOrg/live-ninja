@@ -255,7 +255,9 @@ test('the inline settings writer notifies the conversation delta path', async ({
   expect(settingsSource).toContain("new CustomEvent('ln:settings-changed'");
   expect(conversationSource).toContain("const SETTINGS_LOCAL_EVENT = 'ln:settings-changed'");
   expect(conversationSource).toContain('await applyWakeWordSettings(wakeEngine, prev, fresh)');
-  expect(conversationSource).toContain('await applySettingsDelta(prev, fresh)');
+  expect(conversationSource).toContain(
+    'await applySettingsDelta(adoption.prev, adoption.fresh)',
+  );
 });
 
 test('online navigation waits for its cache write and is then available offline', async ({}, testInfo) => {

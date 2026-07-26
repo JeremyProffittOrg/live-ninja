@@ -85,7 +85,7 @@ type forecastResponse struct {
 }
 
 func handleGetWeather(ctx context.Context, deps *Deps, inv Invocation, args map[string]any) (map[string]any, *ToolError) {
-	profile := deps.profileFor(ctx, inv.UserID)
+	profile := deps.profileForInvocation(ctx, inv)
 
 	days := 3
 	if d, ok := args["days"].(int); ok {

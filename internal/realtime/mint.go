@@ -17,6 +17,7 @@ import (
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
+	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	"github.com/JeremyProffittOrg/live-ninja/internal/tools"
 	"github.com/JeremyProffittOrg/live-ninja/internal/voiceengine"
 )
@@ -425,7 +426,7 @@ func ResolveEngine(ctx context.Context, g SettingsGetter, table, userID, deviceI
 			"pk": &ddbtypes.AttributeValueMemberS{Value: "USER#" + userID},
 			"sk": &ddbtypes.AttributeValueMemberS{Value: settingsSK},
 		},
-		ProjectionExpression: aws.String("voiceEngine"),
+		ProjectionExpression: aws.String("voiceEngine, deviceOverrides"),
 	})
 	if err != nil {
 		return voiceengine.EngineOpenAIRealtime, fmt.Errorf("realtime: get settings for engine pin: %w", err)
@@ -433,16 +434,22 @@ func ResolveEngine(ctx context.Context, g SettingsGetter, table, userID, deviceI
 	if len(out.Item) == 0 {
 		return voiceengine.EngineOpenAIRealtime, nil
 	}
-	var doc struct {
-		VoiceEngine struct {
-			Default string            `dynamodbav:"default"`
-			Devices map[string]string `dynamodbav:"devices"`
-		} `dynamodbav:"voiceEngine"`
-	}
-	if err := attributevalue.UnmarshalMap(out.Item, &doc); err != nil {
+	var raw map[string]any
+	if err := attributevalue.UnmarshalMap(out.Item, &raw); err != nil {
 		return voiceengine.EngineOpenAIRealtime, fmt.Errorf("realtime: unmarshal voiceEngine pin: %w", err)
 	}
-	return PinToEngine(doc.VoiceEngine.Default, doc.VoiceEngine.Devices, deviceID), nil
+	doc := store.EffectiveSettings(raw, deviceID)
+	voiceEngine, _ := doc["voiceEngine"].(map[string]any)
+	def, _ := voiceEngine["default"].(string)
+	devices := map[string]string{}
+	if rawDevices, ok := voiceEngine["devices"].(map[string]any); ok {
+		for id, value := range rawDevices {
+			if pin, ok := value.(string); ok {
+				devices[id] = pin
+			}
+		}
+	}
+	return PinToEngine(def, devices, deviceID), nil
 }
 
 // settingsSK is the sort key of the canonical settings item (mirrors

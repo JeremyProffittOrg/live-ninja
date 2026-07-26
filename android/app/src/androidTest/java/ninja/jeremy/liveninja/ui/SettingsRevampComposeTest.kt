@@ -13,19 +13,27 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.test.espresso.Espresso.pressBack
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import ninja.jeremy.liveninja.TestHarnessActivity
 import ninja.jeremy.liveninja.ui.settings.DEFAULT_EXPANDED_SETTINGS_SECTION
 import ninja.jeremy.liveninja.ui.settings.SettingsAccordionCard
 import ninja.jeremy.liveninja.ui.settings.SettingsSection
+import ninja.jeremy.liveninja.ui.settings.SettingsHostUi
+import ninja.jeremy.liveninja.ui.settings.SettingsSectionScopeUi
+import ninja.jeremy.liveninja.ui.screens.SettingsDeviceScopeControl
 import ninja.jeremy.liveninja.ui.settings.toggledSettingsSection
 import ninja.jeremy.liveninja.ui.theme.LiveNinjaTheme
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -160,5 +168,96 @@ class SettingsRevampComposeTest {
         assertEquals(openHeight, closeHeight, 0.1f)
         assertEquals(48f, openWidth, 0.1f)
         assertEquals(openWidth, closeWidth, 0.1f)
+    }
+
+    @Test
+    fun hostScopeShowsValuesAndDisablesInvalidAllHostsInheritance() {
+        composeTestRule.setContent {
+            LiveNinjaTheme {
+                SettingsDeviceScopeControl(
+                    section = SettingsSection.ABOUT_YOU,
+                    scope = SettingsSectionScopeUi(
+                        version = 3,
+                        viewedDeviceId = "current",
+                        hosts = listOf(
+                            SettingsHostUi(
+                                id = "current",
+                                name = "Kitchen tablet",
+                                isCurrent = true,
+                                inherited = false,
+                                settings = JSONObject().put(
+                                    "profile",
+                                    JSONObject()
+                                        .put("displayName", "Jeremy")
+                                        .put("units", "metric"),
+                                ),
+                            ),
+                        ),
+                    ),
+                    onViewDevice = {},
+                    onApply = { _, _ -> },
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText("Jeremy · metric units").assertExists()
+        composeTestRule
+            .onNodeWithContentDescription("Apply to… Kitchen tablet")
+            .performClick()
+        composeTestRule.onNodeWithText("All hosts").performClick()
+        composeTestRule.onNodeWithText(
+            "Applying to all hosts updates the account default and clears this section’s " +
+                "per-host customizations.",
+        ).assertExists()
+        composeTestRule.onNodeWithText("Use inherited defaults").assertIsNotEnabled()
+    }
+
+    @Test
+    fun hostPickerKeepsUnsupportedHostVisibleAndExplicitlyDisabled() {
+        composeTestRule.setContent {
+            LiveNinjaTheme {
+                SettingsDeviceScopeControl(
+                    section = SettingsSection.APPEARANCE,
+                    scope = SettingsSectionScopeUi(
+                        version = 3,
+                        viewedDeviceId = "current",
+                        hosts = listOf(
+                            SettingsHostUi(
+                                id = "current",
+                                name = "Kitchen tablet",
+                                isCurrent = true,
+                            ),
+                            SettingsHostUi(
+                                id = "speaker",
+                                name = "Bedroom display",
+                                capabilities = setOf("privacy"),
+                            ),
+                        ),
+                    ),
+                    onViewDevice = {},
+                    onApply = { _, _ -> },
+                )
+            }
+        }
+
+        composeTestRule
+            .onNode(hasText("Kitchen tablet · This device") and hasClickAction())
+            .performClick()
+        composeTestRule.onNodeWithText("Bedroom display").assertExists()
+        composeTestRule.onNodeWithText("Not supported for this section").assertExists()
+        composeTestRule
+            .onNode(
+                hasText("Bedroom display") and
+                    hasText("Not supported for this section"),
+            )
+            .assertIsNotEnabled()
+
+        pressBack()
+        composeTestRule
+            .onNodeWithContentDescription("Apply to… Kitchen tablet")
+            .performClick()
+        composeTestRule
+            .onNode(hasText("All hosts") and hasClickAction())
+            .assertIsNotEnabled()
     }
 }

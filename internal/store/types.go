@@ -187,15 +187,21 @@ type AppHandoff struct {
 // RFC3339> — the recently-seen feed (a bounded owner+allowlist fleet, so a
 // GSI2 Query + userId filter serves per-user listing without a Scan).
 type Device struct {
-	DeviceID  string `dynamodbav:"deviceId"`
-	UserID    string `dynamodbav:"userId"`
-	Name      string `dynamodbav:"name"`
-	ThingName string `dynamodbav:"thingName,omitempty"`
-	CertArn   string `dynamodbav:"certArn,omitempty"`
-	CertID    string `dynamodbav:"certId,omitempty"`
-	Status    string `dynamodbav:"status"` // active | revoked
-	FamilyID  string `dynamodbav:"familyId"`
-	CreatedAt int64  `dynamodbav:"createdAt"` // unix seconds
+	DeviceID       string            `dynamodbav:"deviceId"`
+	UserID         string            `dynamodbav:"userId"`
+	Name           string            `dynamodbav:"name"`
+	NameCustomized bool              `dynamodbav:"nameCustomized,omitempty"`
+	Surface        string            `dynamodbav:"surface,omitempty"` // web | android | device
+	Metadata       map[string]string `dynamodbav:"metadata,omitempty"`
+	Capabilities   []string          `dynamodbav:"capabilities,omitempty"`
+	ThingName      string            `dynamodbav:"thingName,omitempty"`
+	CertArn        string            `dynamodbav:"certArn,omitempty"`
+	CertID         string            `dynamodbav:"certId,omitempty"`
+	Status         string            `dynamodbav:"status"` // active | revoked
+	FamilyID       string            `dynamodbav:"familyId,omitempty"`
+	CreatedAt      int64             `dynamodbav:"createdAt"` // unix seconds
+	UpdatedAt      int64             `dynamodbav:"updatedAt,omitempty"`
+	LastSeenAt     int64             `dynamodbav:"lastSeenAt,omitempty"`
 }
 
 // ---- key builders (single source of truth for key formats) ----

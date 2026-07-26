@@ -4,8 +4,10 @@ import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.util.zip.GZIPOutputStream
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -93,7 +95,18 @@ class LogSinkCore(
             ring.toList()
         }
         _entriesFlow.value = snapshot
-        writerScope.launch { writeToFile(redacted) }
+        writerScope.launch {
+            try {
+                writeToFile(redacted)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: IOException) {
+                // Disk logging is best-effort. The directory can disappear
+                // during app-data cleanup (or JUnit temporary-folder cleanup)
+                // between mkdirs() and appendText(); never surface that race
+                // as an unrelated coroutine failure.
+            }
+        }
     }
 
     /** Suspends until every write queued before this call has landed on disk. */

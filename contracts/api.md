@@ -53,8 +53,16 @@ NFR-02/FR-A02's anti-confused-deputy posture.
 | GET | `/v1/account` | Account profile, active sessions, connected devices. | Session JWT |
 | DELETE | `/v1/account` | Right-to-delete: partition-scoped `Query`+`BatchWriteItem` purge (no Scan) across DynamoDB, S3 prefix empty, IoT thing/cert delete, LWA refresh revoke, SES confirmation. | Session JWT |
 | POST | `/v1/account/logout-everywhere` | Bump `tokensValidAfter`; every outstanding JWT across every surface is rejected within the authorizer's 60s cache window; every refresh row deleted. | Session JWT |
-| GET | `/v1/devices` | List the caller's registered devices (Android installs, M5Stack units) — backs the per-device `voiceEngine` pin picker in Settings (`settings.schema.json#/properties/voiceEngine/devices`). | Session JWT |
+| GET | `/v1/devices` | List the caller's registered browser installs, Android installs, and M5Stack units. Returns names, safe display metadata/capabilities, status, and last-seen time; never raw user-agent strings or hardware identifiers. | Session JWT |
+| PUT | `/v1/devices/current` | Idempotently register/update the calling app installation and bind it to the current session. The client supplies its persistent random `deviceId`, an inferred `suggestedName`, and low-entropy display metadata; ownership is immutable. A colliding ID owned by another account returns `409 device_conflict`; a revoked ID returns `409 device_revoked`. Web/Android rotate the random installation ID and retry once. For a revoked ID, the replacement is accepted only after fresh authentication with an unbound session; a session already bound to that revoked device remains rejected, so rotation cannot bypass revocation. A user-customized name is never replaced by a later suggestion. | Session JWT + `X-LN-Device-ID` |
+| PATCH | `/v1/devices/{id}` | Rename one of the caller's devices. A successful rename marks the name as user-customized so background registrations cannot overwrite it. | Session JWT |
 | DELETE | `/v1/devices/{id}` | Revoke one device: detach its IoT cert, revoke its refresh family. | Session JWT |
+
+Browser and Android device IDs are random installation UUIDs persisted by the client. They are
+not OS hostnames, Android IDs, serial numbers, MAC addresses, IMEIs, or fingerprints. A browser
+may suggest a label such as `Chrome on Windows`; Android may suggest a configured device name or
+manufacturer/model. The user can rename either. Metadata is display/capability information only
+and is never trusted for authorization.
 
 ## Realtime Voice & Tools (M2 — FR-B02, FR-V01..08, FR-B10)
 
@@ -69,25 +77,64 @@ NFR-02/FR-A02's anti-confused-deputy posture.
 
 | Method | Path | Purpose | Auth |
 |---|---|---|---|
-| GET | `/v1/settings` | Fetch the caller's canonical settings document (`settings.schema.json`). | Session JWT |
+| GET | `/v1/settings` | Fetch the caller's canonical settings document (`settings.schema.json`): top-level account defaults plus sparse `deviceOverrides`. Existing clients retain this behavior. | Session JWT |
+| GET | `/v1/settings?effective=true` | Fetch the effective document for the calling device (`X-LN-Device-ID`, falling back to JWT `did`): account defaults overlaid by that device's section overrides. The returned view omits `deviceOverrides`, but retains the canonical `version`. | Session JWT |
 | PUT | `/v1/settings` | Update settings; body includes the expected `version` — `ConditionExpression version = expected`; mismatch → `409` (client re-reads/re-applies, per `contracts/README.md` rule 4). Also fans out via WebSocket (web), FCM data message (Android), and IoT shadow `desired` (M5Stack — see `shadow.md`). | Session JWT |
 | GET | `/v1/settings?since={version}` | Reconciliation fetch: "give me the doc only if newer than `{version}`" — lets a client that just pushed a local change confirm whether a concurrent write from another surface won. | Session JWT |
+| GET | `/v1/settings/sections/{section}` | Return `{section, version, accountDefaults, currentDeviceId, devices}` for one configurable section. Each device row includes its effective values and whether it is inherited or customized, allowing a client to inspect hosts without changing its own runtime state. | Session JWT |
+| PATCH | `/v1/settings/sections/{section}` | Atomically set or clear one section for the current device, selected owned devices, or all devices. Uses the same optimistic-concurrency version and `409` behavior as full-document PUT. | Session JWT |
 | WSS | `/v1/ws` | Persistent control-plane WebSocket for the web client. Carries `settings.updated` frames (FR-S02) and other server-push control notices (e.g. a device coming online). Not used for realtime audio — that's the direct-to-OpenAI WebRTC path. | Session JWT |
+
+Known section IDs are `aboutYou`, `wakeWord`, `persona`, `voiceEngine`,
+`turnDetection`, `appearance`, `microphone`, and `privacy`. `account` is device
+management, not a copyable settings section.
+
+Section writes use:
+
+```json
+{
+  "version": 12,
+  "operation": "set",
+  "target": {
+    "mode": "current",
+    "deviceIds": []
+  },
+  "settings": {
+    "wakeWord": "hey-live-ninja",
+    "wakeEngine": "openwakeword",
+    "sensitivity": 0.65
+  }
+}
+```
+
+- `mode:"current"` targets the authenticated calling installation.
+- `mode:"selected"` requires one or more caller-owned `deviceIds`.
+- `settings` may be partial. The server merges it over each selected host's own effective
+  section; `mode:"all"` merges it over account defaults, never over the calling host's override.
+- `mode:"all"` updates the section's top-level account defaults and removes the fields this
+  server version understands from every device override, so existing and future capable devices
+  inherit the same value. Additive fields from a newer client are preserved.
+- `operation:"inherit"` removes the understood section override fields for current/selected
+  targets; it does not accept `mode:"all"`.
+- The server rejects fields outside the named section, device IDs not owned by the caller, and
+  devices whose explicit capability list omits the section (including `mode:"all"`). A non-null
+  `micDeviceId` is host-local and cannot be copied to selected/all devices; selecting system
+  default (`null`) is portable.
 
 ## Base Knowledge profile (M15) + suggestion queue (M16)
 
-The profile lives inside the settings document (`settings.schema.json` → `profile`), so it is
-read and written through `GET`/`PUT /v1/settings` above — there is no separate profile CRUD
-route. The endpoints below exist only to *support* the form and the approval queue; **approving a
-suggestion is a normal `PUT /v1/settings`**, not a write of its own, which is what keeps every
-approved value subject to the same schema validation a manual edit gets.
+The profile lives inside the settings document (`settings.schema.json` → `profile`) — there is
+no separate profile CRUD route. New clients write it through the `aboutYou` section PATCH;
+full-document `PUT /v1/settings` remains the compatibility path. The endpoints below exist only
+to *support* the form and approval queue; approving a suggestion first performs that normal
+versioned settings write, so it receives the same validation as a manual edit.
 
 | Method | Path | Purpose | Auth |
 |---|---|---|---|
 | GET | `/v1/geocode?q={query}` | Place typeahead behind the home/work location pickers. Returns `{results:[{label, city, admin1, country, postalCode, lat, lon, timezone}]}` — **exactly the shape stored in `profile.homeLocation`**, so the client saves the selected record verbatim and no second resolution can drift. Queries under 2 characters return an empty list. A `"City, ST"` query is split before the upstream call (the geocoder's name index has no compound entries) and candidates are filtered by the region hint. Upstream is Open-Meteo's keyless geocoder; a failure is `502 geocode_unavailable`. | Session JWT |
 | POST | `/v1/profile/suggest` | Assisted seed: searches the caller's own memory layer for name/home/work/email facts and returns `{suggestions, sources, note}` for the owner to confirm. **Writes nothing** — a silently-copied home location that happens to be wrong would poison every weather and time answer, so the human confirms in the form. `503 not_configured` when the memory service is unavailable. | Session JWT |
 | GET | `/v1/profile/suggestions` | The base-knowledge approval queue (M16): `{suggestions:[{id, field, fieldLabel, currentValue, proposedValue, reason, source, sourceRef, status, autoApplied, needsPick, createdAt}], pendingCount, autoAppliedCount, reviewCount}` — single-partition `Query` on `PK=USER#{userId}, SK begins_with PROFSUGG#`, never `Scan`. Rows are written by the `profile_suggest` tool and by the M17 RCA analyzer; already-resolved rows are filtered out server-side. `reviewCount` drives the settings drawer's badge. `needsPick` is true for the two location fields, which can only be approved by picking a `/v1/geocode` result. | Session JWT |
-| POST | `/v1/profile/suggestions/{id}/resolve` | Record the owner's decision: `{action}` ∈ `approve`\|`reject` (a pending proposal) \| `keep`\|`undo` (a change the server auto-applied). **The body carries no value** — field and value come from the stored row, so a client can only say yes or no to something the server already holds. `approve`/`reject` only stamp the decision (the client has already written the value through `PUT /v1/settings`); `undo` additionally reverts the profile through the same versioned read-modify-write the auto-apply used and returns the new `{version}`. Resolve-once: a second decision on the same row is `409 already_resolved`. An `undo` for a field outside the auto-apply allowlist is refused. | Session JWT |
+| POST | `/v1/profile/suggestions/{id}/resolve` | Record the owner's decision: `{action}` ∈ `approve`\|`reject` (a pending proposal) \| `keep`\|`undo` (a change the server auto-applied). **The body carries no value** — field and value come from the stored row, so a client can only say yes or no to something the server already holds. `approve`/`reject` only stamp the decision (the client has already written the value through the versioned settings API); `undo` additionally reverts the profile through the same versioned read-modify-write the auto-apply used and returns the new `{version}`. Resolve-once: a second decision on the same row is `409 already_resolved`. An `undo` for a field outside the auto-apply allowlist is refused. | Session JWT |
 
 Server-side effects of a stored profile (no client action required):
 
@@ -110,7 +157,10 @@ Server-side effects of a stored profile (no client action required):
   `profile.displayName`, `profile.pronouns`, `profile.contactEmail` and `profile.locale` **always**
   require confirmation. That refusal is structural, not advisory — `store.AutoApplyProfileSuggestion`
   returns `ErrProfileFieldProtected` for a protected field even when a client hand-crafts the tool
-  call with `autoApply:true`, and the same gate guards the `undo` route.
+  call with `autoApply:true`, and the same gate guards the `undo` route. Because that legacy
+  auto-apply helper writes the account default, an invocation carrying a named `DeviceID` leaves
+  even an otherwise eligible proposal pending; the owner applies it to this device, selected
+  devices, or all devices explicitly in Settings.
 
 ## Wake-word (M6 — FR-K01..06)
 
@@ -213,6 +263,7 @@ Server-side effects of a stored profile (no client action required):
 
 | Date | Change | Motivated by |
 |---|---|---|
+| 2026-07-26 | Named-device and section-scoped settings contract (M31): current-install registration, rename, safe metadata, `X-LN-Device-ID`, sparse `deviceOverrides`, device-effective reads, and atomic current/selected/all/inherit section operations. Existing top-level values and full-document GET/PUT remain the additive compatibility base. | One shared document could not represent different wake, appearance, voice, privacy, or hardware choices across a browser, Android tablet, and paired M5Stack, and users could not identify or compare those hosts |
 | 2026-07-17 | Initial freeze at M0. Full inventory compiled from PRD §5 catalog + all milestone task lists (M1–M12); three route names canonicalized per "Reconciliation notes" above. | WS-G M0 contract-freeze task |
 | 2026-07-18 | RFC 8628 user-code binding added to device pairing: `pair/start` responses gain `userCode` (`XXXX-XXXX`, alphabet `BCDFGHJKLMNPQRSTVWXZ`, displayed on the device); new `POST /auth/device/pair/confirm` route (browser confirm leg — constant-time code match, 5-attempt budget); `pair/poll` gains the terminal `failed` status (`reason: user_code_attempts_exceeded`) and folds the former `pair/claim` step into itself; the shared `lwa/callback` (device leg) now serves the confirm page instead of binding directly. No back-compat shim — the code is required (no device had onboarded). | Pairing anti-phishing gap: an allowlisted attacker could phish a victim into binding a 10-yr device credential to the victim's account |
 | 2026-07-25 | Knowledge Refinement Loop (M16): new `profile_suggest` tool (21st in the manifest); new `GET /v1/profile/suggestions` and `POST /v1/profile/suggestions/{id}/resolve`; `settings.schema.json` documents nothing new (suggestions live in their own `PROFSUGG#` items, not in the settings document); `memoryUsageDirective` now states the stable-vs-episodic split. | The assistant could learn a standing fact mid-conversation and had nowhere to put it: `memory_write` buries it where no session reads it, and letting it write the profile directly would let one wrong home location silently poison every weather and time answer |

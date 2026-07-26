@@ -1216,6 +1216,152 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
   padding: var(--ln-sp-5);
   border-top: 1px solid var(--ln-border);
 }
+.set-device-scope {
+  margin: calc(-1 * var(--ln-sp-2)) 0 var(--ln-sp-5);
+  padding-bottom: var(--ln-sp-4);
+  border-bottom: 1px solid var(--ln-border);
+}
+.set-device-scope__trigger {
+  width: 100%;
+  min-height: var(--ln-touch);
+  justify-content: flex-start;
+  text-align: left;
+}
+.set-device-scope__panel {
+  margin-top: var(--ln-sp-3);
+  padding: var(--ln-sp-4);
+  border: 1px solid var(--ln-border-strong);
+  border-radius: var(--ln-r-md);
+  background: var(--ln-surface-2);
+}
+.set-device-scope__panel > :first-child { margin-top: 0; }
+.set-device-scope__status {
+  min-height: 1.5em;
+  margin: var(--ln-sp-2) 0;
+  color: var(--ln-text-muted);
+  font-size: var(--ln-fs-sm);
+}
+.set-device-scope__default {
+  padding: var(--ln-sp-3) var(--ln-sp-4);
+  border: 1px solid var(--ln-border);
+  border-radius: var(--ln-r-md);
+  background: var(--ln-surface);
+}
+.set-device-scope__default p { margin: var(--ln-sp-1) 0 0; }
+.set-device-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ln-sp-2);
+  margin-top: var(--ln-sp-3);
+  padding: 0;
+  border: 0;
+}
+.set-device-row {
+  min-height: var(--ln-touch);
+  padding: var(--ln-sp-3);
+  border: 1px solid var(--ln-border);
+  border-radius: var(--ln-r-md);
+  background: var(--ln-surface);
+}
+.set-device-row__select {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ln-sp-3);
+  cursor: pointer;
+}
+.set-device-row__select > input {
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  accent-color: var(--ln-teal-600);
+}
+.set-device-row__body {
+  min-width: 0;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+}
+.set-device-row__title { font-weight: 650; }
+.set-device-row__meta,
+.set-device-row__state,
+.set-device-row__summary {
+  color: var(--ln-text-muted);
+  font-size: var(--ln-fs-sm);
+  overflow-wrap: anywhere;
+}
+.set-device-row__state { color: var(--ln-text); }
+.set-device-source-banner {
+  margin: var(--ln-sp-3) 0 0;
+  color: var(--ln-text);
+  font-size: var(--ln-fs-sm);
+  font-weight: 600;
+}
+.set-device-row__details {
+  margin: var(--ln-sp-3) 0 0 32px;
+  color: var(--ln-text-muted);
+  font-size: var(--ln-fs-sm);
+}
+.set-device-row__details summary {
+  min-height: var(--ln-touch);
+  padding: 11px 0;
+  color: var(--ln-link);
+  cursor: pointer;
+}
+.set-device-values {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(0, 1.2fr);
+  gap: var(--ln-sp-2) var(--ln-sp-3);
+  margin: 0 0 var(--ln-sp-3);
+}
+.set-device-values dt { font-weight: 650; }
+.set-device-values dd {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.set-device-source[aria-pressed="true"] {
+  border-color: var(--ln-teal-600);
+}
+.set-device-scope__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ln-sp-2);
+  margin-top: var(--ln-sp-4);
+}
+.set-device-scope__actions .ln-btn { min-height: var(--ln-touch); }
+.set-account-devices {
+  margin-bottom: var(--ln-sp-5);
+  padding-bottom: var(--ln-sp-5);
+  border-bottom: 1px solid var(--ln-border);
+}
+.set-account-devices h3 { margin-top: 0; }
+.set-account-devices__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ln-sp-3);
+}
+.set-account-device {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(180px, 1fr) auto;
+  align-items: end;
+  gap: var(--ln-sp-3);
+  padding: var(--ln-sp-3);
+  border: 1px solid var(--ln-border);
+  border-radius: var(--ln-r-md);
+}
+.set-account-device__copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+@media (max-width: 600px) {
+  .set-device-scope__actions { flex-direction: column; }
+  .set-device-scope__actions .ln-btn { width: 100%; }
+  .set-device-values { grid-template-columns: 1fr; }
+  .set-device-values dd { margin-bottom: var(--ln-sp-2); }
+  .set-account-device { grid-template-columns: 1fr; }
+}
 @media (prefers-reduced-motion: reduce) {
   .set-accordion__icon { transition: none; }
 }

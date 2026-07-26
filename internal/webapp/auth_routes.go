@@ -573,6 +573,11 @@ func (r *authRoutes) refresh(c *fiber.Ctx) error {
 		case errors.Is(err, store.ErrInvalidRefresh):
 			r.failRefresh(c, fromCookie)
 			return errorJSON(c, fiber.StatusUnauthorized, "invalid_refresh_token", "The refresh token is invalid.")
+		case errors.Is(err, store.ErrDeviceRevoked):
+			_ = r.deps.Store.RevokeSession(ctx, sess.UserID, sess.SessionID)
+			r.failRefresh(c, fromCookie)
+			return errorJSON(c, fiber.StatusUnauthorized, "session_revoked",
+				"This device session was revoked. Please sign in again.")
 		default:
 			r.deps.Log.Error("refresh: rotate failed", "error", err.Error())
 			return errorJSON(c, fiber.StatusInternalServerError, "internal", "Something went wrong. Please try again.")

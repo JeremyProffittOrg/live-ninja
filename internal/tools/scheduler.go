@@ -119,7 +119,7 @@ func handleSchedule(ctx context.Context, deps *Deps, inv Invocation, args map[st
 	// so "remind me at 9am tomorrow" produces 2026-07-25T09:00:00 far more
 	// often than a correctly-offset RFC3339 string — before this that was a
 	// hard invalid_args, now it means 9am where the user actually is.
-	fireAt, terr := resolveFireTime(now, args, schedulerLocation(deps.profileFor(ctx, inv.UserID)))
+	fireAt, terr := resolveFireTime(now, args, schedulerLocation(deps.profileForInvocation(ctx, inv)))
 	if terr != nil {
 		return nil, terr
 	}

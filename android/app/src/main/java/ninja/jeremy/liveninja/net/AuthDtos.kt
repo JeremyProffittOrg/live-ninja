@@ -58,3 +58,30 @@ data class ApiError(
 data class LogoutAck(
     val ok: Boolean = true,
 )
+
+/** Display-only Android host facts sent while registering this app instance. */
+@Serializable
+data class DeviceMetadataRequest(
+    val manufacturer: String? = null,
+    val model: String? = null,
+    val product: String? = null,
+    val androidSdk: Int,
+    val appVersion: String,
+    val osVersion: String? = null,
+)
+
+/**
+ * PUT /api/v1/devices/current. X-LN-Device-ID is authoritative; this body
+ * contains only a safe suggested display name and non-unique host metadata.
+ */
+@Serializable
+data class DeviceRegistrationRequest(
+    val suggestedName: String,
+    val metadata: DeviceMetadataRequest,
+    val capabilities: List<String> = emptyList(),
+)
+
+@Serializable
+data class DeviceRegistrationResponse(
+    val device: DeviceDto,
+)

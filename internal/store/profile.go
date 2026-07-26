@@ -155,11 +155,27 @@ func (s *Store) GetProfile(ctx context.Context, userID string) (Profile, error) 
 	return LoadProfile(ctx, s.client, s.table, userID), nil
 }
 
+// GetProfileForDevice is GetProfile over the named host's effective About
+// You section.
+func (s *Store) GetProfileForDevice(ctx context.Context, userID, deviceID string) (Profile, error) {
+	if userID == "" {
+		return Profile{}, fmt.Errorf("store: userID is required")
+	}
+	return LoadProfileForDevice(ctx, s.client, s.table, userID, deviceID), nil
+}
+
 // LoadProfile is GetProfile's dependency-injected form for callers that hold
 // a raw getter rather than a *Store (the realtime broker holds exactly that,
 // mirroring ResolveSessionVoice's single-read posture). It never returns an
 // error by design — every failure path degrades to the zero profile.
 func LoadProfile(ctx context.Context, g SettingsGetter, table, userID string) Profile {
+	return LoadProfileForDevice(ctx, g, table, userID, "")
+}
+
+// LoadProfileForDevice projects profile from the named host's effective
+// About You section. It is still a single projected GetItem and retains
+// LoadProfile's fail-open behavior.
+func LoadProfileForDevice(ctx context.Context, g SettingsGetter, table, userID, deviceID string) Profile {
 	if g == nil || table == "" || userID == "" {
 		return Profile{}
 	}
@@ -169,19 +185,20 @@ func LoadProfile(ctx context.Context, g SettingsGetter, table, userID string) Pr
 			"pk": &types.AttributeValueMemberS{Value: "USER#" + userID},
 			"sk": &types.AttributeValueMemberS{Value: settingsSK},
 		},
-		ProjectionExpression:     aws.String("#p"),
-		ExpressionAttributeNames: map[string]string{"#p": profileAttr},
+		ProjectionExpression: aws.String("#p, #o"),
+		ExpressionAttributeNames: map[string]string{
+			"#p": profileAttr,
+			"#o": "deviceOverrides",
+		},
 	})
 	if err != nil || len(out.Item) == 0 {
 		return Profile{}
 	}
-	var wrapper struct {
-		Profile Profile `dynamodbav:"profile"`
+	var raw map[string]any
+	if attributevalue.UnmarshalMap(out.Item, &raw) != nil {
+		return Profile{}
 	}
-	// Best-effort: a malformed profile leaves the zero value, which every
-	// consumer already handles as "nothing known about this user".
-	_ = attributevalue.UnmarshalMap(out.Item, &wrapper)
-	return wrapper.Profile.normalized()
+	return ProfileFromDoc(EffectiveSettings(raw, deviceID))
 }
 
 // ProfileFromDoc projects a Profile out of an already-loaded settings

@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -28,10 +30,43 @@ import (
 
 // ErrVersionConflict is returned by PutSettings when the conditional
 // version check fails — another surface wrote the document first.
-var ErrVersionConflict = errors.New("store: settings version conflict")
+var (
+	ErrVersionConflict  = errors.New("store: settings version conflict")
+	ErrSettingsTooLarge = errors.New("store: settings document is too large")
+)
+
+// MaxSettingsSerializedBytes leaves roughly 100 KiB below DynamoDB's 400 KiB
+// item ceiling for attribute-name/type overhead and future server fields.
+const MaxSettingsSerializedBytes = 300 * 1024
 
 // settingsSK is the sort key of the canonical settings item.
 const settingsSK = "SETTINGS"
+
+const (
+	SettingsSectionAboutYou      = "aboutYou"
+	SettingsSectionWakeWord      = "wakeWord"
+	SettingsSectionPersona       = "persona"
+	SettingsSectionVoiceEngine   = "voiceEngine"
+	SettingsSectionTurnDetection = "turnDetection"
+	SettingsSectionAppearance    = "appearance"
+	SettingsSectionMicrophone    = "microphone"
+	SettingsSectionPrivacy       = "privacy"
+
+	// MaxDeviceOverrides keeps the single canonical SETTINGS item comfortably
+	// below DynamoDB's item limit even when clients retain stale host ids.
+	MaxDeviceOverrides = 50
+)
+
+var settingsSectionFields = map[string][]string{
+	SettingsSectionAboutYou:      {"profile"},
+	SettingsSectionWakeWord:      {"wakeWord", "wakeEngine", "sensitivity"},
+	SettingsSectionPersona:       {"persona", "voice", "voiceAccent", "personaPrefs"},
+	SettingsSectionVoiceEngine:   {"voiceEngine", "geminiVoice"},
+	SettingsSectionTurnDetection: {"turnDetection", "micEagerness", "keepListeningSeconds"},
+	SettingsSectionAppearance:    {"theme", "appearance"},
+	SettingsSectionMicrophone:    {"micDeviceId"},
+	SettingsSectionPrivacy:       {"privacy"},
+}
 
 // reservedItemAttrs are table plumbing attributes that must never leak
 // into (or be accepted from) the settings document itself.
@@ -78,6 +113,9 @@ func DefaultSettings() map[string]any {
 		"micDeviceId": nil,
 		"voiceEngine": map[string]any{"default": "openai-realtime", "devices": map[string]any{}},
 		"privacy":     map[string]any{"storeAudio": false, "storeTranscripts": true, "retentionDays": 30},
+		// deviceOverrides is an additive sparse overlay. Top-level fields
+		// remain the account defaults consumed by every legacy client.
+		"deviceOverrides": map[string]any{},
 		// profile: the Base Knowledge block (M15) — stable facts injected
 		// server-side into every session's instructions and used as default
 		// arguments for profile-aware tools. Locations are null until the
@@ -98,6 +136,425 @@ func DefaultSettings() map[string]any {
 	}
 }
 
+// SettingsSectionFields returns a defensive copy of the stable top-level
+// field group owned by section.
+func SettingsSectionFields(section string) ([]string, bool) {
+	fields, ok := settingsSectionFields[section]
+	if !ok {
+		return nil, false
+	}
+	return append([]string(nil), fields...), true
+}
+
+// SettingsSectionIDs returns the stable API section ids.
+func SettingsSectionIDs() []string {
+	return []string{
+		SettingsSectionAboutYou,
+		SettingsSectionWakeWord,
+		SettingsSectionPersona,
+		SettingsSectionVoiceEngine,
+		SettingsSectionTurnDetection,
+		SettingsSectionAppearance,
+		SettingsSectionMicrophone,
+		SettingsSectionPrivacy,
+	}
+}
+
+// GetEffectiveSettings returns the canonical account defaults overlaid with
+// the sparse section settings for deviceID. The returned runtime document
+// never exposes the other devices' overrides.
+func (s *Store) GetEffectiveSettings(ctx context.Context, userID, deviceID string) (map[string]any, error) {
+	doc, err := s.GetSettings(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return EffectiveSettings(doc, deviceID), nil
+}
+
+// EffectiveSettings overlays one device's sparse section values on a deep
+// copy of the account defaults. Legacy voiceEngine.devices pins are treated
+// as a Voice Engine override until that section is next written through the
+// scoped API.
+func EffectiveSettings(doc map[string]any, deviceID string) map[string]any {
+	out := cloneSettingsMap(doc)
+	delete(out, "deviceOverrides")
+
+	if deviceID != "" {
+		if ve, ok := out["voiceEngine"].(map[string]any); ok {
+			ve = cloneSettingsMap(ve)
+			if devices, ok := ve["devices"].(map[string]any); ok {
+				if pin, ok := devices[deviceID].(string); ok && pin != "" {
+					ve["default"] = pin
+				}
+			}
+			// This deprecated compatibility map can contain every host's
+			// engine pin. An effective view exposes only this host's resolved
+			// default, never the cross-host map itself.
+			ve["devices"] = map[string]any{}
+			out["voiceEngine"] = ve
+		}
+
+		if override := deviceOverrideEntry(doc, deviceID); override != nil {
+			if sections, ok := override["sections"].(map[string]any); ok {
+				for _, section := range SettingsSectionIDs() {
+					raw, ok := sections[section].(map[string]any)
+					if !ok {
+						continue
+					}
+					for _, field := range settingsSectionFields[section] {
+						if value, present := raw[field]; present {
+							out[field] = mergeSettingsValue(out[field], value)
+						}
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// ExtractSettingsSection projects one stable section from an account or
+// effective settings document. voiceEngine.devices is storage compatibility
+// plumbing, not a value users copy between hosts, so it is stripped.
+func ExtractSettingsSection(doc map[string]any, section string) (map[string]any, bool) {
+	fields, ok := settingsSectionFields[section]
+	if !ok {
+		return nil, false
+	}
+	out := make(map[string]any, len(fields))
+	for _, field := range fields {
+		if value, present := doc[field]; present {
+			out[field] = cloneSettingsValue(value)
+		}
+	}
+	if section == SettingsSectionVoiceEngine {
+		if ve, ok := out["voiceEngine"].(map[string]any); ok {
+			ve["devices"] = map[string]any{}
+		}
+	}
+	return out, true
+}
+
+// MergeSettingsSection applies a possibly-partial section payload to a copy
+// of doc. It rejects top-level fields owned by another section; nested
+// objects are deep-merged so additive unknown sub-fields survive.
+func MergeSettingsSection(doc, payload map[string]any, section string) (map[string]any, error) {
+	fields, ok := settingsSectionFields[section]
+	if !ok {
+		return nil, fmt.Errorf("store: unknown settings section %q", section)
+	}
+	allowed := make(map[string]bool, len(fields))
+	for _, field := range fields {
+		allowed[field] = true
+	}
+	out := cloneSettingsMap(doc)
+	for field, value := range payload {
+		if !allowed[field] {
+			return nil, fmt.Errorf("store: field %q does not belong to section %q", field, section)
+		}
+		out[field] = mergeSettingsValue(out[field], value)
+	}
+	return out, nil
+}
+
+// DeviceSectionInherited reports whether deviceID has no explicit override
+// for section. A legacy voiceEngine.devices pin counts as a custom value.
+func DeviceSectionInherited(doc map[string]any, deviceID, section string) bool {
+	if section == SettingsSectionVoiceEngine && deviceID != "" {
+		if ve, ok := doc["voiceEngine"].(map[string]any); ok {
+			if devices, ok := ve["devices"].(map[string]any); ok {
+				if pin, ok := devices[deviceID].(string); ok && pin != "" {
+					return false
+				}
+			}
+		}
+	}
+	entry := deviceOverrideEntry(doc, deviceID)
+	if entry == nil {
+		return true
+	}
+	sections, _ := entry["sections"].(map[string]any)
+	_, present := sections[section]
+	return !present
+}
+
+// ApplySettingsSection mutates doc in place after the HTTP layer has merged
+// and validated payload. For all=true it updates account defaults and clears
+// that section on every host. Otherwise it sets or inherits the section for
+// deviceIDs. Unknown fields and unrelated sections survive untouched.
+func ApplySettingsSection(doc map[string]any, section string, payload map[string]any,
+	deviceIDs []string, all, inherit bool, now time.Time) error {
+	fields, ok := settingsSectionFields[section]
+	if !ok {
+		return fmt.Errorf("store: unknown settings section %q", section)
+	}
+	if all {
+		if inherit {
+			return errors.New("store: all devices cannot inherit from themselves")
+		}
+		for _, field := range fields {
+			if value, present := payload[field]; present {
+				doc[field] = cloneSettingsValue(value)
+			}
+		}
+		if section == SettingsSectionVoiceEngine {
+			clearLegacyVoicePins(doc, nil)
+		}
+		clearSectionFromAllDeviceOverrides(doc, section, now)
+		return nil
+	}
+	if len(deviceIDs) == 0 {
+		return errors.New("store: at least one target device is required")
+	}
+	if !inherit {
+		allOverrides, _ := doc["deviceOverrides"].(map[string]any)
+		missing := map[string]bool{}
+		for _, deviceID := range deviceIDs {
+			if strings.TrimSpace(deviceID) == "" {
+				return errors.New("store: target device id is required")
+			}
+			if _, present := allOverrides[deviceID]; !present {
+				missing[deviceID] = true
+			}
+		}
+		if len(allOverrides)+len(missing) > MaxDeviceOverrides {
+			return fmt.Errorf("store: device override limit is %d", MaxDeviceOverrides)
+		}
+	}
+	for _, deviceID := range deviceIDs {
+		if inherit {
+			clearDeviceSection(doc, deviceID, section, now)
+		} else {
+			setDeviceSection(doc, deviceID, section, payload, now)
+		}
+	}
+	if section == SettingsSectionVoiceEngine {
+		clearLegacyVoicePins(doc, deviceIDs)
+	}
+	return nil
+}
+
+func deviceOverrideEntry(doc map[string]any, deviceID string) map[string]any {
+	if deviceID == "" {
+		return nil
+	}
+	all, _ := doc["deviceOverrides"].(map[string]any)
+	entry, _ := all[deviceID].(map[string]any)
+	return entry
+}
+
+func setDeviceSection(doc map[string]any, deviceID, section string, payload map[string]any, now time.Time) {
+	all, ok := doc["deviceOverrides"].(map[string]any)
+	if !ok {
+		all = map[string]any{}
+		doc["deviceOverrides"] = all
+	}
+	entry, ok := all[deviceID].(map[string]any)
+	if !ok {
+		entry = map[string]any{}
+		all[deviceID] = entry
+	}
+	sections, ok := entry["sections"].(map[string]any)
+	if !ok {
+		sections = map[string]any{}
+		entry["sections"] = sections
+	}
+	existing, _ := sections[section].(map[string]any)
+	sections[section] = mergeSettingsValue(existing, payload)
+	entry["updatedAt"] = now.UTC().Format(time.RFC3339)
+}
+
+func clearDeviceSection(doc map[string]any, deviceID, section string, now time.Time) {
+	all, _ := doc["deviceOverrides"].(map[string]any)
+	entry := deviceOverrideEntry(doc, deviceID)
+	if entry == nil {
+		return
+	}
+	sections, _ := entry["sections"].(map[string]any)
+	clearKnownSectionFields(sections, section)
+	if len(sections) == 0 {
+		delete(all, deviceID)
+		return
+	}
+	entry["updatedAt"] = now.UTC().Format(time.RFC3339)
+}
+
+func clearSectionFromAllDeviceOverrides(doc map[string]any, section string, now time.Time) {
+	all, _ := doc["deviceOverrides"].(map[string]any)
+	for deviceID, raw := range all {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if sections, ok := entry["sections"].(map[string]any); ok {
+			clearKnownSectionFields(sections, section)
+			if len(sections) == 0 {
+				delete(all, deviceID)
+				continue
+			}
+			entry["updatedAt"] = now.UTC().Format(time.RFC3339)
+		}
+	}
+}
+
+func clearKnownSectionFields(sections map[string]any, section string) {
+	payload, ok := sections[section].(map[string]any)
+	if !ok {
+		return
+	}
+	// Inherit/apply-all may clear only fields this server version owns.
+	// Additive keys written by a newer client remain device-specific until
+	// a version that understands them decides how to merge or clear them.
+	for _, field := range settingsSectionFields[section] {
+		value, present := payload[field]
+		if !present {
+			continue
+		}
+		if unknown, keep := retainUnknownSettingsField(field, value); keep {
+			payload[field] = unknown
+		} else {
+			delete(payload, field)
+		}
+	}
+	if len(payload) == 0 {
+		delete(sections, section)
+	}
+}
+
+func retainUnknownSettingsField(field string, value any) (any, bool) {
+	object, ok := value.(map[string]any)
+	if !ok {
+		// Scalars, arrays, null, and malformed known values have no
+		// independently preservable additive properties.
+		return nil, false
+	}
+	switch field {
+	case "persona":
+		deleteKnownMapKeys(object, "presetId", "systemInstructions")
+	case "personaPrefs":
+		for personaID, raw := range object {
+			entry, ok := raw.(map[string]any)
+			if !ok {
+				continue // preserve an unknown/malformed future representation
+			}
+			deleteKnownMapKeys(entry, "voice", "accent", "updatedAt")
+			if len(entry) == 0 {
+				delete(object, personaID)
+			}
+		}
+	case "voiceEngine":
+		deleteKnownMapKeys(object, "default", "devices")
+	case "appearance":
+		deleteKnownMapKeys(object, "appStyle", "liveStyle", "accentColor", "themeStyle")
+	case "privacy":
+		deleteKnownMapKeys(object, "storeAudio", "storeTranscripts", "retentionDays")
+	case "profile":
+		deleteKnownMapKeys(object,
+			"displayName", "pronouns", "units", "locale", "contactEmail", "notes")
+		retainUnknownNestedMap(object, "homeLocation",
+			"label", "postalCode", "city", "admin1", "country", "lat", "lon", "timezone")
+		retainUnknownNestedMap(object, "workLocation",
+			"label", "postalCode", "city", "admin1", "country", "lat", "lon", "timezone")
+		retainUnknownNestedMap(object, "quietHours", "start", "end")
+	default:
+		// Known scalar fields and map fields without an additive object
+		// schema are removed as one value.
+		return nil, false
+	}
+	return object, len(object) > 0
+}
+
+func deleteKnownMapKeys(object map[string]any, keys ...string) {
+	for _, key := range keys {
+		delete(object, key)
+	}
+}
+
+func retainUnknownNestedMap(parent map[string]any, field string, knownKeys ...string) {
+	raw, present := parent[field]
+	if !present {
+		return
+	}
+	nested, ok := raw.(map[string]any)
+	if !ok {
+		delete(parent, field)
+		return
+	}
+	deleteKnownMapKeys(nested, knownKeys...)
+	if len(nested) == 0 {
+		delete(parent, field)
+	}
+}
+
+func clearLegacyVoicePins(doc map[string]any, deviceIDs []string) {
+	ve, ok := doc["voiceEngine"].(map[string]any)
+	if !ok {
+		return
+	}
+	devices, ok := ve["devices"].(map[string]any)
+	if !ok {
+		devices = map[string]any{}
+		ve["devices"] = devices
+	}
+	if deviceIDs == nil {
+		ve["devices"] = map[string]any{}
+		return
+	}
+	for _, id := range deviceIDs {
+		delete(devices, id)
+	}
+}
+
+func cloneSettingsMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = cloneSettingsValue(value)
+	}
+	return out
+}
+
+func cloneSettingsValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneSettingsMap(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneSettingsValue(item)
+		}
+		return out
+	case map[string]string:
+		out := make(map[string]string, len(typed))
+		for key, item := range typed {
+			out[key] = item
+		}
+		return out
+	case []string:
+		return append([]string(nil), typed...)
+	default:
+		return value
+	}
+}
+
+func mergeSettingsValue(base, override any) any {
+	baseMap, baseOK := base.(map[string]any)
+	overrideMap, overrideOK := override.(map[string]any)
+	if !baseOK || !overrideOK {
+		return cloneSettingsValue(override)
+	}
+	out := cloneSettingsMap(baseMap)
+	if out == nil {
+		out = map[string]any{}
+	}
+	for key, value := range overrideMap {
+		out[key] = mergeSettingsValue(out[key], value)
+	}
+	return out
+}
+
 // GetSettings fetches the caller's settings document, synthesizing the
 // full default document when none has ever been written (there is never
 // an "empty settings" response — docs/web-ui-spec.md §3.5). A stored
@@ -111,7 +568,8 @@ func (s *Store) GetSettings(ctx context.Context, userID string) (map[string]any,
 	}
 
 	out, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: aws.String(s.table),
+		TableName:      aws.String(s.table),
+		ConsistentRead: aws.Bool(true),
 		Key: map[string]types.AttributeValue{
 			"pk": &types.AttributeValueMemberS{Value: "USER#" + userID},
 			"sk": &types.AttributeValueMemberS{Value: settingsSK},
@@ -166,6 +624,15 @@ func (s *Store) PutSettings(ctx context.Context, userID string, doc map[string]a
 	item["version"] = newVersion
 	item["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
 
+	serialized, err := json.Marshal(item)
+	if err != nil {
+		return 0, fmt.Errorf("store: serialize settings size check: %w", err)
+	}
+	if len(serialized) > MaxSettingsSerializedBytes {
+		return 0, fmt.Errorf("%w: %d bytes exceeds %d-byte headroom limit",
+			ErrSettingsTooLarge, len(serialized), MaxSettingsSerializedBytes)
+	}
+
 	av, err := attributevalue.MarshalMap(item)
 	if err != nil {
 		return 0, fmt.Errorf("store: marshal settings: %w", err)
@@ -192,6 +659,53 @@ func (s *Store) PutSettings(ctx context.Context, userID string, doc map[string]a
 		return 0, fmt.Errorf("store: put settings: %w", err)
 	}
 	return newVersion, nil
+}
+
+// PurgeDeviceSettingsOverride advances the canonical settings version on
+// every device revoke, removing that device's sparse override when present.
+// The unconditional version bump is also the revoke/write barrier: a section
+// PATCH that validated the device before it was marked revoked must either
+// commit first (and then be purged here) or lose its stale version write.
+// It returns the committed document/version for shadow fan-out.
+func (s *Store) PurgeDeviceSettingsOverride(ctx context.Context, userID, deviceID string) (map[string]any, int64, bool, error) {
+	if userID == "" || deviceID == "" {
+		return nil, 0, false, errors.New("store: userID and deviceID are required")
+	}
+	for attempt := 0; attempt < 5; attempt++ {
+		doc, err := s.GetSettings(ctx, userID)
+		if err != nil {
+			return nil, 0, false, err
+		}
+		overrides, _ := doc["deviceOverrides"].(map[string]any)
+		delete(overrides, deviceID)
+		expected := settingsDocumentVersion(doc)
+		newVersion, err := s.PutSettings(ctx, userID, doc, expected)
+		if errors.Is(err, ErrVersionConflict) {
+			continue
+		}
+		if err != nil {
+			return nil, 0, false, err
+		}
+		doc["version"] = newVersion
+		return doc, newVersion, true, nil
+	}
+	return nil, 0, false, ErrVersionConflict
+}
+
+func settingsDocumentVersion(doc map[string]any) int64 {
+	switch value := doc["version"].(type) {
+	case int:
+		return int64(value)
+	case int64:
+		return value
+	case float64:
+		return int64(value)
+	case json.Number:
+		n, _ := value.Int64()
+		return n
+	default:
+		return 0
+	}
 }
 
 // fillSettingsDefaults deep-fills missing required fields (top level

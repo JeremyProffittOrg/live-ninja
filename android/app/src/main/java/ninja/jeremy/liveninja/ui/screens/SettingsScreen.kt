@@ -102,10 +102,15 @@ import ninja.jeremy.liveninja.ui.settings.GeminiVoiceOption
 import ninja.jeremy.liveninja.ui.settings.MicDeviceOption
 import ninja.jeremy.liveninja.ui.settings.PersonaPreset
 import ninja.jeremy.liveninja.ui.settings.SettingsNotice
+import ninja.jeremy.liveninja.ui.settings.SettingsApplyTarget
 import ninja.jeremy.liveninja.ui.settings.SettingsAccordionCard
 import ninja.jeremy.liveninja.ui.settings.SettingsHeaderMove
+import ninja.jeremy.liveninja.ui.settings.SettingsHostUi
 import ninja.jeremy.liveninja.ui.settings.SettingsSection
+import ninja.jeremy.liveninja.ui.settings.SettingsSectionScopeUi
+import ninja.jeremy.liveninja.ui.settings.SettingsTargetMode
 import ninja.jeremy.liveninja.ui.settings.SettingsViewModel
+import ninja.jeremy.liveninja.ui.settings.settingsSectionSummary
 import ninja.jeremy.liveninja.ui.settings.targetSettingsHeaderIndex
 import ninja.jeremy.liveninja.ui.settings.toggledSettingsSection
 import ninja.jeremy.liveninja.ui.state.DiagnosticsConfig
@@ -162,6 +167,10 @@ fun SettingsScreen(
     val listState = rememberLazyListState()
     val sectionScope = rememberCoroutineScope()
 
+    LaunchedEffect(expandedSection) {
+        expandedSection?.let(viewModel::loadSection)
+    }
+
     // Re-check the battery-optimization exemption whenever the user returns from
     // the system prompt (the result arrives out-of-band on ON_RESUME).
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -197,6 +206,13 @@ fun SettingsScreen(
                 SettingsNotice.WAKE_TRAIN_LIMIT -> R.string.settings_wake_train_limit
                 SettingsNotice.WAKE_TRAIN_INVALID -> R.string.settings_wake_train_invalid
                 SettingsNotice.WAKE_TRAIN_REQUEST_FAILED -> R.string.settings_wake_train_request_failed
+                SettingsNotice.SETTINGS_SYNC_FAILED -> R.string.settings_sync_failed
+                SettingsNotice.SETTINGS_APPLIED -> R.string.settings_applied
+                SettingsNotice.SETTINGS_INHERITED -> R.string.settings_inherited
+                SettingsNotice.MICROPHONE_TARGET_LOCAL_ONLY ->
+                    R.string.settings_microphone_local_only
+                SettingsNotice.DEVICE_RENAMED -> R.string.settings_device_renamed
+                SettingsNotice.DEVICE_RENAME_FAILED -> R.string.settings_device_rename_failed
             }
             snackbarHostState.showSnackbar(context.getString(messageRes))
         }
@@ -252,18 +268,32 @@ fun SettingsScreen(
                             )
                         },
                     ) {
+                        val sectionDoc = state.documentFor(section)
+                        val viewingCurrentHost =
+                            state.sectionScopes[section]?.viewedHost?.isCurrent != false
+                        if (section.apiId != null) {
+                            SettingsDeviceScopeControl(
+                                section = section,
+                                scope = state.sectionScopes[section],
+                                onViewDevice = { viewModel.viewSettingsFor(section, it) },
+                                onApply = { target, inherit ->
+                                    viewModel.applySection(section, target, inherit)
+                                },
+                            )
+                        }
                         when (section) {
                             SettingsSection.ABOUT_YOU -> AboutYouSection()
                             SettingsSection.WAKE_WORD -> {
                                 WakeSection(
+                                    localControlsEnabled = viewingCurrentHost,
                                     wakeServiceEnabled = wakeServiceEnabled,
                                     wakeServiceRunning = wakeServiceRunning,
-                                    wakeWord = doc.wakeWord,
+                                    wakeWord = sectionDoc.wakeWord,
                                     wakeOptions = state.wakeOptions,
                                     wakeCatalogOffline = state.wakeCatalogOffline,
-                                    wakeEngine = doc.wakeEngine,
+                                    wakeEngine = sectionDoc.wakeEngine,
                                     porcupineAvailable = state.porcupineAvailable,
-                                    sensitivity = doc.sensitivity,
+                                    sensitivity = sectionDoc.sensitivity,
                                     activeWakeWordId = state.activeWakeWordId,
                                     customPhrase = state.customPhrase,
                                     customPhraseValid = state.customPhraseValid,
@@ -278,9 +308,10 @@ fun SettingsScreen(
                                     onClearCustomJob = viewModel::clearCustomJob,
                                 )
                                 VoiceScreenSection(
-                                    lockedSessions = doc.lockedSessions,
-                                    wakeScreenOnWake = doc.wakeScreenOnWake,
-                                    keepScreenOn = doc.keepScreenOn,
+                                    localControlsEnabled = viewingCurrentHost,
+                                    lockedSessions = sectionDoc.lockedSessions,
+                                    wakeScreenOnWake = sectionDoc.wakeScreenOnWake,
+                                    keepScreenOn = sectionDoc.keepScreenOn,
                                     batteryOptimizationIgnored = state.batteryOptimizationIgnored,
                                     onSetLockedSessions = viewModel::setLockedSessions,
                                     onSetWakeScreenOnWake = viewModel::setWakeScreenOnWake,
@@ -304,48 +335,51 @@ fun SettingsScreen(
                                 )
                             }
                             SettingsSection.PERSONA -> PersonaSection(
-                                personaPresetId = doc.personaPresetId,
-                                personaSystemInstructions = doc.personaSystemInstructions,
+                                personaPresetId = sectionDoc.personaPresetId,
+                                personaSystemInstructions = sectionDoc.personaSystemInstructions,
                                 personaPresets = state.personaPresets,
-                                displayVoice = doc.displayVoice,
+                                displayVoice = sectionDoc.displayVoice,
                                 onSetPersona = viewModel::setPersona,
                                 onSetCustomInstructions = viewModel::setCustomInstructions,
                                 onSetVoice = viewModel::setVoice,
                                 onVoicePreviewRequested = viewModel::onVoicePreviewRequested,
                             )
                             SettingsSection.VOICE_ENGINE -> VoiceEngineSection(
-                                voiceEngineDefault = doc.voiceEngineDefault,
-                                geminiVoice = doc.geminiVoice,
+                                voiceEngineDefault = sectionDoc.voiceEngineDefault,
+                                geminiVoice = sectionDoc.geminiVoice,
                                 geminiVoices = state.geminiVoices,
                                 onSetVoiceEngine = viewModel::setVoiceEngine,
                                 onSetGeminiVoice = viewModel::setGeminiVoice,
                             )
                             SettingsSection.TURN_DETECTION -> TurnDetectionSection(
-                                turnDetection = doc.turnDetection,
+                                turnDetection = sectionDoc.turnDetection,
                                 onSetTurnDetection = viewModel::setTurnDetection,
                             )
                             SettingsSection.APPEARANCE -> AppearanceSection(
-                                appStyle = doc.appStyle,
-                                theme = doc.theme,
+                                appStyle = sectionDoc.appStyle,
+                                theme = sectionDoc.theme,
                                 onSetAppStyle = viewModel::setAppStyle,
                                 onSetTheme = viewModel::setTheme,
                             )
                             SettingsSection.MICROPHONE -> AudioSection(
-                                micDeviceId = doc.micDeviceId,
+                                localControlsEnabled = viewingCurrentHost,
+                                micDeviceId = sectionDoc.micDeviceId,
                                 micDevices = state.micDevices,
                                 onSetMicDevice = viewModel::setMicDevice,
                                 onExpandMicDevices = viewModel::refreshMicDevices,
                             )
                             SettingsSection.PRIVACY -> {
                                 PrivacySection(
-                                    storeTranscripts = doc.storeTranscripts,
-                                    storeAudio = doc.storeAudio,
-                                    retentionDays = doc.retentionDays,
+                                    localControlsEnabled = viewingCurrentHost,
+                                    storeTranscripts = sectionDoc.storeTranscripts,
+                                    storeAudio = sectionDoc.storeAudio,
+                                    retentionDays = sectionDoc.retentionDays,
                                     onSetStoreTranscripts = viewModel::setStoreTranscripts,
                                     onSetStoreAudio = viewModel::setStoreAudio,
                                     onSetRetentionDays = viewModel::setRetentionDays,
                                 )
                                 DiagnosticsSection(
+                                    localControlsEnabled = viewingCurrentHost,
                                     diagnostics = doc.diagnostics,
                                     onSetDiagnosticsEnabled = viewModel::setDiagnosticsEnabled,
                                     onSetDiagnosticsMinLevel = viewModel::setDiagnosticsMinLevel,
@@ -362,6 +396,8 @@ fun SettingsScreen(
                                 signedIn = state.signedIn,
                                 accountActionsAvailable = state.accountActionsAvailable,
                                 signOutInProgress = state.signOutInProgress,
+                                devices = state.devices,
+                                onRenameDevice = viewModel::renameDevice,
                                 onSignOut = viewModel::signOut,
                                 onSignOutEverywhere = viewModel::signOutEverywhere,
                             )
@@ -392,6 +428,310 @@ private fun AboutYouSection() {
 }
 
 /**
+ * Per-section host context. The picker only changes the values being viewed;
+ * runtime settings continue to come from SettingsStore's current-device flow.
+ */
+@Composable
+internal fun SettingsDeviceScopeControl(
+    section: SettingsSection,
+    scope: SettingsSectionScopeUi?,
+    onViewDevice: (String) -> Unit,
+    onApply: (SettingsApplyTarget, Boolean) -> Unit,
+) {
+    val viewed = scope?.viewedHost
+    var hostMenuExpanded by remember { mutableStateOf(false) }
+    var applyDialogOpen by remember { mutableStateOf(false) }
+    val applyLabel = stringResource(R.string.settings_device_apply)
+    val currentBadge = stringResource(R.string.settings_device_current_badge)
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (scope?.loading == true || viewed == null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                    Text(stringResource(R.string.settings_device_choose))
+                }
+            } else {
+                ExposedDropdownMenuBox(
+                    expanded = hostMenuExpanded,
+                    onExpandedChange = { hostMenuExpanded = it },
+                ) {
+                    OutlinedTextField(
+                        value = buildString {
+                            append(viewed.name)
+                            if (viewed.isCurrent) {
+                                append(" · ")
+                                append(currentBadge)
+                            }
+                        },
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text(stringResource(R.string.settings_device_viewing)) },
+                        supportingText = {
+                            Text(
+                                stringResource(
+                                    if (viewed.inherited) {
+                                        R.string.settings_device_inherited
+                                    } else {
+                                        R.string.settings_device_overridden
+                                    },
+                                ),
+                            )
+                        },
+                        trailingIcon = {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = hostMenuExpanded)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                    )
+                    ExposedDropdownMenu(
+                        expanded = hostMenuExpanded,
+                        onDismissRequest = { hostMenuExpanded = false },
+                    ) {
+                        scope.hosts.forEach { host ->
+                            val hostSupported = host.supports(section)
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(
+                                            if (host.isCurrent) {
+                                                "${host.name} · $currentBadge"
+                                            } else {
+                                                host.name
+                                            },
+                                        )
+                                        if (!hostSupported) {
+                                            Text(
+                                                stringResource(
+                                                    R.string.settings_device_not_supported,
+                                                ),
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    }
+                                },
+                                enabled = hostSupported,
+                                onClick = {
+                                    onViewDevice(host.id)
+                                    hostMenuExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+                Text(
+                    settingsSectionSummary(section, viewed.settings),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                OutlinedButton(
+                    onClick = { applyDialogOpen = true },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .semantics {
+                            contentDescription = "$applyLabel ${viewed.name}"
+                        },
+                ) {
+                    Text(applyLabel)
+                }
+                if (!viewed.isCurrent &&
+                    (section == SettingsSection.MICROPHONE ||
+                        section == SettingsSection.WAKE_WORD ||
+                        section == SettingsSection.PRIVACY)
+                ) {
+                    Text(
+                        stringResource(R.string.settings_device_local_controls),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+
+    if (applyDialogOpen && viewed != null) {
+        SettingsApplyDialog(
+            section = section,
+            viewed = viewed,
+            hosts = scope.hosts,
+            onApply = { target, inherit ->
+                applyDialogOpen = false
+                onApply(target, inherit)
+            },
+            onDismiss = { applyDialogOpen = false },
+        )
+    }
+}
+
+@Composable
+private fun SettingsApplyDialog(
+    section: SettingsSection,
+    viewed: SettingsHostUi,
+    hosts: List<SettingsHostUi>,
+    onApply: (SettingsApplyTarget, Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val initialMode = if (viewed.isCurrent) SettingsTargetMode.CURRENT else SettingsTargetMode.SELECTED
+    var mode by remember(viewed.id) { mutableStateOf(initialMode) }
+    val eligibleIds = hosts.filter { it.supports(section) }.mapTo(mutableSetOf()) { it.id }
+    var selected by remember(viewed.id) {
+        mutableStateOf(if (viewed.id in eligibleIds) setOf(viewed.id) else emptySet())
+    }
+    val currentSupported = hosts.firstOrNull { it.isCurrent }?.supports(section) == true
+    val allSupported = hosts.all { it.supports(section) }
+    val selectedEligible = selected.intersect(eligibleIds)
+    val target = SettingsApplyTarget(
+        mode,
+        if (mode == SettingsTargetMode.SELECTED) selectedEligible else emptySet(),
+    )
+    val canSubmit = when (mode) {
+        SettingsTargetMode.CURRENT -> currentSupported
+        SettingsTargetMode.SELECTED -> selectedEligible.isNotEmpty()
+        SettingsTargetMode.ALL -> allSupported
+    }
+    val canInherit = canSubmit && mode != SettingsTargetMode.ALL
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.settings_device_apply_title)) },
+        text = {
+            Column(
+                modifier = Modifier.selectableGroup(),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                listOf(
+                    SettingsTargetMode.CURRENT to R.string.settings_device_target_current,
+                    SettingsTargetMode.SELECTED to R.string.settings_device_target_selected,
+                    SettingsTargetMode.ALL to R.string.settings_device_target_all,
+                ).forEach { (value, label) ->
+                    val targetEnabled = when (value) {
+                        SettingsTargetMode.CURRENT -> currentSupported
+                        SettingsTargetMode.SELECTED -> true
+                        SettingsTargetMode.ALL -> allSupported
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .selectable(
+                                selected = mode == value,
+                                enabled = targetEnabled,
+                                role = Role.RadioButton,
+                                onClick = { mode = value },
+                            )
+                            .alpha(if (targetEnabled) 1f else 0.5f)
+                            .padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = mode == value,
+                            onClick = null,
+                            enabled = targetEnabled,
+                        )
+                        Column(modifier = Modifier.padding(start = 8.dp)) {
+                            Text(stringResource(label))
+                            if (!targetEnabled) {
+                                Text(
+                                    stringResource(R.string.settings_device_not_supported),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+                if (mode == SettingsTargetMode.SELECTED) {
+                    hosts.forEach { host ->
+                        val hostEnabled = host.supports(section)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .toggleable(
+                                    value = host.id in selected,
+                                    enabled = hostEnabled,
+                                    role = Role.Checkbox,
+                                    onValueChange = { checked ->
+                                        selected = if (checked) {
+                                            selected + host.id
+                                        } else {
+                                            selected - host.id
+                                        }
+                                    },
+                                )
+                                .alpha(if (hostEnabled) 1f else 0.5f)
+                                .padding(start = 24.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = host.id in selected,
+                                onCheckedChange = null,
+                                enabled = hostEnabled,
+                            )
+                            Column(modifier = Modifier.padding(start = 8.dp)) {
+                                Text(host.name)
+                                if (!hostEnabled) {
+                                    Text(
+                                        stringResource(R.string.settings_device_not_supported),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if (!canSubmit) {
+                        Text(
+                            stringResource(R.string.settings_device_select_at_least_one),
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+                if (mode == SettingsTargetMode.ALL) {
+                    Text(
+                        stringResource(R.string.settings_device_target_all_warning),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onApply(target, false) },
+                enabled = canSubmit,
+                modifier = Modifier.heightIn(min = 48.dp),
+            ) { Text(stringResource(R.string.settings_device_apply_confirm)) }
+        },
+        dismissButton = {
+            Row {
+                TextButton(
+                    onClick = { if (canInherit) onApply(target, true) },
+                    enabled = canInherit,
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) { Text(stringResource(R.string.settings_device_use_defaults)) }
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) { Text(stringResource(R.string.dialog_cancel)) }
+            }
+        },
+    )
+}
+
+/**
  * Wake-word group: the always-listening switch (bound to the service's own
  * observable running state, never a local mirror), the wake-word combobox,
  * the engine radio group, the sensitivity slider, and the custom wake-phrase
@@ -399,6 +739,7 @@ private fun AboutYouSection() {
  */
 @Composable
 private fun WakeSection(
+    localControlsEnabled: Boolean,
     wakeServiceEnabled: Boolean,
     wakeServiceRunning: Boolean,
     wakeWord: String,
@@ -448,10 +789,12 @@ private fun WakeSection(
         if (micGranted) WakeWordService.start(context)
         else micLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
+    SubsectionHeader(stringResource(R.string.settings_android_local_controls_title))
     LabeledSwitchRow(
         label = stringResource(R.string.settings_wake_service_label),
         description = stringResource(R.string.settings_wake_service_desc),
         checked = switchDisplay == WakeSwitchDisplay.RUNNING,
+        enabled = localControlsEnabled,
         onCheckedChange = { enable ->
             // In the paused state the switch already reads OFF, so a tap means
             // "resume", never "stop" — and a start is never gated on the persisted
@@ -473,7 +816,10 @@ private fun WakeSection(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.error,
         )
-        OutlinedButton(onClick = startListening) {
+        OutlinedButton(
+            onClick = startListening,
+            enabled = localControlsEnabled,
+        ) {
             Text(stringResource(R.string.settings_wake_service_resume))
         }
     }
@@ -484,6 +830,7 @@ private fun WakeSection(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+    SubsectionHeader(stringResource(R.string.settings_scoped_controls_title))
 
     // Wake-word combobox, populated from the shared catalog (never free text).
     var wakeExpanded by remember { mutableStateOf(false) }
@@ -999,6 +1346,7 @@ private fun VoiceEngineSection(
 /** Audio group: input-device combobox (populated from [MicDeviceOption], never typed). */
 @Composable
 private fun AudioSection(
+    localControlsEnabled: Boolean,
     micDeviceId: String?,
     micDevices: List<MicDeviceOption>,
     onSetMicDevice: (String?) -> Unit,
@@ -1006,15 +1354,20 @@ private fun AudioSection(
 ) {
     var micExpanded by remember { mutableStateOf(false) }
     val selectedMic = micDevices.firstOrNull { it.id == micDeviceId } ?: micDevices.firstOrNull()
+    val selectedMicLabel = if (!localControlsEnabled && micDeviceId != null) {
+        stringResource(R.string.settings_mic_specific_on_host)
+    } else {
+        selectedMic?.label ?: stringResource(R.string.settings_mic_system_default)
+    }
     ExposedDropdownMenuBox(
         expanded = micExpanded,
         onExpandedChange = {
-            if (it) onExpandMicDevices()
+            if (it && localControlsEnabled) onExpandMicDevices()
             micExpanded = it
         },
     ) {
         OutlinedTextField(
-            value = selectedMic?.label ?: stringResource(R.string.settings_mic_system_default),
+            value = selectedMicLabel,
             onValueChange = {},
             readOnly = true,
             label = { Text(stringResource(R.string.settings_mic_label)) },
@@ -1032,6 +1385,7 @@ private fun AudioSection(
             micDevices.forEach { device ->
                 DropdownMenuItem(
                     text = { Text(device.label) },
+                    enabled = localControlsEnabled || device.id == null,
                     onClick = {
                         onSetMicDevice(device.id)
                         micExpanded = false
@@ -1049,6 +1403,7 @@ private fun AudioSection(
  */
 @Composable
 private fun VoiceScreenSection(
+    localControlsEnabled: Boolean,
     lockedSessions: Boolean,
     wakeScreenOnWake: Boolean,
     keepScreenOn: Boolean,
@@ -1060,29 +1415,34 @@ private fun VoiceScreenSection(
     onRecheck: () -> Unit,
     onOpenAppInfo: () -> Unit,
 ) {
+    SubsectionHeader(stringResource(R.string.settings_android_local_controls_title))
     SubsectionHeader(stringResource(R.string.settings_section_voice_screen))
     LabeledSwitchRow(
         label = stringResource(R.string.settings_locked_sessions_label),
         description = stringResource(R.string.settings_locked_sessions_desc),
         checked = lockedSessions,
+        enabled = localControlsEnabled,
         onCheckedChange = onSetLockedSessions,
     )
     LabeledSwitchRow(
         label = stringResource(R.string.settings_wake_screen_label),
         description = stringResource(R.string.settings_wake_screen_desc),
         checked = wakeScreenOnWake,
+        enabled = localControlsEnabled,
         onCheckedChange = onSetWakeScreenOnWake,
     )
     LabeledSwitchRow(
         label = stringResource(R.string.settings_keep_screen_on_label),
         description = stringResource(R.string.settings_keep_screen_on_desc),
         checked = keepScreenOn,
+        enabled = localControlsEnabled,
         onCheckedChange = onSetKeepScreenOn,
     )
 
     // Battery-optimization health card + action row (01-platform §C).
     BatteryHealthCard(
         ignored = batteryOptimizationIgnored,
+        enabled = localControlsEnabled,
         onExempt = onExempt,
         onRecheck = onRecheck,
     )
@@ -1090,7 +1450,10 @@ private fun VoiceScreenSection(
     // Per-OEM guidance (M8.4): OEM battery/sleep layers on top of Android's
     // own Doze exemption above — Samsung (the owner's phone) gets concrete
     // steps, every other manufacturer gets a generic pointer at the card above.
-    OemGuidanceCard(onOpenAppInfo = onOpenAppInfo)
+    OemGuidanceCard(
+        enabled = localControlsEnabled,
+        onOpenAppInfo = onOpenAppInfo,
+    )
 }
 
 /**
@@ -1180,6 +1543,7 @@ private fun AppearanceSection(
 /** Privacy group: storage switches + retention radio group. */
 @Composable
 private fun PrivacySection(
+    localControlsEnabled: Boolean,
     storeTranscripts: Boolean,
     storeAudio: Boolean,
     retentionDays: Int,
@@ -1197,6 +1561,7 @@ private fun PrivacySection(
     val cameraLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted -> cameraGranted = granted }
+    SubsectionHeader(stringResource(R.string.settings_android_local_controls_title))
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = androidx.compose.material3.CardDefaults.cardColors(
@@ -1224,6 +1589,7 @@ private fun PrivacySection(
             } else {
                 OutlinedButton(
                     onClick = { cameraLauncher.launch(Manifest.permission.CAMERA) },
+                    enabled = localControlsEnabled,
                     modifier = Modifier.heightIn(min = 48.dp),
                 ) {
                     Text(stringResource(R.string.settings_camera_permission_allow))
@@ -1231,6 +1597,7 @@ private fun PrivacySection(
             }
         }
     }
+    SubsectionHeader(stringResource(R.string.settings_scoped_controls_title))
     LabeledSwitchRow(
         label = stringResource(R.string.settings_store_transcripts_label),
         description = stringResource(R.string.settings_store_transcripts_desc),
@@ -1269,6 +1636,7 @@ private fun PrivacySection(
  */
 @Composable
 private fun DiagnosticsSection(
+    localControlsEnabled: Boolean,
     diagnostics: DiagnosticsConfig,
     onSetDiagnosticsEnabled: (Boolean) -> Unit,
     onSetDiagnosticsMinLevel: (String) -> Unit,
@@ -1285,10 +1653,16 @@ private fun DiagnosticsSection(
     var confirmClearLogs by remember { mutableStateOf(false) }
 
     SubsectionHeader(stringResource(R.string.settings_section_diagnostics))
+    Text(
+        stringResource(R.string.settings_diagnostics_local_note),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
     LabeledSwitchRow(
         label = stringResource(R.string.settings_diagnostics_master_label),
         description = stringResource(R.string.settings_diagnostics_master_desc),
         checked = diagnostics.enabled,
+        enabled = localControlsEnabled,
         onCheckedChange = onSetDiagnosticsEnabled,
     )
     // Everything below only affects capture while logging is enabled.
@@ -1296,11 +1670,11 @@ private fun DiagnosticsSection(
         LabeledRadioGroup(
             label = stringResource(R.string.settings_diagnostics_level_label),
             options = listOf(
-                RadioOption("VERBOSE", stringResource(R.string.settings_diagnostics_level_verbose), null, true),
-                RadioOption("DEBUG", stringResource(R.string.settings_diagnostics_level_debug), null, true),
-                RadioOption("INFO", stringResource(R.string.settings_diagnostics_level_info), null, true),
-                RadioOption("WARN", stringResource(R.string.settings_diagnostics_level_warn), null, true),
-                RadioOption("ERROR", stringResource(R.string.settings_diagnostics_level_error), null, true),
+                RadioOption("VERBOSE", stringResource(R.string.settings_diagnostics_level_verbose), null, localControlsEnabled),
+                RadioOption("DEBUG", stringResource(R.string.settings_diagnostics_level_debug), null, localControlsEnabled),
+                RadioOption("INFO", stringResource(R.string.settings_diagnostics_level_info), null, localControlsEnabled),
+                RadioOption("WARN", stringResource(R.string.settings_diagnostics_level_warn), null, localControlsEnabled),
+                RadioOption("ERROR", stringResource(R.string.settings_diagnostics_level_error), null, localControlsEnabled),
             ),
             selected = diagnostics.minLevel,
             onSelect = onSetDiagnosticsMinLevel,
@@ -1320,15 +1694,18 @@ private fun DiagnosticsSection(
             )
             TextButton(
                 onClick = { onSetAllDiagnosticsCategories(true) },
+                enabled = localControlsEnabled,
                 modifier = Modifier.heightIn(min = 48.dp),
             ) { Text(stringResource(R.string.settings_diagnostics_select_all)) }
             TextButton(
                 onClick = { onSetAllDiagnosticsCategories(false) },
+                enabled = localControlsEnabled,
                 modifier = Modifier.heightIn(min = 48.dp),
             ) { Text(stringResource(R.string.settings_diagnostics_select_none)) }
         }
         DiagnosticsCategories(
             categories = diagnostics.categories,
+            enabled = localControlsEnabled,
             onToggle = onSetDiagnosticsCategory,
         )
     }
@@ -1403,6 +1780,7 @@ private fun DiagnosticsSection(
         }
         OutlinedButton(
             onClick = { confirmClearLogs = true },
+            enabled = localControlsEnabled,
             modifier = Modifier
                 .weight(1f)
                 .heightIn(min = 48.dp),
@@ -1432,6 +1810,8 @@ private fun AccountSection(
     signedIn: Boolean,
     accountActionsAvailable: Boolean,
     signOutInProgress: Boolean,
+    devices: List<SettingsHostUi>,
+    onRenameDevice: (String, String) -> Unit,
     onSignOut: () -> Unit,
     onSignOutEverywhere: () -> Unit,
 ) {
@@ -1447,6 +1827,51 @@ private fun AccountSection(
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+    if (devices.isNotEmpty()) {
+        SubsectionHeader(stringResource(R.string.settings_devices_title))
+        devices.forEach { device ->
+            var editedName by remember(device.id, device.name) { mutableStateOf(device.name) }
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = editedName,
+                        onValueChange = { editedName = it.take(80) },
+                        label = { Text(stringResource(R.string.settings_device_name_label)) },
+                        supportingText = {
+                            val manufacturer = device.metadata["manufacturer"]
+                            val model = device.metadata["model"]
+                            val hostInfo = when {
+                                model.isNullOrBlank() -> manufacturer
+                                manufacturer.isNullOrBlank() ||
+                                    model.startsWith(manufacturer, ignoreCase = true) -> model
+                                else -> "$manufacturer $model"
+                            }
+                            Text(
+                                listOfNotNull(
+                                    device.surface,
+                                    hostInfo,
+                                    stringResource(R.string.settings_device_current_badge)
+                                        .takeIf { device.isCurrent },
+                                ).joinToString(" · "),
+                            )
+                        },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedButton(
+                        onClick = { onRenameDevice(device.id, editedName) },
+                        enabled = editedName.isNotBlank() && editedName.trim() != device.name,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp),
+                    ) { Text(stringResource(R.string.settings_device_rename)) }
+                }
+            }
+        }
+    }
     OutlinedButton(
         onClick = { confirmSignOut = true },
         enabled = accountActionsAvailable && !signOutInProgress,
@@ -1503,6 +1928,7 @@ private fun AccountSection(
 @Composable
 private fun BatteryHealthCard(
     ignored: Boolean,
+    enabled: Boolean,
     onExempt: () -> Unit,
     onRecheck: () -> Unit,
 ) {
@@ -1536,11 +1962,13 @@ private fun BatteryHealthCard(
             if (ignored) {
                 OutlinedButton(
                     onClick = onRecheck,
+                    enabled = enabled,
                     modifier = Modifier.heightIn(min = 48.dp),
                 ) { Text(stringResource(R.string.settings_battery_recheck)) }
             } else {
                 Button(
                     onClick = onExempt,
+                    enabled = enabled,
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = 48.dp),
@@ -1560,7 +1988,10 @@ private fun BatteryHealthCard(
  * the exemption card instead of invented per-OEM steps this app can't verify.
  */
 @Composable
-private fun OemGuidanceCard(onOpenAppInfo: () -> Unit) {
+private fun OemGuidanceCard(
+    enabled: Boolean,
+    onOpenAppInfo: () -> Unit,
+) {
     val isSamsung = Build.MANUFACTURER.equals("samsung", ignoreCase = true)
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -1594,6 +2025,7 @@ private fun OemGuidanceCard(onOpenAppInfo: () -> Unit) {
             }
             OutlinedButton(
                 onClick = onOpenAppInfo,
+                enabled = enabled,
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 48.dp),
@@ -1606,6 +2038,7 @@ private fun OemGuidanceCard(onOpenAppInfo: () -> Unit) {
 @Composable
 private fun DiagnosticsCategories(
     categories: Map<String, Boolean>,
+    enabled: Boolean,
     onToggle: (String, Boolean) -> Unit,
 ) {
     Column(Modifier.fillMaxWidth()) {
@@ -1618,12 +2051,17 @@ private fun DiagnosticsCategories(
                     .heightIn(min = 48.dp)
                     .toggleable(
                         value = checked,
+                        enabled = enabled,
                         role = Role.Checkbox,
                         onValueChange = { onToggle(key, it) },
                     ),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Checkbox(checked = checked, onCheckedChange = null)
+                Checkbox(
+                    checked = checked,
+                    onCheckedChange = null,
+                    enabled = enabled,
+                )
                 Text(
                     label,
                     style = MaterialTheme.typography.bodyLarge,
@@ -1742,6 +2180,7 @@ private fun LabeledSwitchRow(
     label: String,
     description: String,
     checked: Boolean,
+    enabled: Boolean = true,
     onCheckedChange: (Boolean) -> Unit,
 ) {
     Row(
@@ -1750,9 +2189,11 @@ private fun LabeledSwitchRow(
             .heightIn(min = 48.dp)
             .selectable(
                 selected = checked,
+                enabled = enabled,
                 role = Role.Switch,
                 onClick = { onCheckedChange(!checked) },
-            ),
+            )
+            .alpha(if (enabled) 1f else 0.5f),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
@@ -1764,7 +2205,7 @@ private fun LabeledSwitchRow(
             )
         }
         Box(Modifier.width(8.dp))
-        Switch(checked = checked, onCheckedChange = null)
+        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
     }
 }
 

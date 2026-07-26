@@ -154,6 +154,55 @@ func TestRotateRefreshInvalidHash(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidRefresh)
 }
 
+func TestRotateRefreshRejectsRevokedBoundDevice(t *testing.T) {
+	ctx := context.Background()
+	st, _ := newTestStore()
+	deviceID := "019c8dc7-0a68-7bd8-93a0-a39deeb7e2cf"
+	_, err := st.UpsertClientDevice(ctx, &Device{
+		DeviceID: deviceID, UserID: "u1", Name: "Browser",
+		Surface: SurfaceWeb, FamilyID: "f1",
+	})
+	require.NoError(t, err)
+	sess := mkSession("s1", "u1", "f1", "hash-1")
+	sess.DeviceID = deviceID
+	require.NoError(t, st.CreateSession(ctx, sess))
+	require.NoError(t, st.RevokeDevice(ctx, deviceID))
+
+	_, err = st.RotateRefresh(ctx, sess, "hash-1", "hash-2", time.Now().Add(time.Hour).Unix())
+	require.ErrorIs(t, err, ErrDeviceRevoked)
+	fresh, err := st.GetSessionForUser(ctx, "u1", "s1")
+	require.NoError(t, err)
+	require.NotNil(t, fresh)
+	assert.Equal(t, "hash-1", fresh.RefreshHash,
+		"a revoked device must fail before its refresh credential rotates")
+}
+
+func TestRotateRefreshLosesRaceToDeviceRevoke(t *testing.T) {
+	ctx := context.Background()
+	fake := testutil.NewFakeDynamo()
+	direct := NewWithClient(fake, "live-ninja-test")
+	deviceID := "019c8dc7-0a68-7bd8-93a0-a39deeb7e2cf"
+	_, err := direct.UpsertClientDevice(ctx, &Device{
+		DeviceID: deviceID, UserID: "u1", Name: "Browser",
+		Surface: SurfaceWeb, FamilyID: "f1",
+	})
+	require.NoError(t, err)
+	sess := mkSession("s1", "u1", "f1", "hash-1")
+	sess.DeviceID = deviceID
+	require.NoError(t, direct.CreateSession(ctx, sess))
+
+	racing := NewWithClient(&revokeBeforeTransactionDynamo{
+		FakeDynamo: fake, revokeStore: direct, deviceID: deviceID,
+	}, "live-ninja-test")
+	_, err = racing.RotateRefresh(ctx, sess, "hash-1", "hash-2", time.Now().Add(time.Hour).Unix())
+	require.ErrorIs(t, err, ErrDeviceRevoked)
+	fresh, err := direct.GetSessionForUser(ctx, "u1", "s1")
+	require.NoError(t, err)
+	require.NotNil(t, fresh)
+	assert.Equal(t, "hash-1", fresh.RefreshHash,
+		"the device condition and refresh update must cancel atomically")
+}
+
 func TestRevokeAllForUserAndListSessions(t *testing.T) {
 	ctx := context.Background()
 	st, _ := newTestStore()

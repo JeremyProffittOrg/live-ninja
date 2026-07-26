@@ -26,6 +26,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -46,6 +47,8 @@ func RegisterSettingsRoutes(app *fiber.App, deps *Deps) {
 	api := app.Group("/api/v1", RequireAuth())
 	api.Get("/settings", handleGetSettings(deps))
 	api.Put("/settings", handlePutSettings(deps))
+	api.Get("/settings/sections/:section", handleGetSettingsSection(deps))
+	api.Patch("/settings/sections/:section", handlePatchSettingsSection(deps))
 	api.Get("/realtime/voices", handleListVoices())
 	api.Get("/realtime/personas", handleListPersonas())
 }
@@ -99,6 +102,18 @@ func handleGetSettings(deps *Deps) fiber.Handler {
 		if err != nil {
 			return apiInternalError(c, deps, "get settings", err)
 		}
+		switch effectiveRaw := strings.TrimSpace(c.Query("effective")); effectiveRaw {
+		case "":
+		case "true":
+			deviceID, responseErr := ownedRequestDeviceID(c, deps, true)
+			if responseErr != nil {
+				return responseErr
+			}
+			doc = store.EffectiveSettings(doc, deviceID)
+		case "false":
+		default:
+			return apiBadRequest(c, "effective must be true or false")
+		}
 
 		if sinceRaw := c.Query("since"); sinceRaw != "" {
 			since, perr := strconv.ParseInt(sinceRaw, 10, 64)
@@ -138,6 +153,24 @@ func handlePutSettings(deps *Deps) fiber.Handler {
 		if body.Version < 1 {
 			return apiBadRequest(c, "version must be a positive integer (the version you last read)")
 		}
+		current, err := deps.Store.GetSettings(c.Context(), userID)
+		if err != nil {
+			return apiInternalError(c, deps, "get settings before put", err)
+		}
+		if lnsync.DocVersion(current) != body.Version {
+			return errorJSON(c, fiber.StatusConflict, "version_conflict",
+				"Your settings were changed from another device. Re-read and re-apply.")
+		}
+		currentOverrides, _ := current["deviceOverrides"].(map[string]any)
+		submittedOverrides, present := body.Settings["deviceOverrides"]
+		if !present {
+			// Additive compatibility for an old typed client that does not
+			// yet know this field: preserve it instead of erasing every
+			// device-specific value.
+			body.Settings["deviceOverrides"] = currentOverrides
+		} else if !reflect.DeepEqual(submittedOverrides, currentOverrides) {
+			return apiBadRequest(c, "deviceOverrides can only be changed through the settings section API")
+		}
 
 		if msg := validateAndNormalizeSettings(body.Settings); msg != "" {
 			return apiBadRequest(c, msg)
@@ -148,6 +181,10 @@ func handlePutSettings(deps *Deps) fiber.Handler {
 			if errors.Is(err, store.ErrVersionConflict) {
 				return errorJSON(c, fiber.StatusConflict, "version_conflict",
 					"Your settings were changed from another device. Re-read and re-apply.")
+			}
+			if errors.Is(err, store.ErrSettingsTooLarge) {
+				return errorJSON(c, fiber.StatusRequestEntityTooLarge, "settings_too_large",
+					"Settings are too large to save. Remove some device-specific or custom data.")
 			}
 			return apiInternalError(c, deps, "put settings", err)
 		}
@@ -199,6 +236,33 @@ var publishSettingsShadow = func(ctx context.Context, deps *Deps, userID string,
 // ResolveSessionVoice chain already falls through safely).
 func validateAndNormalizeSettings(doc map[string]any) string {
 	delete(doc, "version") // server-owned; PutSettings sets it
+	switch overrides := doc["deviceOverrides"].(type) {
+	case nil:
+		doc["deviceOverrides"] = map[string]any{}
+	case map[string]any:
+		if len(overrides) > store.MaxDeviceOverrides {
+			return "deviceOverrides may contain at most 50 devices"
+		}
+		for deviceID, raw := range overrides {
+			entry, ok := raw.(map[string]any)
+			if !ok {
+				return "deviceOverrides[" + deviceID + "] must be an object"
+			}
+			sections, ok := entry["sections"].(map[string]any)
+			if !ok {
+				return "deviceOverrides[" + deviceID + "].sections must be an object"
+			}
+			for section, payload := range sections {
+				if _, known := store.SettingsSectionFields(section); known {
+					if _, ok := payload.(map[string]any); !ok {
+						return "deviceOverrides[" + deviceID + "].sections[" + section + "] must be an object"
+					}
+				}
+			}
+		}
+	default:
+		return "deviceOverrides must be an object"
+	}
 
 	if s, ok := doc["wakeWord"].(string); !ok || strings.TrimSpace(s) == "" || len(s) > 128 {
 		return "wakeWord must be a non-empty catalog id"

@@ -8,6 +8,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/iotdataplane"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 )
@@ -121,6 +123,41 @@ func TestBuildDesiredPerDevicePin(t *testing.T) {
 	}
 }
 
+func TestBuildDesiredUsesDeviceSectionOverrides(t *testing.T) {
+	doc := settingsDoc()
+	doc["deviceOverrides"] = map[string]any{
+		"dev1": map[string]any{
+			"sections": map[string]any{
+				"wakeWord": map[string]any{
+					"wakeWord": "computer", "wakeEngine": "porcupine", "sensitivity": 0.25,
+				},
+				"persona": map[string]any{"voice": "marin"},
+				"voiceEngine": map[string]any{
+					"voiceEngine": map[string]any{
+						"default": "gemini-flash-live",
+						"devices": map[string]any{},
+					},
+				},
+				"privacy": map[string]any{
+					"privacy": map[string]any{
+						"storeAudio": false, "storeTranscripts": false, "retentionDays": 0,
+					},
+				},
+			},
+		},
+	}
+	desired := BuildDesired(doc, "dev1", 8)
+	assert.Equal(t, "computer", desired["wakeWord"])
+	assert.Equal(t, 0.25, desired["sensitivity"])
+	assert.Equal(t, "marin", desired["voice"])
+	assert.Equal(t, "gemini-flash-live", desired["voiceEngine"])
+	assert.Equal(t, false, desired["privacy"].(map[string]any)["storeTranscripts"])
+
+	other := BuildDesired(doc, "dev2", 8)
+	assert.Equal(t, "hey-live-ninja", other["wakeWord"])
+	assert.Equal(t, "cedar", other["voice"])
+}
+
 func TestPublishDesiredFiltersAndPublishes(t *testing.T) {
 	iotFake := &fakeIoT{}
 	p := NewWithClient(iotFake, nil)
@@ -228,6 +265,22 @@ func TestMergeDeviceReported(t *testing.T) {
 	if canonical["voice"] != "cedar" {
 		t.Errorf("MergeDeviceReported mutated its input")
 	}
+}
+
+func TestMergeDeviceReportedForDeviceCreatesSparseOverride(t *testing.T) {
+	canonical := settingsDoc()
+	canonical["deviceOverrides"] = map[string]any{}
+	merged, changed := MergeDeviceReportedForDevice(canonical, "dev1", map[string]any{
+		"wakeWord": "computer", "voice": "marin", "turnDetection": "server_vad",
+	})
+	require.True(t, changed)
+	assert.Equal(t, "hey-live-ninja", canonical["wakeWord"], "input/account defaults must stay unchanged")
+	assert.Equal(t, "cedar", merged["voice"], "device report must not rewrite the account default")
+	effective := store.EffectiveSettings(merged, "dev1")
+	assert.Equal(t, "computer", effective["wakeWord"])
+	assert.Equal(t, "marin", effective["voice"])
+	assert.Equal(t, "server_vad", effective["turnDetection"])
+	assert.Equal(t, "cedar", store.EffectiveSettings(merged, "dev2")["voice"])
 }
 
 func TestMergeDeviceReportedRejectsInvalid(t *testing.T) {

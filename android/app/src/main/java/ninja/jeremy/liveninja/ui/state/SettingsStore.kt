@@ -6,6 +6,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -112,6 +113,16 @@ class SettingsStore @Inject constructor(
     private val _document = MutableStateFlow(parse(loadRaw()))
     val document: StateFlow<SettingsDocument> = _document
 
+    /**
+     * True only when a valid settings document was actually persisted before
+     * this store was opened. A synthesized default document is not migration
+     * input for a brand-new install.
+     */
+    val hasPersistedDocument: Boolean
+        get() = prefs.getString(KEY_DOC, null)
+            ?.let { stored -> runCatching { JSONObject(stored) }.isSuccess }
+            ?: false
+
     /** Apply [block] to a copy of the raw document, bump `version`, persist, emit. */
     fun update(block: (JSONObject) -> Unit) {
         synchronized(lock) {
@@ -170,8 +181,17 @@ class SettingsStore @Inject constructor(
     fun setWakeScreenOnWake(value: Boolean) = update { it.put("wakeScreenOnWake", value) }
     fun setKeepScreenOn(value: Boolean) = update { it.put("keepScreenOn", value) }
 
-    /** Set the active visual style (03-theme: hal9000 / ninja / minimal / terminal). */
-    fun setAppStyle(style: String) = update { it.put("appStyle", style) }
+    /**
+     * Set the canonical app-zone visual style. Older Android builds stored a
+     * top-level `appStyle`; reads still understand it for migration, while new
+     * writes use `appearance.appStyle` like the shared settings schema.
+     */
+    fun setAppStyle(style: String) = update {
+        val appearance = it.optJSONObject("appearance") ?: JSONObject()
+        appearance.put("appStyle", style)
+        it.put("appearance", appearance)
+        it.remove("appStyle")
+    }
 
     // ---- diagnostics (04-logging §A4) ----
 
@@ -207,6 +227,49 @@ class SettingsStore @Inject constructor(
         }
     }
 
+    /** Deep snapshot used by the one-time local-to-current-device migration. */
+    fun rawSnapshot(): JSONObject = synchronized(lock) {
+        JSONObject(_document.value.raw.toString())
+    }
+
+    /**
+     * Adopt the backend's effective settings for this device without treating
+     * the pull as a local edit. Android-only controls remain local because the
+     * shared backend sections intentionally do not classify them as portable.
+     */
+    fun replaceFromServer(effective: JSONObject) {
+        synchronized(lock) {
+            val current = _document.value.raw
+            val next = JSONObject(effective.toString())
+            LOCAL_ONLY_KEYS.forEach { key ->
+                if (current.has(key)) next.put(key, copyJsonValue(current.opt(key)))
+            }
+            prefs.edit().putString(KEY_DOC, next.toString()).apply()
+            _document.value = parse(next)
+        }
+    }
+
+    /** Build a typed remote-host preview without changing the runtime flow. */
+    fun preview(sectionSettings: JSONObject): SettingsDocument {
+        val next = JSONObject(_document.value.raw.toString())
+        sectionSettings.keys().forEach { key ->
+            next.put(key, copyJsonValue(sectionSettings.opt(key)))
+        }
+        return parse(next)
+    }
+
+    /** Confirm locally-edited section values after a queued server save. */
+    fun applySyncedSection(sectionSettings: JSONObject) {
+        synchronized(lock) {
+            val next = JSONObject(_document.value.raw.toString())
+            sectionSettings.keys().forEach { key ->
+                next.put(key, copyJsonValue(sectionSettings.opt(key)))
+            }
+            prefs.edit().putString(KEY_DOC, next.toString()).apply()
+            _document.value = parse(next)
+        }
+    }
+
     private fun loadRaw(): JSONObject {
         val stored = prefs.getString(KEY_DOC, null) ?: return defaultDocument()
         return runCatching { JSONObject(stored) }.getOrElse { defaultDocument() }
@@ -216,6 +279,7 @@ class SettingsStore @Inject constructor(
         val persona = raw.optJSONObject("persona")
         val privacy = raw.optJSONObject("privacy")
         val voiceEngine = raw.optJSONObject("voiceEngine")
+        val appearance = raw.optJSONObject("appearance")
         return SettingsDocument(
             version = raw.optInt("version", 1),
             wakeWord = raw.optString("wakeWord", "hey-live-ninja"),
@@ -237,7 +301,10 @@ class SettingsStore @Inject constructor(
             lockedSessions = raw.optBoolean("lockedSessions", true),
             wakeScreenOnWake = raw.optBoolean("wakeScreenOnWake", true),
             keepScreenOn = raw.optBoolean("keepScreenOn", false),
-            appStyle = raw.optString("appStyle", "hal9000"),
+            appStyle = appearance?.optString(
+                "appStyle",
+                raw.optString("appStyle", "hal9000"),
+            ) ?: raw.optString("appStyle", "hal9000"),
             diagnostics = parseDiagnostics(raw.optJSONObject("diagnostics")),
             raw = raw,
         )
@@ -315,5 +382,19 @@ class SettingsStore @Inject constructor(
 
     private companion object {
         const val KEY_DOC = "settings_document_v1"
+        val LOCAL_ONLY_KEYS = listOf(
+            "lockedSessions",
+            "wakeScreenOnWake",
+            "keepScreenOn",
+            "diagnostics",
+            // Read compatibility only; setAppStyle migrates this into appearance.
+            "appStyle",
+        )
+
+        fun copyJsonValue(value: Any?): Any? = when (value) {
+            is JSONObject -> JSONObject(value.toString())
+            is JSONArray -> JSONArray(value.toString())
+            else -> value
+        }
     }
 }

@@ -38,42 +38,53 @@ import ninja.jeremy.liveninja.R
 enum class SettingsSection(
     @StringRes val titleRes: Int,
     @StringRes val descriptionRes: Int,
+    /** Backend section id; null means actions-only rather than configurable. */
+    val apiId: String?,
 ) {
     ABOUT_YOU(
         R.string.settings_section_about_you,
         R.string.settings_section_about_you_desc,
+        "aboutYou",
     ),
     WAKE_WORD(
         R.string.settings_section_wake,
         R.string.settings_section_wake_desc,
+        "wakeWord",
     ),
     PERSONA(
         R.string.settings_section_persona,
         R.string.settings_section_persona_desc,
+        "persona",
     ),
     VOICE_ENGINE(
         R.string.settings_section_voice_engine,
         R.string.settings_section_voice_engine_desc,
+        "voiceEngine",
     ),
     TURN_DETECTION(
         R.string.settings_section_turn_detection,
         R.string.settings_section_turn_detection_desc,
+        "turnDetection",
     ),
     APPEARANCE(
         R.string.settings_section_appearance,
         R.string.settings_section_appearance_desc,
+        "appearance",
     ),
     MICROPHONE(
         R.string.settings_section_microphone,
         R.string.settings_section_microphone_desc,
+        "microphone",
     ),
     PRIVACY(
         R.string.settings_section_privacy,
         R.string.settings_section_privacy_desc,
+        "privacy",
     ),
     ACCOUNT(
         R.string.settings_section_account,
         R.string.settings_section_account_desc,
+        null,
     ),
 }
 

@@ -81,6 +81,7 @@ which is why the profile below exists as an always-injected alternative.
 
 One versioned settings document per user at `USER#<uid>` / `SETTINGS`, JSON-schema-validated
 (contracts/settings.schema.json), optimistic concurrency on `version`, synced across surfaces.
+Verified `X-LN-Device-ID` selects sparse host overrides; scoped writes share `version`.
 Its `profile` section: `displayName`, `pronouns?`, `homeLocation` / `workLocation`
 `{label, postalCode?, city?, admin1?, country?, lat, lon, timezone}`, `units`, `locale?`,
 `contactEmail`, `quietHours?`, `notes[]`. Locations are geocode-verified at save time — a location

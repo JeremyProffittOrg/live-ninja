@@ -129,6 +129,31 @@ func TestResolveSessionVoice(t *testing.T) {
 		}
 	})
 
+	t.Run("device persona section overrides stored voice preferences", func(t *testing.T) {
+		withOverride := map[string]any{}
+		for key, value := range full {
+			withOverride[key] = value
+		}
+		withOverride["deviceOverrides"] = map[string]any{
+			"dev-1": map[string]any{
+				"sections": map[string]any{
+					"persona": map[string]any{
+						"voice":       "ash",
+						"voiceAccent": "new-york",
+						"personaPrefs": map[string]any{
+							"custom": map[string]any{"voice": "verse", "accent": "irish"},
+						},
+					},
+				},
+			},
+		}
+		g := &fakeAccentSettingsGetter{item: voicePrefsItem(t, withOverride)}
+		sv := ResolveSessionVoiceForDevice(ctx, g, "tbl", "u1", "dev-1", "custom", "")
+		if sv.Voice != "verse" || sv.AccentID != "irish" {
+			t.Errorf("got %+v, want verse/irish", sv)
+		}
+	})
+
 	t.Run("stored-persona ref keys by its bare persona id", func(t *testing.T) {
 		g := &fakeAccentSettingsGetter{item: voicePrefsItem(t, full)}
 		sv := ResolveSessionVoice(ctx, g, "tbl", "u1", "user:u1:my-persona", "")

@@ -202,6 +202,29 @@ func TestGetWeatherWithNoLocationUsesProfileHome(t *testing.T) {
 	assert.Equal(t, "imperial", out["units"])
 }
 
+func TestGetWeatherUsesDeviceEffectiveProfile(t *testing.T) {
+	fake := &fakeGeoServer{}
+	withFakeUpstreams(t, fake)
+
+	deviceHome := store.Location{
+		Label: "Berlin, Germany", Lat: 52.52, Lon: 13.405,
+		Timezone: "Europe/Berlin",
+	}
+	deps := weatherDeps(store.Profile{HomeLocation: &charlotteNC, Units: store.UnitsImperial})
+	deps.DeviceProfile = func(_ context.Context, userID, deviceID string) store.Profile {
+		assert.Equal(t, "user-1", userID)
+		assert.Equal(t, "device-1", deviceID)
+		return store.Profile{HomeLocation: &deviceHome, Units: store.UnitsMetric}
+	}
+	out, terr := handleGetWeather(context.Background(), deps,
+		Invocation{UserID: "user-1", DeviceID: "device-1"}, map[string]any{})
+
+	require.Nil(t, terr)
+	location := out["location"].(map[string]any)
+	assert.Equal(t, deviceHome.Label, location["name"])
+	assert.Equal(t, "metric", out["units"])
+}
+
 func TestGetWeatherUnitsDefaultToProfile(t *testing.T) {
 	fake := &fakeGeoServer{}
 	withFakeUpstreams(t, fake)

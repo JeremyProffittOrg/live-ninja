@@ -299,6 +299,10 @@ func TestRotateDeviceSession(t *testing.T) {
 		ExpiresAt:   1,
 		TTL:         1,
 	}
+	require.NoError(t, st.CreateDevice(ctx, &store.Device{
+		DeviceID: sess.DeviceID, UserID: sess.UserID, FamilyID: sess.FamilyID,
+		Name: "Test device", Surface: store.SurfaceDevice,
+	}))
 	require.NoError(t, st.CreateSession(ctx, sess))
 
 	rotated, newPlain, err := RotateDeviceSession(ctx, st, sess, plain)

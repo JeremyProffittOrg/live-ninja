@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -188,6 +189,39 @@ func TestProfileSuggestAutoAppliesANote(t *testing.T) {
 	profile, err := deps.Store.GetProfile(ctx, "user-1")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"I keep bees"}, profile.Notes)
+}
+
+func TestProfileSuggestDoesNotAutoApplyDeviceProfileGlobally(t *testing.T) {
+	deps, _ := newTestDepsWithFake()
+	r := newTestRegistry(t, deps)
+	ctx := context.Background()
+
+	doc := store.DefaultSettings()
+	doc["profile"].(map[string]any)["units"] = store.UnitsImperial
+	require.NoError(t, store.ApplySettingsSection(doc, store.SettingsSectionAboutYou,
+		map[string]any{"profile": map[string]any{"units": store.UnitsImperial}},
+		[]string{"device-1"}, false, false, time.Now()))
+	_, err := deps.Store.PutSettings(ctx, "user-1", doc, 1)
+	require.NoError(t, err)
+
+	args := suggestArgs(store.SuggestFieldUnits, "metric", `The user said "I prefer Celsius".`)
+	args["autoApply"] = true
+	inv := suggestInv(args)
+	inv.DeviceID = "device-1"
+	res := r.Invoke(ctx, inv)
+	require.True(t, res.OK, "error: %+v", res.Error)
+	assert.Equal(t, "suggested", res.Output["status"])
+	assert.Equal(t, false, res.Output["applied"])
+	assert.Equal(t, true, res.Output["autoApplyRefused"])
+
+	account, err := deps.Store.GetProfile(ctx, "user-1")
+	require.NoError(t, err)
+	assert.Equal(t, store.UnitsImperial, account.Units,
+		"device-scoped invocation must not write account defaults")
+	rows := pendingRows(t, deps)
+	require.Len(t, rows, 1)
+	assert.Equal(t, store.SuggestionStatusPending, rows[0].Status)
+	assert.False(t, rows[0].AutoApplied)
 }
 
 // An auto-apply of something already true must not queue a phantom undo row.

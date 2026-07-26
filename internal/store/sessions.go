@@ -103,6 +103,191 @@ func (s *Store) GetSessionByID(ctx context.Context, sessionID string) (*Session,
 	return &sess, nil
 }
 
+// GetSessionForUser reads a known session directly from its base-table key
+// with ConsistentRead. Request paths use it when an immediately preceding
+// device rebind must be visible without waiting for the session-id GSI.
+func (s *Store) GetSessionForUser(ctx context.Context, userID, sessionID string) (*Session, error) {
+	if userID == "" || sessionID == "" {
+		return nil, errors.New("store: userID and sessionID are required")
+	}
+	return s.getSessionConsistent(ctx, userID, sessionID)
+}
+
+// BindSessionDevice attaches a stable browser/app device id to an existing
+// authenticated session. The binding is one-way: a session may move from no
+// device id to one id, or be idempotently rebound to the same id, but can
+// never be switched to a different host. The next ordinary refresh then
+// carries this id in the access JWT's `did` claim.
+func (s *Store) BindSessionDevice(ctx context.Context, userID, sessionID, deviceID string) error {
+	if userID == "" || sessionID == "" || deviceID == "" {
+		return errors.New("store: userID, sessionID and deviceID are required")
+	}
+	sess, err := s.getSessionConsistent(ctx, userID, sessionID)
+	if err != nil {
+		return err
+	}
+	if sess == nil {
+		return ErrNotFound
+	}
+	if sess.DeviceID == deviceID {
+		return s.requireActiveBindingDevice(ctx, userID, deviceID)
+	}
+	if sess.DeviceID != "" {
+		return ErrDeviceBindingConflict
+	}
+	return s.bindSessionDeviceTransaction(ctx, sess, deviceID)
+}
+
+// BindClientSessionDevice is the browser/Android recovery variant of
+// BindSessionDevice. Those surfaces keep their random installation UUID in
+// app-local storage, which can be cleared independently of the still-valid
+// refresh session. In that case registration may replace the old binding.
+// Provisioned device sessions remain immutable.
+func (s *Store) BindClientSessionDevice(ctx context.Context, userID, sessionID, deviceID string) error {
+	if userID == "" || sessionID == "" || deviceID == "" {
+		return errors.New("store: userID, sessionID and deviceID are required")
+	}
+	sess, err := s.getSessionConsistent(ctx, userID, sessionID)
+	if err != nil {
+		return err
+	}
+	if sess == nil {
+		return ErrNotFound
+	}
+	if sess.DeviceID == deviceID {
+		return s.requireActiveBindingDevice(ctx, userID, deviceID)
+	}
+	if sess.DeviceID != "" && sess.Surface != SurfaceWeb && sess.Surface != SurfaceAndroid {
+		return ErrDeviceBindingConflict
+	}
+	return s.bindSessionDeviceTransaction(ctx, sess, deviceID)
+}
+
+// bindSessionDeviceTransaction makes the device status check and the session
+// binding one serializable operation. Once RevokeDevice flips the old device
+// to revoked, a stale browser/Android session can no longer switch itself to
+// a fresh UUID and escape the subsequent session sweep.
+func (s *Store) bindSessionDeviceTransaction(ctx context.Context, sess *Session, deviceID string) error {
+	if err := s.requireActiveBindingDevice(ctx, sess.UserID, deviceID); err != nil {
+		return err
+	}
+	if sess.DeviceID != "" {
+		if err := s.requireActiveBindingDevice(ctx, sess.UserID, sess.DeviceID); err != nil {
+			return err
+		}
+	}
+
+	sessionCondition := "attribute_exists(pk) AND #uid = :uid AND attribute_not_exists(#did)"
+	sessionValues := map[string]types.AttributeValue{
+		":did": &types.AttributeValueMemberS{Value: deviceID},
+		":uid": &types.AttributeValueMemberS{Value: sess.UserID},
+	}
+	if sess.DeviceID != "" {
+		sessionCondition = "attribute_exists(pk) AND #uid = :uid AND #did = :old"
+		sessionValues[":old"] = &types.AttributeValueMemberS{Value: sess.DeviceID}
+	}
+
+	items := []types.TransactWriteItem{{
+		Update: &types.Update{
+			TableName:           aws.String(s.table),
+			Key:                 keyOf(userPK(sess.UserID), sessSK(sess.SessionID)),
+			UpdateExpression:    aws.String("SET #did = :did"),
+			ConditionExpression: aws.String(sessionCondition),
+			ExpressionAttributeNames: map[string]string{
+				"#did": "deviceId",
+				"#uid": "userId",
+			},
+			ExpressionAttributeValues: sessionValues,
+		},
+	}, {
+		ConditionCheck: activeDeviceBindingCondition(s.table, sess.UserID, deviceID),
+	}}
+	if sess.DeviceID != "" {
+		items = append(items, types.TransactWriteItem{
+			ConditionCheck: activeDeviceBindingCondition(s.table, sess.UserID, sess.DeviceID),
+		})
+	}
+
+	_, err := s.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: items,
+	})
+	if err == nil {
+		return nil
+	}
+	var canceled *types.TransactionCanceledException
+	if errors.As(err, &canceled) {
+		// CancellationReasons are not populated uniformly by every DynamoDB
+		// SDK/service failure shape. A strong status re-read still guarantees
+		// a revoke race gets the stable revoked result.
+		if sess.DeviceID != "" {
+			if stateErr := s.requireActiveBindingDevice(ctx, sess.UserID, sess.DeviceID); errors.Is(stateErr, ErrDeviceRevoked) {
+				return ErrDeviceRevoked
+			}
+		}
+		if stateErr := s.requireActiveBindingDevice(ctx, sess.UserID, deviceID); errors.Is(stateErr, ErrDeviceRevoked) {
+			return ErrDeviceRevoked
+		}
+		if transactionConditionFailed(canceled) {
+			return s.classifyBindingTransactionFailure(ctx, sess, deviceID)
+		}
+	}
+	return fmt.Errorf("store: bind client session device: %w", err)
+}
+
+func activeDeviceBindingCondition(table, userID, deviceID string) *types.ConditionCheck {
+	return &types.ConditionCheck{
+		TableName:           aws.String(table),
+		Key:                 keyOf(devicePK(deviceID), skMeta),
+		ConditionExpression: aws.String("attribute_exists(pk) AND #uid = :uid AND #status = :active"),
+		ExpressionAttributeNames: map[string]string{
+			"#uid":    "userId",
+			"#status": "status",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":uid":    &types.AttributeValueMemberS{Value: userID},
+			":active": &types.AttributeValueMemberS{Value: DeviceStatusActive},
+		},
+	}
+}
+
+func (s *Store) requireActiveBindingDevice(ctx context.Context, userID, deviceID string) error {
+	device, err := s.GetDevice(ctx, deviceID)
+	if err != nil {
+		return err
+	}
+	if device == nil || device.UserID != userID {
+		return ErrDeviceBindingConflict
+	}
+	if device.Status != DeviceStatusActive {
+		return ErrDeviceRevoked
+	}
+	return nil
+}
+
+func (s *Store) classifyBindingTransactionFailure(ctx context.Context, sess *Session, deviceID string) error {
+	// Prefer the old-device state so a revoke racing this transaction gets
+	// the stable device_revoked response instead of a generic conflict.
+	if sess.DeviceID != "" {
+		if err := s.requireActiveBindingDevice(ctx, sess.UserID, sess.DeviceID); err != nil {
+			return err
+		}
+	}
+	if err := s.requireActiveBindingDevice(ctx, sess.UserID, deviceID); err != nil {
+		return err
+	}
+	fresh, err := s.getSessionConsistent(ctx, sess.UserID, sess.SessionID)
+	if err != nil {
+		return err
+	}
+	if fresh == nil {
+		return ErrNotFound
+	}
+	if fresh.DeviceID == deviceID {
+		return nil // a concurrent idempotent registration won
+	}
+	return ErrDeviceBindingConflict
+}
+
 // getSessionConsistent reads the session row from the base table with
 // ConsistentRead — used to adjudicate a lost rotate race without GSI lag.
 func (s *Store) getSessionConsistent(ctx context.Context, userID, sessionID string) (*Session, error) {
@@ -162,52 +347,80 @@ func (s *Store) RotateRefresh(ctx context.Context, sess *Session, presentedHash,
 		}
 		return nil, ErrInvalidRefresh
 	}
+	if sess.DeviceID != "" {
+		if err := s.requireActiveBindingDevice(ctx, sess.UserID, sess.DeviceID); err != nil {
+			if errors.Is(err, ErrDeviceBindingConflict) || errors.Is(err, ErrDeviceRevoked) {
+				return nil, ErrDeviceRevoked
+			}
+			return nil, err
+		}
+	}
 
 	now := time.Now()
-	_, err := s.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
-		TransactItems: []types.TransactWriteItem{
-			{
-				Update: &types.Update{
-					TableName: aws.String(s.table),
-					Key:       keyOf(userPK(sess.UserID), sessSK(sess.SessionID)),
-					UpdateExpression: aws.String(
-						"SET #rh = :new, #ph = :presented, #exp = :slide, #ttl = :slide, #lu = :now, #g2sk = :nowts"),
-					ConditionExpression: aws.String("attribute_exists(pk) AND #rh = :presented"),
-					ExpressionAttributeNames: map[string]string{
-						"#rh":   "refreshHash",
-						"#ph":   "prevHash",
-						"#exp":  "expiresAt",
-						"#ttl":  "ttl",
-						"#lu":   "lastUsedAt",
-						"#g2sk": "gsi2sk",
-					},
-					ExpressionAttributeValues: map[string]types.AttributeValue{
-						":new":       &types.AttributeValueMemberS{Value: newHash},
-						":presented": &types.AttributeValueMemberS{Value: presentedHash},
-						":slide":     &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", slideTo)},
-						":now":       &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", now.Unix())},
-						":nowts":     &types.AttributeValueMemberS{Value: now.UTC().Format(time.RFC3339)},
-					},
+	transactItems := []types.TransactWriteItem{
+		{
+			Update: &types.Update{
+				TableName: aws.String(s.table),
+				Key:       keyOf(userPK(sess.UserID), sessSK(sess.SessionID)),
+				UpdateExpression: aws.String(
+					"SET #rh = :new, #ph = :presented, #exp = :slide, #ttl = :slide, #lu = :now, #g2sk = :nowts"),
+				ConditionExpression: aws.String("attribute_exists(pk) AND #rh = :presented"),
+				ExpressionAttributeNames: map[string]string{
+					"#rh":   "refreshHash",
+					"#ph":   "prevHash",
+					"#exp":  "expiresAt",
+					"#ttl":  "ttl",
+					"#lu":   "lastUsedAt",
+					"#g2sk": "gsi2sk",
+				},
+				ExpressionAttributeValues: map[string]types.AttributeValue{
+					":new":       &types.AttributeValueMemberS{Value: newHash},
+					":presented": &types.AttributeValueMemberS{Value: presentedHash},
+					":slide":     &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", slideTo)},
+					":now":       &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", now.Unix())},
+					":nowts":     &types.AttributeValueMemberS{Value: now.UTC().Format(time.RFC3339)},
 				},
 			},
 		},
+	}
+	if sess.DeviceID != "" {
+		transactItems = append(transactItems, types.TransactWriteItem{
+			ConditionCheck: activeDeviceBindingCondition(s.table, sess.UserID, sess.DeviceID),
+		})
+	}
+	_, err := s.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: transactItems,
 	})
 	if err != nil {
 		var canceled *types.TransactionCanceledException
-		if errors.As(err, &canceled) && transactionConditionFailed(canceled) {
-			// Lost a race (or the handed-in copy was stale). Adjudicate
-			// against a strongly consistent read of the base table.
-			fresh, rerr := s.getSessionConsistent(ctx, sess.UserID, sess.SessionID)
-			if rerr != nil {
-				return nil, rerr
-			}
-			if fresh != nil && fresh.PrevHash != "" && presentedHash == fresh.PrevHash {
-				if verr := s.RevokeFamily(ctx, fresh.UserID, fresh.FamilyID); verr != nil {
-					return nil, fmt.Errorf("store: revoke family after reuse: %w", verr)
+		if errors.As(err, &canceled) {
+			if sess.DeviceID != "" {
+				stateErr := s.requireActiveBindingDevice(ctx, sess.UserID, sess.DeviceID)
+				if errors.Is(stateErr, ErrDeviceBindingConflict) || errors.Is(stateErr, ErrDeviceRevoked) {
+					return nil, ErrDeviceRevoked
 				}
-				return nil, ErrRefreshReuse
+				if stateErr != nil {
+					return nil, stateErr
+				}
 			}
-			return nil, ErrInvalidRefresh
+			if transactionConditionFailed(canceled) {
+				if sess.DeviceID != "" && transactionConditionFailedAt(canceled, 1) {
+					return nil, ErrDeviceRevoked
+				}
+				// Lost a race (or the handed-in copy was stale). Adjudicate
+				// against a strongly consistent read of the base table.
+				fresh, rerr := s.getSessionConsistent(ctx, sess.UserID, sess.SessionID)
+				if rerr != nil {
+					return nil, rerr
+				}
+				if fresh != nil && fresh.PrevHash != "" && presentedHash == fresh.PrevHash {
+					if verr := s.RevokeFamily(ctx, fresh.UserID, fresh.FamilyID); verr != nil {
+						return nil, fmt.Errorf("store: revoke family after reuse: %w", verr)
+					}
+					return nil, ErrRefreshReuse
+				}
+				return nil, ErrInvalidRefresh
+			}
 		}
 		return nil, fmt.Errorf("store: rotate refresh: %w", err)
 	}
@@ -232,6 +445,14 @@ func transactionConditionFailed(c *types.TransactionCanceledException) bool {
 	return false
 }
 
+func transactionConditionFailedAt(c *types.TransactionCanceledException, index int) bool {
+	if c == nil || index < 0 || index >= len(c.CancellationReasons) {
+		return false
+	}
+	reason := c.CancellationReasons[index]
+	return reason.Code != nil && *reason.Code == "ConditionalCheckFailed"
+}
+
 // RevokeSession deletes one session row (logout). Idempotent — deleting
 // an absent session is a no-op.
 func (s *Store) RevokeSession(ctx context.Context, userID, sessionID string) error {
@@ -249,6 +470,7 @@ func (s *Store) RevokeSession(ctx context.Context, userID, sessionID string) err
 func (s *Store) listSessionItems(ctx context.Context, userID, familyID string) ([]sessionItem, error) {
 	in := &dynamodb.QueryInput{
 		TableName:              aws.String(s.table),
+		ConsistentRead:         aws.Bool(true),
 		KeyConditionExpression: aws.String("pk = :pk AND begins_with(sk, :pfx)"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":pk":  &types.AttributeValueMemberS{Value: userPK(userID)},
@@ -299,6 +521,26 @@ func (s *Store) RevokeFamily(ctx context.Context, userID, familyID string) error
 		return err
 	}
 	return s.deleteSessions(ctx, items)
+}
+
+// RevokeSessionsForDevice deletes every refresh session currently bound to a
+// stable device id, across re-logins and therefore across refresh families.
+// It is a bounded Query of the user's SESS# rows, never a table Scan.
+func (s *Store) RevokeSessionsForDevice(ctx context.Context, userID, deviceID string) error {
+	if userID == "" || deviceID == "" {
+		return errors.New("store: userID and deviceID are required")
+	}
+	items, err := s.listSessionItems(ctx, userID, "")
+	if err != nil {
+		return err
+	}
+	matches := make([]sessionItem, 0, len(items))
+	for _, item := range items {
+		if item.DeviceID == deviceID {
+			matches = append(matches, item)
+		}
+	}
+	return s.deleteSessions(ctx, matches)
 }
 
 // RevokeAllForUser deletes every session row for the user ("log out

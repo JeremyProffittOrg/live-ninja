@@ -183,11 +183,18 @@ func TestDeviceInitiatedBumpCommitsAndFansOut(t *testing.T) {
 	if lnsync.DocVersion(doc) != 3 {
 		t.Errorf("canonical version = %d, want 3", lnsync.DocVersion(doc))
 	}
-	if doc["voice"] != "marin" {
-		t.Errorf("voice = %v, want marin", doc["voice"])
+	if doc["voice"] != "cedar" {
+		t.Errorf("account-default voice = %v, want cedar", doc["voice"])
 	}
-	if n, _ := doc["sensitivity"].(float64); n != 0.9 {
-		t.Errorf("sensitivity = %v, want 0.9", doc["sensitivity"])
+	if n, _ := doc["sensitivity"].(float64); n != 0.5 {
+		t.Errorf("account-default sensitivity = %v, want 0.5", doc["sensitivity"])
+	}
+	effective := store.EffectiveSettings(doc, "dev1")
+	if effective["voice"] != "marin" {
+		t.Errorf("device-effective voice = %v, want marin", effective["voice"])
+	}
+	if n, _ := effective["sensitivity"].(float64); n != 0.9 {
+		t.Errorf("device-effective sensitivity = %v, want 0.9", effective["sensitivity"])
 	}
 	// Unrelated canonical fields survive the fold.
 	if doc["wakeWord"] != "hey-live-ninja" || doc["theme"] != "light" {
@@ -198,8 +205,9 @@ func TestDeviceInitiatedBumpCommitsAndFansOut(t *testing.T) {
 		t.Fatalf("want one full fan-out after commit, got %d", len(pub.fanOuts))
 	}
 	fo := pub.fanOuts[0]
-	if fo.userID != "u1" || fo.version != 3 || fo.doc["voice"] != "marin" {
-		t.Errorf("fan-out = %+v, want u1/v3/marin", fo)
+	if fo.userID != "u1" || fo.version != 3 ||
+		store.EffectiveSettings(fo.doc, "dev1")["voice"] != "marin" {
+		t.Errorf("fan-out = %+v, want u1/v3 with dev1 voice marin", fo)
 	}
 }
 

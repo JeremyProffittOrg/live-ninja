@@ -391,10 +391,10 @@ func (f *FakeDynamo) UpdateItem(ctx context.Context, params *dynamodb.UpdateItem
 	return out, nil
 }
 
-// TransactWriteItems implements the (Update-only) transactional surface
-// RotateRefresh uses: all conditions checked first, then all updates
-// applied; any failed condition cancels the whole transaction with a
-// ConditionalCheckFailed cancellation reason.
+// TransactWriteItems implements the Update + ConditionCheck transactional
+// surface used by refresh rotation and device/session binding: all
+// conditions are checked first, then all updates are applied; any failed
+// condition cancels the whole transaction.
 func (f *FakeDynamo) TransactWriteItems(ctx context.Context, params *dynamodb.TransactWriteItemsInput, optFns ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -402,20 +402,31 @@ func (f *FakeDynamo) TransactWriteItems(ctx context.Context, params *dynamodb.Tr
 	reasons := make([]types.CancellationReason, len(params.TransactItems))
 	failed := false
 	for i, ti := range params.TransactItems {
-		if ti.Update == nil {
-			panic("testutil: only Update transact items are supported")
-		}
 		reasons[i] = types.CancellationReason{Code: aws.String("None")}
-		existing := f.items[keyOfKey(ti.Update.Key)]
-		if ti.Update.ConditionExpression != nil {
-			if !evalCondition(*ti.Update.ConditionExpression, existing,
-				ti.Update.ExpressionAttributeNames, ti.Update.ExpressionAttributeValues) {
+		switch {
+		case ti.Update != nil:
+			existing := f.items[keyOfKey(ti.Update.Key)]
+			if ti.Update.ConditionExpression != nil &&
+				!evalCondition(*ti.Update.ConditionExpression, existing,
+					ti.Update.ExpressionAttributeNames, ti.Update.ExpressionAttributeValues) {
 				reasons[i] = types.CancellationReason{
 					Code:    aws.String("ConditionalCheckFailed"),
 					Message: aws.String("The conditional request failed"),
 				}
 				failed = true
 			}
+		case ti.ConditionCheck != nil:
+			existing := f.items[keyOfKey(ti.ConditionCheck.Key)]
+			if !evalCondition(*ti.ConditionCheck.ConditionExpression, existing,
+				ti.ConditionCheck.ExpressionAttributeNames, ti.ConditionCheck.ExpressionAttributeValues) {
+				reasons[i] = types.CancellationReason{
+					Code:    aws.String("ConditionalCheckFailed"),
+					Message: aws.String("The conditional request failed"),
+				}
+				failed = true
+			}
+		default:
+			panic("testutil: only Update and ConditionCheck transact items are supported")
 		}
 	}
 	if failed {
@@ -426,6 +437,9 @@ func (f *FakeDynamo) TransactWriteItems(ctx context.Context, params *dynamodb.Tr
 	}
 
 	for _, ti := range params.TransactItems {
+		if ti.Update == nil {
+			continue
+		}
 		key := keyOfKey(ti.Update.Key)
 		existing := f.items[key]
 		var item map[string]types.AttributeValue

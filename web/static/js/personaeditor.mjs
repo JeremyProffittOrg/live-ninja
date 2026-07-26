@@ -20,7 +20,7 @@
 //     instructions live on the Settings page);
 // and saves:
 //   - persona text via PUT /api/v1/personas/:id (own personas only);
-//   - voice/accent into personaPrefs[personaId] via the settings PUT with
+//   - voice/accent into personaPrefs[personaId] via the persona-section PATCH with
 //     the optimistic-concurrency 409 retry-once rule (same contract as
 //     conversation.mjs/settings.mjs — re-GET, re-apply, retry once).
 // On success it dispatches a 'personachanged' CustomEvent on window
@@ -28,8 +28,13 @@
 // select labels, and pings the ln.settings.version cross-tab channel.
 
 import { apiJSON, ApiError } from './toolclient.mjs';
+import {
+  ensureCurrentDeviceRegistered,
+  sectionSettings,
+  withSettingsOperation,
+} from './device-settings.mjs';
 
-const SETTINGS_PATH = '/api/v1/settings';
+const SETTINGS_PATH = '/api/v1/settings?effective=true';
 const VOICES_PATH = '/api/v1/realtime/voices';
 const PERSONAS_PATH = '/api/v1/personas';
 const SETTINGS_PING_KEY = 'ln.settings.version';
@@ -105,45 +110,55 @@ async function loadPersona(personaId) {
   return apiJSON(`${PERSONAS_PATH}/${encodeURIComponent(personaId)}`);
 }
 
-/** Write personaPrefs[personaId] = {voice, accent, updatedAt} through the
- * settings PUT with the 409 retry-once rule. Unknown sibling fields on the
- * entry (and everywhere else in the document) are preserved. */
+/** Write personaPrefs[personaId] = {voice, accent, updatedAt} to the current
+ * device's persona section with the 409 retry-once rule. */
 async function savePersonaPrefs(settingsDoc, personaId, voice, accent) {
-  const attempt = async (doc) => {
-    const version = Number(doc.version) || 1;
-    const settings = structuredClone(doc);
-    delete settings.version;
-    if (!settings.personaPrefs || typeof settings.personaPrefs !== 'object') {
-      settings.personaPrefs = {};
-    }
-    settings.personaPrefs[personaId] = {
-      ...(typeof settings.personaPrefs[personaId] === 'object' ? settings.personaPrefs[personaId] : {}),
-      voice,
-      accent,
-      updatedAt: new Date().toISOString(),
+  return withSettingsOperation(async () => {
+    const attempt = async (doc) => {
+      const version = Number(doc.version) || 1;
+      const settings = structuredClone(doc);
+      if (!settings.personaPrefs || typeof settings.personaPrefs !== 'object') {
+        settings.personaPrefs = {};
+      }
+      settings.personaPrefs[personaId] = {
+        ...(typeof settings.personaPrefs[personaId] === 'object' ? settings.personaPrefs[personaId] : {}),
+        voice,
+        accent,
+        updatedAt: new Date().toISOString(),
+      };
+      const resp = await apiJSON('/api/v1/settings/sections/persona', {
+        method: 'PATCH',
+        json: {
+          version,
+          operation: 'set',
+          target: { mode: 'current', deviceIds: [] },
+          settings: sectionSettings(settings, 'persona'),
+        },
+      });
+      try {
+        // Cross-tab channel: other tabs re-GET the doc (conversation.mjs).
+        localStorage.setItem(SETTINGS_PING_KEY, String(resp.version));
+      } catch {
+        /* storage blocked — cross-tab sync degrades gracefully */
+      }
+      window.dispatchEvent(
+        new CustomEvent('ln:settings-changed', {
+          detail: { version: Number(resp.version) || version },
+        }),
+      );
+      return resp;
     };
-    const resp = await apiJSON(SETTINGS_PATH, {
-      method: 'PUT',
-      json: { settings, version },
-    });
-    try {
-      // Cross-tab channel: other tabs re-GET the doc (conversation.mjs).
-      localStorage.setItem(SETTINGS_PING_KEY, String(resp.version));
-    } catch {
-      /* storage blocked — cross-tab sync degrades gracefully */
-    }
-    return resp;
-  };
 
-  try {
-    return await attempt(settingsDoc);
-  } catch (err) {
-    if (!(err instanceof ApiError) || err.code !== 'version_conflict') throw err;
-    // Another surface wrote first: re-read, re-apply this one edit on the
-    // fresh document, retry once. A second conflict surfaces to the caller.
-    const fresh = await apiJSON(SETTINGS_PATH);
-    return attempt(fresh);
-  }
+    try {
+      return await attempt(settingsDoc);
+    } catch (err) {
+      if (!(err instanceof ApiError) || err.code !== 'version_conflict') throw err;
+      // Another surface wrote first: re-read, re-apply this one edit on the
+      // fresh document, retry once. A second conflict surfaces to the caller.
+      const fresh = await apiJSON(SETTINGS_PATH);
+      return attempt(fresh);
+    }
+  });
 }
 
 /**
@@ -198,6 +213,7 @@ export async function openPersonaEditor(personaId) {
   let settingsDoc;
   let catalogs;
   try {
+    await ensureCurrentDeviceRegistered();
     [persona, settingsDoc, catalogs] = await Promise.all([
       loadPersona(state.personaId),
       apiJSON(SETTINGS_PATH),

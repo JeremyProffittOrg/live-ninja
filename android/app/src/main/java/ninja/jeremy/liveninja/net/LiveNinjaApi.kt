@@ -3,10 +3,12 @@ package ninja.jeremy.liveninja.net
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
+import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.PUT
 import retrofit2.http.Path
 import retrofit2.http.Query
+import kotlinx.serialization.json.JsonObject
 
 /**
  * Retrofit service for the Live Ninja backend (https://live.jeremy.ninja).
@@ -193,4 +195,41 @@ interface LiveNinjaApi {
     /** List the caller's registered devices (populates the device filter). */
     @GET("api/v1/devices")
     suspend fun listDevices(): DeviceListResponse
+
+    // ---- Named devices + per-device settings ----
+
+    /**
+     * Register or refresh this Android app instance. X-LN-Device-ID supplies
+     * the stable random app-instance id; the body is display-only metadata.
+     */
+    @PUT("api/v1/devices/current")
+    suspend fun registerCurrentDevice(
+        @Body body: DeviceRegistrationRequest,
+    ): DeviceRegistrationResponse
+
+    /** Rename one owned host; inferred metadata must never overwrite this name. */
+    @PATCH("api/v1/devices/{id}")
+    suspend fun renameDevice(
+        @Path("id") id: String,
+        @Body body: DeviceRenameRequest,
+    ): DeviceRegistrationResponse
+
+    /** Effective settings for the current X-LN-Device-ID. */
+    @GET("api/v1/settings")
+    suspend fun getEffectiveSettings(
+        @Query("effective") effective: Boolean = true,
+    ): JsonObject
+
+    /** Device/default values used by one configurable accordion section. */
+    @GET("api/v1/settings/sections/{section}")
+    suspend fun getSettingsSection(
+        @Path("section") section: String,
+    ): SettingsSectionEnvelope
+
+    /** Versioned set/inherit operation for current, selected, or all hosts. */
+    @PATCH("api/v1/settings/sections/{section}")
+    suspend fun patchSettingsSection(
+        @Path("section") section: String,
+        @Body body: SettingsSectionPatchRequest,
+    ): SettingsSectionEnvelope
 }

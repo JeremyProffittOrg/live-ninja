@@ -169,7 +169,7 @@ class HistoryViewModel @Inject constructor(
     private fun loadDevices() {
         viewModelScope.launch {
             try {
-                val devices = repository.listDevices().items.mapNotNull { dto ->
+                val devices = repository.listDevices().resolvedItems.mapNotNull { dto ->
                     val id = dto.deviceKey ?: return@mapNotNull null
                     DeviceUi(id = id, name = dto.displayName)
                 }

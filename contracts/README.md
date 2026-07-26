@@ -14,11 +14,11 @@ alongside `PRD.md` (FR IDs, §7 Auth, §8 Data Model, "REST endpoint catalog") a
 
 | File | Covers | Primary FR IDs |
 |---|---|---|
-| [`settings.schema.json`](./settings.schema.json) | Canonical per-user settings document (`SETTINGS#v<n>`) | FR-S01..05, FR-VE-01..04 |
+| [`settings.schema.json`](./settings.schema.json) | Canonical per-user settings document (`SETTINGS`): account defaults plus sparse per-device section overrides | FR-S01..05, FR-VE-01..04 |
 | [`shadow.md`](./shadow.md) | IoT named shadow (`config`) document shape + reconciliation | FR-S02, FR-M02/M05, Q-19 |
 | [`wakeword-manifest.md`](./wakeword-manifest.md) | Per-platform wake-word model distribution manifest | FR-K03, FR-K04 |
 | [`telemetry.schema.json`](./telemetry.schema.json) | Analytics/telemetry event envelope (no transcript content) | NFR-06, Crosscut §5 |
-| [`headers.md`](./headers.md) | `X-LN-Client`/`X-LN-Server` negotiation + `GET /v1/compat` | NFR-08, Q-19 |
+| [`headers.md`](./headers.md) | `X-LN-Client`/`X-LN-Server` negotiation, app-install `X-LN-Device-ID`, and `GET /v1/compat` | NFR-08, Q-19 |
 | [`metering.md`](./metering.md) | Quota gate: daily-minutes + monthly-token caps, token bucket, soft/hard cap responses | FR-B09, FR-V06, Q-16 |
 | [`api.md`](./api.md) | Full `/v1` route inventory across all milestones, auth requirements | All FR-B/V/A/W/M/K/S + FR-DLV/MEM/TOP/VE |
 

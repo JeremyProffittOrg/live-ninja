@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://live.jeremy.ninja/contracts/v1/settings.schema.json",
   "title": "Live Ninja — User Settings (v1)",
-  "description": "Canonical per-user settings document. Stored as DynamoDB item PK=USER#<userId> SK=SETTINGS#v<n> (see PRD.md §8.1). This is the ONLY settings document across all three surfaces (web, Android, M5Stack) — FR-S01. Every reader/writer, including firmware written years apart, MUST preserve unknown fields on write-back per contracts/README.md rule 2. additionalProperties is true at every object level for exactly this reason.",
+  "description": "Canonical per-user settings document. Stored as DynamoDB item PK=USER#<userId> SK=SETTINGS (see PRD.md §8.1). Top-level values are the account defaults shared by web, Android, and M5Stack; deviceOverrides contains sparse per-device section overrides in the same document and under the same optimistic-concurrency version. Every reader/writer, including firmware written years apart, MUST preserve unknown fields on write-back per contracts/README.md rule 2. additionalProperties is true at every object level for exactly this reason.",
   "type": "object",
   "additionalProperties": true,
   "required": [
@@ -169,7 +169,7 @@
     },
     "voiceEngine": {
       "type": "object",
-      "description": "Voice-engine selection (FR-VE-01..04). `default` applies to any session/device without an explicit pin (e.g. a fresh web browser session); `devices` is a per-device pin map keyed by deviceId, letting an individual M5Stack/Android device be pinned to a cheaper or alternate engine (e.g. nova-sonic) while others stay on the platform default. The realtime-broker resolves engine-for-session as devices[deviceId] ?? default. `nova-sonic` reintroduces a backend media bridge for ONLY the pinned device (FR-VE-04) — all other engines stay client-direct.",
+      "description": "Voice-engine selection (FR-VE-01..04). In account defaults, `default` is the inherited engine. In a deviceOverrides.voiceEngine section, `default` is that device's effective engine. `devices` is the deprecated pre-M31 per-device pin map retained additively for old clients; readers use it only when the corresponding device has no voiceEngine section override, and section writes migrate/clear its entry. `nova-sonic` reintroduces a backend media bridge for ONLY a selected device (FR-VE-04) — all other engines stay client-direct.",
       "additionalProperties": true,
       "required": [
         "default",
@@ -188,7 +188,7 @@
         },
         "devices": {
           "type": "object",
-          "description": "Map of deviceId -> pinned engine. Keys are the caller's own DEVICE#<deviceId> ids; absent keys fall back to `default`.",
+          "description": "Deprecated M12–M30 map of deviceId -> pinned engine. Preserved for compatibility; new clients use deviceOverrides[deviceId].sections.voiceEngine.",
           "additionalProperties": {
             "type": "string",
             "enum": [
@@ -275,9 +275,18 @@
         }
       }
     },
+    "deviceOverrides": {
+      "type": "object",
+      "description": "Sparse per-device settings. Keys are owned DEVICE ids, never client-supplied hostnames or hardware identifiers. Each entry contains only sections customized for that device; a missing device or section inherits the corresponding top-level account defaults. The section PATCH API owns mutation of this map so clients cannot overwrite another device accidentally. `Apply to all` updates the top-level defaults and removes the understood fields in that section from every device entry while retaining additive fields from newer clients. Legacy clients that do not know this field preserve it verbatim.",
+      "default": {},
+      "maxProperties": 50,
+      "additionalProperties": {
+        "$ref": "#/$defs/deviceOverride"
+      }
+    },
     "profile": {
       "type": "object",
-      "description": "Base Knowledge profile (M15). Stable, always-relevant facts about the user, injected server-side into EVERY minted session's instructions as a BASE KNOWLEDGE block (internal/realtime/baseknowledge.go) and used as the default argument source for profile-aware tools (get_weather location/units, scheduler timezone). This is deliberately NOT the memory layer: memory is episodic and retrieval-on-demand, this is stable and always-present. Locations are stored GEOCODE-VERIFIED — lat/lon/timezone are resolved at save time via GET /api/v1/geocode, never at question time. Optional; an absent or empty profile mints exactly as before. M16 adds a refinement loop on top: the assistant's profile_suggest tool and the tool-failure RCA analyzer PROPOSE changes as separate PROFSUGG# items (not part of this document), which the owner approves in Settings — an approval is then an ordinary versioned PUT of this document. Only `units` and a `notes[]` addition may ever be written without that confirmation (see those fields); displayName, pronouns, contactEmail, locale, homeLocation and workLocation always require it, and the refusal is enforced server-side in store.AutoApplyProfileSuggestion rather than in the UI.",
+      "description": "Base Knowledge profile (M15). This top-level value is the account default; a deviceOverrides.aboutYou section may customize it for one named host. The effective profile is injected server-side into every minted session's instructions as a BASE KNOWLEDGE block (internal/realtime/baseknowledge.go) and used as the default argument source for profile-aware tools (get_weather location/units, scheduler timezone). This is deliberately NOT the memory layer: memory is episodic and retrieval-on-demand, this is stable and always-present. Locations are stored GEOCODE-VERIFIED — lat/lon/timezone are resolved at save time via GET /api/v1/geocode, never at question time. Optional; an absent or empty profile mints exactly as before. M16 adds a refinement loop on top: the assistant's profile_suggest tool and the tool-failure RCA analyzer PROPOSE changes as separate PROFSUGG# items (not part of this document), which the owner approves in Settings. Only `units` and a `notes[]` addition are eligible for legacy account-default auto-apply (see those fields), and named-device invocations leave those pending for an explicit scoped choice; displayName, pronouns, contactEmail, locale, homeLocation and workLocation always require confirmation.",
       "additionalProperties": true,
       "properties": {
         "displayName": {
@@ -307,7 +316,7 @@
             "metric"
           ],
           "default": "imperial",
-          "description": "Unit system for temperature, wind, distance. Becomes the default `units` argument for get_weather. One of the only two fields the assistant may write on its own (M16 auto-apply policy): the value set is enumerable, the effect is immediately audible in the next answer, and Settings shows an Undo. Everything else needs the owner's confirmation."
+          "description": "Unit system for temperature, wind, distance. Becomes the default `units` argument for get_weather. One of the only two fields eligible for the legacy account-default M16 auto-apply policy: the value set is enumerable, the effect is immediately audible in the next answer, and Settings shows an Undo. A named-device invocation leaves it pending for an explicit scoped choice. Everything else needs the owner's confirmation."
         },
         "locale": {
           "type": "string",
@@ -338,7 +347,7 @@
         },
         "notes": {
           "type": "array",
-          "description": "Short free-form owner facts that belong in every session but aren't a modeled field — the 'everything else' bucket. Capped so the instruction block can't grow without bound. The other field the assistant may write on its own (M16 auto-apply policy), and only ever by ADDING an entry the user spoke explicitly — never by replacing the list; Settings shows an Undo that removes exactly the entry that was added.",
+          "description": "Short free-form owner facts that belong in every effective session profile but aren't a modeled field — the 'everything else' bucket. Capped so the instruction block can't grow without bound. The other field eligible for the legacy account-default M16 auto-apply policy, and only ever by ADDING an entry the user spoke explicitly — never by replacing the list; Settings shows an Undo that removes exactly the entry that was added. A named-device invocation leaves it pending for an explicit scoped choice.",
           "maxItems": 20,
           "items": {
             "type": "string",
@@ -351,6 +360,56 @@
     }
   },
   "$defs": {
+    "deviceOverride": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "sections"
+      ],
+      "properties": {
+        "sections": {
+          "type": "object",
+          "description": "Section-keyed sparse overrides. Values use the same top-level field names and shapes as the canonical document. Known section ids are aboutYou, wakeWord, persona, voiceEngine, turnDetection, appearance, microphone, and privacy; unknown future sections must be preserved.",
+          "additionalProperties": true,
+          "properties": {
+            "aboutYou": {
+              "$ref": "#/$defs/deviceSection"
+            },
+            "wakeWord": {
+              "$ref": "#/$defs/deviceSection"
+            },
+            "persona": {
+              "$ref": "#/$defs/deviceSection"
+            },
+            "voiceEngine": {
+              "$ref": "#/$defs/deviceSection"
+            },
+            "turnDetection": {
+              "$ref": "#/$defs/deviceSection"
+            },
+            "appearance": {
+              "$ref": "#/$defs/deviceSection"
+            },
+            "microphone": {
+              "$ref": "#/$defs/deviceSection"
+            },
+            "privacy": {
+              "$ref": "#/$defs/deviceSection"
+            }
+          }
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server-written time of the most recent override change for this device."
+        }
+      }
+    },
+    "deviceSection": {
+      "type": "object",
+      "description": "A sparse section payload whose keys are canonical top-level settings fields. Unknown fields are retained for additive schema evolution.",
+      "additionalProperties": true
+    },
     "profileLocation": {
       "type": [
         "object",

@@ -165,7 +165,7 @@ func (a *app) Handle(ctx context.Context, raw json.RawMessage) error {
 func (a *app) deviceInitiatedBump(ctx context.Context, l *slog.Logger, device *store.Device,
 	doc map[string]any, canonical int64, reported map[string]any) error {
 
-	merged, changed := lnsync.MergeDeviceReported(doc, reported)
+	merged, changed := lnsync.MergeDeviceReportedForDevice(doc, device.DeviceID, reported)
 	if !changed {
 		// The device claims a new version but nothing it is allowed to
 		// write differs — push the canonical state (and version) back so

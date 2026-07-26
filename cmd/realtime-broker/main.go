@@ -385,7 +385,7 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 	// instead of failing the session. The accent directive composes after
 	// the memory directive and before the guide suffix (realtime.Mint
 	// appends the combined suffix after memoryUsageDirective).
-	sv := realtime.ResolveSessionVoice(ctx, b.settings, b.table, req.UserID, req.Persona, req.VoiceOverride)
+	sv := realtime.ResolveSessionVoiceForDevice(ctx, b.settings, b.table, req.UserID, req.DeviceID, req.Persona, req.VoiceOverride)
 	voice := sv.Voice
 	accentDirective := realtime.AccentDirective(sv.AccentID)
 
@@ -395,7 +395,7 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 	// as the voice read: an empty or unreadable profile yields "" and mints
 	// exactly as it did pre-M15.
 	baseKnowledge := realtime.BuildBaseKnowledge(
-		store.LoadProfile(ctx, b.settings, b.table, req.UserID), time.Now())
+		store.LoadProfileForDevice(ctx, b.settings, b.table, req.UserID, req.DeviceID), time.Now())
 
 	// Guide Entity injection (FR-MEM-07): append the user's enabled guides
 	// to the persona instructions, priority order. Best-effort — a guide
@@ -468,9 +468,9 @@ func (b *broker) handleNovaBridge(ctx context.Context, l *slog.Logger, req Reque
 			Message: "The Nova Sonic bridge is not configured; use the fallback cascade."}
 	}
 
-	sv := realtime.ResolveSessionVoice(ctx, b.settings, b.table, req.UserID, req.Persona, req.VoiceOverride)
+	sv := realtime.ResolveSessionVoiceForDevice(ctx, b.settings, b.table, req.UserID, req.DeviceID, req.Persona, req.VoiceOverride)
 	baseKnowledge := realtime.BuildBaseKnowledge(
-		store.LoadProfile(ctx, b.settings, b.table, req.UserID), time.Now())
+		store.LoadProfileForDevice(ctx, b.settings, b.table, req.UserID, req.DeviceID), time.Now())
 	guideSuffix := ""
 	if guides, gerr := realtime.LoadEnabledGuides(ctx, b.ddb, b.table, req.UserID); gerr != nil {
 		l.Warn("realtime-broker: guide load failed; minting Nova without guides",
@@ -556,10 +556,10 @@ func (b *broker) handleGeminiDirect(ctx context.Context, l *slog.Logger, req Req
 	// Same one-read voice-identity resolution posture as the OpenAI path,
 	// through the Gemini chain (D4b); the accent directive is voice-agnostic
 	// and composes into the instructions identically.
-	gv := realtime.ResolveSessionGeminiVoice(ctx, b.settings, b.table, req.UserID, req.Persona)
+	gv := realtime.ResolveSessionGeminiVoiceForDevice(ctx, b.settings, b.table, req.UserID, req.DeviceID, req.Persona)
 	accentDirective := realtime.AccentDirective(gv.AccentID)
 	baseKnowledge := realtime.BuildBaseKnowledge(
-		store.LoadProfile(ctx, b.settings, b.table, req.UserID), time.Now())
+		store.LoadProfileForDevice(ctx, b.settings, b.table, req.UserID, req.DeviceID), time.Now())
 
 	guideSuffix := ""
 	if guides, gerr := realtime.LoadEnabledGuides(ctx, b.ddb, b.table, req.UserID); gerr != nil {
@@ -634,7 +634,7 @@ func (b *broker) handleFallbackTurn(ctx context.Context, l *slog.Logger, req Req
 	// and fails in the text fallback, which is a worse bug than the outage
 	// that triggered the fallback.
 	extraSystem := realtime.SessionDirectives + realtime.BuildBaseKnowledge(
-		store.LoadProfile(ctx, b.settings, b.table, req.UserID), time.Now())
+		store.LoadProfileForDevice(ctx, b.settings, b.table, req.UserID, req.DeviceID), time.Now())
 
 	// Tool-capable turn: the server-executable tool catalog only. The
 	// model's tool_calls are returned verbatim for the WEB function to
