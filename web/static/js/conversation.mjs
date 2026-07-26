@@ -1430,6 +1430,15 @@ for (const chip of micSensChips) {
 // wrapper, so a click that reaches the dialog element itself is always on
 // the backdrop.
 
+// Initialize these before the drawer's deep-link path below. A
+// ?openSettings=1 load opens the drawer during module evaluation and calls
+// loadDrawerCost() synchronously, so later declarations would still be in
+// their temporal dead zone.
+const drawerCostEl = $('drawerCost');
+const drawerCostValue = $('drawerCostValue');
+const drawerCostSub = $('drawerCostSub');
+let drawerCostFetchedAt = 0;
+
 const settingsDrawer = $('settingsDrawer');
 const settingsDrawerBtn = $('settingsDrawerBtn');
 const settingsDrawerClose = $('settingsDrawerClose');
@@ -1486,11 +1495,6 @@ if (settingsDrawer && settingsDrawerBtn && typeof settingsDrawer.showModal === '
 // of every saved conversation's persisted per-session estimate). Fetched
 // on each drawer open, cached 60s so repeated opens stay free; a failed
 // fetch just leaves the line hidden — the menu must never break on it.
-const drawerCostEl = $('drawerCost');
-const drawerCostValue = $('drawerCostValue');
-const drawerCostSub = $('drawerCostSub');
-let drawerCostFetchedAt = 0;
-
 async function loadDrawerCost() {
   if (!drawerCostEl || !drawerCostValue) return;
   if (Date.now() - drawerCostFetchedAt < 60_000) return;

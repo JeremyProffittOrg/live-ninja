@@ -380,8 +380,8 @@ test('online navigation waits for its cache write and is then available offline'
 test('static revalidation keeps the worker alive through cache.put', async ({}, testInfo) => {
   desktopOnly(testInfo);
   const harness = await loadServiceWorkerHarness();
-  const url = 'https://live.test/static/js/app.123.js';
-  await harness.seed('ln-static-v3', url, new Response('old asset', { status: 200 }));
+  const url = 'https://live.test/static/js/app.0123456789ab.js';
+  await harness.seed('ln-static-v4', url, new Response('old asset', { status: 200 }));
 
   let releasePut;
   const putGate = new Promise((resolve) => {
@@ -389,7 +389,7 @@ test('static revalidation keeps the worker alive through cache.put', async ({}, 
   });
   let putStarted = false;
   harness.setPutHook(async (cacheName) => {
-    if (cacheName === 'ln-static-v3') {
+    if (cacheName === 'ln-static-v4') {
       putStarted = true;
       await putGate;
     }
@@ -414,7 +414,58 @@ test('static revalidation keeps the worker alive through cache.put', async ({}, 
 
   releasePut();
   await result.lifetimePromises[0];
-  expect(await harness.cachedText('ln-static-v3', url)).toBe('new asset');
+  expect(await harness.cachedText('ln-static-v4', url)).toBe('new asset');
+});
+
+test('logical static modules revalidate past the browser cache', async ({}, testInfo) => {
+  desktopOnly(testInfo);
+  const harness = await loadServiceWorkerHarness();
+  const url = 'https://live.test/static/js/realtime.mjs';
+  await harness.seed('ln-static-v4', url, new Response('old module', { status: 200 }));
+  let requestCache = '';
+  harness.setFetch(async (request) => {
+    requestCache = request.cache;
+    return {
+      status: 200,
+      type: 'basic',
+      clone: () => new Response('new module', { status: 200 }),
+    };
+  });
+
+  const result = harness.dispatchFetch(new Request(url));
+  expect(await (await result.responsePromise).text()).toBe('old module');
+  await Promise.all(result.lifetimePromises);
+  expect(requestCache).toBe('reload');
+  expect(await harness.cachedText('ln-static-v4', url)).toBe('new module');
+});
+
+test('fingerprinted and large immutable assets retain the browser cache', async ({}, testInfo) => {
+  desktopOnly(testInfo);
+  const harness = await loadServiceWorkerHarness();
+  const urls = [
+    'https://live.test/static/js/app.0123456789ab.js',
+    'https://live.test/static/vendor/ort-wasm.wasm',
+    'https://live.test/static/models/hey-automatica.onnx',
+  ];
+  for (const url of urls) {
+    await harness.seed('ln-static-v4', url, new Response('cached asset', { status: 200 }));
+  }
+  const requestCaches = [];
+  harness.setFetch(async (request) => {
+    requestCaches.push(request.cache);
+    return {
+      status: 200,
+      type: 'basic',
+      clone: () => new Response('network asset', { status: 200 }),
+    };
+  });
+
+  for (const url of urls) {
+    const result = harness.dispatchFetch(new Request(url));
+    expect(await (await result.responsePromise).text()).toBe('cached asset');
+    await Promise.all(result.lifetimePromises);
+  }
+  expect(requestCaches).toEqual(['default', 'default', 'default']);
 });
 
 test('static assets remain network-available when Cache Storage cannot open', async ({}, testInfo) => {

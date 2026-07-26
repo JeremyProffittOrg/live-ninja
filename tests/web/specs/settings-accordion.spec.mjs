@@ -13,6 +13,10 @@ const conversationTemplate = await readFile(
   new URL('../../../web/templates/pages/conversation.html', import.meta.url),
   'utf8',
 );
+const conversationSource = await readFile(
+  new URL('../../../web/static/js/conversation.mjs', import.meta.url),
+  'utf8',
+);
 
 const section = (name, expanded) => `
   <section>
@@ -62,6 +66,30 @@ test('settings accordion keeps one panel open and allows all panels to collapse'
   await expect(voice).toHaveAttribute('aria-expanded', 'false');
   await expect(page.locator('#voicePanel')).toBeHidden();
   await expect(page.locator('[data-settings-accordion-trigger][aria-expanded="true"]')).toHaveCount(0);
+});
+
+test('deep-linked settings initializes drawer cost state before opening', async ({}, testInfo) => {
+  test.skip(
+    testInfo.project.name !== 'desktop-chrome',
+    'source-order contract only needs one project',
+  );
+
+  const deepLink = conversationSource.indexOf(
+    "new URLSearchParams(window.location.search).get('openSettings') === '1'",
+  );
+  const immediateOpen = conversationSource.indexOf('openSettingsDrawer();', deepLink);
+
+  for (const declaration of [
+    "const drawerCostEl = $('drawerCost');",
+    "const drawerCostValue = $('drawerCostValue');",
+    "const drawerCostSub = $('drawerCostSub');",
+    'let drawerCostFetchedAt = 0;',
+  ]) {
+    const costState = conversationSource.indexOf(declaration);
+    expect(costState, declaration).toBeGreaterThanOrEqual(0);
+    expect(deepLink, declaration).toBeGreaterThan(costState);
+  }
+  expect(immediateOpen).toBeGreaterThan(deepLink);
 });
 
 test('shipped settings markup keeps every control inside its owned panel', async ({ page }) => {

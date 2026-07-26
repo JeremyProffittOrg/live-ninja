@@ -20,7 +20,7 @@
 
 'use strict';
 
-const SW_VERSION = 'v3';
+const SW_VERSION = 'v4';
 const CACHE_HTML = `ln-html-${SW_VERSION}`;
 const CACHE_STATIC = `ln-static-${SW_VERSION}`;
 const CURRENT_CACHES = [CACHE_HTML, CACHE_STATIC];
@@ -134,10 +134,28 @@ async function networkFirstHTML(request) {
   }
 }
 
+/** True for the content-addressed paths emitted by assets.go. */
+function isFingerprintedStatic(url) {
+  return /\.[0-9a-f]{12}\.[^/]+$/i.test(url.pathname);
+}
+
+function needsNetworkModuleReload(url) {
+  return url.pathname.startsWith('/static/js/') && !isFingerprintedStatic(url);
+}
+
 /** Fetch and durably refresh one same-origin static asset. */
 async function revalidateStatic(request) {
   try {
-    const resp = await fetch(request);
+    const url = new URL(request.url);
+    // Dependency modules use logical paths because import statements cannot
+    // call the server-side asset() helper. Force those revalidations past the
+    // browser HTTP/module cache; otherwise a successful SWR can put the same
+    // pre-deploy module back into Cache Storage indefinitely. Fingerprinted
+    // paths are content-addressed and can safely use the browser cache.
+    const networkRequest = needsNetworkModuleReload(url)
+      ? new Request(request, { cache: 'reload' })
+      : request;
+    const resp = await fetch(networkRequest);
     if (resp && resp.status === 200 && resp.type === 'basic') {
       try {
         const cache = await caches.open(CACHE_STATIC);
