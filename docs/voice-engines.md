@@ -41,8 +41,10 @@ and pumps audio between them for the life of the turn. That backend is the
 A Lambda behind an API Gateway WebSocket API is request/response *per frame* — it
 cannot hold an open HTTP/2 stream to Bedrock for the duration of a session.
 Bedrock's bidirectional streaming needs a long-lived held socket. So the bridge
-is a small **ECS Fargate service (arm64, scale-to-1)** running a Go WSS server,
-fronted by an ALB with the ACM cert on **`nova.live.jeremy.ninja`** (Route 53).
+is a small **ECS Fargate service (arm64, scale-to-1)** running a Go WSS server.
+Its ALB is reached through CloudFront's same-origin `/nova/*` behavior, so
+clients connect to **`wss://live.jeremy.ninja/nova/session`** and no separate
+public bridge hostname is required.
 It is deliberately the only place in the whole product where AWS is in the audio
 media path. See `template.yaml` for the task definition / service / listener and
 the bridge source for the audio pump.
@@ -82,11 +84,20 @@ and returns **one of three shapes**:
 ```jsonc
 {
   "mode": "nova-bridge",
-  "wsUrl": "wss://nova.live.jeremy.ninja/…?token=…",  // single-use token in the URL
+  "wsUrl": "wss://live.jeremy.ninja/nova/session?token=…", // single-use token in the URL
   "token": "…",                                        // optional; usually already in wsUrl
+  "sessionConfig": { /* server-resolved prompt + server-executable tools */ },
   "sessionId": "…"
 }
 ```
+
+The client sends `{"type":"session.start","config":<sessionConfig>}` as the
+first WebSocket frame and does not start microphone capture until the bridge
+acknowledges with `{"type":"session.start"}`. The bridge token carries a signed
+SHA-256 digest of that config; the bridge canonicalizes and verifies the first
+frame before opening Bedrock, so the relay client cannot change persona,
+instructions, or tool policy. Because Nova executes tool calls in the bridge,
+the config deliberately excludes every device-local tool.
 
 **Gemini-direct** (M13) — the client opens a WSS straight to Google's Live API:
 
@@ -95,7 +106,7 @@ and returns **one of three shapes**:
   "mode": "gemini-direct",
   "engine": "gemini-flash-live",
   "model": "gemini-3.1-flash-live-preview",
-  "geminiEndpoint": "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained",
+  "geminiEndpoint": "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained",
   "accessToken": { "value": "auth_tokens/…", "expiresAt": "…", "newSessionExpiresAt": "…" },
   "sessionConfig": { /* the exact `setup` frame body the client sends on open */ },
   "voice": "Kore",
@@ -113,12 +124,15 @@ field names are deliberately outside the `wsUrl`/`bridgeUrl` family: legacy
 clients detect Nova by field *presence*, so the Gemini shape must never trip
 that heuristic.
 
-The bridge token is **single-use and scoped to that one `sessionId`**. WebSocket
+The bridge token is **single-use, scoped to that one `sessionId`, and bound to
+the exact server-generated session config**. WebSocket
 upgrade requests can't reliably carry a `Bearer` header across every client
 stack (browsers especially), so the token rides in the URL query string rather
-than a header (`contracts/api.md`, `/v1/realtime/bridge/{sessionId}`). The bridge
-verifies it (and the underlying first-party JWT) and runs the quota gate before
-it ever opens the Bedrock stream.
+than a header (`contracts/api.md`, `/nova/session`). The bridge
+verifies it (and the underlying first-party JWT), validates the live session
+slot, and atomically marks that slot redeemed before it ever opens the Bedrock
+stream. A racing or replayed connection is rejected; reconnect first fetches a
+fresh session.
 
 Clients branch on `mode`. Presence of `wsUrl` (or a `bridgeUrl`) is treated as
 Nova even if `mode` is absent, so the exact broker spelling can be finalized
@@ -126,14 +140,14 @@ without breaking already-shipped clients.
 
 ---
 
-## One event vocabulary across both engines (FR-VE-01)
+## One event vocabulary across all engines (FR-VE-01)
 
 Topics, memory, tools, transcripts, and barge-in must behave **identically** no
-matter which engine answered. That is achieved by normalizing both engines onto
+matter which engine answered. That is achieved by normalizing every engine onto
 a **common event schema** (`internal/voiceengine`):
 
 ```
-session.start | audio.in | audio.out | transcript |
+session.start | audio.in | audio.out | user.text | transcript |
 tool.call | tool.result | turn.start | turn.end | error
 ```
 
@@ -141,19 +155,28 @@ tool.call | tool.result | turn.start | turn.end | error
   turns) onto this schema.
 - The web/Android/broker code maps **OpenAI Realtime** events onto the same
   schema.
-- Transcript turns from either engine are POSTed to the **same** transcript sink
+- Transcript turns from every engine are POSTed to the **same** transcript sink
   (`POST /api/v1/transcript`); function calls from either engine go to the
   **same** tool router (`POST /api/v1/tools/invoke`).
 
-On the wire toward the *client*, the Nova bridge deliberately speaks the **same
-pcm16 event framing** the clients already use for OpenAI (uplink
-`input_audio_buffer.append`, downlink `response.output_audio.delta`, transcript
-deltas, `response.cancel` for barge-in). That is what lets each client add Nova
-support as a **transport switch only** — a different URL and auth — with no
-change to audio encode/decode, playback, or barge-in logic.
+On the Nova client wire, audio and control are deliberately separated:
+
+- binary WebSocket frames carry raw little-endian mono PCM16 in both directions
+  (microphone uplink and assistant downlink);
+- JSON text frames carry `session.start`, transcript/turn lifecycle, and
+  errors. The shared `user.text` operation returns a typed unsupported error
+  on Nova Sonic v1 because v1 permits TEXT only as pre-audio history, not as
+  an interactive mid-stream turn;
+- Nova server VAD detects barge-in from the continuous microphone stream; an
+  interrupted assistant `turn.end` makes web/Android clear queued playback
+  immediately, while the bridge drops trailing audio until the next completion;
+- Nova's manifest contains server-executable tools only. The bridge executes
+  those calls exactly once and returns results to Nova without redispatching
+  them to the client.
 
 Audio format is pcm16 both ways: **16 kHz mono uplink**, **24 kHz mono downlink**
-(the bridge conforms Nova's stream to the same rates the OpenAI path uses).
+(the bridge adapter converts raw binary frames to/from Nova's base64 event
+payloads).
 
 ---
 
@@ -163,36 +186,32 @@ Audio format is pcm16 both ways: **16 kHz mono uplink**, **24 kHz mono downlink*
 |-----------|:-------------:|:-----------:|:-------------:|-------|
 | Web (`realtime.mjs`)        | ✅ | ✅ | ⚠️ per-surface until verified | Triple path: WebRTC/WSS to OpenAI, WSS to the bridge, or WSS to Google. |
 | Android (`RealtimeTransport`)| ✅ | ✅ | ⚠️ per-surface until verified | Same triple path. |
-| M5Stack Tab5 (`ln_realtime`) | ✅ | ⚠️ **HIL-unverified** | ⚠️ **HIL-unverified** | Nova and Gemini branches implemented; not yet validated on hardware. |
+| M5Stack Tab5 (`ln_realtime`) | ✅ | ❌ **out of scope** | ⚠️ **HIL-unverified** | Its historical Nova branch predates the required signed-config handshake; the surface is backlog-only. |
 
 ### M5Stack firmware (`firmware/components/ln_realtime`)
 
-The Tab5 firmware already ran an OpenAI-direct WSS client. M12 adds a
-**nova-bridge branch** guarded by the `mode` field of the session-bootstrap
-response:
+The Tab5 firmware already runs an OpenAI-direct WSS client. Its historical M12
+**nova-bridge branch** is guarded by the `mode` field of the session-bootstrap
+response, but it predates the required signed-config bootstrap:
 
-- `ln_rt_session.c` parses **both** response shapes. OpenAI-direct resolves the
-  ephemeral token + model as before; nova-bridge resolves `wsUrl` (+ optional
-  `token`) and sets the session's engine mode. A `nova-bridge` response is no
-  longer rejected (it was, pre-M12).
+- `ln_rt_session.c` parses the Nova URL/token but does **not** yet retain the
+  returned `sessionConfig`.
 - `ln_realtime.c` (`ws_open`) branches on the mode:
   - **OpenAI-direct:** `wss://api.openai.com/v1/realtime?model=…` with
     `Authorization: Bearer ek_…`, and it sends `session.update` (pcm16 in/out)
     on connect — unchanged.
-  - **Nova-bridge:** connects to `wsUrl` verbatim (token already in the URL; a
-    separately-returned token is appended as a query param if not present), with
-    **no** `Authorization` header and **no** OpenAI `session.update` — the bridge
-    fixes pcm16 and owns session config server-side.
-- Uplink (`input_audio_buffer.append`), downlink audio decode, transcript
-  events, and local/VAD barge-in (`response.cancel`) are **shared** across both
-  paths — same pcm16 framing.
+  - **Nova-bridge:** can connect to `wsUrl`, but does not send the mandatory
+    first `session.start` config frame and therefore must not be enabled.
+- Its legacy JSON/base64 audio and control mapping also predates the bridge's
+  current raw-binary PCM contract and would need to be updated with the signed
+  config handshake.
 - Reconnect re-fetches a **fresh** session each attempt, which correctly re-mints
   the single-use bridge token per reconnect.
 
-> **HIL status:** the firmware Nova path is written and reviewed but has **not**
-> been exercised against a live bridge on real Tab5 hardware. It is marked
-> HIL-unverified until the PC↔Tab5 bidirectional smoke test covers a Nova-pinned
-> device. The OpenAI-direct firmware path is unchanged and unaffected.
+> **Scope/status:** Tab5 is outside the active plan. Before Nova can be enabled
+> there, firmware must parse `sessionConfig`, send it as the first frame, await
+> the bridge ACK, and then pass a real hardware smoke. OpenAI-direct is
+> unchanged and unaffected.
 
 ---
 
@@ -217,7 +236,8 @@ with the cost/tradeoff note below). Picking an engine for a device writes:
 
 Only the pinned device changes; every other device keeps falling back to
 `default` and stays client-direct. The next session that device bootstraps gets
-the `nova-bridge` response and connects to `nova.live.jeremy.ninja`.
+the `nova-bridge` response and connects to the same-origin
+`wss://live.jeremy.ninja/nova/session` endpoint.
 
 `deviceId` keys are the caller's own `DEVICE#<id>` ids (from `GET /v1/devices`,
 which backs the picker). An absent key ⇒ `default`.
@@ -267,9 +287,7 @@ the loop and the usage is steady enough to amortize the bridge.
 - `archive/plan.md` → **M12 — Secondary Voice Engine (Nova Sonic)** (DoD + task list; Nova is disabled — see `backlog.md`).
 - `archive/gemini-plan.md` → **M13 — Tertiary Voice Engine (Gemini Flash Live)** (protocol facts, mint recipe, DoD).
 - PRD → **FR-VE-01..04**.
-- `contracts/api.md` → `GET /v1/realtime/session`, `WSS /v1/realtime/bridge/{sessionId}`.
+- `contracts/api.md` → `GET /v1/realtime/session`, `WSS /nova/session`.
 - `contracts/settings.schema.json` → `#/properties/voiceEngine`.
 - `internal/voiceengine` → common event schema + normalizers.
 - `firmware/components/ln_realtime` → M5Stack dual-path client.
-</content>
-</invoke>

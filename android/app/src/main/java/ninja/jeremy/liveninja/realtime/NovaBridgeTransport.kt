@@ -43,6 +43,22 @@ import okio.ByteString.Companion.toByteString
 import org.json.JSONObject
 
 /**
+ * Build the required first client frame for a Nova bridge socket.
+ *
+ * The config is copied through JSON so neither the frame nor its caller can
+ * mutate the broker-authored bootstrap out from under the other.
+ */
+internal fun buildNovaSessionStartFrame(sessionConfig: JSONObject): String =
+    JSONObject()
+        .put("type", "session.start")
+        .put("config", JSONObject(sessionConfig.toString()))
+        .toString()
+
+/** Published Nova bridge interruption marker used by the Android playout path. */
+internal fun novaAssistantTurnWasInterrupted(event: JSONObject): Boolean =
+    event.optString("role") == "assistant" && event.optBoolean("interrupted")
+
+/**
  * Nova Sonic bridge implementation of [RealtimeTransport] (M12 FR-VE-02/03).
  *
  * Bedrock's `InvokeModelWithBidirectionalStream` is a server-held HTTP/2 +
@@ -54,18 +70,23 @@ import org.json.JSONObject
  * WebRTC path does, so [RealtimeSessionCoordinator] is engine-agnostic.
  *
  * Wire protocol (mirrors web/static/js/realtime.mjs):
+ *   * The first client text frame is
+ *     `{"type":"session.start","config":<server-authored sessionConfig>}`.
+ *     The bridge's `session.start` reply is the acknowledgement that opens
+ *     the audio path.
  *   * Binary WS frames = raw little-endian mono PCM16. Outbound = mic input
  *     (`audio.in`); inbound = assistant output (`audio.out`). Sample rates are
  *     announced in `session.start` (default 16 kHz in / 24 kHz out).
  *   * Text WS frames = JSON control/lifecycle in the common schema:
- *     session.start / turn.start / turn.end / transcript / tool.call /
+ *     session.start / turn.start / turn.end / transcript /
  *     speaking.start|stop / error. Outbound control (translated from the
- *     shared OpenAI-shaped [sendEvent] calls): tool.result / user.text /
- *     turn.commit / barge-in.
+ *     shared OpenAI-shaped [sendEvent] calls): user.text (typed rejection on
+ *     Nova v1) / turn.commit / barge-in. Nova tools execute exactly once in
+ *     the bridge and are not redispatched to this client.
  *
- * Barge-in is server-driven (Nova VAD): the bridge sends `turn.start`
- * role=user when it hears the user over the assistant; this transport flushes
- * local playback immediately (Android §4.3) and reports [RealtimeEvent.SpeechStarted].
+ * Barge-in is server-driven (Nova VAD): an interrupted assistant `turn.end`
+ * flushes local playback immediately; the following user `turn.start` reports
+ * [RealtimeEvent.SpeechStarted] and remains a defensive second flush point.
  *
  * Echo (WS-5 M21.2): this path has **no software APM at all** — raw `AudioRecord`
  * frames go straight onto the socket, so unlike [WebRtcTransport] there is no
@@ -107,6 +128,8 @@ class NovaBridgeTransport @Inject constructor(
 
     private var webSocket: WebSocket? = null
     private var sessionReady: CompletableDeferred<Unit>? = null
+    private var sessionConfig: JSONObject? = null
+    @Volatile private var connectionGeneration = 0L
 
     @Volatile
     private var inRate = DEFAULT_IN_RATE
@@ -136,6 +159,16 @@ class NovaBridgeTransport @Inject constructor(
     private val assistantText = HashMap<String, String>()
     private val userText = HashMap<String, String>()
 
+    override fun prime(session: RealtimeSession) {
+        // A fresh Nova session must use only the config minted for that
+        // bootstrap. Deep-copy it because JSONObject is mutable.
+        sessionConfig = if (session.mode == RealtimeSession.MODE_NOVA_BRIDGE) {
+            session.sessionConfig?.let { JSONObject(it.toString()) }
+        } else {
+            null
+        }
+    }
+
     override suspend fun connect(ephemeralToken: String, callsUrl: String) {
         // Interface params reused engine-agnostically: ephemeralToken = the
         // single-use bridge token, callsUrl = the bridge WebSocket URL.
@@ -158,12 +191,15 @@ class NovaBridgeTransport @Inject constructor(
     private suspend fun doConnect(bridgeToken: String, wsUrl: String) {
         val url = buildUrl(wsUrl, bridgeToken)
         if (url.isEmpty()) throw IOException("nova bridge URL was empty")
+        if (sessionConfig == null) throw IOException("nova transport not primed with sessionConfig")
 
         val ready = CompletableDeferred<Unit>()
         sessionReady = ready
+        val generation = ++connectionGeneration
 
+        val config = JSONObject(requireNotNull(sessionConfig).toString())
         val request = Request.Builder().url(url).build()
-        val ws = httpClient.newWebSocket(request, BridgeListener())
+        val ws = httpClient.newWebSocket(request, BridgeListener(ready, config, generation))
         webSocket = ws
 
         // Wait for the bridge to announce the session (sample rates, etc.).
@@ -279,9 +315,18 @@ class NovaBridgeTransport @Inject constructor(
             "turn.end" -> when (json.optString("role")) {
                 "user" -> emit(RealtimeEvent.SpeechStopped)
                 "assistant" -> {
+                    // Nova's INTERRUPTED content notification arrives before
+                    // the next USER transcript block. It is the authoritative
+                    // signal to purge faster-than-real-time buffered PCM.
+                    val wasSpeaking = assistantSpeaking
+                    if (novaAssistantTurnWasInterrupted(json)) {
+                        interruptPlayback(sendBargeIn = false)
+                    }
                     if (assistantSpeaking) {
                         assistantSpeaking = false
                         echoGate.assistantAudioStopped()
+                        emit(RealtimeEvent.AssistantAudioStopped)
+                    } else if (wasSpeaking) {
                         emit(RealtimeEvent.AssistantAudioStopped)
                     }
                     emit(RealtimeEvent.ResponseDone(null))
@@ -322,8 +367,12 @@ class NovaBridgeTransport @Inject constructor(
                 val err = json.optJSONObject("error")
                 emit(
                     RealtimeEvent.ServerError(
-                        code = err?.optString("code")?.ifEmpty { null },
-                        message = err?.optString("message").orEmpty().ifEmpty { "nova bridge error" },
+                        code = (err?.optString("code").orEmpty().ifEmpty {
+                            json.optString("code")
+                        }).ifEmpty { null },
+                        message = err?.optString("message").orEmpty().ifEmpty {
+                            json.optString("message")
+                        }.ifEmpty { "nova bridge error" },
                     ),
                 )
             }
@@ -342,7 +391,7 @@ class NovaBridgeTransport @Inject constructor(
                 else RealtimeEvent.AssistantTranscriptDone(itemId, text),
             )
         } else {
-            val delta = json.optString("delta")
+            val delta = json.optString("delta").ifEmpty { json.optString("text") }
             if (delta.isEmpty()) return
             map[itemId] = (map[itemId] ?: "") + delta
             emit(
@@ -500,6 +549,7 @@ class NovaBridgeTransport @Inject constructor(
     // ---- teardown ----
 
     private fun releaseSession() {
+        connectionGeneration++
         running = false
         assistantSpeaking = false
         userMuted = false
@@ -531,6 +581,7 @@ class NovaBridgeTransport @Inject constructor(
 
         assistantText.clear()
         userText.clear()
+        sessionConfig = null
         restoreAudioMode()
     }
 
@@ -540,14 +591,41 @@ class NovaBridgeTransport @Inject constructor(
         }
     }
 
-    private inner class BridgeListener : WebSocketListener() {
-        override fun onMessage(webSocket: WebSocket, text: String) = handleTextMessage(text)
+    private inner class BridgeListener(
+        private val ready: CompletableDeferred<Unit>,
+        private val config: JSONObject,
+        private val generation: Long,
+    ) : WebSocketListener() {
+        override fun onOpen(webSocket: WebSocket, response: Response) {
+            if (isStale(webSocket)) return
+            // The bridge cannot start Bedrock until it receives this config,
+            // so this must be the first outbound text frame and must precede
+            // waiting for the server's session.start acknowledgement.
+            val failure = runCatching {
+                if (!webSocket.send(buildNovaSessionStartFrame(config))) {
+                    throw IOException("nova session.start send was rejected")
+                }
+            }.exceptionOrNull()
+            if (failure != null && !ready.isCompleted) {
+                ready.completeExceptionally(
+                    IOException("nova session.start send failed", failure),
+                )
+            }
+        }
 
-        override fun onMessage(webSocket: WebSocket, bytes: ByteString) = handleBinaryMessage(bytes)
+        override fun onMessage(webSocket: WebSocket, text: String) {
+            if (isStale(webSocket)) return
+            handleTextMessage(text)
+        }
+
+        override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+            if (isStale(webSocket)) return
+            handleBinaryMessage(bytes)
+        }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            val ready = sessionReady
-            if (ready != null && !ready.isCompleted) {
+            if (isStale(webSocket)) return
+            if (!ready.isCompleted) {
                 ready.completeExceptionally(IOException("nova bridge connection failed: ${t.message}", t))
             } else if (_state.value == TransportState.CONNECTED) {
                 _state.value = TransportState.FAILED
@@ -559,12 +637,18 @@ class NovaBridgeTransport @Inject constructor(
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            val ready = sessionReady
-            if (ready != null && !ready.isCompleted) {
+            if (isStale(webSocket)) return
+            if (!ready.isCompleted) {
                 ready.completeExceptionally(IOException("nova bridge closed before starting ($code)"))
             } else if (_state.value == TransportState.CONNECTED) {
                 _state.value = TransportState.CLOSED
             }
+        }
+
+        /** True when this callback belongs to a socket already replaced. */
+        private fun isStale(ws: WebSocket): Boolean {
+            val current = this@NovaBridgeTransport.webSocket
+            return generation != connectionGeneration || (current != null && current !== ws)
         }
     }
 

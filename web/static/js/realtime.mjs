@@ -41,11 +41,13 @@
 // the device's `voiceEngine` pin (contracts/settings.schema.json):
 //   { mode:"openai-direct", clientSecret, model, voice, ... }  ← default path,
 //     the WebRTC-to-OpenAI transport below (unchanged).
-//   { mode:"nova-bridge",  wsUrl, token, model?, voice?, sessionId }  ← a
-//     Nova-pinned device; audio flows device⇄backend-bridge⇄Bedrock Nova
-//     Sonic. Bedrock's bidirectional stream is server-held (SigV4 + HTTP/2),
-//     so it can't be client-direct — the browser instead opens a WebSocket to
-//     the bridge and streams raw PCM16 frames both ways.
+//   { mode:"nova-bridge",  wsUrl, token, sessionConfig, model?, voice?,
+//                          sessionId }  ← a Nova-pinned device; audio flows
+//     device⇄backend-bridge⇄Bedrock Nova Sonic. Bedrock's bidirectional
+//     stream is server-held (SigV4 + HTTP/2), so it can't be client-direct —
+//     the browser instead opens a WebSocket to the bridge, sends the minted
+//     sessionConfig as its first frame, and streams raw PCM16 frames both
+//     ways after the bridge acknowledges the session.
 //   { mode:"gemini-direct", geminiEndpoint, accessToken:{value, expiresAt,
 //     newSessionExpiresAt}, sessionConfig, model, voice, sessionId, rates }
 //     ← a gemini-flash-live-pinned device (M13, gemini-plan.md §3.4): the
@@ -70,14 +72,16 @@
 //                              model?, voice?, sessionId?}
 //       {type:"turn.start"|"turn.end", role:"user"|"assistant"}
 //       {type:"transcript", role, delta?, text?, final?, itemId?}
-//       {type:"tool.call", tool, callId, args}    (args: object or JSON string)
 //       {type:"speaking.start"|"speaking.stop"}   (optional; also inferred
 //                                                   from audio.out frames)
-//       {type:"error", error:{message}}
+//       {type:"error", code, message}
 //     Client→bridge control the RealtimeSession emits (translated from the
 //     shared OpenAI-shaped calls in #novaSend):
-//       {type:"tool.result", callId, result}
-//       {type:"user.text", text}   {type:"turn.commit"}   {type:"barge-in"}
+//       {type:"session.start", config:<server-minted sessionConfig>} (FIRST)
+//       {type:"user.text", text} (typed rejection on Nova v1)
+//       {type:"turn.commit"}   {type:"barge-in"}
+//     Nova tools are server-execution-only: the bridge invokes and returns
+//     them to Nova without redispatching them to this client.
 //
 // CSP note: openai-direct reaches https://api.openai.com, which the page
 // `connect-src` allowlist names explicitly (spec §0). nova-bridge is NOT on a
@@ -242,7 +246,7 @@ async function mintOnce(sessionPath) {
   // pre-M12 openai-direct shape.
   const mode = body && body.mode ? body.mode : 'openai-direct';
   if (mode === 'nova-bridge') {
-    if (!body || !body.wsUrl) {
+    if (!body || !body.wsUrl || !body.sessionConfig) {
       throw new RealtimeError('mint_failed', 'The voice service returned an invalid Nova session.');
     }
   } else if (mode === 'gemini-direct') {
@@ -828,8 +832,10 @@ export class RealtimeSession extends EventTarget {
     ws.binaryType = 'arraybuffer';
     this.#novaWs = ws;
 
-    // Resolve once the bridge announces the session (sample rates, model,
-    // voice); reject on socket error/close/timeout before that.
+    // The bridge cannot start Bedrock until it receives the server-minted
+    // configuration. Send it as the first outbound frame, then resolve only
+    // after the bridge ACKs with its own session.start (sample rates, model,
+    // voice). Reject on socket error/close/timeout before that.
     try {
       await new Promise((resolve, reject) => {
         const timer = setTimeout(
@@ -847,6 +853,22 @@ export class RealtimeSession extends EventTarget {
           },
         };
         ws.onmessage = (e) => this.#onNovaMessage(e);
+        ws.onopen = () => {
+          try {
+            ws.send(
+              JSON.stringify({
+                type: 'session.start',
+                config: minted.sessionConfig,
+              }),
+            );
+          } catch {
+            if (this.#novaReady) {
+              this.#novaReady.reject(
+                new RealtimeError('bridge_failed', 'Could not start the voice bridge.'),
+              );
+            }
+          }
+        };
         ws.onerror = () => {
           if (this.#novaReady) this.#novaReady.reject(new RealtimeError('bridge_failed', 'The voice bridge connection failed.'));
         };
@@ -864,6 +886,7 @@ export class RealtimeSession extends EventTarget {
 
     this.#novaReady = null;
     // Post-handshake: a close/error is now a mid-call drop, not a start failure.
+    ws.onopen = null;
     ws.onerror = () => this.#handleDrop('bridge');
     ws.onclose = () => this.#handleDrop('bridge');
 
@@ -966,6 +989,11 @@ export class RealtimeSession extends EventTarget {
         if (evt.role === 'user') {
           this.#emit('speechstopped');
         } else if (evt.role === 'assistant') {
+          // Nova generates faster than playback. Its INTERRUPTED content
+          // notification is the first authoritative barge-in signal, so purge
+          // already-buffered PCM immediately instead of waiting for the next
+          // USER transcript block.
+          if (evt.interrupted === true) this.#novaStopPlayback();
           if (this.#speaking) {
             this.#speaking = false;
             this.#emit('speakingended');
@@ -997,7 +1025,7 @@ export class RealtimeSession extends EventTarget {
           map.delete(itemId);
           this.#emit(role === 'user' ? 'userfinal' : 'assistantfinal', { itemId, text });
         } else {
-          const delta = evt.delta || '';
+          const delta = evt.delta || evt.text || '';
           const text = (map.get(itemId) || '') + delta;
           map.set(itemId, text);
           this.#emit(role === 'user' ? 'userdelta' : 'assistantdelta', { itemId, delta, text });
@@ -1517,8 +1545,38 @@ export class RealtimeSession extends EventTarget {
       }
       return acc;
     };
-    const inTok = split(u.promptTokensDetails);
-    const outTok = split(u.responseTokensDetails);
+    const withRemainder = (details, aggregate, remainderBucket) => {
+      const remainder = Math.max(
+        0,
+        (Number(aggregate) || 0) - details.text - details.audio,
+      );
+      return {
+        text: details.text + (remainderBucket === 'text' ? remainder : 0),
+        audio: details.audio + (remainderBucket === 'audio' ? remainder : 0),
+      };
+    };
+    const prompt = withRemainder(
+      split(u.promptTokensDetails),
+      u.promptTokenCount,
+      'audio',
+    );
+    const toolPrompt = withRemainder(
+      split(u.toolUsePromptTokensDetails),
+      u.toolUsePromptTokenCount,
+      'text',
+    );
+    const inTok = {
+      text: prompt.text + toolPrompt.text,
+      audio: prompt.audio + toolPrompt.audio,
+    };
+    const responseCount =
+      Number(u.responseTokenCount) || Number(u.candidatesTokenCount) || 0;
+    const outTok = withRemainder(
+      split(u.responseTokensDetails || u.candidatesTokensDetails),
+      responseCount,
+      'audio',
+    );
+    outTok.text += Number(u.thoughtsTokenCount) || 0;
     this.#emit('usage', {
       usage: {
         total_tokens: Number(u.totalTokenCount) || 0,

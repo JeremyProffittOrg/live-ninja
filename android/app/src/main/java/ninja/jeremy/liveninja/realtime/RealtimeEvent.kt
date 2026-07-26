@@ -4,10 +4,10 @@ import org.json.JSONException
 import org.json.JSONObject
 
 /**
- * Typed view of the OpenAI Realtime server events that arrive on the
- * `oai-events` DataChannel (plan.md M4, Android §4). Only the events the
- * client acts on are modeled; everything else surfaces as [Other] so the
- * ViewModel/diagnostics can still observe the raw stream.
+ * Typed view of provider realtime events. OpenAI events arrive on the
+ * `oai-events` DataChannel; Nova and Gemini transports adapt their native
+ * protocols into this same stream. Only events the client acts on are
+ * modeled; everything else surfaces as [Other] for diagnostics.
  */
 sealed interface RealtimeEvent {
     /** `session.created` — the realtime session is live. */
@@ -37,6 +37,16 @@ sealed interface RealtimeEvent {
         val responseId: String?,
         val usage: JSONObject? = null,
     ) : RealtimeEvent
+
+    /**
+     * Provider-neutral per-turn token usage.
+     *
+     * OpenAI carries this inline on [ResponseDone]. Gemini sends a sibling
+     * `usageMetadata` envelope, so its transport normalizes that payload and
+     * emits this event at the turn boundary without inventing a second
+     * response lifecycle event.
+     */
+    data class Usage(val usage: JSONObject) : RealtimeEvent
 
     /** `output_audio_buffer.started` — assistant audio is now playing (WebRTC-specific). */
     data object AssistantAudioStarted : RealtimeEvent

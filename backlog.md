@@ -9,7 +9,6 @@ should be picked up as "next" without that decision being made explicitly.
 ## Voice engines
 
 - **Re-enable Nova Sonic (M12).** Fully built and connect-chain-verified, then **disabled by the owner** because the ALB + Fargate standing cost wasn't worth it. Re-enable = flip `NovaBridgeEnable` (two-phase: repo/ALB → image push → `NovaBridgeReady=true`, isolated deploy, nothing else in the same push) + restore the picker option; the ECR repo was force-deleted. ⟵ archive/plan.md M12 / §8 M14 item 3
-- **Nova Sonic's empty tool/persona config.** A real defect, explicitly ruled out of scope for the M18–M20 tool-parity work. Only matters if Nova is ever re-enabled. ⟵ archive/tool-parity-plan.md §0
 - **Speed / Energy / Register voice knobs.** Proposed to the owner, never picked. ⟵ archive/plan.md §8 M14 item 11b
 
 ## Tab5 / M5Stack — whole surface removed from the plan (owner, 2026-07-24)
@@ -30,6 +29,10 @@ picked up again. Full history: [archive/plan.md](archive/plan.md) M5 + §8 M5 no
 - **Live voice round-trip capture from the Tab5** into the shared transcript sink (parity with web/Android) — unverified. ⟵ docs/qa-report.md
 - **Owner eyeball of the reworked LCD screens** — onboarding slide-outs, WiFi list-select, subnet picker, QR at bottom, conversation-fills-screen layout: all flashed and serial-verified, never visually reviewed.
 - **Gemini path on firmware is HIL-unverified** (committed `968d373`). ⟵ archive/gemini-plan.md §10
+- **Nova signed-config handshake on firmware.** The active web/Android bridge now requires the
+  broker's `sessionConfig` as the first frame and verifies its signed digest before Bedrock opens.
+  Tab5's old Nova branch parses only URL/token and must add this handshake before Nova can ever be
+  enabled on that surface. The former empty tool/persona-config backend defect is resolved.
 - **Fleet registry row** — reconcile the Tab5 in `c:\dev\fleet\esp32.md` (eFuse MAC `30:ED:A0:E3:01:1E`, last seen COM58). House rule, still worth doing if the board is touched.
 - **Watch item:** one `sdio_rx_get_buffer` assert on esp-hosted slave v1.4.7 during a rapid mint-retry storm; next lever is SDIO RX buffer tuning. Only matters if the device is used again.
 

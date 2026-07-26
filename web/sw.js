@@ -20,7 +20,7 @@
 
 'use strict';
 
-const SW_VERSION = 'v1';
+const SW_VERSION = 'v3';
 const CACHE_HTML = `ln-html-${SW_VERSION}`;
 const CACHE_STATIC = `ln-static-${SW_VERSION}`;
 const CURRENT_CACHES = [CACHE_HTML, CACHE_STATIC];
@@ -34,12 +34,17 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     (async () => {
-      const names = await caches.keys();
-      await Promise.all(
-        names
-          .filter((n) => n.startsWith('ln-') && !CURRENT_CACHES.includes(n))
-          .map((n) => caches.delete(n)),
-      );
+      try {
+        const names = await caches.keys();
+        await Promise.all(
+          names
+            .filter((n) => n.startsWith('ln-') && !CURRENT_CACHES.includes(n))
+            .map((n) => caches.delete(n)),
+        );
+      } catch {
+        // Cache Storage can be unavailable (privacy mode/quota corruption);
+        // activation and network access must still proceed.
+      }
       await self.clients.claim();
     })(),
   );
@@ -55,7 +60,7 @@ function bypassed(request, url) {
   // other third-party fetch. Never cached, never intercepted.
   if (url.origin !== self.location.origin) return true;
   const p = url.pathname;
-  if (p.startsWith('/api/')) return true;
+  if (p.startsWith('/api/') || p.startsWith('/v1/')) return true;
   if (p.startsWith('/auth/')) return true;
   if (p.startsWith('/.well-known/')) return true;
   if (p === '/healthz') return true;
@@ -101,38 +106,62 @@ function offlineResponse() {
 
 /** Network-first for HTML/navigations; cache is only an offline fallback. */
 async function networkFirstHTML(request) {
-  const cache = await caches.open(CACHE_HTML);
   try {
     const fresh = await fetch(request);
     // Only cache clean, non-redirected 200s: caching a redirected response
     // and replaying it for a navigation throws in several browsers, and the
     // landing page 302s to /conversation for authed users.
     if (fresh && fresh.status === 200 && !fresh.redirected) {
-      cache.put(request, fresh.clone());
+      try {
+        const cache = await caches.open(CACHE_HTML);
+        await cache.put(request, fresh.clone());
+      } catch {
+        // Cache quota/storage failures must not turn a good network response
+        // into the offline page; this request simply lacks an offline copy.
+      }
     }
     return fresh;
   } catch {
-    const cached =
-      (await cache.match(request, { ignoreSearch: true })) || (await cache.match('/'));
-    return cached || offlineResponse();
+    try {
+      const cache = await caches.open(CACHE_HTML);
+      const cached =
+        (await cache.match(request, { ignoreSearch: true })) || (await cache.match('/'));
+      if (cached) return cached;
+    } catch {
+      // No usable Cache Storage fallback.
+    }
+    return offlineResponse();
+  }
+}
+
+/** Fetch and durably refresh one same-origin static asset. */
+async function revalidateStatic(request) {
+  try {
+    const resp = await fetch(request);
+    if (resp && resp.status === 200 && resp.type === 'basic') {
+      try {
+        const cache = await caches.open(CACHE_STATIC);
+        await cache.put(request, resp.clone());
+      } catch {
+        // Serve the fresh asset even when Cache Storage is unavailable.
+      }
+    }
+    return resp;
+  } catch {
+    return undefined;
   }
 }
 
 /** Stale-while-revalidate for same-origin static assets. */
-async function staleWhileRevalidate(request, event) {
-  const cache = await caches.open(CACHE_STATIC);
-  const cached = await cache.match(request);
-  const revalidate = fetch(request)
-    .then((resp) => {
-      if (resp && resp.status === 200 && resp.type === 'basic') {
-        cache.put(request, resp.clone());
-      }
-      return resp;
-    })
-    .catch(() => undefined);
-  if (cached) {
-    event.waitUntil(revalidate);
-    return cached;
+async function staleWhileRevalidate(request, revalidate) {
+  try {
+    const cache = await caches.open(CACHE_STATIC);
+    const cached = await cache.match(request);
+    if (cached) {
+      return cached;
+    }
+  } catch {
+    // Continue network-only when Cache Storage cannot be opened/read.
   }
   const fresh = await revalidate;
   return fresh || Response.error();
@@ -153,7 +182,12 @@ self.addEventListener('fetch', (event) => {
     return;
   }
   if (url.pathname.startsWith('/static/')) {
-    event.respondWith(staleWhileRevalidate(request, event));
+    // waitUntil must be registered while the fetch event is still active.
+    // revalidateStatic resolves only after cache.put, so the worker cannot be
+    // terminated between the network response and the durable cache write.
+    const revalidate = revalidateStatic(request);
+    event.waitUntil(revalidate);
+    event.respondWith(staleWhileRevalidate(request, revalidate));
     return;
   }
   // Anything else same-origin (none expected today): leave to the network.

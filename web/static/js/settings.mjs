@@ -138,6 +138,12 @@ function pingSettingsVersion() {
   } catch {
     /* storage blocked — cross-tab sync degrades gracefully */
   }
+  // The settings drawer is embedded in /conversation, and `storage` never
+  // fires in the document that made the write. Notify that document too;
+  // conversation.mjs re-GETs the canonical settings before applying them.
+  window.dispatchEvent(
+    new CustomEvent('ln:settings-changed', { detail: { version } }),
+  );
 }
 
 async function flush() {

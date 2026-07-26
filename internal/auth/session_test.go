@@ -35,9 +35,10 @@ func TestSignAccessTokenRoundTrip(t *testing.T) {
 
 	before := time.Now().Unix()
 	token, err := s.SignAccessToken(ctx, Claims{
-		Sub:     "user-1",
-		Sid:     "sess-1",
-		Surface: "web",
+		Sub:       "user-1",
+		Sid:       "sess-1",
+		Surface:   "web",
+		ConfigSHA: "nova-config-digest",
 	})
 	require.NoError(t, err)
 	after := time.Now().Unix()
@@ -53,6 +54,7 @@ func TestSignAccessTokenRoundTrip(t *testing.T) {
 	assert.Equal(t, "user-1", claims.Sub)
 	assert.Equal(t, "sess-1", claims.Sid)
 	assert.Equal(t, "web", claims.Surface)
+	assert.Equal(t, "nova-config-digest", claims.ConfigSHA)
 	assert.NotEmpty(t, claims.Jti)
 
 	// iat within the sign window; exp exactly iat + 15 minutes.

@@ -3,6 +3,7 @@ package webapp
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/observ"
+	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 )
 
 // Cookie / header names fixed by the shared spec. __Host- prefixed cookies
@@ -49,6 +51,7 @@ const (
 	localSurface   = "surface"
 	localDeviceID  = "deviceId"
 	localRole      = "role"
+	localScope     = "scope"
 	// localTxID holds the transaction id set by TxnMiddleware. Read via
 	// TxID(c); errorJSON stamps it into the error envelope.
 	localTxID = "txId"
@@ -73,6 +76,11 @@ func DeviceID(c *fiber.Ctx) string { return localString(c, localDeviceID) }
 
 // Role returns the authenticated user's role (owner|member), or "".
 func Role(c *fiber.Ctx) string { return localString(c, localRole) }
+
+// Scope returns the independently verified bearer capability scope, or "" for
+// ordinary access tokens. Route handlers use it only for scope-specific
+// identity binding; authorization itself remains in ExtractAuthContext.
+func Scope(c *fiber.Ctx) string { return localString(c, localScope) }
 
 func localString(c *fiber.Ctx, key string) string {
 	if v, ok := c.Locals(key).(string); ok {
@@ -255,10 +263,15 @@ type amznRequestContext struct {
 //     defense in depth), including the tokensValidAfter/status check via
 //     the user record.
 //
-// It only ever *extracts* — it never rejects. Enforcement is RequireAuth /
-// RequireOwner on the routes that need it.
+// Ordinary session/device tokens are only extracted here; enforcement is
+// RequireAuth / RequireOwner on the routes that need it. The one exception is
+// the broker-minted scope=nova credential: it is a capability token for the
+// Nova bridge's two server-to-server sinks, not a general access token. This
+// middleware therefore rejects it everywhere except the exact POST routes
+// that the bridge calls.
 func ExtractAuthContext(deps *Deps) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		token := bearerToken(c)
 		if raw := c.Get("x-amzn-request-context"); raw != "" {
 			var rc amznRequestContext
 			if err := json.Unmarshal([]byte(raw), &rc); err == nil && len(rc.Authorizer.Lambda) > 0 {
@@ -268,13 +281,17 @@ func ExtractAuthContext(deps *Deps) fiber.Handler {
 				setLocalFromAny(c, localDeviceID, rc.Authorizer.Lambda["deviceId"])
 				setLocalFromAny(c, localRole, rc.Authorizer.Lambda["role"])
 				if UserID(c) != "" {
-					return c.Next()
+					// The current API Gateway authorizer context predates the
+					// scope claim. Read it when present, but also detect the
+					// scope on the original bearer JWT so deployed requests are
+					// protected without trusting an unverified claim.
+					contextScope, _ := rc.Authorizer.Lambda["scope"].(string)
+					return continueAuthorizerRequest(c, deps, token, contextScope)
 				}
 			}
 		}
 
 		// Fallback: verify a Bearer JWT locally against our own JWKS.
-		token := bearerToken(c)
 		if token == "" || deps.Signer == nil {
 			return c.Next()
 		}
@@ -307,8 +324,114 @@ func ExtractAuthContext(deps *Deps) fiber.Handler {
 		c.Locals(localSurface, claims.Surface)
 		c.Locals(localDeviceID, claims.Did)
 		c.Locals(localRole, user.Role)
+		c.Locals(localScope, claims.Scope)
+		return enforceBearerScope(c, deps, claims.Scope)
+	}
+}
+
+// continueAuthorizerRequest applies the Nova capability boundary after API
+// Gateway has already authenticated the bearer token and supplied identity
+// locals. Normal access tokens take the historical fast path unchanged. A
+// potential Nova token is independently verified before its scope is trusted;
+// this both keeps the sink usable with today's authorizer context (which does
+// not include scope) and fails closed if local JWKS verification is unavailable.
+func continueAuthorizerRequest(c *fiber.Ctx, deps *Deps, token, contextScope string) error {
+	candidateScope := strings.TrimSpace(contextScope)
+	if candidateScope == "" {
+		candidateScope = unverifiedBearerScope(token)
+	}
+	if candidateScope != realtime.NovaScope {
 		return c.Next()
 	}
+	if token == "" || deps == nil || deps.Signer == nil {
+		return errorJSON(c, fiber.StatusUnauthorized, "invalid_token",
+			"The scoped bearer token could not be verified.")
+	}
+
+	jwks, err := deps.Signer.JWKS(c.Context())
+	if err != nil {
+		requestLogger(c).Warn("auth context: jwks unavailable for scoped-token verification",
+			slog.String("error", err.Error()))
+		return errorJSON(c, fiber.StatusUnauthorized, "invalid_token",
+			"The scoped bearer token could not be verified.")
+	}
+	claims, err := auth.VerifyJWT(token, jwks)
+	if err != nil || claims.Scope != realtime.NovaScope ||
+		!claimsMatchAuthContext(c, claims) {
+		return errorJSON(c, fiber.StatusUnauthorized, "invalid_token",
+			"The scoped bearer token could not be verified.")
+	}
+	c.Locals(localScope, claims.Scope)
+	return enforceBearerScope(c, deps, claims.Scope)
+}
+
+// claimsMatchAuthContext prevents a scoped token from being paired with a
+// different upstream authorizer identity. API Gateway derives both values
+// from the same Authorization header in production; an inconsistency is
+// therefore always an authentication failure.
+func claimsMatchAuthContext(c *fiber.Ctx, claims *auth.Claims) bool {
+	if claims == nil {
+		return false
+	}
+	return claims.Sub == UserID(c) &&
+		claims.Sid == SessionID(c) &&
+		claims.Surface == Surface(c) &&
+		claims.Did == DeviceID(c)
+}
+
+// unverifiedBearerScope is only a cheap classifier deciding whether the
+// independently verified slow path above is required. Its result never grants
+// access: scope=nova must still pass auth.VerifyJWT and match the upstream
+// authorizer identity before either sink is reached.
+func unverifiedBearerScope(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Scope string `json:"scope"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(claims.Scope)
+}
+
+// enforceBearerScope confines the broker-minted Nova capability credential to
+// the two bridge sink calls. Exact path and method matching is deliberate:
+// aliases, descendants, reads, and all other authenticated resources remain
+// unavailable to this short-lived bridge token.
+func enforceBearerScope(c *fiber.Ctx, deps *Deps, scope string) error {
+	if scope != realtime.NovaScope {
+		return c.Next()
+	}
+	if c.Method() == fiber.MethodPost {
+		switch c.Path() {
+		case "/api/v1/transcript", "/api/v1/tools/invoke":
+			if deps == nil || deps.Store == nil {
+				return errorJSON(c, fiber.StatusServiceUnavailable, "session_check_unavailable",
+					"The scoped session could not be verified.")
+			}
+			active, err := deps.Store.IsRedeemedSessionActive(c.Context(), UserID(c), SessionID(c))
+			if err != nil {
+				requestLogger(c).Error("auth context: scoped session check failed",
+					slog.String("error", err.Error()))
+				return errorJSON(c, fiber.StatusServiceUnavailable, "session_check_unavailable",
+					"The scoped session could not be verified.")
+			}
+			if !active {
+				return errorJSON(c, fiber.StatusUnauthorized, "session_inactive",
+					"The scoped session is no longer active.")
+			}
+			return c.Next()
+		}
+	}
+	return errorJSON(c, fiber.StatusForbidden, "insufficient_scope",
+		"The scoped bearer token is not authorized for this endpoint.")
 }
 
 func setLocalFromAny(c *fiber.Ctx, key string, v any) {

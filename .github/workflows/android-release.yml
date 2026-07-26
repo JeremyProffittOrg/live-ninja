@@ -1,9 +1,10 @@
 name: Android Release
 
-# build-and-publish is manual-only: builds and verifies a signed, arm64 release APK,
-# produces the matching AAB for Play Console, publishes the APK under
-# /static/models/downloads/, then atomically updates the metadata consumed by
-# GET /v1/app/android/latest and /.well-known/assetlinks.json.
+# build-and-publish is manual-only and main-only: builds and verifies a signed,
+# arm64 release APK, produces the matching AAB for Play Console, publishes the
+# APK under /static/models/downloads/, updates the signer document, then moves
+# the stable release pointer last. Signer continuity keeps the old and new APK
+# valid throughout the two-document publication sequence.
 #
 # unit-tests and instrumented-tests (WS-5 M24.3) additionally run on every push touching
 # android/** — that's the actual CI signal ("regressions fail in CI today", plan.md M24.1);
@@ -108,9 +109,12 @@ jobs:
     # timeouts, shared-runner KVM flakiness), and blocking the one physical tester's build on
     # a flaky emulator is a worse trade than occasionally shipping past an instrumented-test
     # failure that unit-tests didn't already catch (plan.md M24.3 decision).
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: unit-tests
     runs-on: ubuntu-latest
+    concurrency:
+      group: android-release-publish
+      cancel-in-progress: false
     permissions:
       id-token: write # required for OIDC
       contents: read
@@ -309,6 +313,7 @@ jobs:
           echo "safe_version=${SAFE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
           echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "certificate_sha256=${CERT_SHA256}" >> "$GITHUB_OUTPUT"
           echo "url=${APK_URL}" >> "$GITHUB_OUTPUT"
 
       - name: Upload signed release artifact
@@ -329,6 +334,98 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           role-session-name: gha-live-ninja-android-release-${{ github.run_id }}
           aws-region: us-east-1
+
+      # The job-level concurrency group makes this check + publish sequence
+      # single-writer. Read the public, validated stable document rather than
+      # printing or inspecting any AWS credential-bearing command output.
+      - name: Prevent stable release rollback
+        env:
+          CANDIDATE_VERSION_CODE: ${{ steps.release.outputs.version_code }}
+          CANDIDATE_CERTIFICATE_SHA256: ${{ steps.release.outputs.certificate_sha256 }}
+          CANDIDATE_ASSETLINKS_PATH: ${{ steps.release.outputs.assetlinks_path }}
+          CURRENT_RELEASE_URL: https://live.jeremy.ninja/v1/app/android/latest
+          CURRENT_ASSETLINKS_URL: https://live.jeremy.ninja/.well-known/assetlinks.json
+        run: |
+          set -euo pipefail
+          CURRENT_LATEST="$RUNNER_TEMP/android-current-latest.json"
+          HTTP_STATUS="$(
+            curl --silent --show-error \
+              --proto '=https' --tlsv1.2 \
+              --connect-timeout 10 --max-time 30 \
+              --output "$CURRENT_LATEST" --write-out '%{http_code}' \
+              "$CURRENT_RELEASE_URL"
+          )"
+          case "$HTTP_STATUS" in
+            200)
+              CURRENT_VERSION_CODE="$(
+                jq -er '.versionCode |
+                  select(type == "number" and floor == . and . >= 1)' \
+                  "$CURRENT_LATEST"
+              )"
+              if ! [[ "$CURRENT_VERSION_CODE" =~ ^[1-9][0-9]*$ ]]; then
+                echo "::error::Current Android release has an invalid versionCode"
+                exit 1
+              fi
+              if (( CANDIDATE_VERSION_CODE <= CURRENT_VERSION_CODE )); then
+                echo "::error::Android versionCode $CANDIDATE_VERSION_CODE must be greater than current stable $CURRENT_VERSION_CODE"
+                exit 1
+              fi
+              CURRENT_CERTIFICATE_SHA256="$(
+                jq -er '.certificateSha256 |
+                  select(type == "string" and
+                    test("^([0-9A-F]{2}:){31}[0-9A-F]{2}$"))' \
+                  "$CURRENT_LATEST"
+              )"
+              if [ "$CANDIDATE_CERTIFICATE_SHA256" != "$CURRENT_CERTIFICATE_SHA256" ]; then
+                echo "::error::Android release signer differs from the current stable signer"
+                exit 1
+              fi
+
+              CURRENT_ASSETLINKS="$RUNNER_TEMP/android-current-assetlinks.json"
+              ASSETLINKS_STATUS="$(
+                curl --silent --show-error \
+                  --proto '=https' --tlsv1.2 \
+                  --connect-timeout 10 --max-time 30 \
+                  --output "$CURRENT_ASSETLINKS" --write-out '%{http_code}' \
+                  "$CURRENT_ASSETLINKS_URL"
+              )"
+              if [ "$ASSETLINKS_STATUS" != "200" ]; then
+                echo "::error::Could not verify current Android signer document (HTTP $ASSETLINKS_STATUS)"
+                exit 1
+              fi
+              CURRENT_FINGERPRINTS="$(
+                jq -cer 'select(type == "array" and length == 1) |
+                  .[0].target.sha256_cert_fingerprints |
+                  select(type == "array" and length >= 1)' \
+                  "$CURRENT_ASSETLINKS"
+              )"
+              CANDIDATE_FINGERPRINTS="$(
+                jq -cer 'select(type == "array" and length == 1) |
+                  .[0].target.sha256_cert_fingerprints |
+                  select(type == "array" and length >= 1)' \
+                  "$CANDIDATE_ASSETLINKS_PATH"
+              )"
+              if ! jq -en \
+                --argjson current "$CURRENT_FINGERPRINTS" \
+                --argjson candidate "$CANDIDATE_FINGERPRINTS" \
+                '($current - $candidate) | length == 0' >/dev/null; then
+                echo "::error::Candidate signer document would remove a current certificate fingerprint"
+                exit 1
+              fi
+              ;;
+            404)
+              if ! jq -e '.error.code == "release_not_available"' \
+                "$CURRENT_LATEST" >/dev/null; then
+                echo "::error::Release endpoint returned an unexpected 404 response"
+                exit 1
+              fi
+              echo "No stable Android release exists yet; publishing the first version."
+              ;;
+            *)
+              echo "::error::Could not verify current Android release metadata (HTTP $HTTP_STATUS)"
+              exit 1
+              ;;
+          esac
 
       # Upload the immutable APK first. The stable documents move only after it
       # succeeds, so /latest can never advertise a missing object.

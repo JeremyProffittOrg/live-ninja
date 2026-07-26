@@ -13,11 +13,11 @@
 //     output events back into this schema before forwarding them on and
 //     emitting transcript turns / tool calls.
 //
-// The client <-> nova-bridge wire protocol IS this schema, one JSON
-// [Event] per WebSocket text frame (audio carried base64 in-band, matching
-// how Nova itself frames audio). That keeps a single representation across
-// the whole path and makes the bridge's translation layer the only place
-// Nova's protocol details live.
+// The client <-> nova-bridge wire protocol uses JSON [Event] text frames for
+// configuration/lifecycle/control and raw PCM16 WebSocket binary frames for
+// audio. The bridge adapter converts binary audio to/from the base64 fields
+// used inside this package and by Nova itself, keeping that translation at
+// one boundary.
 package voiceengine
 
 import "encoding/json"
@@ -42,22 +42,36 @@ const (
 	// mono at [Event.SampleRate] Hz (24 kHz for Nova output). Bridge ->
 	// client only.
 	TypeAudioOut Type = "audio.out"
+	// TypeUserText is an interactive typed USER turn. Engines that support
+	// cross-modal input map it to their native text operation; Nova Sonic v1
+	// rejects it with a typed error because v1 only accepts non-interactive
+	// TEXT history before the audio stream begins.
+	TypeUserText Type = "user.text"
+	// TypeTurnCommit is a client hint that captured input is complete. Nova's
+	// streaming server VAD commits audio turns itself, so the bridge accepts
+	// this as a no-op for cross-engine caller compatibility.
+	TypeTurnCommit Type = "turn.commit"
+	// TypeBargeIn is an explicit client interruption hint. The bridge drops
+	// remaining assistant audio for the active response and releases that
+	// suppression when the next assistant completion begins, matching the
+	// client's immediate playback clear.
+	TypeBargeIn Type = "barge-in"
 	// TypeTranscript is a recognized/generated text turn (user ASR or
 	// assistant text). [Event.Final] distinguishes a settled turn (persist
 	// it) from an in-progress hypothesis (display only). Bridge -> client,
 	// and final turns are mirrored to the transcript sink.
 	TypeTranscript Type = "transcript"
 	// TypeToolCall is a function-call request from the model. The bridge
-	// executes it server-side (POST /api/v1/tools/invoke) and both forwards
-	// this to the client (for UI) and feeds the result back to the engine.
+	// executes it server-side (POST /api/v1/tools/invoke) and feeds the
+	// result back to the engine; server tools are never dispatched again by
+	// the client.
 	TypeToolCall Type = "tool.call"
-	// TypeToolResult is the settled result of a TypeToolCall, echoed to the
-	// client after the bridge has fed it back to the engine.
+	// TypeToolResult is the settled result of a TypeToolCall.
 	TypeToolResult Type = "tool.result"
-	// TypeTurnStart marks the assistant beginning a response turn.
+	// TypeTurnStart marks a user or assistant turn beginning.
 	TypeTurnStart Type = "turn.start"
-	// TypeTurnEnd marks the assistant finishing (or being interrupted on)
-	// a response turn. [Event.Interrupted] is true for a barge-in.
+	// TypeTurnEnd marks a user or assistant turn finishing (or being
+	// interrupted). [Event.Interrupted] is true for a barge-in.
 	TypeTurnEnd Type = "turn.end"
 	// TypeError is a terminal or non-terminal engine/bridge error.
 	TypeError Type = "error"
@@ -113,7 +127,7 @@ type Event struct {
 	Audio      string `json:"audio,omitempty"`
 	SampleRate int    `json:"sampleRate,omitempty"`
 
-	// TypeTranscript.
+	// TypeTranscript / TypeUserText.
 	Role  string `json:"role,omitempty"`
 	Text  string `json:"text,omitempty"`
 	Final bool   `json:"final,omitempty"`
@@ -133,10 +147,10 @@ type Event struct {
 	Message string `json:"message,omitempty"`
 }
 
-// Marshal encodes an Event as a WebSocket text-frame payload.
+// Marshal encodes a control/lifecycle Event as a WebSocket text payload.
 func (e Event) Marshal() ([]byte, error) { return json.Marshal(e) }
 
-// ParseEvent decodes a client WebSocket text-frame payload into an Event.
+// ParseEvent decodes a client WebSocket text payload into an Event.
 func ParseEvent(b []byte) (Event, error) {
 	var e Event
 	err := json.Unmarshal(b, &e)

@@ -27,9 +27,9 @@ Parameters:
     Default: 100
     MinValue: 0
     Description: >-
-      Owner-set monthly OpenAI budget used by the M29 estimated-remaining
-      warning. The web function compares this with persisted OpenAI CONV
-      costs and warns below $20; 0 disables the warning.
+      Per-user monthly OpenAI allowance used by the M29 estimated-remaining
+      warning. Each authenticated member is compared only with OpenAI CONV
+      costs in their own partition and warned below $20; 0 disables it.
   GeminiLiveModel:
     Type: String
     Default: gemini-3.1-flash-live-preview
@@ -417,6 +417,17 @@ Resources:
           Resource:
           - !Sub "${AssetsBucket.Arn}/static/models/downloads/android-latest.json"
           - !Sub "${AssetsBucket.Arn}/static/models/downloads/android-assetlinks.json"
+        - Sid: AndroidReleaseDocumentsList
+          Effect: Allow
+          Action:
+          - s3:ListBucket
+          Resource:
+          - !GetAtt AssetsBucket.Arn
+          Condition:
+            StringEquals:
+              s3:prefix:
+              - static/models/downloads/android-latest.json
+              - static/models/downloads/android-assetlinks.json
         - Sid: WakewordModelsList
           Effect: Allow
           Action:
@@ -601,13 +612,6 @@ Resources:
           - ssm:GetParameter
           Resource:
           - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/gemini/api_key"
-          # Service-account key: the ONLY credential that can mint a Gemini Live
-          # ephemeral token (CreateToken rejects an API key with
-          # ACCESS_TOKEN_TYPE_UNSUPPORTED). Without this ARN the broker gets
-          # AccessDenied reading it and silently falls back to the api_key above,
-          # which fails the same way it always has — so the grant is load-bearing,
-          # not incidental.
-          - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/gemini/service_account_json"
         - Sid: SsmSecureStringDecrypt
           Effect: Allow
           Action:

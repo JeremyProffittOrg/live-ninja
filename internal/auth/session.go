@@ -37,7 +37,7 @@ const (
 
 // Claims is the payload of a Live Ninja access JWT. Field order matches
 // the canonical claim set from the spec: iss/sub/aud/sid/did/surface/
-// scope/iat/exp/jti.
+// scope/cfg/iat/exp/jti.
 type Claims struct {
 	Iss     string `json:"iss"`
 	Sub     string `json:"sub"` // userId
@@ -46,9 +46,12 @@ type Claims struct {
 	Did     string `json:"did,omitempty"` // deviceId (device surface only)
 	Surface string `json:"surface"`       // web | android | device
 	Scope   string `json:"scope,omitempty"`
-	Iat     int64  `json:"iat"`
-	Exp     int64  `json:"exp"`
-	Jti     string `json:"jti"`
+	// ConfigSHA binds a Nova bridge token to the server-generated session
+	// config without placing the private prompt itself in the URL-carried JWT.
+	ConfigSHA string `json:"cfg,omitempty"`
+	Iat       int64  `json:"iat"`
+	Exp       int64  `json:"exp"`
+	Jti       string `json:"jti"`
 }
 
 // jwtHeader is the fixed JOSE header for every token this package mints.

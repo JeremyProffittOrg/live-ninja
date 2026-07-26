@@ -25,6 +25,7 @@ func takePhotoDefinition() *Definition {
 			},
 		},
 		DeviceLocal: true,
+		Surfaces:    []string{"android"},
 		Handler:     handleDeviceLocalOnly,
 	}
 }
@@ -56,6 +57,7 @@ func recordVideoDefinition() *Definition {
 			},
 		},
 		DeviceLocal: true,
+		Surfaces:    []string{"android"},
 		Handler:     handleDeviceLocalOnly,
 	}
 }

@@ -143,6 +143,24 @@ func TestRenderManifestSurfacesEveryConstraintKind(t *testing.T) {
 		"Unadvertised params must be excluded from the rendered manifest")
 }
 
+func TestCatalogManifestForServerExecutionExcludesEveryDeviceLocalTool(t *testing.T) {
+	manifest := CatalogManifestForServerExecution()
+	names := make(map[string]bool, len(manifest))
+	for _, entry := range manifest {
+		name, ok := entry["name"].(string)
+		require.True(t, ok)
+		names[name] = true
+	}
+
+	for _, def := range definitions() {
+		if def.DeviceLocal {
+			assert.False(t, names[def.Name], "device-local tool %q must not be server-advertised", def.Name)
+		} else {
+			assert.True(t, names[def.Name], "server tool %q must remain advertised", def.Name)
+		}
+	}
+}
+
 // TestRenderManifestConstraintTestCoversEveryParamSpecField pins the
 // ParamSpec field set. When a field is added, this fails to force a
 // decision: does jsonSchema()/renderManifest need to surface it, and does

@@ -26,6 +26,71 @@ import ninja.jeremy.liveninja.ui.state.TranscriptRole
 import org.json.JSONObject
 
 /**
+ * Generation-bound state for a deferred device-session action.
+ *
+ * Tool calls run on worker coroutines while session start/stop and transport
+ * events can arrive on other threads. Updating generation and pending action
+ * under one monitor prevents a stale tool job from overwriting state installed
+ * by a newer session.
+ */
+internal class DeviceActionSessionState {
+    data class Pending(
+        val action: DeviceSessionTool,
+        val generation: Long,
+        val acknowledgementStarted: Boolean = false,
+    )
+
+    private val lock = Any()
+    private var generation = 0L
+    private var pending: Pending? = null
+
+    fun advanceGeneration() {
+        synchronized(lock) {
+            generation++
+            pending = null
+        }
+    }
+
+    fun currentGeneration(): Long = synchronized(lock) { generation }
+
+    fun isCurrent(candidate: Long): Boolean =
+        synchronized(lock) { candidate == generation }
+
+    fun setPending(action: DeviceSessionTool, candidate: Long): Boolean =
+        synchronized(lock) {
+            if (candidate != generation) {
+                false
+            } else {
+                pending = Pending(action, candidate)
+                true
+            }
+        }
+
+    fun markAcknowledgementStarted() {
+        synchronized(lock) {
+            val current = pending
+            pending = if (current?.generation == generation) {
+                current.copy(acknowledgementStarted = true)
+            } else {
+                null
+            }
+        }
+    }
+
+    fun takeAcknowledged(): Pending? =
+        synchronized(lock) {
+            val current = pending
+            if (current?.generation == generation && current.acknowledgementStarted) {
+                pending = null
+                current
+            } else {
+                if (current?.generation != generation) pending = null
+                null
+            }
+        }
+}
+
+/**
  * The realtime workstream's implementation of the UI seam
  * [RealtimeSessionController] (ui/state/UiSeams.kt): one live GPT-Realtime
  * session — bootstrap via `GET /api/v1/realtime/session`, WebRTC media via
@@ -64,15 +129,7 @@ class RealtimeSessionCoordinator @Inject constructor(
     private var transport: RealtimeTransport = webRtcTransport
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-
-    /** A device-local action held through the function-call response and its spoken follow-up. */
-    private data class PendingDeviceAction(
-        val action: DeviceSessionTool,
-        val acknowledgementStarted: Boolean = false,
-    )
-
-    @Volatile
-    private var pendingDeviceAction: PendingDeviceAction? = null
+    private val deviceActionState = DeviceActionSessionState()
     private val lifecycleMutex = Mutex()
 
     private val _connected = MutableStateFlow(false)
@@ -91,6 +148,7 @@ class RealtimeSessionCoordinator @Inject constructor(
      */
     private val costTracker = SessionCostTracker()
     private var sessionRates: RealtimeRates? = null
+    private val localToolResults = LocalToolCallResults()
 
     /**
      * Characters already emitted per transcript item, so the final
@@ -105,7 +163,8 @@ class RealtimeSessionCoordinator @Inject constructor(
 
             // Fresh conversation: clear the process-wide transcript so a UI
             // attaching mid-session (screen-on) renders only this session.
-            pendingDeviceAction = null
+            deviceActionState.advanceGeneration()
+            localToolResults.reset()
             transcriptStore.clear()
 
             // Latency parallelization (02-voice §D.2): speculatively bootstrap
@@ -206,9 +265,10 @@ class RealtimeSessionCoordinator @Inject constructor(
             eventsJob?.cancel()
             eventsJob = null
             _connected.value = false
-            pendingDeviceAction = null
+            deviceActionState.advanceGeneration()
             transport.disconnect()
             emittedChars.clear()
+            localToolResults.reset()
             // Session-end seam: the final:true flush is what makes the backend
             // run topics-extract and persist the CONV record for History.
             // Carry the session's accrued estimate on the same flush — it is what
@@ -241,23 +301,17 @@ class RealtimeSessionCoordinator @Inject constructor(
 
             is RealtimeEvent.ResponseDone -> {
                 emit(SessionUiEvent.AssistantSpeaking(speaking = false))
-                pendingDeviceAction
-                    ?.takeIf { it.acknowledgementStarted }
-                    ?.let { pending ->
-                    pendingDeviceAction = null
-                    scope.launch { runDeviceAction(pending.action) }
+                deviceActionState.takeAcknowledged()?.let { pending ->
+                    scope.launch {
+                        if (deviceActionState.isCurrent(pending.generation)) {
+                            runDeviceAction(pending.action)
+                        }
+                    }
                 }
-                // response.done is the only carrier of per-turn token counts.
-                costTracker.add(event.usage, sessionRates)?.let { cost ->
-                    emit(
-                        SessionUiEvent.CostUpdated(
-                            usd = cost.usd,
-                            textTokens = cost.textTokens,
-                            audioTokens = cost.audioTokens,
-                        ),
-                    )
-                }
+                applyUsage(event.usage)
             }
+
+            is RealtimeEvent.Usage -> applyUsage(event.usage)
 
             is RealtimeEvent.UserTranscriptDelta ->
                 emitDelta(event.itemId, TranscriptRole.USER, event.delta, done = false)
@@ -283,9 +337,7 @@ class RealtimeSessionCoordinator @Inject constructor(
                 // response.created after a device function result identifies
                 // the acknowledgement response. The earlier response.done is
                 // the function-calling turn and must not trigger the action.
-                pendingDeviceAction = pendingDeviceAction?.copy(
-                    acknowledgementStarted = true,
-                )
+                deviceActionState.markAcknowledgementStarted()
             }
 
             is RealtimeEvent.SessionCreated,
@@ -297,30 +349,62 @@ class RealtimeSessionCoordinator @Inject constructor(
     }
 
     /**
+     * Fold either OpenAI's response.done usage or Gemini's normalized usage
+     * event through the one tracker that backs both the live badge and the
+     * final transcript persistence payload.
+     */
+    private fun applyUsage(usage: JSONObject?) {
+        costTracker.add(usage, sessionRates)?.let { cost ->
+            emit(
+                SessionUiEvent.CostUpdated(
+                    usd = cost.usd,
+                    textTokens = cost.textTokens,
+                    audioTokens = cost.audioTokens,
+                ),
+            )
+        }
+    }
+
+    /**
      * Tool round-trip (FR-V04): execute server-side, then hand the result
      * back to the model and ask it to continue the spoken response.
      */
     private fun handleFunctionCall(call: RealtimeEvent.FunctionCall) {
+        val generation = deviceActionState.currentGeneration()
         scope.launch {
+            if (!deviceActionState.isCurrent(generation)) return@launch
+
             // Device-local tools never reach the backend router. Session actions
             // are deferred until the assistant has spoken its confirmation;
             // volume/camera actions happen immediately and return their actual
             // device/storage result in the same Result shape as a backend tool.
             val deviceTool = DeviceSessionTool.forName(call.name)
+            var shouldRespond = true
             val output = when {
                 deviceTool != null -> {
-                    pendingDeviceAction = PendingDeviceAction(deviceTool)
+                    if (!deviceActionState.setPending(deviceTool, generation)) return@launch
                     deviceToolOutput(deviceTool, call.callId)
                 }
 
-                call.name == DEVICE_VOLUME_TOOL_NAME ->
-                    deviceVolumeTool.execute(call.callId, call.argumentsJson)
+                call.name == DEVICE_VOLUME_TOOL_NAME -> {
+                    val delivery = localToolResults.getOrExecute(call.callId) {
+                        deviceVolumeTool.execute(call.callId, call.argumentsJson)
+                    }
+                    shouldRespond = delivery.shouldRespond
+                    delivery.output
+                }
 
-                call.name == TAKE_PHOTO_TOOL_NAME || call.name == RECORD_VIDEO_TOOL_NAME ->
-                    deviceCameraTool.execute(call.name, call.callId, call.argumentsJson)
+                call.name == TAKE_PHOTO_TOOL_NAME || call.name == RECORD_VIDEO_TOOL_NAME -> {
+                    val delivery = localToolResults.getOrExecute(call.callId) {
+                        deviceCameraTool.execute(call.name, call.callId, call.argumentsJson)
+                    }
+                    shouldRespond = delivery.shouldRespond
+                    delivery.output
+                }
 
                 else -> toolRouter.invoke(call)
             }
+            if (!shouldRespond || !deviceActionState.isCurrent(generation)) return@launch
             transport.sendEvent(
                 JSONObject()
                     .put("type", "conversation.item.create")

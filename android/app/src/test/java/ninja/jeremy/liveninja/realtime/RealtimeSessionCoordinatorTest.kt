@@ -6,6 +6,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import java.io.IOException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,6 +25,7 @@ import ninja.jeremy.liveninja.ui.state.TranscriptRole
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -224,9 +226,47 @@ class RealtimeSessionCoordinatorTest {
     }
 
     @Test
+    fun deviceActionState_rejectsStaleWritesAndClearsAcknowledgedActionsOnGenerationAdvance() {
+        val state = DeviceActionSessionState()
+        state.advanceGeneration()
+        val staleGeneration = state.currentGeneration()
+
+        state.advanceGeneration()
+        val currentGeneration = state.currentGeneration()
+        assertTrue(
+            state.setPending(
+                DeviceSessionTool.STOP_LISTENING,
+                currentGeneration,
+            ),
+        )
+        assertFalse(
+            state.setPending(
+                DeviceSessionTool.START_NEW_CONVERSATION,
+                staleGeneration,
+            ),
+        )
+
+        state.markAcknowledgementStarted()
+        val pending = state.takeAcknowledged()
+        assertEquals(DeviceSessionTool.STOP_LISTENING, pending?.action)
+        assertEquals(currentGeneration, pending?.generation)
+        assertNull(state.takeAcknowledged())
+
+        assertTrue(
+            state.setPending(
+                DeviceSessionTool.START_NEW_CONVERSATION,
+                currentGeneration,
+            ),
+        )
+        state.markAcknowledgementStarted()
+        state.advanceGeneration()
+        assertNull(state.takeAcknowledged())
+    }
+
+    @Test
     fun start_geminiDirect_routesToGeminiTransportAndPrimes() = runBlocking {
         val endpoint = "wss://generativelanguage.googleapis.com/ws/" +
-            "google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained"
+            "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained"
         coEvery { sessionApi.fetchSession() } returns RealtimeSession(
             mode = RealtimeSession.MODE_GEMINI_DIRECT,
             clientSecret = "",
@@ -264,6 +304,78 @@ class RealtimeSessionCoordinatorTest {
         assertTrue(transport.connectCalls.isEmpty())
         assertTrue(novaTransport.connectCalls.isEmpty())
         coord.stop()
+    }
+
+    @Test
+    fun geminiUsage_updatesBadgeAndFinalTranscriptCost() = runBlocking {
+        val rates = RealtimeRates(
+            textInPer1M = 0.75,
+            textOutPer1M = 4.50,
+            audioInPer1M = 3.00,
+            audioOutPer1M = 12.00,
+            cachedTextInPer1M = 0.75,
+            cachedAudioInPer1M = 3.00,
+        )
+        coEvery { sessionApi.fetchSession() } returns RealtimeSession(
+            mode = RealtimeSession.MODE_GEMINI_DIRECT,
+            clientSecret = "",
+            expiresAt = null,
+            model = "gemini-3.1-flash-live-preview",
+            voice = "Kore",
+            sessionId = "rs-gemini-cost",
+            quotaWarning = null,
+            geminiEndpoint = "wss://example/gemini",
+            accessToken = GeminiAccessToken("auth_tokens/abc", null, null),
+            sessionConfig = JSONObject().put("model", "models/gemini"),
+            rates = rates,
+        )
+        val transcriptSink = CapturingTranscriptSink()
+        val coord = RealtimeSessionCoordinator(
+            mockk<android.content.Context>(relaxed = true),
+            transport, novaTransport, geminiTransport, sessionApi, toolRouter, deviceVolumeTool,
+            deviceCameraTool,
+            TranscriptStore(), TranscriptUploader(transcriptSink, this),
+        )
+        val seen = mutableListOf<SessionUiEvent>()
+        val job = collectInto(coord, seen)
+        coord.start()
+
+        val usage = GeminiUsageNormalizer.normalize(
+            JSONObject(
+                """
+                {
+                  "totalTokenCount": 4000000,
+                  "promptTokensDetails": [
+                    {"modality":"TEXT","tokenCount":1000000},
+                    {"modality":"AUDIO","tokenCount":1000000}
+                  ],
+                  "responseTokensDetails": [
+                    {"modality":"TEXT","tokenCount":1000000},
+                    {"modality":"AUDIO","tokenCount":1000000}
+                  ]
+                }
+                """.trimIndent(),
+            ),
+        )
+        geminiTransport.serverEvent(RealtimeEvent.Usage(usage))
+
+        awaitUntil("Gemini cost badge update") {
+            seen.any { it is SessionUiEvent.CostUpdated }
+        }
+        val badge = seen.filterIsInstance<SessionUiEvent.CostUpdated>().single()
+        assertEquals(20.25, badge.usd, 1e-9)
+        assertEquals(2_000_000, badge.textTokens)
+        assertEquals(2_000_000, badge.audioTokens)
+
+        coord.stop()
+        awaitUntil("final transcript cost payload") {
+            transcriptSink.requests.any { it.final }
+        }
+        val persisted = transcriptSink.requests.single { it.final }.cost!!
+        assertEquals(20.25, persisted.usd, 1e-9)
+        assertEquals(2_000_000, persisted.textTokens)
+        assertEquals(2_000_000, persisted.audioTokens)
+        job.cancel()
     }
 
     @Test
@@ -525,6 +637,117 @@ class RealtimeSessionCoordinatorTest {
     }
 
     @Test
+    fun duplicateInFlightCameraCall_reusesOneCaptureResult() = runBlocking {
+        val localOutput =
+            """{"tool":"take_photo","callId":"photo-retry","ok":true,"output":{"deliverableId":"d-retry","name":"photo.jpg"}}"""
+        val captureStarted = CompletableDeferred<Unit>()
+        val captureResult = CompletableDeferred<String>()
+        coEvery {
+            deviceCameraTool.execute(
+                TAKE_PHOTO_TOOL_NAME,
+                "photo-retry",
+                """{"camera":"back"}""",
+            )
+        } coAnswers {
+            captureStarted.complete(Unit)
+            captureResult.await()
+        }
+        val coord = coordinator()
+        coord.start()
+        val duplicate = RealtimeEvent.FunctionCall(
+            callId = "photo-retry",
+            name = TAKE_PHOTO_TOOL_NAME,
+            argumentsJson = """{"camera":"back"}""",
+        )
+
+        transport.serverEvent(duplicate)
+        withTimeout(2_000) { captureStarted.await() }
+        transport.serverEvent(duplicate)
+        delay(100)
+        coVerify(exactly = 1) {
+            deviceCameraTool.execute(
+                TAKE_PHOTO_TOOL_NAME,
+                "photo-retry",
+                """{"camera":"back"}""",
+            )
+        }
+
+        captureResult.complete(localOutput)
+        awaitUntil("one camera result is returned") {
+            transport.sentEvents.count {
+                it.optString("type") == "conversation.item.create"
+            } == 1
+        }
+        delay(100)
+        val outputs = transport.sentEvents
+            .filter { it.optString("type") == "conversation.item.create" }
+            .map { it.getJSONObject("item").getString("output") }
+        assertEquals(listOf(localOutput), outputs)
+        assertEquals(1, transport.sentEvents.count { it.optString("type") == "response.create" })
+        coVerify(exactly = 0) { toolRouter.invoke(any()) }
+
+        coord.stop()
+    }
+
+    @Test
+    fun duplicateCompletedRelativeVolumeCall_reusesResultOnlyWithinSession() = runBlocking {
+        val localOutput =
+            """{"tool":"set_volume","callId":"volume-retry","ok":true,"output":{"action":"increase","level":60}}"""
+        every {
+            deviceVolumeTool.execute(
+                "volume-retry",
+                """{"action":"increase"}""",
+            )
+        } returns localOutput
+        val coord = coordinator()
+        coord.start()
+        val duplicate = RealtimeEvent.FunctionCall(
+            callId = "volume-retry",
+            name = DEVICE_VOLUME_TOOL_NAME,
+            argumentsJson = """{"action":"increase"}""",
+        )
+
+        transport.serverEvent(duplicate)
+        awaitUntil("first relative-volume result") {
+            transport.sentEvents.count {
+                it.optString("type") == "conversation.item.create"
+            } == 1
+        }
+        transport.serverEvent(duplicate)
+        delay(100)
+
+        verify(exactly = 1) {
+            deviceVolumeTool.execute(
+                "volume-retry",
+                """{"action":"increase"}""",
+            )
+        }
+        val outputs = transport.sentEvents
+            .filter { it.optString("type") == "conversation.item.create" }
+            .map { it.getJSONObject("item").getString("output") }
+        assertEquals(listOf(localOutput), outputs)
+        assertEquals(1, transport.sentEvents.count { it.optString("type") == "response.create" })
+        coVerify(exactly = 0) { toolRouter.invoke(any()) }
+
+        coord.stop()
+        transport.sentEvents.clear()
+        coord.start()
+        transport.serverEvent(duplicate)
+        awaitUntil("same call id executes again in the next session") {
+            transport.sentEvents.any {
+                it.optString("type") == "conversation.item.create"
+            }
+        }
+        verify(exactly = 2) {
+            deviceVolumeTool.execute(
+                "volume-retry",
+                """{"action":"increase"}""",
+            )
+        }
+        coord.stop()
+    }
+
+    @Test
     fun assistantSpeaking_followsAudioStartStop() = runBlocking {
         val coord = coordinator()
         val seen = mutableListOf<SessionUiEvent>()
@@ -547,5 +770,13 @@ class RealtimeSessionCoordinatorTest {
      */
     private object NoopTranscriptSink : TranscriptSink {
         override suspend fun upload(body: ninja.jeremy.liveninja.net.TranscriptUploadRequest) = Unit
+    }
+
+    private class CapturingTranscriptSink : TranscriptSink {
+        val requests = mutableListOf<ninja.jeremy.liveninja.net.TranscriptUploadRequest>()
+
+        override suspend fun upload(body: ninja.jeremy.liveninja.net.TranscriptUploadRequest) {
+            requests += body
+        }
     }
 }

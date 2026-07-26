@@ -10,7 +10,7 @@ Folded in from (full history + verbose implementation notes preserved in each):
 | Archived plan | What it contributed |
 |---|---|
 | [archive/plan.md](archive/plan.md) | Master M0–M12 plan + the entire §8 implementation-notes / RESUME-STATE history. **Read §8 there before resuming anything** — it is the deepest record of how this system actually works. |
-| [archive/gemini-plan.md](archive/gemini-plan.md) | M13 Gemini Flash Live — direct-REST auth fix implemented; production mint + E1/E2 live-audio verification outstanding |
+| [archive/gemini-plan.md](archive/gemini-plan.md) | M13 Gemini Flash Live — obsolete mixed-auth approach superseded by the official v1beta API-key-only contract; production mint + E1/E2 live-audio verification outstanding |
 | [archive/base-knowledge-plan.md](archive/base-knowledge-plan.md) | M15–M17 — M15/M16 and the core M17 pipeline deployed; M17 browser-client failure capture implemented in this pass |
 | [archive/tool-parity-plan.md](archive/tool-parity-plan.md) | M18–M20 — complete; only the owner live-audio smoke remains |
 | [archive/android-revamp-plan.md](archive/android-revamp-plan.md) | Android v0.2.1-hal revamp history; training completed and Android hot-swap/detection were later verified |
@@ -25,9 +25,12 @@ verification checklist), [SETUP.md](SETUP.md) (one-time owner setup checklist).
 
 ## Where the project actually stands (2026-07-25)
 
-The platform is **built and deployed to production**. M0–M13 are code-complete and live at
-`live.jeremy.ninja`; the QA campaign found **0 blockers and 0 functional bugs** across 8 surfaces.
-The Android app shipped as v0.2.1-hal and the tool manifest is single-sourced.
+The production baseline is live at `live.jeremy.ninja`, and the 2026-07-25 reliability
+implementation pass is code-complete locally but still awaiting its push, workflow result, and
+post-deploy smoke. M0–M12 are deployed; M13's corrected Gemini token-mint contract still requires
+a successful production mint and E1/E2 live-audio verification. The Android app shipped as
+v0.2.1-hal and the tool manifest is single-sourced. Remaining blockers and unverified checks are
+recorded explicitly below rather than summarized as zero.
 
 > **Scope decision (2026-07-24): the M5Stack Tab5 surface is OUT of this plan.** All Tab5 /
 > firmware / IoT-provisioning work — including the `ProvisionIoT` hook, device pairing, OTA,
@@ -35,13 +38,13 @@ The Android app shipped as v0.2.1-hal and the tool manifest is single-sourced.
 > works (HIL-verified multi-turn voice loop); it is simply not scheduled work. Active surfaces
 > are **web** and **Android**.
 
-What is left divides cleanly into four buckets — the workstreams below:
+What is left divides into six workstreams:
 
-- **WS-1 Verification** — human/mic/hardware-gated checks that no agent can run. Mostly owner work.
+- **WS-1 Verification** — remaining human/mic/hardware-gated checks. Mostly owner work.
 - **WS-2 Base Knowledge (M15–M17)** — M15/M16 complete; M17 Phase 2 is now implemented.
 - **WS-3 Unfinished platform work** — the wake-word train/hot-swap verification and owner-only checks.
 - **WS-4 Launch (M8)** — release automation and runbook are built; signed publication, Play
-  Console work, production smoke, and go/no-go remain.
+  Console work, post-change production smoke, and go/no-go remain.
 - **WS-6 Owner-requested capabilities** — M26 web parity and the M27–M30 implementations are
   complete; the new Android hardware paths still need owner/device verification.
 - **WS-5 Android stability & performance** — opened 2026-07-24 from live on-device evidence, and **closed 2026-07-25**: M21 all verified on hardware (21.2 echo audibly gone at 4x the reproducing volume, 21.3 wake detection proven at stock sensitivity, 21.5 auth deadlock fixed), M22 perf done (all-ABI 256 MB → arm64 108.7 MB), M23 verified end to end with a spoken tool-calling round-trip, M24 harness green in CI, M25 cost badge verified on screen *and* in the persisted CONV row.
@@ -55,8 +58,10 @@ WS-2 and WS-3 are independent and can run in parallel. WS-1 gates WS-4.
 **Definition of done:** every "built but never exercised with real audio/hardware" claim in the
 archived plans is either confirmed working or converted into a bug with a repro.
 
-> These cannot be automated: the agent profile has **no microphone** (hard block, hit repeatedly
-> across M12/M13/M19 verification) and the phone is physically at the owner's desk.
+> Some checks require subjective live-audio or owner-console judgment and cannot be fully
+> automated. This implementation pass did use the connected Samsung tablet plus the
+> PC-speakers-to-tablet-mic rig for the hardware checks specifically recorded as verified below;
+> unmarked checks remain owner work.
 
 ### 1.1 Live voice loop — web  `[x]` (owner-verified)
 ⟵ archive/plan.md §8 M14 item 12 · docs/qa-report.md "Live voice / microphone"
@@ -71,23 +76,22 @@ archived plans is either confirmed working or converted into a bug with a repro.
 
 ### 1.2 Gemini Flash Live — E1/E2  `[~]` **candidate auth fix implemented; live retry pending**
 
-> **Root cause found 2026-07-25:** the SDK's API-key-only token mint returned
-> `ACCESS_TOKEN_TYPE_UNSUPPORTED`. Three production attempts established the required shape by
-> elimination: API key only demanded OAuth2; bearer plus `x-goog-api-key` was rejected as two
-> authentication headers; bearer only demanded an API key. `BackendVertexAI` is not an
-> alternative because it does not expose ephemeral Live tokens.
+> **Root cause corrected 2026-07-25:** production returned
+> `401 UNAUTHENTICATED: API key for authentication is used with other authentication
+> credentials. Expected only one form of authentication.` The broker was posting to obsolete
+> `v1alpha/auth_tokens` with both OAuth2 and an API key. That inference-by-trial path contradicted
+> Google's published Live ephemeral-token contract.
 >
-> **Direct REST fix implemented 2026-07-25:** the broker now posts to
-> `v1alpha/auth_tokens` with the service-account OAuth2 bearer in `Authorization` and the API
-> key in the `?key=` query parameter—the combination the SDK cannot express. Redirects are
-> refused, credential-bearing errors are redacted, the request/response stays bounded, and the
-> old SDK API-key path remains the absent-service-account fallback. Unit tests pin the exact
-> headers, query, constraints body, response, fallback, and redaction behavior.
+> **Contract fix implemented 2026-07-25:** token creation and constrained Live WSS now use
+> `v1beta`; the provisioning request carries the broker-held API key only (the SDK emits
+> `x-goog-api-key`) and no bearer or query credential. The service-account secret mapping,
+> SSM read, workflow sync, and IAM grant were removed. Unit tests pin `/v1beta/auth_tokens`,
+> exactly one authentication form, `bidiGenerateContentSetup` constraints, and the v1beta WSS
+> endpoint.
 >
-> `GEMINI_SERVICE_ACCOUNT_JSON`, its SSM SecureString mapping, and the broker IAM read grant are
-> already present. The broker fallback remains confirmed in production, so a failed Gemini mint
-> still yields a working OpenAI session. **Do not call Gemini fixed until the newly deployed
-> shape successfully mints in production.** After that, E1/E2 still require real audio/time.
+> The broker fallback remains confirmed in production, so a failed Gemini mint still yields a
+> working OpenAI session. **Do not call Gemini fixed until the newly deployed shape successfully
+> mints in production.** After that, E1/E2 still require real audio/time.
 ⟵ archive/gemini-plan.md §4 Phase E · exact 6-step script in that file's §10 "Phase E status"
 - `[ ]` **E1 cross-engine parity:** pin one device to `gemini-flash-live`, one to `openai-realtime` — transcripts land in the same sink with correct `engine` tags, tools invoke identically, topics/memory extraction runs, cost priced at Gemini rates, barge-in cuts playback, persona switch changes the Gemini voice per the D4b mapping, user `geminiVoice` overrides it.
 - `[ ]` **E2 lifecycle:** a >10-min session survives the `goAway` recycle via resumption handle; a >30-min session re-fetches a fresh token and resumes; the quota gate still fires pre-mint.
@@ -102,10 +106,13 @@ archived plans is either confirmed working or converted into a bug with a repro.
   (The `device_control` / "reboot the terminal" step from the original smoke needs a Tab5 — moved to `backlog.md`.)
 - `[ ]` Repeat the first two on a `gemini-flash-live`-pinned device.
 
-### 1.4 Authed web surfaces  `[~]` (owner or owner-assisted browser session)
+### 1.4 Authed web surfaces  `[x]` (owner/device verified)
 ⟵ docs/qa-report.md "Requires an authenticated session"
 - `[x]` Full LWA web sign-in end-to-end → `__Host-ln_rt` cookie → `/conversation`.  **Owner-verified 2026-07-25.**
-- `[ ]` Android Custom-Tabs PKCE exchange (`POST /auth/lwa/exchange`) on a real device.
+- `[x]` Android Custom-Tabs PKCE exchange (`POST /auth/lwa/exchange`) on a real device. The
+  connected Samsung tablet launched the installed app directly into its authenticated
+  Conversation/Settings surfaces on 2026-07-25, backed by the refresh session created through
+  that exchange.
 - `[x]` `GET /personas` renders the grouped library (builtin/mine/shared) when authed.  **Owner-verified 2026-07-25.**
 - `[x]` Persona editor round-trip: create → edit voice/accent → share → copy a shared one → `personachanged` refresh + mid-session pending banner.  **Owner-verified 2026-07-25.**
 - `[x]` Settings autosave + 409 reconcile (concurrent second-device edit → remote-wins toast).  **Owner-verified 2026-07-25.**
@@ -113,23 +120,32 @@ archived plans is either confirmed working or converted into a bug with a repro.
 - `[x]` `/conversation` authed runtime: drawer focus-trap/Escape, mic-sens chips live-apply, persona `<select>` populated, transcript streams, cost badge on session start.  **Owner-verified 2026-07-25.**
 - `[x]` Settings **drawer** opened and exercised in a real browser — the drawer relocation was only ever statically screenshotted, never hydrated live (`initSettingsPanel`). ⟵ archive/plan.md §8 Task #8 Request 3  **Owner-verified 2026-07-25.**
 
-### 1.5 Android device  `[ ]` (owner, on the phone)
+### 1.5 Android device  `[~]` (connected physical tablet)
 ⟵ docs/qa-report.md "Device / hardware" · archive/plan.md §8
 - `[x]` Live voice round-trip capture on Android — done 2026-07-25: spoken turn → `get_weather` tool call → spoken answer → `final:true` flush → CONV row in History tagged `gpt-realtime`.
-- `[ ]` PWA install + offline: install prompt / add-to-homescreen / real offline navigation fallback on a device.
+- `[~]` PWA install + offline. Cache correctness was hardened 2026-07-25: `sw.js` v3 keeps
+  network-first HTML and stale-while-revalidate assets, awaits cache writes for worker lifetime,
+  removes older shells on activate, stays network-available if Cache Storage itself fails, and
+  continues to bypass API/auth/live traffic. Automated regression coverage is green; install
+  prompt / add-to-homescreen / real offline navigation fallback on a physical device remains.
 - `[~]` Android wake / lock-screen paths on real hardware. **Wake path done 2026-07-25** (wake phrase → `SessionOrchestrator` → live session, unlocked). **Lock-screen/keyguard path still untested.**
-- `[~]` Android FRR/FAR wake-engine corpus harness. **Automated half done 2026-07-25:**
-  fixed dual-voice positive/negative PCM corpus runs through the exact shipped VAD,
-  mel/embedding/head ONNX pipeline in `androidTest`; the existing emulator job gates it in CI
-  against the recorded 0-FR/1-FA baseline. A connected physical-device run remains owner work.
+- `[x]` Android FRR/FAR wake-engine corpus harness. Fixed dual-voice positive/negative PCM
+  corpus runs through the exact shipped VAD, mel/embedding/head ONNX pipeline in `androidTest`
+  against the recorded 0-FR/1-FA baseline. The connected SM-X518U physical-device run passed
+  `shippedOpenWakeWordModelDoesNotRegressFrrOrFar` on 2026-07-25 (0 failures, 1.918 s), and the
+  existing emulator job continues to gate it in CI.
 
-### 1.6 Delivery / infra spot-checks  `[ ]`
+### 1.6 Delivery / infra spot-checks  `[x]`
 ⟵ docs/qa-report.md "Delivery / infra / out-of-band"
-- `[ ]` Confirm the memory-fix commit is the currently-deployed `WebFunction` version. (H)
+- `[x]` Confirm the memory-fix commit is the currently-deployed `WebFunction` version. The
+  memory fix (`a55a9bc`) is an ancestor of production `de5ffa7`; `/healthz` reported
+  `0.7.0+de5ffa7` on 2026-07-25. (H)
 - `[x]` Security emails delivered to the owner inbox — owner confirmed working 2026-07-19.
 - `[x]` `Project`/`CostCenter` Cost Allocation Tags active — activated via `ce update-cost-allocation-tags-status`, Errors:[] (archive/plan.md §8 M0).
-- `[ ]` M9/M10/M11 (deliverables, memory/guides, topics/history) exercised with **real data**, not just deployed. (S)
-- `[x]` Playwright e2e + Lighthouse/axe WCAG-AA gates wired into CI — done 2026-07-25 (`b21ed31`, `52c8d44`). `tests/web/`: **34 Playwright tests** (desktop + Pixel 7) with axe WCAG 2.1 AA in **both colour schemes**, focus-ring, no-cache HTML, sw.js root scope, manifest icons actually fetched, 1.4.10 reflow at 320 px and 200 % zoom, no console errors; plus Lighthouse CI asserting **accessibility ≥ 1.0** / best-practices ≥ 0.9 / SEO ≥ 0.9. Verified green in CI against the deployed origin (every step, not just the job). **The gates found and fixed two real defects:** Lighthouse accessibility was 0.98 (`heading-order` — the landing page's feature cards were `h3` directly under the `h1`) and SEO 0.90 (no meta description). **Scope limit, deliberate:** unauthenticated surface only — the authed screens have no CI credentials, so the suite asserts they *redirect* anonymous visitors rather than faking a session; their authed behaviour stays owner-gated under 1.4. Runs **after** deploy and is advisory (`continue-on-error`), because the Fiber app needs Dynamo/KMS/SSM to boot so a local pre-deploy harness could only reach `/healthz`.
+- `[x]` M9/M10/M11 (deliverables, memory/guides, topics/history) exercised with **real data**,
+  not just deployed. The archived M9/M10/M11 acceptance notes and 2026-07-25 QA evidence record
+  real deliverable, memory, topic, and conversation rows plus authenticated history rendering.
+- `[x]` Playwright e2e + Lighthouse/axe WCAG-AA gates wired into CI — done 2026-07-25 (`b21ed31`, `52c8d44`). `npm test -- --list` currently reports **64 project executions across five specs** (desktop and Pixel/mobile), including axe WCAG 2.1 AA in **both colour schemes**, focus-ring, no-cache HTML, sw.js root scope, manifest icons actually fetched, 1.4.10 reflow at 320 px and 200 % zoom, no console errors, and nine desktop runtime regressions. (The same-tab settings check is a source-contract assertion; the wake swap/cache/Nova cases exercise behavior.) Lighthouse CI asserts **accessibility ≥ 1.0** / best-practices ≥ 0.9 / SEO ≥ 0.9. Verified green in CI against the deployed origin (every step, not just the job). **The gates found and fixed two real defects:** Lighthouse accessibility was 0.98 (`heading-order` — the landing page's feature cards were `h3` directly under the `h1`) and SEO 0.90 (no meta description). **Scope limit, deliberate:** unauthenticated surface only — the authed screens have no CI credentials, so the suite asserts they *redirect* anonymous visitors rather than faking a session; their authed behaviour stays owner-gated under 1.4. Runs **after** deploy and is advisory (`continue-on-error`), because the Fiber app needs Dynamo/KMS/SSM to boot so a local pre-deploy harness could only reach `/healthz`.
 
 ---
 
@@ -332,10 +348,18 @@ A full **train → model → Android hot-swap → live detection** run completed
 is verifying the same trained model's SHA-checked hot-swap on the web surface. Do **not** relabel
 to "Hey Jarvis" (owner decision).
 - `[x]` Confirm the 2026-07-20 training job finished and produced per-platform models in S3 (SHA-256 pinned). Proven on device: `active_openwakeword.json` pins `hey-live-ninja` sha256 `d7282ac…` against a real 209 KB `.onnx`.
-- `[~]` Verify hot-swap on web + Android (SHA verify + live swap). **Android done 2026-07-25** — the downloaded trained model is the loaded head model and it detected (`score=0.696`). **Web still unverified.**
+- `[~]` Verify hot-swap on web + Android (SHA verify + live swap). **Android done
+  2026-07-25** — the downloaded trained model is the loaded head model and it detected
+  (`score=0.696`). **Web implementation completed 2026-07-25:** same-tab and cross-tab saves
+  now re-fetch settings; a replacement detector is SHA-verified, instantiated, and warmed before
+  an atomic swap; failed verification leaves the proven detector active; displaced/stopped ONNX
+  sessions are released. Nine deterministic Playwright regressions cover lifecycle, SHA failure,
+  preservation, release, same-tab save notification, cache lifetime/bypass, and the Nova
+  first-frame/ACK handshake. A production
+  microphone/ONNX live swap remains.
 - `[x]` ~~Until then the Android wake word is **inert**~~ — **no longer true as of 2026-07-25.** "Hey Live Ninja" detects on device with the downloaded trained model. Do not repeat the "inert / only Hey Jarvis works" caveat in user-facing notes.
 
-### 3.2 Deferred security/cleanup findings  `[~]`
+### 3.2 Deferred security/cleanup findings  `[x]`
 ⟵ archive/plan.md §8 M7 "Lower findings ... noted for M8 cleanup"
 - `[x]` **S** — Idempotency-before-execute ordering in the tool router. Fixed 2026-07-25 in the M17 commit: the `IDEMP#<userId>#<key>` conditional put is now claimed *before* the side-effecting handler runs, so a retried invocation cannot execute twice.
 - `[x]` **H** — `scripts/gen-icons/main.go` now reproduces the shipped HAL-eye art (`c9bb28a`): all four assets to **MAE ~1/255 with 95–97% of pixels within 8/255**, residual being sub-pixel edge placement from integer-unit radii. Every value measured off the committed `icon-512.png`, not approximated: flat navy disc **r=199** (not 140), plate `#060d18`, navy `#16294a`, the eye as **translucent** red discs (alpha 0.167/0.36 over `#ff5f4a`) sitting **over** a lens band that darkens the navy, and the band a **stadium** (flat 51-unit half-height to x=106, then radius-51 caps) which predicts 51/38/26/14 at x=110/140/150/155 exactly as measured. **Correction:** at 192 px the shipped art reads as a smooth glow and I briefly rewrote the generator around gradients on that basis; at 512 px the shipped art is a hard-edged disc stack, so that was a redesign of the app icon, not a fix, and was reverted. Renders to a scratch cwd (the output path is relative), so the committed PNGs stay untouched.
@@ -426,6 +450,10 @@ runaway echo loop above made pointed — it burned tokens with no on-screen indi
 - `[x]` Android had **none** of the chain the web badge uses: the mint response's `rates` was parsed and thrown away, `response.done` usage was never read, and the final transcript flush carried no `cost`, so Android conversations produced **uncosted CONV rows**. Added `SessionCostTracker` (formula pinned to `web/static/js/conversation.mjs` so the two surfaces cannot disagree about the same session), a badge beside the session timer, and `cost` on the `final:true` flush. Also closes the Android half of WS-1's "costed CONV row" gap.
 - `[x]` The subtlety, pinned by a test: **cached tokens are a subset of `input_token_details`, not a sibling** — adding rather than subtracting them bills 1.1M tokens for a 1M-token turn.
 - `[x]` A null cost renders **no badge at all** rather than `~$0.000`: nova-bridge surfaces no usage, and showing zero for an unpriced engine is a lie rather than a zero. `Locale.US` is pinned so a comma-decimal locale cannot render `~$0,003`.
+- `[x]` Gemini cost parity added 2026-07-25: `usageMetadata` is normalized into the same
+  consume-once `SessionCostTracker` path as OpenAI `response.done`, so Gemini updates the badge
+  and persists the final CONV cost at Gemini rates. JVM tests cover parsing, latest-wins
+  buffering, duplicate suppression, badge updates, and the final transcript payload.
 - `[x]` **Verified on device 2026-07-25.** The badge rendered `~$0.040` beside the `0:28` timer during a live spoken session. The persistence half is confirmed straight from DynamoDB: the CONV row for that session carries `costUsd=0.023532`, `costTextTokens=4434`, `costAudioTokens=95`, `surface=android` — while today's **earlier** CONV rows (02:04Z, 10:16Z) have no cost attributes at all, which is exactly the before/after. **This also closes WS-1's "confirm the cost-persist chain produces a costed CONV row" for Android.**
 
 ## WS-6 — Owner-requested capabilities  `[~]`
@@ -433,7 +461,7 @@ runaway echo loop above made pointed — it burned tokens with no on-screen indi
 Opened 2026-07-25 from live use. Everything here was asked for directly by the owner during
 the session that closed WS-5, so it is scheduled work, not backlog.
 
-### M26 — Device session control  `[x]`  (2026-07-25, `54b95c9`)
+### M26 — Device session control  `[~]`  (built 2026-07-25; voice verification pending)
 
 **Definition of Done:** the user can stop listening and start a fresh conversation both by
 hand and by voice, from wherever they are.
@@ -462,6 +490,15 @@ hand and by voice, from wherever they are.
   intercepts both device-local session tools. Android and web both wait through the
   function-calling response and the subsequent spoken acknowledgement before executing, so the
   confirmation is not cut off. Automated regression tests pin that two-boundary deferral.
+  Client-direct OpenAI/Gemini manifests and prompts are rendered per surface: web sees these two
+  lifecycle tools, Android sees every supported local tool, and M5Stack/device sees none.
+  Typed fallback and Nova use a separate server-execution manifest/prompt with all device-local
+  tools removed, because those paths route every model call through the backend rather than back
+  to the client. Unsupported calls are therefore not advertised and cannot generate expected
+  `not_configured` failures. Nova's previously deadlocked bootstrap is also closed end to end:
+  web and Android send the broker-generated config as their first frame, wait for the bridge ACK
+  before capture, and the bridge verifies the config's canonical digest from its signed token
+  before opening Bedrock.
 
 ### M27 — Volume control  `[~]`
 
@@ -469,9 +506,13 @@ hand and by voice, from wherever they are.
   addressable, **media is the default** when unspecified. Device-local like M26, so it routes
   through the same `DeviceLocal` interception rather than the backend. The manifest and Android
   executor cover set/increase/decrease/mute/unmute for media, ring, notification, alarm, system,
-  voice-call, DTMF and accessibility streams, with strict argument/result tests.
+  voice-call, DTMF and accessibility streams, with strict argument/result tests. A per-session
+  call-ID single-flight/completed-result cache now prevents a provider retry from applying a
+  relative volume mutation twice.
 - `[ ]` Owner/device voice verification: exercise media default plus at least one explicitly
-  named stream and confirm OEM/DND restrictions fail truthfully.
+  named stream and confirm OEM/DND restrictions fail truthfully. On the connected Samsung
+  tablet, explicit media volume reached 53% and explicit alarm volume reached about 43%;
+  unspecified/default-media wording and an OEM/DND rejection still remain.
 
 ### M28 — Camera: photo + video capture  `[~]`
 
@@ -484,7 +525,9 @@ command IS the confirmation**; stored in the existing **S3** user bucket; and su
   onboarding/Privacy copy. The privacy posture changes materially: an assistant that captures
   on command without a confirmation step is a deliberate choice and is stated plainly in-app.
 - `[x]` **F** — Camera2 photo and silent H.264/MP4 video capture; video defaults to **60 s**,
-  accepts 1–300 s, and camera selection defaults to back with front override. Video is
+  accepts 1–300 s, and camera selection defaults to back with front override. JPEG and MP4
+  metadata now use the sensor orientation, current display rotation, and lens-facing sign;
+  exhaustive JVM cases cover all four rotations for 90° and 270° front/back sensors. Video is
   deliberately silent because the live voice session retains microphone ownership.
 - `[x]` **S** — Authenticated upload intent → credential-free, length/type-signed direct S3 PUT
   → server `HeadObject` verification → pending-to-ready `DELIV#` row. Android's Files DTO is
@@ -493,18 +536,22 @@ command IS the confirmation**; stored in the existing **S3** user bucket; and su
   owner-scoped delete path to remove a partial object, pending row, and filename claim; a
   process-death orphan stays visible and manually deletable in Files.
 - `[x]` **S** — `take_photo` and `record_video` are in the canonical manifest/persona prompt and
-  intercepted on Android before the backend router.
+  intercepted on Android before the backend router. Camera calls share the same per-session
+  call-ID single-flight cache as volume, so an in-flight retry awaits one capture and receives
+  the identical result instead of taking a second photo/video.
 - `[ ]` Owner/device verification: front/back photo, 60-second video, locked/background
   foreground-service behavior, slow-network upload, and Files refresh.
 
 ### M29 — OpenAI budget warning  `[x]`
 
 - `[x]` Recommendation **(a)** implemented against the existing owner-set
-  `OPENAI_MONTHLY_BUDGET_USD=100` variable: a bounded current-month `Query` sums only
-  `gpt-*`/`openai-*` costed conversations and warns strictly below **$20 remaining**. No billing
-  credential was added. `/api/v1/costs`, the web drawer, and Android session bootstrap all
-  surface the estimate; advisory query failures never break minting, and Android treats the
-  warning as dismissible/nonfatal.
+  `OPENAI_MONTHLY_BUDGET_USD=100` variable as a **per-authenticated-user monthly allowance**:
+  a bounded current-month `Query` over that user's partition sums only `gpt-*`/`openai-*`
+  costed conversations and warns strictly below **$20 remaining**. It is intentionally not
+  described as total spend on the shared provider key. No billing credential was added.
+  `/api/v1/costs`, the web drawer, and Android session bootstrap all surface the estimate;
+  advisory query failures never break minting, and Android treats the warning as
+  dismissible/nonfatal. A two-user regression pins the isolation policy.
 
 ### M30 — Settings revamp (web + Android)  `[x]`  (owner: **both** surfaces)
 
@@ -528,13 +575,20 @@ emailing (**no CloudWatch alerts — owner decision 2026-07-19; alarms stay remo
 
 - `[x]` **H** — SES production access + DKIM `@jeremy.ninja`, bounce/complaint SNS suppression wired (owner confirmed 2026-07-18).
 - `[x]` **H** — `Project`/`CostCenter` Cost Allocation Tags active; budgets alerting (activated at M0 via CLI).
-- `[ ]` **S** — Production end-to-end smoke: web voice turn, Android wake → WebRTC turn + tool call. **Gated on WS-1.**
+- `[x]` **S** — Production end-to-end smoke: web voice turn and Android wake → WebRTC turn +
+  `get_weather` tool call were both completed on production 2026-07-25; the Android final flush
+  produced the costed CONV row recorded under WS-1/WS-5.
 - `[~]` **S** — Distribution: web live ✅. The v0.2.2-hal/code-5 release workflow now requires
   owner-managed signing inputs, builds a signed APK plus a Play-ready AAB, verifies the APK
   signer, publishes the immutable APK, derives `assetlinks.json`, and writes the validated
   `GET /v1/app/android/latest` pointer last. Public S3-backed routes and verified App
-  Link/custom-scheme fallback are built. The runbook handles the first debug-to-release
-  reinstall and the distinct Play App Signing certificate.
+  Link/custom-scheme fallback are built. Manual publication is main-only, serialized, and
+  fail-closed unless `versionCode` strictly increases and the signer matches the current stable
+  release; it also refuses to remove a currently published sideload/Play certificate fingerprint
+  before the stable pointer can move. Missing release
+  documents map to 404 via narrowly conditioned `ListBucket`; real S3 authorization failures log
+  and return 503 instead of masquerading as "not published." The runbook handles the first
+  debug-to-release reinstall and the distinct Play App Signing certificate.
   **Blocked from first signed publication:** the four `ANDROID_RELEASE_*` GitHub secrets are not
   configured. Google Play App Signing/listing/AAB upload/data-safety and its public certificate
   variable remain owner-console work.
@@ -549,7 +603,7 @@ emailing (**no CloudWatch alerts — owner decision 2026-07-19; alarms stay remo
 
 - **Deploy = push to `main`.** GitHub Actions + OIDC only. No local `aws`/`sam deploy`/`sam sync`. Production-only; every push is a prod deploy.
 - **arm64 everywhere**, `provided.al2023`, built `GOOS=linux GOARCH=arm64 CGO_ENABLED=0 -tags lambda.norpc -o bootstrap`. Flip architecture and build step together.
-- **No `Scan` on a serving path.** `Query`/`GetItem` only; read-mostly catalogs from S3/CloudFront snapshots; `ConsumedReadCapacityUnits` alarm armed.
+- **No `Scan` on a serving path.** `Query`/`GetItem` only; read-mostly catalogs from S3/CloudFront snapshots. Capacity is inspected through metrics/runbook procedures; no CloudWatch alarm is configured.
 - **Secrets:** SSM SecureString + KMS only. No Secrets Manager. Agents never see values — owner sets them via `scripts/set-secret.sh`.
 - **Cost tags** (stack-level, `samconfig.toml`): `Project=live-ninja CostCenter=voice-ai Environment=prod ManagedBy=sam DeployedVia=github-actions Owner=jeremy`.
 - **No CloudWatch alarms** (owner, 2026-07-19). Budgets email directly; the `live-ninja-ops` SNS topic's only producer is SES bounce/complaint.

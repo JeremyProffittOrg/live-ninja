@@ -9,12 +9,13 @@
 // DeviceID/Role, middleware.go accessors) from the Fiber Locals that
 // ExtractAuthContext populated ahead of this group — never from a
 // client-supplied body/query field (contracts/api.md's anti-confused-
-// deputy rule, NFR-02/FR-A02). ExtractAuthContext only ever *extracts*;
-// RequireAuth()/RequireOwner() (also middleware.go) are what actually
-// reject, and this file applies them to the whole /api/v1 group (plus
-// RequireOwner on the admin allowlist routes) so every route here is
-// fail-closed regardless of the API Gateway authorizer already having
-// enforced the same thing upstream (defense in depth).
+// deputy rule, NFR-02/FR-A02). RequireAuth()/RequireOwner() (also
+// middleware.go) reject ordinary unauthenticated/unauthorized requests;
+// ExtractAuthContext additionally confines the scope=nova capability token
+// to the bridge's two exact POST sinks. This file applies RequireAuth to the
+// whole /api/v1 group (plus RequireOwner on the admin allowlist routes) so
+// every route here is fail-closed regardless of the API Gateway authorizer
+// already having enforced the same thing upstream (defense in depth).
 //
 // CSRF (the `__Host-ln_csrf` double-submit cookie + `X-LN-CSRF` header on
 // POSTs, web surface only) is enforced by CSRFProtect(), mounted globally
@@ -501,6 +502,7 @@ func handleRealtimeSession(deps *Deps) fiber.Handler {
 				"wsUrl":                resp.WSURL,
 				"token":                resp.BridgeToken,
 				"bridgeTokenExpiresAt": resp.BridgeTokenExpiresAt,
+				"sessionConfig":        resp.SessionConfig,
 				"toolManifest":         resp.ToolManifest,
 				"sessionId":            resp.SessionID,
 			})
@@ -769,6 +771,13 @@ func handleTranscript(deps *Deps) fiber.Handler {
 		}
 		if strings.TrimSpace(body.SessionID) == "" {
 			return apiBadRequest(c, "sessionId is required")
+		}
+		// A Nova capability token is minted for exactly one broker session.
+		// Never let the bridge use that otherwise-valid sink credential to
+		// write turns under a different conversation id supplied in the body.
+		if Scope(c) == realtime.NovaScope && body.SessionID != SessionID(c) {
+			return errorJSON(c, fiber.StatusForbidden, "session_mismatch",
+				"The transcript session does not match the scoped credential.")
 		}
 		if len(body.Turns) == 0 && !body.Final {
 			return apiBadRequest(c, "turns must be a non-empty array (unless final is true)")

@@ -8,12 +8,14 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 	"github.com/JeremyProffittOrg/live-ninja/internal/testutil"
+	"github.com/JeremyProffittOrg/live-ninja/internal/voiceengine"
 )
 
 // newTestBroker builds a broker whose only wired dependency is a JSON logger
@@ -55,13 +57,13 @@ type fakeFallback struct {
 	turnWithTools int
 }
 
-func (f *fakeFallback) Turn(_ context.Context, _ string, text string, _ string) (string, error) {
+func (f *fakeFallback) TurnForSurface(_ context.Context, _, _ string, text string, _ string) (string, error) {
 	f.turnCalls++
 	f.gotTurnText = text
 	return f.turnText, f.turnErr
 }
 
-func (f *fakeFallback) TurnWithTools(_ context.Context, _ string, messages []realtime.ChatMessage, _ string) (*realtime.TurnResult, error) {
+func (f *fakeFallback) TurnWithToolsForSurface(_ context.Context, _, _ string, messages []realtime.ChatMessage, _ string) (*realtime.TurnResult, error) {
 	f.turnWithTools++
 	f.gotMessages = messages
 	return f.toolsResult, f.toolsErr
@@ -134,6 +136,49 @@ func TestFallbackTurnLegacyTextStillWorks(t *testing.T) {
 	assert.Equal(t, 1, fb.turnCalls)
 	assert.Equal(t, 0, fb.turnWithTools)
 	assert.Equal(t, "hi", fb.gotTurnText)
+}
+
+func TestHandleNovaBridgeReturnsDigestBoundServerConfig(t *testing.T) {
+	fakeDDB := testutil.NewFakeDynamo()
+	logger := slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))
+	var signedDigest string
+	b := &broker{
+		log:      logger,
+		gate:     realtime.NewGate(fakeDDB, "live-ninja-test"),
+		ddb:      fakeDDB,
+		settings: fakeDDB,
+		table:    "live-ninja-test",
+		novaMint: func(_ context.Context, _, _, _, _, configDigest string) (string, time.Time, error) {
+			signedDigest = configDigest
+			return "signed.token", time.Date(2026, 7, 25, 20, 0, 0, 0, time.UTC), nil
+		},
+	}
+
+	resp := b.handleNovaBridge(context.Background(), logger, Request{
+		UserID: "u1", DeviceID: "d1", Surface: "android", Persona: "default",
+	}, "sess-nova", nil)
+	require.Empty(t, resp.Error)
+	require.NotEmpty(t, resp.SessionConfig)
+	require.NotEmpty(t, resp.ToolManifest)
+	assert.Equal(t, "nova-bridge", resp.Mode)
+
+	var config voiceengine.Config
+	require.NoError(t, json.Unmarshal(resp.SessionConfig, &config))
+	assert.Contains(t, config.SystemPrompt, "Always speak and respond in English")
+	assert.Contains(t, config.SystemPrompt, realtime.SessionDirectives)
+	assert.NotContains(t, config.SystemPrompt, "stop_listening")
+	assert.Equal(t, realtime.NovaConfigDigest(config), signedDigest)
+
+	names := make(map[string]bool, len(config.Tools))
+	for _, spec := range config.Tools {
+		names[spec.Name] = true
+	}
+	assert.True(t, names["send_email"])
+	for _, local := range []string{
+		"stop_listening", "start_new_conversation", "set_volume", "take_photo", "record_video",
+	} {
+		assert.False(t, names[local], local)
+	}
 }
 
 func TestFallbackTurnValidatesPayload(t *testing.T) {

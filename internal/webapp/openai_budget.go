@@ -11,9 +11,11 @@ import (
 
 const openAIBudgetWarningThresholdUSD = 20.0
 
-// openAIBudgetStatus is option (a) from plan.md M29: compare the owner-set
-// monthly OpenAI budget with costUsd already persisted on CONV rows. It needs
-// no new credential and deliberately describes the result as an estimate.
+// openAIBudgetStatus is option (a) from plan.md M29: compare the configured
+// per-user monthly allowance with costUsd persisted on that user's CONV rows.
+// This is deliberately a member allowance, not an estimate of total spend on
+// the shared provider key; keeping the Query inside one user partition makes
+// the policy bounded and preserves the no-Scan serving-path rule.
 type openAIBudgetStatus struct {
 	BudgetUSD           float64
 	SpentUSD            float64
@@ -67,7 +69,7 @@ func (s *openAIBudgetStatus) warningText() string {
 		return ""
 	}
 	return fmt.Sprintf(
-		"OpenAI budget warning: estimated $%.2f remaining this month.",
+		"OpenAI per-user allowance warning: estimated $%.2f remaining this month.",
 		s.RemainingUSD,
 	)
 }

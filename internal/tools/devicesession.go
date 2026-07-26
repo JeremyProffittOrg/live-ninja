@@ -26,6 +26,7 @@ func stopListeningDefinition() *Definition {
 			"the app, to 'stop', or says they are done talking for now. The user restarts " +
 			"listening from the app, so say so briefly rather than promising to resume.",
 		DeviceLocal: true,
+		Surfaces:    []string{"web", "android"},
 		Handler:     handleDeviceLocalOnly,
 	}
 }
@@ -38,6 +39,7 @@ func startNewConversationDefinition() *Definition {
 			"asks to start over, start a new conversation, clear the conversation, or change " +
 			"to an unrelated subject and wants a clean slate. This does not delete anything.",
 		DeviceLocal: true,
+		Surfaces:    []string{"web", "android"},
 		Handler:     handleDeviceLocalOnly,
 	}
 }

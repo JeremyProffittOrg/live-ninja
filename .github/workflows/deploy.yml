@@ -284,7 +284,6 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_SERVICE_ACCOUNT_JSON: ${{ secrets.GEMINI_SERVICE_ACCOUNT_JSON }}
           LWA_CLIENT_ID: ${{ vars.LWA_CLIENT_ID }}
           LWA_CLIENT_SECRET: ${{ secrets.LWA_CLIENT_SECRET }}
         run: |
@@ -301,18 +300,6 @@ jobs:
             --type SecureString \
             --value "$GEMINI_API_KEY" \
             --overwrite >/dev/null
-
-          # Service-account key for Gemini Live. Optional: the mint falls back to
-          # the API key when unset, so an account without one deploys exactly as
-          # before. Only OAuth2 can mint a Live ephemeral token - CreateToken
-          # rejects an API key with ACCESS_TOKEN_TYPE_UNSUPPORTED.
-          if [ -n "${GEMINI_SERVICE_ACCOUNT_JSON:-}" ]; then
-            aws ssm put-parameter \
-              --name "/live-ninja/prod/gemini/service_account_json" \
-              --type SecureString \
-              --value "$GEMINI_SERVICE_ACCOUNT_JSON" \
-              --overwrite >/dev/null
-          fi
 
           aws ssm put-parameter \
             --name "/live-ninja/prod/lwa/client_id" \

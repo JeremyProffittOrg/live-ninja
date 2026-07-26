@@ -6,10 +6,12 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 	"github.com/JeremyProffittOrg/live-ninja/internal/voiceengine"
 )
 
@@ -44,6 +46,9 @@ type session struct {
 	sink      *sinkClient
 	sessionID string
 	surface   string
+	// expectedConfigDigest comes from the signed bridge JWT. Production
+	// sessions require the first client config frame to match it exactly.
+	expectedConfigDigest string
 
 	// Nova protocol identifiers, stable for the session's life.
 	promptName   string
@@ -55,6 +60,12 @@ type session struct {
 	novaMu sync.Mutex
 
 	norm *voiceengine.NovaNormalizer
+	// suppressAudio is set by an explicit client cancel after the client has
+	// flushed local playback. Nova Sonic has no separate cancel control for
+	// an interactive response; dropping the rest of that assistant turn keeps
+	// later stream chunks from making the client start speaking again.
+	suppressAudio   atomic.Bool
+	assistantActive atomic.Bool
 
 	// transcript buffering.
 	tmu     sync.Mutex
@@ -97,6 +108,17 @@ func (s *session) Run(ctx context.Context) error {
 	} else {
 		deferred = &first
 	}
+	if s.expectedConfigDigest != "" {
+		if first.Type != voiceengine.TypeSessionStart || first.Config == nil ||
+			realtime.NovaConfigDigest(cfg) != s.expectedConfigDigest {
+			_ = s.client.WriteEvent(voiceengine.Event{
+				Type:    voiceengine.TypeError,
+				Code:    "nova_config",
+				Message: "the Nova session configuration was invalid",
+			})
+			return errors.New("nova-bridge: client session config did not match signed digest")
+		}
+	}
 
 	nova, err := s.openNova(ctx)
 	if err != nil {
@@ -111,6 +133,9 @@ func (s *session) Run(ctx context.Context) error {
 
 	if err := s.initNova(ctx, cfg); err != nil {
 		_ = s.client.WriteEvent(voiceengine.Event{Type: voiceengine.TypeError, Code: "nova_init", Message: "could not start the Nova session"})
+		return err
+	}
+	if err := s.client.WriteEvent(voiceengine.Event{Type: voiceengine.TypeSessionStart}); err != nil {
 		return err
 	}
 
@@ -201,6 +226,31 @@ func (s *session) handleClientEvent(ctx context.Context, ev voiceengine.Event) e
 		return s.sendNovaBuilt(ctx, func() ([]byte, error) {
 			return voiceengine.NovaAudioInput(s.promptName, s.audioContent, ev.Audio)
 		})
+	case voiceengine.TypeUserText:
+		if ev.Text == "" {
+			return nil
+		}
+		// Nova Sonic v1 accepts non-interactive TEXT only as startup history,
+		// before the long-lived audio content begins. Sending an interactive
+		// TEXT block here protocol-fails the Bedrock stream, so reject this
+		// shared-schema operation without disturbing the active audio session.
+		return s.client.WriteEvent(voiceengine.Event{
+			Type:    voiceengine.TypeError,
+			Code:    "nova_user_text_unsupported",
+			Message: "Typed text is not supported by Nova Sonic v1.",
+		})
+	case voiceengine.TypeBargeIn:
+		if s.assistantActive.Load() {
+			s.suppressAudio.Store(true)
+		}
+		// Nova detects the actual interruption from continuous microphone
+		// audio; suppress the old completion until the next one begins.
+		return nil
+	case voiceengine.TypeTurnCommit:
+		// Nova's continuous interactive audio input and server VAD commit
+		// turns. Clients still send this shared control so they can use one
+		// engine-neutral interface.
+		return nil
 	case voiceengine.TypeSessionStart:
 		// Re-configuration mid-session is not supported; ignore.
 		return nil
@@ -229,17 +279,37 @@ func (s *session) pumpNovaToClient(ctx context.Context) error {
 
 func (s *session) dispatch(ctx context.Context, ev voiceengine.Event) error {
 	switch ev.Type {
+	case voiceengine.TypeAudioOut:
+		if s.suppressAudio.Load() {
+			return nil
+		}
+		return s.client.WriteEvent(ev)
 	case voiceengine.TypeToolCall:
-		// Surface the call to the client for UI, then execute and feed the
-		// result back to Nova.
-		_ = s.client.WriteEvent(ev)
+		// Nova's manifest is server-execution-only. Execute exactly once in
+		// the bridge and never redispatch the call to a client.
 		return s.handleToolCall(ctx, ev)
 	case voiceengine.TypeTranscript:
 		if ev.Final {
 			s.bufferTurn(ctx, ev)
 		}
 		return s.client.WriteEvent(ev)
+	case voiceengine.TypeTurnStart:
+		if ev.Role == voiceengine.RoleAssistant {
+			// A new completion is the safe point to release suppression left
+			// by an interrupted predecessor. Nova may still deliver buffered
+			// chunks after that predecessor's INTERRUPTED contentEnd.
+			s.suppressAudio.Store(false)
+			s.assistantActive.Store(true)
+		}
+		return s.client.WriteEvent(ev)
 	case voiceengine.TypeTurnEnd:
+		if ev.Role == voiceengine.RoleAssistant {
+			s.assistantActive.Store(false)
+			// INTERRUPTED is Nova's first authoritative barge-in signal. Latch
+			// suppression even if the client's USER-start round trip has not
+			// arrived yet, because old PCM can trail the notification.
+			s.suppressAudio.Store(ev.Interrupted)
+		}
 		// A settled turn is a good moment to persist accumulated transcript.
 		if err := s.flush(ctx, false); err != nil {
 			s.log.Warn("nova-bridge: transcript flush failed", slog.String("error", err.Error()))
@@ -250,8 +320,7 @@ func (s *session) dispatch(ctx context.Context, ev voiceengine.Event) error {
 	}
 }
 
-// handleToolCall executes a model tool call and returns its result to Nova,
-// then echoes the result to the client.
+// handleToolCall executes a model tool call and returns its result to Nova.
 func (s *session) handleToolCall(ctx context.Context, call voiceengine.Event) error {
 	result, status, err := s.sink.InvokeTool(ctx, call)
 	if err != nil {
@@ -267,12 +336,6 @@ func (s *session) handleToolCall(ctx context.Context, call voiceengine.Event) er
 	if err := s.sendNovaAll(ctx, docs); err != nil {
 		return err
 	}
-	_ = s.client.WriteEvent(voiceengine.Event{
-		Type:       voiceengine.TypeToolResult,
-		ToolCallID: call.ToolCallID,
-		ToolName:   call.ToolName,
-		ToolResult: result,
-	})
 	s.log.Info("nova-bridge: tool executed",
 		slog.String("tool", call.ToolName), slog.Int("status", status))
 	return nil

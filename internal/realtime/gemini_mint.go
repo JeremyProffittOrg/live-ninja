@@ -2,15 +2,17 @@ package realtime
 
 // Gemini Live ephemeral-token mint (M13, gemini-flash-live engine). The
 // broker is the sole holder of the Gemini API key (SSM
-// /live-ninja/prod/gemini/api_key) and service-account credential (SSM
-// /live-ninja/prod/gemini/service_account_json); clients receive only a
+// /live-ninja/prod/gemini/api_key); clients receive only a
 // single-use, config-constrained ephemeral token and connect DIRECTLY to
 // Google — no bridge, no AWS in the media path (the Nova exception stays
 // Nova-only).
 //
-// Protocol facts proven live in the Phase 0 spike (gemini-plan.md §10):
-//   - Tokens must be minted against the v1alpha API surface
-//     (genai.HTTPOptions{APIVersion: "v1alpha"}).
+// Protocol facts:
+//   - Gemini's current ephemeral-token contract is v1beta for both mint and
+//     Live connection (the July 2026 API contract replaced the preview
+//     v1alpha-only behavior used by the original Phase 0 spike).
+//   - The provisioning request authenticates with exactly one credential:
+//     x-goog-api-key. OAuth2 plus an API key is rejected as mixed auth.
 //   - Token-authenticated WSS sessions use the BidiGenerateContentConstrained
 //     method with the token URL-escaped in an access_token query param — NOT
 //     the API-key BidiGenerateContent endpoint.
@@ -19,15 +21,9 @@ package realtime
 //     protocol does not).
 
 import (
-	"bytes"
-	"cloud.google.com/go/auth"
-	"cloud.google.com/go/auth/credentials"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"os"
 	"reflect"
 	"sort"
@@ -43,19 +39,17 @@ import (
 // (template.yaml passes the GeminiLiveModel parameter, same default).
 const DefaultGeminiLiveModel = "gemini-3.1-flash-live-preview"
 
-// geminiAuthTokensEndpoint is deliberately a raw REST endpoint. The Go SDK's
-// Gemini Developer client can only put its API key in x-goog-api-key and
-// cannot express the credential shape CreateToken requires in production:
-// an OAuth2 bearer plus the API key in the `key` query parameter.
-const geminiAuthTokensEndpoint = "https://generativelanguage.googleapis.com/v1alpha/auth_tokens"
+// GeminiAPIVersion is shared by token minting and the direct Live endpoint.
+// Ephemeral tokens are accepted only when both use the same API version.
+const GeminiAPIVersion = "v1beta"
 
 // GeminiLiveEndpoint is the WSS endpoint clients open with the minted
-// ephemeral token. Ephemeral tokens are only honored by the v1alpha
+// ephemeral token. Ephemeral tokens are only honored by the v1beta
 // *Constrained* method (Phase 0 spike; matches the JS SDK's live.connect
 // routing for auth_tokens/… keys). Clients append ?access_token=<url-escaped
 // token>. Deliberately NOT named anything in the wsUrl/bridgeUrl family —
 // pre-M12 firmware detects Nova by field *presence* (gemini-plan.md §3.4).
-const GeminiLiveEndpoint = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained"
+const GeminiLiveEndpoint = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained"
 
 // geminiTokenTTL is the minted token's message-window lifetime. 30 minutes
 // (the API default) bounds a stolen token; past it the client re-fetches the
@@ -313,8 +307,13 @@ func sanitizeGeminiParameters(params map[string]any) map[string]any {
 // the model's toolCall routes to POST /api/v1/tools/invoke and the result
 // returns as toolResponse.
 func geminiToolDeclarations() []map[string]any {
-	decls := make([]map[string]any, 0, len(toolManifest))
-	for _, t := range toolManifest {
+	return geminiToolDeclarationsForSurface("")
+}
+
+func geminiToolDeclarationsForSurface(surface string) []map[string]any {
+	manifest := toolManifestForSurface(surface)
+	decls := make([]map[string]any, 0, len(manifest))
+	for _, t := range manifest {
 		decl := map[string]any{
 			"name":        t["name"],
 			"description": t["description"],
@@ -337,6 +336,10 @@ func geminiToolDeclarations() []map[string]any {
 // both transcription streams (they feed the same transcript sink the other
 // engines use).
 func buildGeminiSetup(model, voice, instructions string) map[string]any {
+	return buildGeminiSetupForSurface(model, voice, instructions, "")
+}
+
+func buildGeminiSetupForSurface(model, voice, instructions, surface string) map[string]any {
 	return map[string]any{
 		"model": "models/" + model,
 		"generationConfig": map[string]any{
@@ -350,7 +353,7 @@ func buildGeminiSetup(model, voice, instructions string) map[string]any {
 		"systemInstruction": map[string]any{
 			"parts": []map[string]any{{"text": instructions}},
 		},
-		"tools":                    []map[string]any{{"functionDeclarations": geminiToolDeclarations()}},
+		"tools":                    []map[string]any{{"functionDeclarations": geminiToolDeclarationsForSurface(surface)}},
 		"sessionResumption":        map[string]any{},
 		"contextWindowCompression": map[string]any{"slidingWindow": map[string]any{}},
 		"inputAudioTranscription":  map[string]any{},
@@ -363,7 +366,11 @@ func buildGeminiSetup(model, voice, instructions string) map[string]any {
 // substitute its own model/voice/instructions even though it sends the
 // setup frame itself.
 func buildGeminiConstraints(model, voice, instructions string) *genai.LiveConnectConstraints {
-	tools := []*genai.Tool{{FunctionDeclarations: sdkFunctionDeclarations()}}
+	return buildGeminiConstraintsForSurface(model, voice, instructions, "")
+}
+
+func buildGeminiConstraintsForSurface(model, voice, instructions, surface string) *genai.LiveConnectConstraints {
+	tools := []*genai.Tool{{FunctionDeclarations: sdkFunctionDeclarationsForSurface(surface)}}
 	return &genai.LiveConnectConstraints{
 		Model: model,
 		Config: &genai.LiveConnectConfig{
@@ -389,7 +396,11 @@ func buildGeminiConstraints(model, voice, instructions string) *genai.LiveConnec
 // FunctionDeclaration list via a JSON round-trip (the manifest's parameters
 // are plain map JSON-Schema; genai.Schema unmarshals the same wire shape).
 func sdkFunctionDeclarations() []*genai.FunctionDeclaration {
-	raw, err := json.Marshal(geminiToolDeclarations())
+	return sdkFunctionDeclarationsForSurface("")
+}
+
+func sdkFunctionDeclarationsForSurface(surface string) []*genai.FunctionDeclaration {
+	raw, err := json.Marshal(geminiToolDeclarationsForSurface(surface))
 	if err != nil {
 		panic(fmt.Sprintf("realtime: marshal gemini tool declarations: %v", err))
 	}
@@ -400,146 +411,28 @@ func sdkFunctionDeclarations() []*genai.FunctionDeclaration {
 	return decls
 }
 
-type geminiAuthTokenRESTRequest struct {
-	ExpireTime               time.Time      `json:"expireTime"`
-	NewSessionExpireTime     time.Time      `json:"newSessionExpireTime"`
-	Uses                     *int32         `json:"uses,omitempty"`
-	BidiGenerateContentSetup map[string]any `json:"bidiGenerateContentSetup"`
-}
-
-// createGeminiAuthTokenREST is the intentionally small SDK bypass for
-// AuthTokenService.CreateToken. The Gemini Developer SDK always represents an
-// API key as x-goog-api-key, but production evidence shows this endpoint needs
-// the OAuth2 access token in Authorization and the API key in the `key` query
-// parameter. All other Gemini request/response types remain SDK-owned.
-func createGeminiAuthTokenREST(
-	ctx context.Context,
-	client *http.Client,
-	endpoint, apiKey string,
-	tokenProvider auth.TokenProvider,
-	cfg *genai.CreateAuthTokenConfig,
-	setup map[string]any,
-) (*genai.AuthToken, error) {
-	if strings.TrimSpace(apiKey) == "" {
-		return nil, fmt.Errorf("realtime: gemini REST create token requires an API key")
-	}
-	if tokenProvider == nil {
-		return nil, fmt.Errorf("realtime: gemini REST create token requires OAuth2 credentials")
-	}
-	if cfg == nil {
-		return nil, fmt.Errorf("realtime: gemini REST create token requires a config")
-	}
-
-	accessToken, err := tokenProvider.Token(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("realtime: gemini OAuth2 access token: %w", err)
-	}
-	if accessToken == nil || strings.TrimSpace(accessToken.Value) == "" {
-		return nil, fmt.Errorf("realtime: gemini OAuth2 provider returned an empty access token")
-	}
-
-	endpointURL, err := url.Parse(endpoint)
-	if err != nil || endpointURL.Scheme == "" || endpointURL.Host == "" {
-		return nil, fmt.Errorf("realtime: invalid Gemini auth-token endpoint")
-	}
-	query := endpointURL.Query()
-	query.Set("key", apiKey)
-	endpointURL.RawQuery = query.Encode()
-
-	body, err := json.Marshal(geminiAuthTokenRESTRequest{
-		ExpireTime:               cfg.ExpireTime,
-		NewSessionExpireTime:     cfg.NewSessionExpireTime,
-		Uses:                     cfg.Uses,
-		BidiGenerateContentSetup: setup,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("realtime: marshal Gemini auth-token request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL.String(), bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("realtime: build Gemini auth-token request")
-	}
-	req.Header.Set("Authorization", "Bearer "+accessToken.Value)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-
-	if client == nil {
-		client = http.DefaultClient
-	}
-	// The endpoint is canonical and should never redirect. Refusing redirects
-	// prevents either credential from being forwarded if that ever changes.
-	requestClient := *client
-	requestClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
-		return http.ErrUseLastResponse
-	}
-	resp, err := requestClient.Do(req)
-	if err != nil {
-		// net/http errors can contain the full request URL, including ?key=.
-		// Redact both credentials before the error reaches broker logs.
-		safe := redactGeminiCredentials(err.Error(), apiKey, accessToken.Value)
-		return nil, fmt.Errorf("realtime: Gemini auth-token transport: %s", safe)
-	}
-	defer resp.Body.Close()
-
-	const maxResponseBytes = 64 << 10
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		var apiErr struct {
-			Error struct {
-				Message string `json:"message"`
-				Status  string `json:"status"`
-			} `json:"error"`
-		}
-		_ = json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&apiErr)
-		message := redactGeminiCredentials(apiErr.Error.Message, apiKey, accessToken.Value)
-		switch {
-		case apiErr.Error.Status != "" && message != "":
-			return nil, fmt.Errorf("realtime: Gemini auth-token endpoint returned %s (%s): %s",
-				resp.Status, apiErr.Error.Status, message)
-		case message != "":
-			return nil, fmt.Errorf("realtime: Gemini auth-token endpoint returned %s: %s",
-				resp.Status, message)
-		default:
-			return nil, fmt.Errorf("realtime: Gemini auth-token endpoint returned %s", resp.Status)
-		}
-	}
-
-	var tok genai.AuthToken
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&tok); err != nil {
-		return nil, fmt.Errorf("realtime: decode Gemini auth-token response: %w", err)
-	}
-	return &tok, nil
-}
-
-func redactGeminiCredentials(text string, credentials ...string) string {
-	for _, credential := range credentials {
-		if credential == "" {
-			continue
-		}
-		text = strings.ReplaceAll(text, credential, "[REDACTED]")
-		if escaped := url.QueryEscape(credential); escaped != credential {
-			text = strings.ReplaceAll(text, escaped, "[REDACTED]")
-		}
-	}
-	return text
-}
-
 // Mint resolves nothing itself — the broker passes the already-resolved
 // voice and full instruction text (persona + memory directive + accent +
 // guides, the same composition the OpenAI path mints with) — and creates a
-// single-use, config-constrained ephemeral token against v1alpha. The
+// single-use, config-constrained ephemeral token against v1beta. The
 // caller runs the quota gate BEFORE calling this.
 func (m *GeminiMinter) Mint(ctx context.Context, voice, instructions string) (*GeminiMintResult, error) {
+	return m.MintForSurface(ctx, voice, instructions, "")
+}
+
+// MintForSurface scopes device-local tools to the client that receives the
+// token while preserving the same server-executed catalog on every surface.
+func (m *GeminiMinter) MintForSurface(ctx context.Context, voice, instructions, surface string) (*GeminiMintResult, error) {
 	now := time.Now().UTC()
 	expiresAt := now.Add(geminiTokenTTL)
 	newSessionExpiresAt := now.Add(geminiNewSessionWindow)
 	uses := int32(1)
-	setup := buildGeminiSetup(m.model, voice, instructions)
+	setup := buildGeminiSetupForSurface(m.model, voice, instructions, surface)
 	tokenCfg := &genai.CreateAuthTokenConfig{
 		Uses:                   &uses,
 		ExpireTime:             expiresAt,
 		NewSessionExpireTime:   newSessionExpiresAt,
-		LiveConnectConstraints: buildGeminiConstraints(m.model, voice, instructions),
+		LiveConnectConstraints: buildGeminiConstraintsForSurface(m.model, voice, instructions, surface),
 	}
 
 	var tok *genai.AuthToken
@@ -547,45 +440,23 @@ func (m *GeminiMinter) Mint(ctx context.Context, voice, instructions string) (*G
 	if m.create != nil {
 		tok, err = m.create(ctx, tokenCfg)
 	} else {
-		// An API key in x-goog-api-key gets ACCESS_TOKEN_TYPE_UNSUPPORTED;
-		// bearer + x-goog-api-key is rejected as two auth headers; bearer alone
-		// then gets "an API key is required". The direct REST shape below is the
-		// remaining combination: bearer header + API key query parameter.
-		saJSON, saErr := m.loader.Get(ctx, config.ParamGeminiServiceAccountJSON,
-			config.EnvOverrideGeminiServiceAccountJSON)
-		if saErr == nil && strings.TrimSpace(saJSON) != "" {
-			creds, credErr := credentials.DetectDefault(&credentials.DetectOptions{
-				CredentialsJSON: []byte(saJSON),
-				Scopes:          []string{"https://www.googleapis.com/auth/generative-language"},
-			})
-			if credErr != nil {
-				return nil, fmt.Errorf("realtime: gemini service-account credentials: %w", credErr)
-			}
-			apiKey, keyErr := m.loader.Get(ctx, config.ParamGeminiAPIKey, config.EnvOverrideGeminiAPIKey)
-			if keyErr != nil {
-				return nil, fmt.Errorf("realtime: resolve gemini key alongside service account: %w", keyErr)
-			}
-			tok, err = createGeminiAuthTokenREST(
-				ctx, http.DefaultClient, geminiAuthTokensEndpoint, apiKey, creds, tokenCfg, setup)
-		} else {
-			// Preserve the pre-service-account path when the optional credential
-			// is absent or its SSM parameter does not exist. This remains an SDK
-			// API-key mint, so existing deployments fail in the same diagnosable
-			// way instead of gaining a new configuration failure.
-			apiKey, keyErr := m.loader.Get(ctx, config.ParamGeminiAPIKey, config.EnvOverrideGeminiAPIKey)
-			if keyErr != nil {
-				return nil, fmt.Errorf("realtime: resolve gemini credential: %w", keyErr)
-			}
-			client, clientErr := genai.NewClient(ctx, &genai.ClientConfig{
-				Backend:     genai.BackendGeminiAPI,
-				APIKey:      apiKey,
-				HTTPOptions: genai.HTTPOptions{APIVersion: "v1alpha"},
-			})
-			if clientErr != nil {
-				return nil, fmt.Errorf("realtime: gemini client init: %w", clientErr)
-			}
-			tok, err = client.AuthTokens.Create(ctx, tokenCfg)
+		// The provisioning service accepts exactly one authentication form.
+		// The current v1beta contract uses the broker-held API key in
+		// x-goog-api-key; adding OAuth2 (whether the key is in a header or query)
+		// is rejected as mixed authentication.
+		apiKey, keyErr := m.loader.Get(ctx, config.ParamGeminiAPIKey, config.EnvOverrideGeminiAPIKey)
+		if keyErr != nil {
+			return nil, fmt.Errorf("realtime: resolve gemini credential: %w", keyErr)
 		}
+		client, clientErr := genai.NewClient(ctx, &genai.ClientConfig{
+			Backend:     genai.BackendGeminiAPI,
+			APIKey:      apiKey,
+			HTTPOptions: genai.HTTPOptions{APIVersion: GeminiAPIVersion},
+		})
+		if clientErr != nil {
+			return nil, fmt.Errorf("realtime: gemini client init: %w", clientErr)
+		}
+		tok, err = client.AuthTokens.Create(ctx, tokenCfg)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("realtime: gemini auth token mint: %w", err)
@@ -608,6 +479,6 @@ func (m *GeminiMinter) Mint(ctx context.Context, voice, instructions string) (*G
 		Model:         m.model,
 		Voice:         voice,
 		SessionConfig: cfgJSON,
-		ToolManifest:  toolManifestJSON,
+		ToolManifest:  ToolManifestJSONForSurface(surface),
 	}, nil
 }

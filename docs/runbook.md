@@ -70,7 +70,6 @@ Agents/operators never read, paste, echo, or pass secret values on a command lin
 2. Put it into GitHub through the hidden prompt:
    `./scripts/set-secret.sh OPENAI_API_KEY`,
    `./scripts/set-secret.sh GEMINI_API_KEY`,
-   `./scripts/set-secret.sh GEMINI_SERVICE_ACCOUNT_JSON --file <path>`, or
    `./scripts/set-secret.sh LWA_CLIENT_SECRET`. `LWA_CLIENT_ID` is a non-secret GitHub
    variable, not an SSM SecureString.
 3. Re-put SSM without an empty/no-op commit by dispatching the existing deployment path:
@@ -79,8 +78,7 @@ Agents/operators never read, paste, echo, or pass secret values on a command lin
    `gh run watch <id> --exit-status`.
 4. Verify metadata only—never request a decrypted value. In SSM, confirm the expected
    parameter's `Version` and `LastModifiedDate` advanced. The workflow maps the GitHub names
-   to `/live-ninja/prod/openai/api_key`, `/live-ninja/prod/gemini/api_key`,
-   `/live-ninja/prod/gemini/service_account_json`, and
+   to `/live-ninja/prod/openai/api_key`, `/live-ninja/prod/gemini/api_key`, and
    `/live-ninja/prod/lwa/client_secret`.
 5. Allow five minutes for the in-process SSM cache to expire, exercise the affected provider,
    then revoke the old credential at the source. If the check fails, restore the previous
@@ -173,7 +171,9 @@ itself. Never print the encoding or add the keystore to the repository.
 3. CI builds both the signed APK and a Play Console AAB, verifies the APK signature, and
    uploads both in a 30-day Actions artifact. It then publishes the immutable APK, Digital
    Asset Links document, and finally the `android-latest.json` pointer. A failed upload cannot
-   advance `/latest`.
+   advance `/latest`. Once a stable owner-signed release exists, the workflow also refuses a
+   different signer or removal of any current Asset Links certificate fingerprint; that
+   continuity keeps every still-current install valid while the two public documents are updated.
 4. Verify unauthenticated `GET /v1/app/android/latest` and
    `GET /.well-known/assetlinks.json` return 200 with the advertised version/fingerprint.
    Download the APK URL and confirm its SHA-256 equals the metadata before installing it.

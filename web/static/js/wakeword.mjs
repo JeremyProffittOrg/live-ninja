@@ -123,15 +123,17 @@ async function sha256Hex(buf) {
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-async function fetchVerified(url, expectedSha256) {
+export async function fetchVerified(url, expectedSha256) {
+  const expected = String(expectedSha256 || '').trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(expected)) {
+    throw new Error(`Missing or invalid SHA-256 for ${url}`);
+  }
   const resp = await fetch(url, { credentials: 'same-origin' });
   if (!resp.ok) throw new Error(`fetch ${url}: HTTP ${resp.status}`);
   const buf = await resp.arrayBuffer();
-  if (expectedSha256) {
-    const got = await sha256Hex(buf);
-    if (got !== expectedSha256.toLowerCase()) {
-      throw new Error(`SHA-256 mismatch for ${url}: got ${got}, want ${expectedSha256}`);
-    }
+  const got = await sha256Hex(buf);
+  if (got !== expected) {
+    throw new Error(`SHA-256 mismatch for ${url}: got ${got}, want ${expectedSha256}`);
   }
   return buf;
 }
@@ -159,9 +161,9 @@ async function resolveModels(wakeWordId) {
         const m = manifest && manifest.models;
         if (
           m &&
-          m.melspectrogram && m.melspectrogram.url &&
-          m.embedding && m.embedding.url &&
-          m.detector && m.detector.url
+          m.melspectrogram && m.melspectrogram.url && m.melspectrogram.sha256 &&
+          m.embedding && m.embedding.url && m.embedding.sha256 &&
+          m.detector && m.detector.url && m.detector.sha256
         ) {
           return {
             id: wakeWordId,
@@ -197,6 +199,39 @@ async function resolveModels(wakeWordId) {
   return BUNDLED_MODELS;
 }
 
+async function releaseSessionSet(sessions) {
+  if (!sessions) return;
+  await Promise.allSettled(
+    ['mel', 'emb', 'det'].map(async (name) => {
+      const session = sessions[name];
+      if (session && typeof session.release === 'function') {
+        await session.release();
+      }
+    }),
+  );
+}
+
+function wakeWordIdOf(doc) {
+  return (doc && typeof doc.wakeWord === 'string' && doc.wakeWord) || null;
+}
+
+function sensitivityOf(doc) {
+  return doc && typeof doc.sensitivity === 'number' ? doc.sensitivity : 0.5;
+}
+
+/**
+ * Apply the wake-word fields from a freshly-synced settings document.
+ * The engine owns the model restart so callers cannot accidentally change
+ * the displayed phrase while continuing to run the previous detector.
+ */
+export async function applyWakeWordSettings(engine, prev, fresh) {
+  const wakeWordChanged = wakeWordIdOf(prev) !== wakeWordIdOf(fresh);
+  const sensitivityChanged = sensitivityOf(prev) !== sensitivityOf(fresh);
+  if (engine && sensitivityChanged) engine.setSensitivity(sensitivityOf(fresh));
+  if (engine && wakeWordChanged) await engine.setWakeWord(wakeWordIdOf(fresh));
+  return { wakeWordChanged, sensitivityChanged };
+}
+
 /**
  * Wake-word engine. One instance per page is expected; start()/stop() may be
  * called repeatedly (hands-free toggle).
@@ -229,6 +264,9 @@ export class WakeWordEngine {
 
     this._queue = [];
     this._busy = false;
+    this._swapping = false;
+    this._drainPromise = null;
+    this._startPromise = null;
     this._melFrames = [];
     this._melPos = 0;
     this._embBuf = [];
@@ -286,8 +324,19 @@ export class WakeWordEngine {
    * Rejects with err.code === 'unsupported' when the browser can't run the
    * engine (callers fall back to click-to-talk).
    */
-  async start(opts = {}) {
-    if (this._state === 'listening' || this._state === 'loading') return;
+  start(opts = {}) {
+    if (this._state === 'listening') return Promise.resolve();
+    if (this._state === 'loading' && this._startPromise) return this._startPromise;
+    const promise = this._start(opts);
+    this._startPromise = promise;
+    const clear = () => {
+      if (this._startPromise === promise) this._startPromise = null;
+    };
+    promise.then(clear, clear);
+    return promise;
+  }
+
+  async _start(opts = {}) {
     const failure = supportFailure();
     if (failure) {
       const err = unsupportedError(failure);
@@ -298,7 +347,7 @@ export class WakeWordEngine {
     const gen = ++this._generation;
     this._setState('loading');
     try {
-      await this._loadRuntimeAndModels();
+      await this._loadRuntimeAndModels(gen);
       if (gen !== this._generation) return; // stopped while loading
 
       if (opts.stream) {
@@ -348,7 +397,12 @@ export class WakeWordEngine {
       this._resetPipeline();
       this._setState('listening');
     } catch (err) {
+      // A stop/model swap invalidates this start. It owns cleanup and possibly
+      // a newer start, so this stale attempt must not tear down or fail it.
+      if (gen !== this._generation) return;
       this._releaseAudio();
+      await this._releaseSessions();
+      if (gen !== this._generation) return;
       const wrapped =
         err && err.code === 'unsupported'
           ? err
@@ -361,9 +415,104 @@ export class WakeWordEngine {
   /** Stop listening and release the mic (if the engine opened it). Idempotent. */
   async stop() {
     this._generation++;
+    const starting = this._startPromise;
+    if (starting) {
+      try {
+        await starting;
+      } catch {
+        /* the start error was already classified and reported */
+      }
+    }
     this._releaseAudio();
     this._resetPipeline();
+    const draining = this._drainPromise;
+    if (draining) {
+      try {
+        await draining;
+      } catch {
+        /* _drain reports current-generation failures itself */
+      }
+    }
+    await this._releaseSessions();
     if (this._state !== 'unsupported') this._setState('idle');
+  }
+
+  /**
+   * Select a different detector. If hands-free listening is active (or still
+   * loading), stop it, release every old ONNX session, and restart against the
+   * newly resolved + SHA-verified model set.
+   */
+  async setWakeWord(wakeWordId) {
+    const next = (typeof wakeWordId === 'string' && wakeWordId) || null;
+    if (next === this.wakeWordId) return false;
+
+    if (this._state === 'listening' && this._sessions) {
+      const gen = this._generation;
+      let bundle;
+      try {
+        await this._loadRuntime();
+        bundle = await this._createModelBundle(next);
+      } catch (err) {
+        // Verification/model-load failures leave the proven detector active.
+        // The page uses this marker to report the failed switch without
+        // disabling hands-free listening.
+        const failure =
+          err instanceof Error && Object.isExtensible(err)
+            ? err
+            : new Error(String((err && err.message) || err));
+        failure.wakeWordPreserved = true;
+        throw failure;
+      }
+
+      // Listening may have been turned off while the replacement downloaded.
+      // Keep the new preference for the next start, but release the unused
+      // candidate immediately.
+      if (gen !== this._generation || this._state !== 'listening') {
+        await releaseSessionSet(bundle.sessions);
+        this.wakeWordId = next;
+        this._phrase = null;
+        return true;
+      }
+
+      // Pause between inference frames, atomically install the already
+      // verified+warmed bundle, then release the displaced sessions. Audio
+      // arriving during the tiny swap window is bounded by MAX_QUEUE.
+      this._swapping = true;
+      const draining = this._drainPromise;
+      if (draining) {
+        try {
+          await draining;
+        } catch {
+          /* _drain reports current-generation failures itself */
+        }
+      }
+      if (gen !== this._generation || this._state !== 'listening') {
+        this._swapping = false;
+        await releaseSessionSet(bundle.sessions);
+        this.wakeWordId = next;
+        this._phrase = null;
+        return true;
+      }
+
+      const displaced = this._sessions;
+      this.wakeWordId = next;
+      this._installModelBundle(bundle);
+      this._resetPipeline();
+      this._swapping = false;
+      this._startDrainIfNeeded(gen);
+      await releaseSessionSet(displaced);
+      return true;
+    }
+
+    const restart = this._state === 'loading';
+    const externalStream = this._stream && !this._ownStream ? this._stream : null;
+    await this.stop();
+    this.wakeWordId = next;
+    this._phrase = null;
+    if (restart) {
+      await this.start(externalStream ? { stream: externalStream } : {});
+    }
+    return true;
   }
 
   // -- internals ------------------------------------------------------------
@@ -382,7 +531,7 @@ export class WakeWordEngine {
     return err instanceof Error ? err : new Error(msg);
   }
 
-  async _loadRuntimeAndModels() {
+  async _loadRuntime() {
     if (!this._ort) {
       const ort = await import(ORT_MODULE_URL);
       ort.env.wasm.wasmPaths = ORT_WASM_DIR;
@@ -393,55 +542,94 @@ export class WakeWordEngine {
         : 1;
       this._ort = ort;
     }
-    if (!this._sessions) {
-      const models = await resolveModels(this.wakeWordId);
-      this._phrase = models.phrase;
-      this._detWindow = (models.detector && models.detector.window) || DEFAULT_DET_WINDOW;
-
-      const [melBuf, embBuf, detBuf] = await Promise.all([
-        fetchVerified(models.melspectrogram.url, models.melspectrogram.sha256),
-        fetchVerified(models.embedding.url, models.embedding.sha256),
-        fetchVerified(models.detector.url, models.detector.sha256),
-      ]);
-      const sessOpts = { executionProviders: ['wasm'] };
-      const [mel, emb, det] = await Promise.all([
-        this._ort.InferenceSession.create(melBuf, sessOpts),
-        this._ort.InferenceSession.create(embBuf, sessOpts),
-        this._ort.InferenceSession.create(detBuf, sessOpts),
-      ]);
-      this._sessions = { mel, emb, det };
-      this._names = {
-        melIn: mel.inputNames[0],
-        melOut: mel.outputNames[0],
-        embIn: emb.inputNames[0],
-        embOut: emb.outputNames[0],
-        detIn: det.inputNames[0],
-        detOut: det.outputNames[0],
-      };
-      await this._warmUp();
-    }
   }
 
-  async _warmUp() {
-    const { mel, emb, det } = this._sessions;
+  async _createModelBundle(wakeWordId) {
+    const models = await resolveModels(wakeWordId);
+    const detWindow = (models.detector && models.detector.window) || DEFAULT_DET_WINDOW;
+    const [melBuf, embBuf, detBuf] = await Promise.all([
+      fetchVerified(models.melspectrogram.url, models.melspectrogram.sha256),
+      fetchVerified(models.embedding.url, models.embedding.sha256),
+      fetchVerified(models.detector.url, models.detector.sha256),
+    ]);
+    const sessOpts = { executionProviders: ['wasm'] };
+    const results = await Promise.allSettled([
+      this._ort.InferenceSession.create(melBuf, sessOpts),
+      this._ort.InferenceSession.create(embBuf, sessOpts),
+      this._ort.InferenceSession.create(detBuf, sessOpts),
+    ]);
+    const sessions = {
+      mel: results[0].status === 'fulfilled' ? results[0].value : null,
+      emb: results[1].status === 'fulfilled' ? results[1].value : null,
+      det: results[2].status === 'fulfilled' ? results[2].value : null,
+    };
+    const failed = results.find((result) => result.status === 'rejected');
+    if (failed) {
+      await releaseSessionSet(sessions);
+      throw failed.reason;
+    }
+    const names = {
+      melIn: sessions.mel.inputNames[0],
+      melOut: sessions.mel.outputNames[0],
+      embIn: sessions.emb.inputNames[0],
+      embOut: sessions.emb.outputNames[0],
+      detIn: sessions.det.inputNames[0],
+      detOut: sessions.det.outputNames[0],
+    };
+    try {
+      await this._warmUp(sessions, names, detWindow);
+    } catch (err) {
+      await releaseSessionSet(sessions);
+      throw err;
+    }
+    return { sessions, names, detWindow, phrase: models.phrase };
+  }
+
+  _installModelBundle(bundle) {
+    this._phrase = bundle.phrase;
+    this._detWindow = bundle.detWindow;
+    this._sessions = bundle.sessions;
+    this._names = bundle.names;
+  }
+
+  async _loadRuntimeAndModels(gen) {
+    await this._loadRuntime();
+    if (this._sessions) return;
+    const bundle = await this._createModelBundle(this.wakeWordId);
+    if (gen !== this._generation) {
+      await releaseSessionSet(bundle.sessions);
+      return;
+    }
+    this._installModelBundle(bundle);
+  }
+
+  async _warmUp(sessions, names, detWindow) {
+    const { mel, emb, det } = sessions;
     const ort = this._ort;
     await mel.run({
-      [this._names.melIn]: new ort.Tensor('float32', new Float32Array(FRAME_SAMPLES), [1, FRAME_SAMPLES]),
+      [names.melIn]: new ort.Tensor('float32', new Float32Array(FRAME_SAMPLES), [1, FRAME_SAMPLES]),
     });
     await emb.run({
-      [this._names.embIn]: new ort.Tensor(
+      [names.embIn]: new ort.Tensor(
         'float32',
         new Float32Array(MEL_WINDOW * N_MELS),
         [1, MEL_WINDOW, N_MELS, 1],
       ),
     });
     await det.run({
-      [this._names.detIn]: new ort.Tensor(
+      [names.detIn]: new ort.Tensor(
         'float32',
-        new Float32Array(this._detWindow * EMB_DIM),
-        [1, this._detWindow, EMB_DIM],
+        new Float32Array(detWindow * EMB_DIM),
+        [1, detWindow, EMB_DIM],
       ),
     });
+  }
+
+  async _releaseSessions() {
+    const sessions = this._sessions;
+    this._sessions = null;
+    this._names = null;
+    await releaseSessionSet(sessions);
   }
 
   _resetPipeline() {
@@ -457,19 +645,30 @@ export class WakeWordEngine {
     // Realtime discipline: if inference falls behind, drop the oldest audio
     // rather than growing an unbounded backlog.
     while (this._queue.length > MAX_QUEUE) this._queue.shift();
-    if (!this._busy) this._drain(gen);
+    this._startDrainIfNeeded(gen);
+  }
+
+  _startDrainIfNeeded(gen) {
+    if (this._busy || this._swapping || this._queue.length === 0) return;
+    const promise = this._drain(gen);
+    this._drainPromise = promise;
+    const clear = () => {
+      if (this._drainPromise === promise) this._drainPromise = null;
+    };
+    promise.then(clear, clear);
   }
 
   async _drain(gen) {
     this._busy = true;
     try {
-      while (this._queue.length > 0 && gen === this._generation) {
+      while (this._queue.length > 0 && gen === this._generation && !this._swapping) {
         const frame = this._queue.shift();
         await this._processFrame(frame, gen);
       }
     } catch (err) {
       if (gen === this._generation) {
         this._releaseAudio();
+        await this._releaseSessions();
         this._fail(err instanceof Error ? err : new Error(String(err)));
       }
     } finally {

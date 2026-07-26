@@ -57,6 +57,7 @@ func setVolumeDefinition() *Definition {
 			},
 		},
 		DeviceLocal: true,
+		Surfaces:    []string{"android"},
 		Handler:     handleDeviceLocalOnly,
 	}
 }

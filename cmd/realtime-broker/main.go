@@ -10,8 +10,8 @@
 //	  (POST /v1/realtime/client_secrets, ~60s TTL).
 //	"fallback-turn": text-only degraded turn via gpt-4o-mini. Legacy
 //	  payload {text} runs a plain completion; payload {messages} runs a
-//	  tool-capable completion bound to the same tool catalog realtime
-//	  sessions get, returning either the final text or the model's
+//	  tool-capable completion bound to the server-executable subset of the
+//	  realtime tool catalog, returning either the final text or the model's
 //	  tool_calls verbatim — the WEB function executes tools (it holds the
 //	  tool-side IAM; this function holds only the OpenAI key) and
 //	  re-invokes with the results appended.
@@ -181,17 +181,24 @@ var validSurfaces = map[string]bool{
 // an interface so tests can fake the OpenAI legs without HTTP.
 // *realtime.FallbackClient is the production implementation.
 type fallbackAPI interface {
-	Turn(ctx context.Context, personaID, text, extraSystem string) (string, error)
-	TurnWithTools(ctx context.Context, personaID string, messages []realtime.ChatMessage, extraSystem string) (*realtime.TurnResult, error)
+	TurnForSurface(ctx context.Context, personaID, surface, text, extraSystem string) (string, error)
+	TurnWithToolsForSurface(ctx context.Context, personaID, surface string, messages []realtime.ChatMessage, extraSystem string) (*realtime.TurnResult, error)
 	Transcribe(ctx context.Context, audio []byte, filename, contentType string) (string, error)
 	Speak(ctx context.Context, text, voice string) ([]byte, error)
 	ExtractTopics(ctx context.Context, transcript string, existing []realtime.TopicOption) (*realtime.ExtractResult, error)
 }
 
+// realtimeMintAPI is the client-direct OpenAI minter surface. Keeping the
+// broker on this narrow seam lets the Gemini->OpenAI cascade be tested without
+// a network call.
+type realtimeMintAPI interface {
+	Mint(ctx context.Context, personaID, voice, eagerness, instructionsSuffix, surface string) (*realtime.MintResult, error)
+}
+
 type broker struct {
 	log      *slog.Logger
 	gate     *realtime.Gate
-	minter   *realtime.Minter
+	minter   realtimeMintAPI
 	fallback fallbackAPI
 
 	// ddb/table back the per-mint Guide Entity injection (guides.go): the
@@ -218,7 +225,7 @@ type broker struct {
 
 // geminiMintAPI is the GeminiMinter surface the broker dispatches to.
 type geminiMintAPI interface {
-	Mint(ctx context.Context, voice, instructions string) (*realtime.GeminiMintResult, error)
+	MintForSurface(ctx context.Context, voice, instructions, surface string) (*realtime.GeminiMintResult, error)
 }
 
 func (b *broker) Handle(ctx context.Context, req Request) (resp Response, _ error) {
@@ -318,7 +325,18 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 	// than an OpenAI ephemeral token (the sole path where AWS is in the media
 	// path — PRD N-6 exception).
 	if engine == voiceengine.EngineNovaSonic {
-		return b.handleNovaBridge(ctx, l, req, sessionID, warnings)
+		resp := b.handleNovaBridge(ctx, l, req, sessionID, warnings)
+		if resp.Error == "" || b.minter == nil {
+			return resp
+		}
+		l.Warn("realtime-broker: pinned engine could not mint; falling back",
+			slog.String("engine", string(voiceengine.EngineNovaSonic)),
+			slog.String("error", resp.Error),
+			slog.String("sessionId", sessionID))
+		observ.EmitMetric(metricsNamespace, "EngineFallback", 1, "Count",
+			map[string]string{"Surface": req.Surface, "From": string(voiceengine.EngineNovaSonic)})
+		warnings = append(warnings, "Nova Sonic is unavailable right now; using the default voice engine for this conversation.")
+		engine = voiceengine.EngineOpenAIRealtime
 	}
 
 	// Gemini-pinned device (M13): client-direct WSS to Gemini Live with a
@@ -327,9 +345,9 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 	// The engines below tell the caller to "use the fallback cascade" when they
 	// cannot mint — but no client has ever implemented one, so a pinned engine
 	// that is down was a hard 502 with no way out except changing the setting.
-	// That is exactly what a device pinned to Gemini hit: Gemini's ephemeral-token
-	// endpoint rejects API-key auth outright (ACCESS_TOKEN_TYPE_UNSUPPORTED), so
-	// EVERY mint 502'd and the surface simply could not start a conversation.
+	// That is exactly what a device pinned to Gemini hit while its token mint
+	// contract was wrong, so every mint 502'd and the surface simply could not
+	// start a conversation.
 	//
 	// The cascade belongs here rather than in each client: one implementation
 	// covers web, Android and anything added later, and the broker is the only
@@ -351,6 +369,7 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 		// Tell the user once, plainly, rather than silently changing engines on
 		// them — a voice that sounds different with no explanation is its own bug.
 		warnings = append(warnings, "Gemini Live is unavailable right now; using the default voice engine for this conversation.")
+		engine = voiceengine.EngineOpenAIRealtime
 	}
 
 	// Persona-embedded voice identity (personas are the unit of voice
@@ -390,7 +409,7 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 	}
 
 	start := time.Now()
-	res, err := b.minter.Mint(ctx, req.Persona, voice, req.MicEagerness, baseKnowledge+accentDirective+guideSuffix)
+	res, err := b.minter.Mint(ctx, req.Persona, voice, req.MicEagerness, baseKnowledge+accentDirective+guideSuffix, req.Surface)
 	observ.EmitMetric(metricsNamespace, "EphemeralTokenMintLatency",
 		float64(time.Since(start).Milliseconds()), "Milliseconds",
 		map[string]string{"Surface": req.Surface})
@@ -435,8 +454,9 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 // device pinned to nova-sonic: it mints a short-lived first-party token scoped
 // to the bridge (scope "nova", bound to sessionID) and returns the WSS URL the
 // client opens instead of an OpenAI ephemeral token. The quota gate has already
-// passed (caller); persona/voice/guide resolution and the Bedrock bidirectional
-// stream itself are the bridge's responsibility. warnings carries the same
+// passed (caller). Persona, guides, base knowledge, accent, and the
+// server-executable tool manifest are resolved here into a signed-digest-bound
+// config that the client relays to the bridge. warnings carries the same
 // X-LN-Quota-Warning payload the OpenAI path returns.
 func (b *broker) handleNovaBridge(ctx context.Context, l *slog.Logger, req Request, sessionID string, warnings []string) Response {
 	if b.novaMint == nil {
@@ -448,8 +468,31 @@ func (b *broker) handleNovaBridge(ctx context.Context, l *slog.Logger, req Reque
 			Message: "The Nova Sonic bridge is not configured; use the fallback cascade."}
 	}
 
+	sv := realtime.ResolveSessionVoice(ctx, b.settings, b.table, req.UserID, req.Persona, req.VoiceOverride)
+	baseKnowledge := realtime.BuildBaseKnowledge(
+		store.LoadProfile(ctx, b.settings, b.table, req.UserID), time.Now())
+	guideSuffix := ""
+	if guides, gerr := realtime.LoadEnabledGuides(ctx, b.ddb, b.table, req.UserID); gerr != nil {
+		l.Warn("realtime-broker: guide load failed; minting Nova without guides",
+			slog.String("error", gerr.Error()))
+	} else {
+		guideSuffix = realtime.GuideInstructions(guides)
+	}
+	persona := realtime.ResolvePersona(req.Persona)
+	instructions := realtime.InstructionsForServerExecution(persona) +
+		realtime.SessionDirectives + baseKnowledge +
+		realtime.AccentDirective(sv.AccentID) + guideSuffix
+	novaConfig := realtime.BuildNovaSessionConfig(instructions)
+	configJSON, err := json.Marshal(novaConfig)
+	if err != nil {
+		l.Error("realtime-broker: Nova session config marshal failed",
+			slog.String("error", err.Error()), slog.String("sessionId", sessionID))
+		return Response{Error: "nova_bridge_failed", Code: http.StatusBadGateway,
+			Message: "Could not establish a Nova Sonic bridge session; use the fallback cascade."}
+	}
+
 	bs, err := realtime.BuildBridgeSession(ctx, b.novaMint, b.bridgeBaseURL,
-		req.UserID, req.DeviceID, req.Surface, sessionID)
+		req.UserID, req.DeviceID, req.Surface, sessionID, realtime.NovaConfigDigest(novaConfig))
 	if err != nil {
 		l.Error("realtime-broker: nova bridge session build failed", slog.String("error", err.Error()),
 			slog.String("sessionId", sessionID))
@@ -459,11 +502,17 @@ func (b *broker) handleNovaBridge(ctx context.Context, l *slog.Logger, req Reque
 			Message: "Could not establish a Nova Sonic bridge session; use the fallback cascade."}
 	}
 
-	// Post-spend bookkeeping (same ledger marker + dayMints bump as the OpenAI
-	// path). Best-effort: the bridge session is already issued.
+	// RecordMint creates the slot the bridge must atomically redeem. Unlike a
+	// client-direct token, a Nova bootstrap without this record is unusable,
+	// so fail before returning the URL rather than handing the client a
+	// guaranteed-to-be-rejected session.
 	if err := b.gate.RecordMint(ctx, req.UserID, sessionID, req.Surface); err != nil {
-		l.Warn("realtime-broker: nova bridge bookkeeping failed", slog.String("error", err.Error()),
+		l.Error("realtime-broker: nova bridge session record failed", slog.String("error", err.Error()),
 			slog.String("sessionId", sessionID))
+		observ.EmitMetric(metricsNamespace, "MintErrors", 1, "Count",
+			map[string]string{"Surface": req.Surface, "Engine": string(voiceengine.EngineNovaSonic)})
+		return Response{Error: "nova_bridge_failed", Code: http.StatusBadGateway,
+			Message: "Could not establish a Nova Sonic bridge session; use the fallback cascade."}
 	}
 
 	observ.EmitMetric(metricsNamespace, "SessionsBrokered", 1, "Count",
@@ -480,7 +529,8 @@ func (b *broker) handleNovaBridge(ctx context.Context, l *slog.Logger, req Reque
 		WSURL:                bs.WSURL,
 		BridgeToken:          bs.Token,
 		BridgeTokenExpiresAt: bs.ExpiresAt.UTC().Format(time.RFC3339),
-		ToolManifest:         realtime.ToolManifestJSON(),
+		SessionConfig:        configJSON,
+		ToolManifest:         realtime.ToolManifestJSONForServerExecution(),
 		SessionID:            sessionID,
 		QuotaWarning:         strings.Join(warnings, ","),
 	}
@@ -519,10 +569,10 @@ func (b *broker) handleGeminiDirect(ctx context.Context, l *slog.Logger, req Req
 		guideSuffix = realtime.GuideInstructions(guides)
 	}
 	persona := realtime.ResolvePersona(req.Persona)
-	instructions := persona.Instructions + realtime.SessionDirectives + baseKnowledge + accentDirective + guideSuffix
+	instructions := realtime.InstructionsForSurface(persona, req.Surface) + realtime.SessionDirectives + baseKnowledge + accentDirective + guideSuffix
 
 	start := time.Now()
-	res, err := b.geminiMint.Mint(ctx, gv.Voice, instructions)
+	res, err := b.geminiMint.MintForSurface(ctx, gv.Voice, instructions, req.Surface)
 	observ.EmitMetric(metricsNamespace, "EphemeralTokenMintLatency",
 		float64(time.Since(start).Milliseconds()), "Milliseconds",
 		map[string]string{"Surface": req.Surface})
@@ -586,11 +636,12 @@ func (b *broker) handleFallbackTurn(ctx context.Context, l *slog.Logger, req Req
 	extraSystem := realtime.SessionDirectives + realtime.BuildBaseKnowledge(
 		store.LoadProfile(ctx, b.settings, b.table, req.UserID), time.Now())
 
-	// Tool-capable turn: same tool catalog realtime sessions get; the
+	// Tool-capable turn: the server-executable tool catalog only. The
 	// model's tool_calls are returned verbatim for the WEB function to
-	// execute (this function has no tool-side IAM, by design).
+	// execute (this function has no tool-side IAM, by design); device-local
+	// tools cannot be delegated through this topology.
 	if len(p.Messages) > 0 {
-		res, err := b.fallback.TurnWithTools(ctx, req.Persona, p.Messages, extraSystem)
+		res, err := b.fallback.TurnWithToolsForSurface(ctx, req.Persona, req.Surface, p.Messages, extraSystem)
 		if err != nil {
 			return b.fallbackError(l, req, "turn", err)
 		}
@@ -598,7 +649,7 @@ func (b *broker) handleFallbackTurn(ctx context.Context, l *slog.Logger, req Req
 		return Response{Text: res.Text, ToolCalls: res.ToolCalls}
 	}
 
-	text, err := b.fallback.Turn(ctx, req.Persona, p.Text, extraSystem)
+	text, err := b.fallback.TurnForSurface(ctx, req.Persona, req.Surface, p.Text, extraSystem)
 	if err != nil {
 		return b.fallbackError(l, req, "turn", err)
 	}
@@ -837,8 +888,8 @@ func main() {
 
 // wireNovaBridge installs the Nova Sonic bridge token minter (M12, FR-VE-03):
 // an auth.Signer-backed closure that mints a short-lived first-party JWT scoped
-// to the bridge (scope "nova", sid=sessionID) for each nova-pinned session
-// bootstrap. Requires JWT_KMS_KEY_ID (the same KMS signing key the web function
+// to the bridge (scope "nova", sid=sessionID, cfg=session-config digest) for
+// each nova-pinned session bootstrap. Requires JWT_KMS_KEY_ID (the same KMS signing key the web function
 // uses) plus kms:Sign on this function's role. When JWT_KMS_KEY_ID is unset (or
 // signer init fails) the minter stays nil and nova-pinned devices receive a
 // nova_bridge_unavailable error rather than a broken session — OpenAI-pinned
@@ -854,13 +905,14 @@ func wireNovaBridge(b *broker, logger *slog.Logger, ctx context.Context, kmsKeyI
 			slog.String("error", err.Error()))
 		return
 	}
-	b.novaMint = func(ctx context.Context, userID, deviceID, surface, sessionID string) (string, time.Time, error) {
+	b.novaMint = func(ctx context.Context, userID, deviceID, surface, sessionID, configDigest string) (string, time.Time, error) {
 		tok, err := signer.SignAccessToken(ctx, auth.Claims{
-			Sub:     userID,
-			Sid:     sessionID,
-			Did:     deviceID,
-			Surface: surface,
-			Scope:   realtime.NovaScope,
+			Sub:       userID,
+			Sid:       sessionID,
+			Did:       deviceID,
+			Surface:   surface,
+			Scope:     realtime.NovaScope,
+			ConfigSHA: configDigest,
 		})
 		if err != nil {
 			return "", time.Time{}, err

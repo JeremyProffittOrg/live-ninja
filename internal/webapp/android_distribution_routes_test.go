@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -178,11 +179,11 @@ func TestAndroidDistributionRoutesReportUnconfigured(t *testing.T) {
 	}
 }
 
-func TestAndroidDistributionRoutesMapMaskedMissingObjectsToNotFound(t *testing.T) {
+func TestAndroidDistributionRoutesMapMissingObjectsToNotFound(t *testing.T) {
 	fake := &androidDocumentS3{
 		err: &smithy.GenericAPIError{
-			Code:    "AccessDenied",
-			Message: "missing key is masked without s3:ListBucket",
+			Code:    "NoSuchKey",
+			Message: "the release document does not exist",
 		},
 	}
 	app := fiber.New()
@@ -199,4 +200,31 @@ func TestAndroidDistributionRoutesMapMaskedMissingObjectsToNotFound(t *testing.T
 		require.NoError(t, readErr)
 		assert.Contains(t, string(body), `"code":"release_not_available"`)
 	}
+}
+
+func TestAndroidDistributionRoutesDoNotMaskAccessDenied(t *testing.T) {
+	fake := &androidDocumentS3{
+		err: &smithy.GenericAPIError{
+			Code:    "AccessDenied",
+			Message: "the release reader is not authorized",
+		},
+	}
+	var logs bytes.Buffer
+	app := fiber.New()
+	RegisterAndroidDistributionRoutes(app, &Deps{
+		AndroidArtifacts:       fake,
+		AndroidArtifactsBucket: "assets-test",
+		Log:                    slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+
+	for _, path := range []string{"/v1/app/android/latest", "/.well-known/assetlinks.json"} {
+		resp, err := app.Test(httptest.NewRequest(http.MethodGet, path, nil))
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode, path)
+		body, readErr := io.ReadAll(resp.Body)
+		require.NoError(t, readErr)
+		assert.Contains(t, string(body), `"code":"release_metadata_unavailable"`)
+	}
+	assert.Contains(t, logs.String(), "AccessDenied")
+	assert.Contains(t, logs.String(), "document read failed")
 }

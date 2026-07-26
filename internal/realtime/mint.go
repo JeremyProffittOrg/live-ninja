@@ -126,15 +126,9 @@ func AccentDirective(accentID string) string {
 // the accent now resolves per persona — personaPrefs[persona].accent ??
 // top-level voiceAccent — in the same read as the voice.)
 
-// toolManifest is the OpenAI Realtime function-tool declaration set bound
-// into every session at mint, derived at init from the server-side tool
-// router's own catalog (tools.CatalogManifest) — the advertised schema and
-// the schema the router enforces are one and the same by construction
-// (tool-parity-plan.md M19). Execution never happens client-side or in
-// OpenAI: every function_call is routed to POST /api/v1/tools/invoke where
-// the tool router (internal/tools) re-validates arguments against these
-// same schemas and re-authorizes the user per call. This manifest is what
-// the model sees; the router remains the enforcement point.
+// toolManifest is the complete declaration set used by schema-parity tests.
+// Production sessions use toolManifestForSurface so device-local tools are
+// advertised only to clients that implement them.
 var toolManifest = tools.CatalogManifest()
 
 // toolManifestJSON is the manifest marshaled once at init (it is static).
@@ -150,6 +144,33 @@ var toolManifestJSON = func() json.RawMessage {
 // ToolManifestJSON returns the static OpenAI function-tool manifest bound
 // into every minted session (also returned verbatim to clients).
 func ToolManifestJSON() json.RawMessage { return toolManifestJSON }
+
+func toolManifestForSurface(surface string) []map[string]any {
+	return tools.CatalogManifestForSurface(surface)
+}
+
+func toolManifestForServerExecution() []map[string]any {
+	return tools.CatalogManifestForServerExecution()
+}
+
+// ToolManifestJSONForSurface returns the manifest executable by surface.
+func ToolManifestJSONForSurface(surface string) json.RawMessage {
+	b, err := json.Marshal(toolManifestForSurface(surface))
+	if err != nil {
+		panic(fmt.Sprintf("realtime: marshal %s tool manifest: %v", surface, err))
+	}
+	return b
+}
+
+// ToolManifestJSONForServerExecution returns the tools the backend router can
+// execute. It excludes every device-local tool, regardless of client surface.
+func ToolManifestJSONForServerExecution() json.RawMessage {
+	b, err := json.Marshal(toolManifestForServerExecution())
+	if err != nil {
+		panic(fmt.Sprintf("realtime: marshal server-execution tool manifest: %v", err))
+	}
+	return b
+}
 
 // ClientSecret is the minted ephemeral credential returned to clients.
 type ClientSecret struct {
@@ -260,8 +281,9 @@ func buildAudioInput(eagerness string) map[string]any {
 // (guides.go, FR-MEM-07); it is always server-derived, never client input.
 // The caller (broker handler) runs the quota gate BEFORE calling this —
 // Mint itself performs no quota checks.
-func (m *Minter) Mint(ctx context.Context, personaID, voice, eagerness, instructionsSuffix string) (*MintResult, error) {
+func (m *Minter) Mint(ctx context.Context, personaID, voice, eagerness, instructionsSuffix, surface string) (*MintResult, error) {
 	persona := ResolvePersona(personaID)
+	manifest := toolManifestForSurface(surface)
 
 	sessionConfig := map[string]any{
 		"type":  "realtime",
@@ -273,8 +295,8 @@ func (m *Minter) Mint(ctx context.Context, personaID, voice, eagerness, instruct
 			// "Unknown parameter" (broke every mint in prod 2026-07-18).
 			"input": buildAudioInput(eagerness),
 		},
-		"instructions": persona.Instructions + SessionDirectives + instructionsSuffix,
-		"tools":        toolManifest,
+		"instructions": InstructionsForSurface(persona, surface) + SessionDirectives + instructionsSuffix,
+		"tools":        manifest,
 	}
 	body, err := json.Marshal(map[string]any{
 		"expires_after": map[string]any{
@@ -343,7 +365,7 @@ func (m *Minter) Mint(ctx context.Context, personaID, voice, eagerness, instruct
 		Model:         m.model,
 		Voice:         voice,
 		SessionConfig: cfgJSON,
-		ToolManifest:  toolManifestJSON,
+		ToolManifest:  ToolManifestJSONForSurface(surface),
 	}, nil
 }
 
@@ -459,10 +481,12 @@ func validEngine(s string) (voiceengine.Engine, bool) {
 }
 
 // NovaTokenMinter mints the short-lived first-party JWT scoped to the Nova
-// bridge for one session. The broker supplies this backed by auth.Signer
-// (kms:Sign); it is a function value so this package needs no KMS/auth import
-// and stays unit-testable without AWS.
-type NovaTokenMinter func(ctx context.Context, userID, deviceID, surface, sessionID string) (token string, expiresAt time.Time, err error)
+// bridge for one session. configDigest binds the token to the server-generated
+// voiceengine.Config that the client relays as its first WebSocket frame.
+// The broker supplies this backed by auth.Signer (kms:Sign); it is a function
+// value so this package needs no KMS/auth import and stays unit-testable
+// without AWS.
+type NovaTokenMinter func(ctx context.Context, userID, deviceID, surface, sessionID, configDigest string) (token string, expiresAt time.Time, err error)
 
 // BridgeSession is the nova-bridge bootstrap payload returned to a nova-pinned
 // caller by GET /v1/realtime/session (FR-VE-03): the WSS URL to open and the
@@ -478,15 +502,19 @@ type BridgeSession struct {
 // per-session token via mint and builds the WSS URL as
 // baseURL + "/session?sid=<sessionID>&token=<token>". baseURL defaults to
 // DefaultBridgeBaseURL when empty. sessionID is the ledger session id the
-// broker already generated for this mint; the token binds to it (sid claim).
-func BuildBridgeSession(ctx context.Context, mint NovaTokenMinter, baseURL, userID, deviceID, surface, sessionID string) (*BridgeSession, error) {
+// broker already generated for this mint; the token binds to both it (sid)
+// and the server-generated Nova config (cfg digest).
+func BuildBridgeSession(ctx context.Context, mint NovaTokenMinter, baseURL, userID, deviceID, surface, sessionID, configDigest string) (*BridgeSession, error) {
 	if mint == nil {
 		return nil, fmt.Errorf("realtime: nova bridge not configured (no token minter)")
+	}
+	if configDigest == "" {
+		return nil, fmt.Errorf("realtime: nova bridge session config digest is required")
 	}
 	if baseURL == "" {
 		baseURL = DefaultBridgeBaseURL
 	}
-	token, expiresAt, err := mint(ctx, userID, deviceID, surface, sessionID)
+	token, expiresAt, err := mint(ctx, userID, deviceID, surface, sessionID, configDigest)
 	if err != nil {
 		return nil, fmt.Errorf("realtime: mint nova bridge token: %w", err)
 	}

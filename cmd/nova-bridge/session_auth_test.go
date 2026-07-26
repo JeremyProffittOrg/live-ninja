@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 	"github.com/JeremyProffittOrg/live-ninja/internal/testutil"
+	"github.com/JeremyProffittOrg/live-ninja/internal/voiceengine"
 )
 
 const testKMSKeyARN = "arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555"
@@ -33,6 +35,11 @@ func newAuthTestServer(t *testing.T) (*server, *auth.Signer, *testutil.FakeDynam
 	require.NoError(t, err)
 
 	fakeDDB := testutil.NewFakeDynamo()
+	fakeDDB.SeedItem(map[string]ddbtypes.AttributeValue{
+		"pk":     &ddbtypes.AttributeValueMemberS{Value: "USER#u1"},
+		"sk":     &ddbtypes.AttributeValueMemberS{Value: "PROFILE"},
+		"status": &ddbtypes.AttributeValueMemberS{Value: "active"},
+	})
 	return &server{
 		log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		gate: realtime.NewGate(fakeDDB, "live-ninja-test"),
@@ -53,10 +60,11 @@ func seedSessionSlot(fake *testutil.FakeDynamo, userID, sessionID string, expIn 
 func mintBridgeToken(t *testing.T, signer *auth.Signer, scope string) string {
 	t.Helper()
 	tok, err := signer.SignAccessToken(context.Background(), auth.Claims{
-		Sub:     "u1",
-		Sid:     "sess-1",
-		Surface: "web",
-		Scope:   scope,
+		Sub:       "u1",
+		Sid:       "sess-1",
+		Surface:   "web",
+		Scope:     scope,
+		ConfigSHA: "signed-config-digest",
 	})
 	require.NoError(t, err)
 	return tok
@@ -64,6 +72,17 @@ func mintBridgeToken(t *testing.T, signer *auth.Signer, scope string) string {
 
 func doSession(srv *server, url string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet, url, nil)
+	w := httptest.NewRecorder()
+	srv.handleSession(w, req)
+	return w
+}
+
+func doWebSocketSession(srv *server, url string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, url, nil)
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Sec-WebSocket-Key", base64.StdEncoding.EncodeToString(make([]byte, 16)))
+	req.Header.Set("Sec-WebSocket-Version", "13")
 	w := httptest.NewRecorder()
 	srv.handleSession(w, req)
 	return w
@@ -93,6 +112,19 @@ func TestHandleSessionRejectsWrongScope(t *testing.T) {
 	w := doSession(srv, "/nova/session?token="+tok)
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	assert.Contains(t, w.Body.String(), "not scoped")
+}
+
+func TestHandleSessionRejectsNovaTokenWithoutConfigDigest(t *testing.T) {
+	srv, signer, fake := newAuthTestServer(t)
+	seedSessionSlot(fake, "u1", "sess-1", 5*time.Minute)
+	tok, err := signer.SignAccessToken(context.Background(), auth.Claims{
+		Sub: "u1", Sid: "sess-1", Surface: "web", Scope: realtime.NovaScope,
+	})
+	require.NoError(t, err)
+
+	w := doSession(srv, "/nova/session?token="+tok)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Contains(t, w.Body.String(), "missing nova session config")
 }
 
 func TestHandleSessionRejectsUnredeemedSession(t *testing.T) {
@@ -130,17 +162,81 @@ func TestHandleSessionRejectsSuspendedAccount(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "suspended")
 }
 
-// TestHandleSessionValidTokenPassesGates proves the fixed contract end to
-// end at the auth layer: a broker-shaped token (scope=nova, sid bound) with
-// its RecordMint slot present clears every pre-upgrade gate. The request is
-// deliberately not a WebSocket upgrade, so the handler stops at the upgrade
-// step — anything but a 4xx/5xx means auth+session redemption passed.
-func TestHandleSessionValidTokenPassesGates(t *testing.T) {
+func TestHandleSessionRejectsDisabledAccount(t *testing.T) {
+	srv, signer, fake := newAuthTestServer(t)
+	seedSessionSlot(fake, "u1", "sess-1", 5*time.Minute)
+	fake.SeedItem(map[string]ddbtypes.AttributeValue{
+		"pk":     &ddbtypes.AttributeValueMemberS{Value: "USER#u1"},
+		"sk":     &ddbtypes.AttributeValueMemberS{Value: "PROFILE"},
+		"status": &ddbtypes.AttributeValueMemberS{Value: "disabled"},
+	})
+
+	tok := mintBridgeToken(t, signer, realtime.NovaScope)
+	w := doSession(srv, "/nova/session?token="+tok)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Contains(t, w.Body.String(), "account inactive")
+}
+
+func TestHandleSessionRejectsTokenPredatingTokensValidAfter(t *testing.T) {
+	srv, signer, fake := newAuthTestServer(t)
+	seedSessionSlot(fake, "u1", "sess-1", 5*time.Minute)
+	issuedAt := time.Now().Add(-time.Minute).Unix()
+	fake.SeedItem(map[string]ddbtypes.AttributeValue{
+		"pk":               &ddbtypes.AttributeValueMemberS{Value: "USER#u1"},
+		"sk":               &ddbtypes.AttributeValueMemberS{Value: "PROFILE"},
+		"status":           &ddbtypes.AttributeValueMemberS{Value: "active"},
+		"tokensValidAfter": &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(issuedAt+1, 10)},
+	})
+	tok, err := signer.SignAccessToken(context.Background(), auth.Claims{
+		Sub:       "u1",
+		Sid:       "sess-1",
+		Surface:   "web",
+		Scope:     realtime.NovaScope,
+		ConfigSHA: "signed-config-digest",
+		Iat:       issuedAt,
+		Exp:       time.Now().Add(5 * time.Minute).Unix(),
+	})
+	require.NoError(t, err)
+
+	w := doSession(srv, "/nova/session?token="+tok)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assert.Contains(t, w.Body.String(), "session token invalidated")
+}
+
+func TestHandleSessionNonUpgradeDoesNotRedeemToken(t *testing.T) {
 	srv, signer, fake := newAuthTestServer(t)
 	seedSessionSlot(fake, "u1", "sess-1", 5*time.Minute)
 
 	tok := mintBridgeToken(t, signer, realtime.NovaScope)
 	w := doSession(srv, "/nova/session?sid=sess-1&token="+tok)
-	assert.Equal(t, http.StatusOK, w.Code,
-		"gates must pass; the (non-upgrade) request only fails at the websocket handshake")
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "websocket upgrade required")
+	require.NoError(t, srv.gate.RedeemSession(context.Background(), "u1", "sess-1"),
+		"a malformed request must not burn the single-use token")
+}
+
+func TestHandleSessionUpgradeFailureDoesNotRedeemToken(t *testing.T) {
+	srv, signer, fake := newAuthTestServer(t)
+	seedSessionSlot(fake, "u1", "sess-1", 5*time.Minute)
+
+	tok := mintBridgeToken(t, signer, realtime.NovaScope)
+	_ = doWebSocketSession(srv, "/nova/session?token="+tok)
+	require.NoError(t, srv.gate.RedeemSession(context.Background(), "u1", "sess-1"),
+		"a failed HTTP hijack/upgrade must not burn the single-use token")
+}
+
+func TestUpgradedReplayGetsTypedError(t *testing.T) {
+	srv, _, _ := newAuthTestServer(t)
+	client := newFakeClient(nil)
+
+	srv.writeUpgradedSessionError(client, &realtime.SessionRedeemedError{}, "u1", "sess-1")
+
+	select {
+	case ev := <-client.out:
+		assert.Equal(t, voiceengine.TypeError, ev.Type)
+		assert.Equal(t, "session_redeemed", ev.Code)
+		assert.Contains(t, ev.Message, "already redeemed")
+	default:
+		t.Fatal("expected an in-band replay error")
+	}
 }

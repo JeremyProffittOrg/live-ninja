@@ -66,9 +66,9 @@ data class RealtimeSession(
     /** Single-use Gemini ephemeral token (gemini-direct only). */
     val accessToken: GeminiAccessToken? = null,
     /**
-     * The exact raw `setup` frame BODY the client must send on the Gemini
-     * socket open (gemini-direct only; the same config is locked into the
-     * token via liveConnectConstraints server-side).
+     * Server-authored transport bootstrap. For Gemini this is the exact raw
+     * `setup` frame body (also locked into the ephemeral token); for Nova it
+     * is the exact `config` body of the client's first `session.start` frame.
      */
     val sessionConfig: JSONObject? = null,
     /**
@@ -181,10 +181,10 @@ class RealtimeSessionApi @Inject constructor(
 
             when (mode) {
                 RealtimeSession.MODE_NOVA_BRIDGE -> {
-                    if (wsUrl == null) {
+                    if (wsUrl == null || sessionConfig == null) {
                         throw RealtimeSessionException(
                             kind = "invalid_response",
-                            message = "Nova bridge session response is missing wsUrl.",
+                            message = "Nova bridge session response is missing wsUrl/sessionConfig.",
                             httpCode = httpCode,
                         )
                     }

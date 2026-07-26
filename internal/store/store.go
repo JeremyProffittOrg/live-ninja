@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -110,6 +111,48 @@ func (s *Store) PutDeviceTelemetry(ctx context.Context, deviceID string, payload
 		return fmt.Errorf("store: put device telemetry: %w", err)
 	}
 	return nil
+}
+
+// IsRedeemedSessionActive verifies the live capability behind a Nova bridge
+// sink request. The bridge atomically adds redeemedAt to the broker-created
+// concurrency slot after the WebSocket upgrade succeeds; transcript and tool
+// calls made with that scoped JWT remain valid only while that exact slot is
+// present and unexpired. This is one strongly consistent key lookup, never a
+// table scan.
+func (s *Store) IsRedeemedSessionActive(ctx context.Context, userID, sessionID string) (bool, error) {
+	if userID == "" || sessionID == "" {
+		return false, nil
+	}
+	out, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName:      aws.String(s.table),
+		ConsistentRead: aws.Bool(true),
+		Key: map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: "USER#" + userID},
+			"sk": &types.AttributeValueMemberS{Value: "BUCKET#sess#" + sessionID},
+		},
+		ProjectionExpression: aws.String("exp, redeemedAt"),
+	})
+	if err != nil {
+		return false, fmt.Errorf("store: get redeemed session slot: %w", err)
+	}
+	if len(out.Item) == 0 {
+		return false, nil
+	}
+	expAV, ok := out.Item["exp"].(*types.AttributeValueMemberN)
+	if !ok {
+		return false, fmt.Errorf("store: redeemed session slot has invalid exp")
+	}
+	exp, err := strconv.ParseInt(expAV.Value, 10, 64)
+	if err != nil {
+		return false, fmt.Errorf("store: parse redeemed session expiry: %w", err)
+	}
+	if exp <= time.Now().Unix() {
+		return false, nil
+	}
+	if _, ok := out.Item["redeemedAt"].(*types.AttributeValueMemberN); !ok {
+		return false, nil
+	}
+	return true, nil
 }
 
 // ReleaseSessionSlot deletes the realtime concurrency slot the broker

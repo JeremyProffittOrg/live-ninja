@@ -230,6 +230,11 @@ func (c *wsConn) WriteText(payload []byte) error {
 	return c.writeFrame(opText, payload)
 }
 
+// WriteBinary sends a single unfragmented binary message.
+func (c *wsConn) WriteBinary(payload []byte) error {
+	return c.writeFrame(opBinary, payload)
+}
+
 // writeControl sends a control frame (close/ping/pong). Control payloads
 // are capped at 125 bytes by the protocol; longer ones are truncated.
 func (c *wsConn) writeControl(opcode byte, payload []byte) error {

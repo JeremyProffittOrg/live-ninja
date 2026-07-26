@@ -10,12 +10,15 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.hardware.display.DisplayManager
 import android.media.ImageReader
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Size
+import android.view.Display
+import android.view.Surface
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
@@ -49,6 +52,10 @@ class Camera2CaptureEngine @Inject constructor(
     private val cameraManager =
         requireNotNull(appContext.getSystemService(CameraManager::class.java)) {
             "CameraManager is unavailable"
+        }
+    private val displayManager =
+        requireNotNull(appContext.getSystemService(DisplayManager::class.java)) {
+            "DisplayManager is unavailable"
         }
 
     internal suspend fun capture(command: CameraCaptureCommand): CapturedCameraMedia {
@@ -109,7 +116,7 @@ class Camera2CaptureEngine @Inject constructor(
                 )
                 set(
                     CaptureRequest.JPEG_ORIENTATION,
-                    target.characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0,
+                    captureOrientationDegrees(target.characteristics, lens),
                 )
             }.build()
             session.capture(request, null, callbackHandler)
@@ -154,7 +161,11 @@ class Camera2CaptureEngine @Inject constructor(
         var recorderStarted = false
 
         try {
-            val activeRecorder = createRecorder(output, size, target.characteristics)
+            val activeRecorder = createRecorder(
+                output,
+                size,
+                captureOrientationDegrees(target.characteristics, lens),
+            )
             recorder = activeRecorder
             device = openCamera(target.id, callbackHandler)
             session = createSession(device, listOf(activeRecorder.surface), callbackHandler)
@@ -256,7 +267,7 @@ class Camera2CaptureEngine @Inject constructor(
     private fun createRecorder(
         output: File,
         size: Size,
-        characteristics: CameraCharacteristics,
+        orientationDegrees: Int,
     ): MediaRecorder {
         val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             MediaRecorder(appContext)
@@ -274,9 +285,7 @@ class Camera2CaptureEngine @Inject constructor(
                 setVideoEncodingBitRate(
                     (area(size) * 4L).coerceIn(MIN_VIDEO_BITRATE, MAX_VIDEO_BITRATE).toInt(),
                 )
-                setOrientationHint(
-                    characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0,
-                )
+                setOrientationHint(orientationDegrees)
                 prepare()
             }
         } catch (e: Exception) {
@@ -370,6 +379,25 @@ class Camera2CaptureEngine @Inject constructor(
     }
 
     private fun area(size: Size): Long = size.width.toLong() * size.height.toLong()
+
+    private fun captureOrientationDegrees(
+        characteristics: CameraCharacteristics,
+        lens: CameraLens,
+    ): Int = CameraCaptureOrientation.outputRotationDegrees(
+        sensorOrientationDegrees =
+            characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0,
+        displayRotationDegrees = currentDisplayRotationDegrees(),
+        lens = lens,
+    )
+
+    @Suppress("DEPRECATION")
+    private fun currentDisplayRotationDegrees(): Int =
+        when (displayManager.getDisplay(Display.DEFAULT_DISPLAY)?.rotation) {
+            Surface.ROTATION_90 -> 90
+            Surface.ROTATION_180 -> 180
+            Surface.ROTATION_270 -> 270
+            else -> 0
+        }
 
     private fun CaptureRequest.Builder.setAutoFocusIfSupported(
         characteristics: CameraCharacteristics,

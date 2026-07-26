@@ -68,11 +68,18 @@ func NewFallbackClient(loader *config.Loader) *FallbackClient {
 // text turn knows the same facts a realtime session does (M15) — pass "" for
 // none.
 func (c *FallbackClient) Turn(ctx context.Context, personaID, text, extraSystem string) (string, error) {
+	return c.TurnForSurface(ctx, personaID, "", text, extraSystem)
+}
+
+// TurnForSurface keeps the surface-aware broker API while removing all
+// device-local capabilities. This server-executed path has no client tool
+// delegation.
+func (c *FallbackClient) TurnForSurface(ctx context.Context, personaID, _ string, text, extraSystem string) (string, error) {
 	persona := ResolvePersona(personaID)
 	body, err := json.Marshal(map[string]any{
 		"model": fallbackChatModel,
 		"messages": []map[string]string{
-			{"role": "system", "content": persona.Instructions + extraSystem},
+			{"role": "system", "content": InstructionsForServerExecution(persona) + extraSystem},
 			{"role": "user", "content": text},
 		},
 	})

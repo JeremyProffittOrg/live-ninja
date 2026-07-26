@@ -13,18 +13,19 @@ import (
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
 )
 
-// TestChatCompletionToolsMirrorManifest proves the chat-completions tool
-// list is a pure re-wrapping of the realtime manifest — same catalog,
-// same names, same parameter schemas, never a fork.
-func TestChatCompletionToolsMirrorManifest(t *testing.T) {
-	require.Len(t, chatCompletionTools, len(toolManifest))
+// TestChatCompletionToolsMirrorServerManifest proves the chat-completions
+// list is a pure re-wrapping of the server-executable manifest — same names
+// and schemas, with device-local tools deliberately absent.
+func TestChatCompletionToolsMirrorServerManifest(t *testing.T) {
+	serverManifest := toolManifestForServerExecution()
+	require.Len(t, chatCompletionTools, len(serverManifest))
 	for i, ct := range chatCompletionTools {
 		assert.Equal(t, "function", ct["type"])
 		fn, ok := ct["function"].(map[string]any)
 		require.True(t, ok, "tool %d must nest under \"function\"", i)
-		assert.Equal(t, toolManifest[i]["name"], fn["name"])
-		assert.Equal(t, toolManifest[i]["description"], fn["description"])
-		assert.Equal(t, toolManifest[i]["parameters"], fn["parameters"])
+		assert.Equal(t, serverManifest[i]["name"], fn["name"])
+		assert.Equal(t, serverManifest[i]["description"], fn["description"])
+		assert.Equal(t, serverManifest[i]["parameters"], fn["parameters"])
 	}
 }
 
@@ -82,13 +83,14 @@ func TestBuildToolTurnRequestWireShape(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &req))
 	assert.Equal(t, fallbackChatModel, req["model"])
 
-	// Full catalog bound as chat-completions tools.
+	// Only the server-executable catalog is bound as chat-completions tools.
+	serverManifest := toolManifestForServerExecution()
 	toolsArr, ok := req["tools"].([]any)
 	require.True(t, ok)
-	require.Len(t, toolsArr, len(toolManifest))
+	require.Len(t, toolsArr, len(serverManifest))
 	first := toolsArr[0].(map[string]any)
 	assert.Equal(t, "function", first["type"])
-	assert.Equal(t, toolManifest[0]["name"], first["function"].(map[string]any)["name"])
+	assert.Equal(t, serverManifest[0]["name"], first["function"].(map[string]any)["name"])
 
 	msgs, ok := req["messages"].([]any)
 	require.True(t, ok)
@@ -96,7 +98,7 @@ func TestBuildToolTurnRequestWireShape(t *testing.T) {
 
 	system := msgs[0].(map[string]any)
 	assert.Equal(t, "system", system["role"])
-	assert.Equal(t, ResolvePersona("").Instructions, system["content"])
+	assert.Equal(t, InstructionsForServerExecution(ResolvePersona("")), system["content"])
 
 	// Assistant tool request converts to the nested OpenAI shape.
 	asst := msgs[2].(map[string]any)
@@ -173,10 +175,10 @@ func TestTurnWithToolsReturnsToolCallsUntouched(t *testing.T) {
 	assert.Equal(t, ChatToolCall{ID: "call_def", Name: "get_weather",
 		Arguments: `{"location":"Austin"}`}, res.ToolCalls[1])
 
-	// The request the mock saw carried the full tool catalog.
+	// The request the mock saw carried the server-executable tool catalog.
 	toolsArr, ok := gotReq["tools"].([]any)
 	require.True(t, ok, "request must bind tools")
-	assert.Len(t, toolsArr, len(toolManifest))
+	assert.Len(t, toolsArr, len(toolManifestForServerExecution()))
 }
 
 func TestTurnWithToolsReturnsFinalText(t *testing.T) {

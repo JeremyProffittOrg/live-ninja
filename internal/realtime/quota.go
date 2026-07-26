@@ -176,6 +176,45 @@ func (e *SessionUnknownError) Error() string {
 	return fmt.Sprintf("realtime: session %q unknown or expired", e.SessionID)
 }
 
+// SessionRedeemedError is returned by RedeemSession when another bridge
+// connection already redeemed the same minted session. The signed bridge
+// token is intentionally single-use: reconnects must mint a fresh session
+// instead of replaying a token that could otherwise open another upstream
+// stream without consuming a concurrency slot.
+type SessionRedeemedError struct {
+	SessionID string
+}
+
+func (e *SessionRedeemedError) Error() string {
+	return fmt.Sprintf("realtime: session %q already redeemed", e.SessionID)
+}
+
+// AccountInactiveError is returned by the Nova bridge-specific session gate
+// when the token subject no longer has an active PROFILE. The bridge sits
+// behind an ALB rather than API Gateway, so it must enforce the same fresh
+// account-status boundary the API authorizer applies before opening Bedrock.
+type AccountInactiveError struct {
+	Status string
+}
+
+func (e *AccountInactiveError) Error() string {
+	return fmt.Sprintf("realtime: account is not active (status: %s)", e.Status)
+}
+
+// TokenInvalidatedError is returned by the Nova bridge-specific session gate
+// when logout-everywhere/admin revocation moved tokensValidAfter beyond the
+// scoped token's iat. It is deliberately distinct from SessionUnknownError:
+// the session slot may still be live, but the credential is no longer valid.
+type TokenInvalidatedError struct {
+	IssuedAt   int64
+	ValidAfter int64
+}
+
+func (e *TokenInvalidatedError) Error() string {
+	return fmt.Sprintf("realtime: session token issued at %d predates tokensValidAfter %d",
+		e.IssuedAt, e.ValidAfter)
+}
+
 // SuspendAlert carries the details of an auto-suspension to the
 // broker-provided alert hook (SetAlerter) — the hook owns delivery (SES
 // via the email queue) and its own error logging.
@@ -342,6 +381,29 @@ func (g *Gate) CheckSession(ctx context.Context, userID, sessionID string) error
 	if err := g.checkSuspended(ctx, userID); err != nil {
 		return err
 	}
+	return g.checkSessionSlot(ctx, userID, sessionID)
+}
+
+// CheckBridgeSession applies the complete fresh authorization boundary for a
+// Nova capability token before a WebSocket upgrade: the account PROFILE must
+// exist and be active, the token must not predate tokensValidAfter, and the
+// broker-created session slot must still be live. The bridge is reached through
+// an ALB and therefore cannot rely on the API Gateway Lambda authorizer.
+//
+// CheckSession intentionally keeps its historical quota-only semantics for
+// existing callers; this narrowly named method is the bridge authentication
+// gate.
+func (g *Gate) CheckBridgeSession(ctx context.Context, userID, sessionID string, tokenIssuedAt int64) error {
+	if sessionID == "" {
+		return &SessionUnknownError{SessionID: sessionID}
+	}
+	if err := g.checkBridgeAccess(ctx, userID, tokenIssuedAt); err != nil {
+		return err
+	}
+	return g.checkSessionSlot(ctx, userID, sessionID)
+}
+
+func (g *Gate) checkSessionSlot(ctx context.Context, userID, sessionID string) error {
 	out, err := g.ddb.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName:      aws.String(g.table),
 		ConsistentRead: aws.Bool(true),
@@ -365,6 +427,119 @@ func (g *Gate) CheckSession(ctx context.Context, userID, sessionID string) error
 		return &SessionUnknownError{SessionID: sessionID}
 	}
 	return nil
+}
+
+// checkBridgeAccess mirrors the authorizer's active-status and
+// tokensValidAfter checks with a strongly consistent PROFILE read. That closes
+// the otherwise-unprotected ALB handshake path without changing the quota
+// gate's ordinary suspension semantics.
+func (g *Gate) checkBridgeAccess(ctx context.Context, userID string, tokenIssuedAt int64) error {
+	out, err := g.ddb.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName:      aws.String(g.table),
+		ConsistentRead: aws.Bool(true),
+		Key: map[string]ddbtypes.AttributeValue{
+			"pk": &ddbtypes.AttributeValueMemberS{Value: "USER#" + userID},
+			"sk": &ddbtypes.AttributeValueMemberS{Value: "PROFILE"},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("realtime: read bridge account profile: %w", err)
+	}
+	if out.Item == nil {
+		return &AccountInactiveError{Status: "missing"}
+	}
+	statusAV, ok := out.Item["status"].(*ddbtypes.AttributeValueMemberS)
+	if !ok || statusAV.Value == "" {
+		return &AccountInactiveError{Status: "missing"}
+	}
+	if statusAV.Value == statusSuspended {
+		reason := "suspended"
+		if r, ok := out.Item["suspendReason"].(*ddbtypes.AttributeValueMemberS); ok && r.Value != "" {
+			reason = r.Value
+		}
+		return &SuspendedError{Reason: reason}
+	}
+	if statusAV.Value != statusActive {
+		return &AccountInactiveError{Status: statusAV.Value}
+	}
+	if rawTVA, exists := out.Item["tokensValidAfter"]; exists {
+		tvaAV, ok := rawTVA.(*ddbtypes.AttributeValueMemberN)
+		if !ok {
+			return fmt.Errorf("realtime: bridge account tokensValidAfter has invalid type")
+		}
+		validAfter, parseErr := strconv.ParseInt(tvaAV.Value, 10, 64)
+		if parseErr != nil {
+			return fmt.Errorf("realtime: parse bridge account tokensValidAfter: %w", parseErr)
+		}
+		if tokenIssuedAt < validAfter {
+			return &TokenInvalidatedError{IssuedAt: tokenIssuedAt, ValidAfter: validAfter}
+		}
+	}
+	return nil
+}
+
+// RedeemSession atomically consumes a minted session's one bridge
+// connection while retaining its BUCKET#sess# slot for concurrency
+// accounting through the original hard-cap expiry.
+//
+// CheckSession remains a repeatable, read-only validity check. Redemption
+// adds a redeemedAt marker to that same slot with a conditional update that
+// can succeed only while the slot is live and has no prior marker. Thus,
+// racing/replayed bridge connects have exactly one winner without deleting
+// the active slot or extending its exp/ttl.
+//
+// On rejection the error is a *SuspendedError, *SessionUnknownError, or
+// *SessionRedeemedError; anything else is an infrastructure failure.
+func (g *Gate) RedeemSession(ctx context.Context, userID, sessionID string) error {
+	if err := g.CheckSession(ctx, userID, sessionID); err != nil {
+		return err
+	}
+	return g.redeemCheckedSession(ctx, userID, sessionID, func() error {
+		return g.CheckSession(ctx, userID, sessionID)
+	})
+}
+
+// RedeemBridgeSession is the Nova bridge counterpart to RedeemSession. It
+// repeats the bridge-specific active-account/tokensValidAfter check immediately
+// before the conditional redemption so a kill switch applied during the
+// WebSocket handshake is not ignored.
+func (g *Gate) RedeemBridgeSession(ctx context.Context, userID, sessionID string, tokenIssuedAt int64) error {
+	if err := g.CheckBridgeSession(ctx, userID, sessionID, tokenIssuedAt); err != nil {
+		return err
+	}
+	return g.redeemCheckedSession(ctx, userID, sessionID, func() error {
+		return g.CheckBridgeSession(ctx, userID, sessionID, tokenIssuedAt)
+	})
+}
+
+func (g *Gate) redeemCheckedSession(ctx context.Context, userID, sessionID string, recheck func() error) error {
+	nowUnix := g.now().UTC().Unix()
+	_, err := g.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(g.table),
+		Key: map[string]ddbtypes.AttributeValue{
+			"pk": &ddbtypes.AttributeValueMemberS{Value: "USER#" + userID},
+			"sk": &ddbtypes.AttributeValueMemberS{Value: sessSlotPrefix + sessionID},
+		},
+		UpdateExpression:    aws.String("SET redeemedAt = :now"),
+		ConditionExpression: aws.String("attribute_exists(pk) AND exp > :now AND attribute_not_exists(redeemedAt)"),
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":now": numberAV(float64(nowUnix)),
+		},
+	})
+	if err == nil {
+		return nil
+	}
+	if !isConditionalFailure(err) {
+		return fmt.Errorf("realtime: redeem session slot: %w", err)
+	}
+
+	// A failed condition can mean either replay or that the slot expired or
+	// disappeared between the validity read and the atomic update. Re-read
+	// so callers retain the selected gate's precise rejection semantics.
+	if checkErr := recheck(); checkErr != nil {
+		return checkErr
+	}
+	return &SessionRedeemedError{SessionID: sessionID}
 }
 
 // CheckFallback gates the text/STT/TTS fallback modes: suspension gate,

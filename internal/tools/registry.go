@@ -308,7 +308,13 @@ type Definition struct {
 	// exists — but reaching the server Handler means a surface that cannot perform
 	// it called it anyway.
 	DeviceLocal bool
-	Handler     HandlerFunc
+	// Surfaces restricts a device-local capability to clients that actually
+	// implement it. An empty slice means every surface (the normal case for
+	// server-executed tools). This is enforced when the realtime manifest is
+	// rendered, so a model is never invited to call a local action the current
+	// client cannot perform.
+	Surfaces []string
+	Handler  HandlerFunc
 }
 
 // ReauthorizeFunc re-checks, at call time, that the user behind a still-
@@ -553,6 +559,46 @@ func (r *Registry) register(def *Definition) error {
 // live Deps: the Definition constructors are dependency-free.
 func CatalogManifest() []map[string]any {
 	return renderManifest(definitions())
+}
+
+// CatalogManifestForSurface renders only tools executable by surface. Server
+// tools have no surface restriction and are always included; device-local
+// tools opt into the clients that intercept them.
+func CatalogManifestForSurface(surface string) []map[string]any {
+	defs := definitions()
+	filtered := make([]*Definition, 0, len(defs))
+	for _, def := range defs {
+		if supportsSurface(def, surface) {
+			filtered = append(filtered, def)
+		}
+	}
+	return renderManifest(filtered)
+}
+
+// CatalogManifestForServerExecution renders only tools the backend router can
+// execute. Device-local tools must never be advertised on paths (such as the
+// typed fallback and Nova bridge) that send every model call to the server.
+func CatalogManifestForServerExecution() []map[string]any {
+	defs := definitions()
+	filtered := make([]*Definition, 0, len(defs))
+	for _, def := range defs {
+		if !def.DeviceLocal {
+			filtered = append(filtered, def)
+		}
+	}
+	return renderManifest(filtered)
+}
+
+func supportsSurface(def *Definition, surface string) bool {
+	if len(def.Surfaces) == 0 || surface == "" {
+		return true
+	}
+	for _, supported := range def.Surfaces {
+		if surface == supported {
+			return true
+		}
+	}
+	return false
 }
 
 // Manifest renders this registry's catalog as OpenAI Realtime

@@ -7,17 +7,17 @@
 // must HOLD open for the whole conversation, pumping audio both ways. Lambda
 // (and API Gateway WebSocket, which is request/response per frame) cannot
 // hold that stream, so the bridge runs as a single small arm64 Fargate task
-// behind an ALB on nova.live.jeremy.ninja (infra wiring lives in the deploy
-// workstream's template.yaml; this program only needs a TCP port and the
-// task role). It is the ONLY place AWS sits in the audio media path, and
+// behind an ALB reached through CloudFront's same-origin /nova/* behavior
+// (infra wiring lives in template.yaml; this program only needs a TCP port
+// and the task role). It is the ONLY place AWS sits in the audio media path, and
 // only for devices explicitly pinned to Nova — every OpenAI engine stays
 // client-direct (PRD N-6 / FR-VE-04).
 //
 // Per connection the bridge:
 //  1. verifies the client's first-party session JWT (query param, reusing
 //     internal/auth's JWKS verifier — no AWS call),
-//  2. runs the pre-spend quota gate (internal/realtime.Gate.CheckMint),
-//  3. upgrades to WebSocket and opens the Bedrock bidirectional stream,
+//  2. validates the broker-created live session slot and WebSocket request,
+//  3. upgrades, atomically redeems the token, and verifies the signed config,
 //  4. pumps audio/tool/transcript events, normalizing Nova's protocol to and
 //     from the engine-neutral internal/voiceengine schema so topics, memory,
 //     tools, and the transcript sink behave identically to the OpenAI path.
@@ -25,7 +25,9 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -141,9 +143,10 @@ func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-// handleSession authenticates and quota-gates the request, then upgrades to
-// WebSocket and runs the bridge pump. Auth and quota MUST precede the
-// upgrade so failures return a plain HTTP status the client can read.
+// handleSession authenticates and validates the single-use session, upgrades
+// to WebSocket, then atomically redeems it before opening Bedrock. Redemption
+// follows a successful upgrade so a proxy/hijack failure cannot burn a valid
+// token; a post-upgrade race/replay receives an in-band terminal error.
 func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 	token := bridgeToken(r)
 	if token == "" {
@@ -175,6 +178,13 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "token not scoped for the nova bridge", http.StatusForbidden)
 		return
 	}
+	if claims.ConfigSHA == "" {
+		observ.EmitMetric(metricsNamespace, "AuthRejections", 1, "Count", nil)
+		s.log.Warn("nova-bridge: token missing signed session-config digest",
+			slog.String("userId", claims.Sub), slog.String("sessionId", claims.Sid))
+		http.Error(w, "token missing nova session config", http.StatusForbidden)
+		return
+	}
 
 	// The session id comes from the token's sid claim (BuildBridgeSession
 	// binds the token to the ledger session id the broker generated); the
@@ -187,14 +197,19 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 	// counted this session's own concurrency slot and rejected every
 	// legitimate connect with 429 "concurrent session limit" (prod
 	// 2026-07-18: client stuck at the door, nothing in the bridge logs).
-	// CheckSession keeps the enforcement that must hold at redemption time:
-	// fresh suspension gate + the RecordMint slot must exist and be inside
-	// the hard session cap (bounds replay of a leaked token).
-	if err := s.gate.CheckSession(r.Context(), claims.Sub, sessionID); err != nil {
+	// CheckBridgeSession performs a read-only validity check before we inspect
+	// the upgrade. In addition to the live slot, it enforces the fresh active
+	// account + tokensValidAfter boundary that API Gateway applies everywhere
+	// else (this ALB route has no Lambda authorizer). A malformed/non-WebSocket
+	// request must not consume its token.
+	if err := s.gate.CheckBridgeSession(r.Context(), claims.Sub, sessionID, claims.Iat); err != nil {
 		s.rejectSession(w, err, claims.Sub, sessionID)
 		return
 	}
-
+	if !isWebSocketUpgrade(r) {
+		http.Error(w, "websocket upgrade required", http.StatusBadRequest)
+		return
+	}
 	surface := claims.Surface
 	l := observ.WithRequest(s.log, "", claims.Sub, surface).With(slog.String("sessionId", sessionID))
 
@@ -205,6 +220,16 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = wsc.Close() }()
 
+	client := &wsClientConn{ws: wsc}
+	// RedeemSession conditionally marks the existing slot. Exactly one
+	// upgraded racing/replayed connect can proceed to a Bedrock stream while
+	// the slot itself remains present for concurrency accounting and scoped
+	// transcript/tool authorization.
+	if err := s.gate.RedeemBridgeSession(r.Context(), claims.Sub, sessionID, claims.Iat); err != nil {
+		s.writeUpgradedSessionError(client, err, claims.Sub, sessionID)
+		return
+	}
+
 	observ.EmitMetric(metricsNamespace, "SessionsOpened", 1, "Count", map[string]string{"Surface": surface})
 	l.Info("nova-bridge: session opened")
 	start := time.Now()
@@ -213,8 +238,9 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	sink := newSinkClient(s.http, s.apiBase, token)
-	sess := newSession(l, &wsClientConn{ws: wsc}, sink, sessionID, surface,
+	sess := newSession(l, client, sink, sessionID, surface,
 		func(ctx context.Context) (novaStream, error) { return openNovaStream(ctx, s.bedrock) })
+	sess.expectedConfigDigest = claims.ConfigSHA
 
 	if err := sess.Run(ctx); err != nil {
 		observ.EmitMetric(metricsNamespace, "SessionErrors", 1, "Count", map[string]string{"Surface": surface})
@@ -225,24 +251,75 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 	l.Info("nova-bridge: session closed", slog.Duration("duration", time.Since(start)))
 }
 
-// rejectSession maps CheckSession's typed rejections onto HTTP statuses.
+// writeUpgradedSessionError reports a redemption failure after the HTTP 101
+// handshake. At that point an HTTP status is no longer legal, so the bridge
+// uses its normal typed error event and closes the socket immediately.
+func (s *server) writeUpgradedSessionError(client clientConn, err error, userID, sessionID string) {
+	code, message, kind := "session_gate", "The session could not be verified.", "session_gate"
+	var se *realtime.SuspendedError
+	var su *realtime.SessionUnknownError
+	var sr *realtime.SessionRedeemedError
+	var ai *realtime.AccountInactiveError
+	var ti *realtime.TokenInvalidatedError
+	switch {
+	case errors.As(err, &se):
+		code, message, kind = "account_suspended", "The account is suspended.", "suspended"
+	case errors.As(err, &ai):
+		code, message, kind = "account_inactive", "The account is not active.", "account_inactive"
+	case errors.As(err, &ti):
+		code, message, kind = "token_invalidated", "The session token was invalidated.", "token_invalidated"
+	case errors.As(err, &su):
+		code, message, kind = "session_unknown", "The session is unknown or expired.", "session_unknown"
+	case errors.As(err, &sr):
+		code, message, kind = "session_redeemed", "The session token was already redeemed.", "session_redeemed"
+	}
+	observ.EmitMetric(metricsNamespace, "QuotaRejections", 1, "Count", map[string]string{"Kind": kind})
+	s.log.Warn("nova-bridge: upgraded session rejected",
+		slog.String("kind", kind), slog.String("userId", userID), slog.String("sessionId", sessionID))
+	if writeErr := client.WriteEvent(voiceengine.Event{
+		Type: voiceengine.TypeError, Code: code, Message: message,
+	}); writeErr != nil {
+		s.log.Warn("nova-bridge: could not write upgraded session rejection",
+			slog.String("error", writeErr.Error()), slog.String("sessionId", sessionID))
+	}
+}
+
+// rejectSession maps session validity/redemption rejections to HTTP statuses.
 // The bridge is pre-upgrade here, so a plain status is all the client
 // needs. Every rejection is logged (token never included) — silent 4xxs
 // here are exactly what made the concurrent-limit bug undiagnosable.
 func (s *server) rejectSession(w http.ResponseWriter, err error, userID, sessionID string) {
 	var se *realtime.SuspendedError
 	var su *realtime.SessionUnknownError
+	var sr *realtime.SessionRedeemedError
+	var ai *realtime.AccountInactiveError
+	var ti *realtime.TokenInvalidatedError
 	switch {
 	case errors.As(err, &se):
 		observ.EmitMetric(metricsNamespace, "QuotaRejections", 1, "Count", map[string]string{"Kind": "suspended"})
 		s.log.Warn("nova-bridge: session rejected: account suspended",
 			slog.String("userId", userID), slog.String("sessionId", sessionID))
 		http.Error(w, "account suspended", http.StatusForbidden)
+	case errors.As(err, &ai):
+		observ.EmitMetric(metricsNamespace, "QuotaRejections", 1, "Count", map[string]string{"Kind": "account_inactive"})
+		s.log.Warn("nova-bridge: session rejected: account inactive",
+			slog.String("status", ai.Status), slog.String("userId", userID), slog.String("sessionId", sessionID))
+		http.Error(w, "account inactive", http.StatusForbidden)
+	case errors.As(err, &ti):
+		observ.EmitMetric(metricsNamespace, "QuotaRejections", 1, "Count", map[string]string{"Kind": "token_invalidated"})
+		s.log.Warn("nova-bridge: session rejected: token invalidated",
+			slog.String("userId", userID), slog.String("sessionId", sessionID))
+		http.Error(w, "session token invalidated", http.StatusUnauthorized)
 	case errors.As(err, &su):
 		observ.EmitMetric(metricsNamespace, "QuotaRejections", 1, "Count", map[string]string{"Kind": "session_unknown"})
 		s.log.Warn("nova-bridge: session rejected: unknown or expired session",
 			slog.String("userId", userID), slog.String("sessionId", sessionID))
 		http.Error(w, "unknown or expired session", http.StatusUnauthorized)
+	case errors.As(err, &sr):
+		observ.EmitMetric(metricsNamespace, "QuotaRejections", 1, "Count", map[string]string{"Kind": "session_redeemed"})
+		s.log.Warn("nova-bridge: session rejected: token already redeemed",
+			slog.String("userId", userID), slog.String("sessionId", sessionID))
+		http.Error(w, "session token already redeemed", http.StatusUnauthorized)
 	default:
 		s.log.Error("nova-bridge: session gate failed", slog.String("error", err.Error()),
 			slog.String("userId", userID), slog.String("sessionId", sessionID))
@@ -276,8 +353,8 @@ func bridgeToken(r *http.Request) string {
 	return ""
 }
 
-// wsClientConn adapts a wsConn to the clientConn the pump consumes,
-// (de)serializing the engine-neutral event schema over text frames.
+// wsClientConn adapts the mixed bridge wire protocol to engine-neutral
+// events: raw PCM16 uses binary frames; control/lifecycle uses JSON text.
 type wsClientConn struct {
 	ws *wsConn
 }
@@ -288,14 +365,27 @@ func (c *wsClientConn) ReadEvent() (voiceengine.Event, error) {
 		if err != nil {
 			return voiceengine.Event{}, err
 		}
-		if op != opText {
-			continue // ignore binary frames; the protocol is JSON text
+		switch op {
+		case opBinary:
+			return voiceengine.Event{
+				Type:       voiceengine.TypeAudioIn,
+				Audio:      base64.StdEncoding.EncodeToString(payload),
+				SampleRate: voiceengine.NovaInputSampleRate,
+			}, nil
+		case opText:
+			return voiceengine.ParseEvent(payload)
 		}
-		return voiceengine.ParseEvent(payload)
 	}
 }
 
 func (c *wsClientConn) WriteEvent(ev voiceengine.Event) error {
+	if ev.Type == voiceengine.TypeAudioOut {
+		pcm, err := base64.StdEncoding.DecodeString(ev.Audio)
+		if err != nil {
+			return fmt.Errorf("nova-bridge: decode audio.out: %w", err)
+		}
+		return c.ws.WriteBinary(pcm)
+	}
 	b, err := ev.Marshal()
 	if err != nil {
 		return err
@@ -384,4 +474,3 @@ func durationEnv(key string, def time.Duration) time.Duration {
 	}
 	return secs
 }
-

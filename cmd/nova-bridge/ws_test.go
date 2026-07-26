@@ -7,6 +7,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/JeremyProffittOrg/live-ninja/internal/voiceengine"
 )
 
 func TestComputeAcceptKey(t *testing.T) {
@@ -157,6 +159,69 @@ func TestWSWriteText_RoundTrip(t *testing.T) {
 	}
 	if v := <-got; v != "world" {
 		t.Fatalf("round trip = %q, want world", v)
+	}
+}
+
+func TestWSClientConn_ReadsBinaryPCMAsAudioInput(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer func() { _ = c1.Close() }()
+	defer func() { _ = c2.Close() }()
+	client := &wsClientConn{ws: newServerConn(c1)}
+
+	go func() { _, _ = c2.Write(clientFrame(opBinary, true, []byte{1, 2, 3})) }()
+
+	ev, err := client.ReadEvent()
+	if err != nil {
+		t.Fatalf("ReadEvent: %v", err)
+	}
+	if ev.Type != voiceengine.TypeAudioIn || ev.Audio != "AQID" ||
+		ev.SampleRate != voiceengine.NovaInputSampleRate {
+		t.Fatalf("binary frame mapped to %+v", ev)
+	}
+}
+
+func TestWSClientConn_WritesAudioOutputAsBinaryPCM(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer func() { _ = c1.Close() }()
+	defer func() { _ = c2.Close() }()
+	client := &wsClientConn{ws: newServerConn(c1)}
+	reader := bufio.NewReader(c2)
+
+	got := make(chan []byte, 1)
+	go func() {
+		op, payload := readServerFrame(t, reader)
+		if op != opBinary {
+			t.Errorf("op = %d, want binary", op)
+		}
+		got <- payload
+	}()
+
+	err := client.WriteEvent(voiceengine.Event{
+		Type: voiceengine.TypeAudioOut, Audio: "AQID", SampleRate: voiceengine.NovaOutputSampleRate,
+	})
+	if err != nil {
+		t.Fatalf("WriteEvent: %v", err)
+	}
+	if payload := <-got; string(payload) != string([]byte{1, 2, 3}) {
+		t.Fatalf("binary payload = %v, want [1 2 3]", payload)
+	}
+}
+
+func TestWSClientConn_KeepsControlEventsAsJSONText(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer func() { _ = c1.Close() }()
+	defer func() { _ = c2.Close() }()
+	client := &wsClientConn{ws: newServerConn(c1)}
+
+	go func() {
+		_, _ = c2.Write(clientFrame(opText, true, []byte(`{"type":"user.text","text":"hello"}`)))
+	}()
+	ev, err := client.ReadEvent()
+	if err != nil {
+		t.Fatalf("ReadEvent: %v", err)
+	}
+	if ev.Type != voiceengine.TypeUserText || ev.Text != "hello" {
+		t.Fatalf("text control mapped to %+v", ev)
 	}
 }
 

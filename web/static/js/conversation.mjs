@@ -37,7 +37,11 @@ import { createMicTest } from './mictest.mjs';
 import { Transcript } from './transcript.mjs';
 import { createTranscriptSink } from './transcriptsink.mjs';
 import { Visualizer } from './visualizer.mjs';
-import { createWakeWordEngine, isWakeWordSupported } from './wakeword.mjs';
+import {
+  applyWakeWordSettings,
+  createWakeWordEngine,
+  isWakeWordSupported,
+} from './wakeword.mjs';
 import { initSettingsPanel } from './settings.mjs';
 import { initSettingsAccordion } from './settings-accordion.mjs';
 import { createDeferredDeviceActionGate } from './deviceactions.mjs';
@@ -1158,6 +1162,21 @@ function renderWakeUI() {
   }
 }
 
+function handleWakeEngineFailure(err) {
+  if (wakeToggle) wakeToggle.checked = false;
+  if (err && err.code === 'unsupported') {
+    mic.setHandsFreeAvailable(false);
+  } else {
+    // Owner rule: never a bare "couldn't" — the underlying error goes in
+    // the banner's Details so it's report-able.
+    toast("Couldn't start hands-free listening — use the mic button.", {
+      error: true,
+      detail: (err && (err.message || String(err))) || 'unknown error',
+    });
+    renderWakeUI();
+  }
+}
+
 async function setWakeListening(on) {
   if (on) {
     if (wakeStarting) return;
@@ -1173,18 +1192,7 @@ async function setWakeListening(on) {
       await wakeEngine.start();
       renderWakeUI();
     } catch (err) {
-      if (wakeToggle) wakeToggle.checked = false;
-      if (err && err.code === 'unsupported') {
-        mic.setHandsFreeAvailable(false);
-      } else {
-        // Owner rule: never a bare "couldn't" — the underlying error goes in
-        // the banner's Details so it's report-able.
-        toast("Couldn't start hands-free listening — use the mic button.", {
-          error: true,
-          detail: (err && (err.message || String(err))) || 'unknown error',
-        });
-        renderWakeUI();
-      }
+      handleWakeEngineFailure(err);
     } finally {
       wakeStarting = false;
     }
@@ -1484,11 +1492,11 @@ async function loadDrawerCost() {
       drawerCostValue.textContent = `${remainingText} left`;
       if (drawerCostSub) {
         drawerCostSub.textContent =
-          `${formatCostUSD(openAiSpent)} OpenAI spend · $${openAiBudget.toFixed(2)} budget`;
+          `${formatCostUSD(openAiSpent)} your OpenAI spend · $${openAiBudget.toFixed(2)} allowance`;
       }
       drawerCostEl.setAttribute(
         'aria-label',
-        `OpenAI budget warning: estimated ${remainingText} remaining this month`,
+        `OpenAI per-user allowance warning: estimated ${remainingText} remaining this month`,
       );
     } else {
       drawerCostValue.textContent = formatCostUSD(usd);
@@ -1512,8 +1520,9 @@ async function loadDrawerCost() {
 // successful settings PUT — here (quick-switches) and in settings.mjs
 // (the /settings page autosave) — writes the new document version to
 // localStorage under 'ln.settings.version'. The browser fires 'storage'
-// in every OTHER same-origin tab (never the writer, so no self-loop);
-// those tabs re-GET the canonical document and apply the delta:
+// in every OTHER same-origin tab; the inline settings drawer also emits a
+// same-tab event after a successful save. Both paths re-GET the canonical
+// document and apply the delta:
 //   - Mic pickup (micEagerness) / turn detection → applied to the LIVE
 //     session via RealtimeSession.updateAudioInput (session.update,
 //     mirroring internal/realtime/mint.go) — owner request 2026-07-18;
@@ -1522,6 +1531,7 @@ async function loadDrawerCost() {
 //   - appearance/privacy/quick-switch selects re-sync as on bootstrap.
 
 const SETTINGS_PING_KEY = 'ln.settings.version';
+const SETTINGS_LOCAL_EVENT = 'ln:settings-changed';
 
 function pingSettingsChanged() {
   try {
@@ -1538,7 +1548,7 @@ function personaIdOf(doc) {
 
 /** Apply what changed between the previous and freshly-fetched settings
  * docs to the current page/session (see the section comment above). */
-function applySettingsDelta(prev, fresh) {
+async function applySettingsDelta(prev, fresh) {
   const eagerness = (fresh && fresh.micEagerness) || 'auto';
   const audioChanged =
     ((prev && prev.micEagerness) || 'auto') !== eagerness ||
@@ -1560,12 +1570,41 @@ function applySettingsDelta(prev, fresh) {
         : `The ${voiceLabelFor(fresh.voice)} voice applies to your next conversation — tap New conversation to switch now.`,
     );
   }
+
+  try {
+    const wakeDelta = await applyWakeWordSettings(wakeEngine, prev, fresh);
+    // Normally a checked toggle already has an engine. Cover the narrow
+    // bootstrap/save race where the settings panel commits first.
+    if (wakeDelta.wakeWordChanged && !wakeEngine && wakeToggle && wakeToggle.checked) {
+      await setWakeListening(true);
+    }
+    if (wakeDelta.wakeWordChanged) renderWakeUI();
+  } catch (err) {
+    if (err && err.wakeWordPreserved && wakeEngine && wakeEngine.state === 'listening') {
+      toast("Couldn't switch wake phrases — the previous phrase is still active.", {
+        error: true,
+        detail: (err && (err.message || String(err))) || 'unknown error',
+      });
+      renderWakeUI();
+    } else {
+      // With no proven detector to preserve, fail closed instead of leaving
+      // the toggle checked while no model is listening.
+      handleWakeEngineFailure(err);
+    }
+  }
 }
 
 let adoptInFlight = false;
+let adoptQueued = false;
 
 async function adoptRemoteSettings() {
-  if (adoptInFlight || !settingsDoc) return; // bootstrap still owns the doc
+  if (!settingsDoc) return; // bootstrap still owns the doc
+  if (adoptInFlight) {
+    // Model verification can make an adoption take several seconds. Do not
+    // lose a newer settings save that lands while that work is in flight.
+    adoptQueued = true;
+    return;
+  }
   adoptInFlight = true;
   try {
     const fresh = await apiJSON(SETTINGS_PATH);
@@ -1577,11 +1616,15 @@ async function adoptRemoteSettings() {
     }
     const privacy = settingsDoc.privacy;
     sink.setEnabled(!(privacy && privacy.storeTranscripts === false));
-    applySettingsDelta(prev, fresh);
+    await applySettingsDelta(prev, fresh);
   } catch {
     /* offline or auth redirect — the next ping (or a reload) re-syncs */
   } finally {
     adoptInFlight = false;
+    if (adoptQueued) {
+      adoptQueued = false;
+      void adoptRemoteSettings();
+    }
   }
 }
 
@@ -1589,6 +1632,12 @@ window.addEventListener('storage', (e) => {
   // Fires only in tabs that did NOT write the key. Ignore unrelated keys
   // and the removal that a localStorage.clear() produces.
   if (e.key !== SETTINGS_PING_KEY || e.newValue === null || e.newValue === e.oldValue) return;
+  void adoptRemoteSettings();
+});
+
+// `storage` deliberately excludes the document that performed the write.
+// settings.mjs emits this after an inline-drawer autosave commits.
+window.addEventListener(SETTINGS_LOCAL_EVENT, () => {
   void adoptRemoteSettings();
 });
 

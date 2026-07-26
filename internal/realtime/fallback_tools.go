@@ -61,8 +61,13 @@ type TurnResult struct {
 // while chat completions nests them ({type, function:{...}}). Derived once
 // at init so the two views can never drift.
 var chatCompletionTools = func() []map[string]any {
-	out := make([]map[string]any, 0, len(toolManifest))
-	for _, t := range toolManifest {
+	return chatCompletionToolsForServerExecution()
+}()
+
+func chatCompletionToolsForServerExecution() []map[string]any {
+	manifest := toolManifestForServerExecution()
+	out := make([]map[string]any, 0, len(manifest))
+	for _, t := range manifest {
 		out = append(out, map[string]any{
 			"type": "function",
 			"function": map[string]any{
@@ -73,7 +78,7 @@ var chatCompletionTools = func() []map[string]any {
 		})
 	}
 	return out
-}()
+}
 
 // ValidateChatMessages enforces the broker-side invariants on a
 // caller-supplied fallback message array before it is sent anywhere:
@@ -122,11 +127,18 @@ func ValidateChatMessages(msgs []ChatMessage) error {
 // extraSystem carries the same server-composed directive block the realtime
 // path appends (base knowledge + guides, M15); pass "" for none.
 func (c *FallbackClient) TurnWithTools(ctx context.Context, personaID string, messages []ChatMessage, extraSystem string) (*TurnResult, error) {
+	return c.TurnWithToolsForSurface(ctx, personaID, "", messages, extraSystem)
+}
+
+// TurnWithToolsForSurface keeps the surface-aware broker API, but binds only
+// server-executable tools. The web function executes every returned call
+// through the backend router; it has no delegation path back to a device.
+func (c *FallbackClient) TurnWithToolsForSurface(ctx context.Context, personaID, surface string, messages []ChatMessage, extraSystem string) (*TurnResult, error) {
 	if err := ValidateChatMessages(messages); err != nil {
 		return nil, fmt.Errorf("realtime: invalid fallback messages: %w", err)
 	}
 
-	body, err := buildToolTurnRequest(personaID, messages, extraSystem)
+	body, err := buildToolTurnRequestForSurface(personaID, surface, messages, extraSystem)
 	if err != nil {
 		return nil, err
 	}
@@ -141,10 +153,14 @@ func (c *FallbackClient) TurnWithTools(ctx context.Context, personaID string, me
 // resolved persona's instructions as the system prompt, the caller's
 // messages converted to OpenAI wire shape, and the full tool catalog.
 func buildToolTurnRequest(personaID string, messages []ChatMessage, extraSystem string) ([]byte, error) {
+	return buildToolTurnRequestForSurface(personaID, "", messages, extraSystem)
+}
+
+func buildToolTurnRequestForSurface(personaID, _ string, messages []ChatMessage, extraSystem string) ([]byte, error) {
 	persona := ResolvePersona(personaID)
 
 	wire := make([]map[string]any, 0, len(messages)+1)
-	wire = append(wire, map[string]any{"role": "system", "content": persona.Instructions + extraSystem})
+	wire = append(wire, map[string]any{"role": "system", "content": InstructionsForServerExecution(persona) + extraSystem})
 	for _, m := range messages {
 		switch m.Role {
 		case "tool":

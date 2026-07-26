@@ -10,8 +10,8 @@ import "encoding/json"
 // Input (client -> model) events used by the bridge: sessionStart,
 // promptStart, contentStart, textInput, audioInput, toolResult, contentEnd,
 // promptEnd, sessionEnd. Output (model -> client) events normalized here:
-// contentStart, textOutput, audioOutput, toolUse, contentEnd, plus the
-// completion lifecycle and usage events (dropped — not user-visible).
+// completionStart, contentStart, textOutput, audioOutput, toolUse, contentEnd,
+// completionEnd, plus usage events (dropped — not user-visible).
 //
 // Field names follow the published Nova Sonic bidirectional API. The exact
 // stopReason spellings and the additionalModelFields shape are the two
@@ -232,13 +232,19 @@ func NovaSessionEnd() ([]byte, error) {
 
 // --- output normalization (Nova -> Event) --------------------------------
 
-// contentMeta tracks the role/stage/type declared by a Nova contentStart so
-// the textOutput/audioOutput/contentEnd events that follow (which may omit
-// those attributes) can be attributed correctly.
+// contentMeta tracks the role/stage/completion declared by contentStart so
+// the output/contentEnd events that follow can be attributed correctly.
 type contentMeta struct {
-	typ   string
-	role  string
-	final bool
+	role         string
+	final        bool
+	completionID string
+}
+
+// completionMeta collapses Nova's several assistant content blocks
+// (speculative text, audio, and final text) into one engine-neutral turn.
+type completionMeta struct {
+	assistantStarted bool
+	assistantEnded   bool
 }
 
 // NovaNormalizer converts the stream of Nova output events into
@@ -246,51 +252,68 @@ type contentMeta struct {
 // content blocks) and is NOT safe for concurrent use — drive it from the
 // single goroutine reading the Bedrock stream.
 type NovaNormalizer struct {
-	// byName remembers metadata per contentName; lastName is the fallback
-	// for output events that omit contentName.
-	byName   map[string]contentMeta
-	lastName string
+	// byName remembers metadata per output contentId; lastName is the fallback
+	// for output events that omit contentId. Nova input events use contentName,
+	// but the model's output contract deliberately uses contentId.
+	byName            map[string]contentMeta
+	lastName          string
+	completions       map[string]*completionMeta
+	currentCompletion string
 }
 
 // NewNovaNormalizer returns a ready normalizer.
 func NewNovaNormalizer() *NovaNormalizer {
-	return &NovaNormalizer{byName: make(map[string]contentMeta)}
+	return &NovaNormalizer{
+		byName:      make(map[string]contentMeta),
+		completions: make(map[string]*completionMeta),
+	}
 }
 
 // nova output event payloads (only the fields we consume).
+type novaCompletionStart struct {
+	CompletionID string `json:"completionId"`
+}
+
 type novaContentStart struct {
-	ContentName           string `json:"contentName"`
+	ContentID             string `json:"contentId"`
+	CompletionID          string `json:"completionId"`
 	Type                  string `json:"type"`
 	Role                  string `json:"role"`
 	AdditionalModelFields string `json:"additionalModelFields"`
 }
 
 type novaTextOutput struct {
-	ContentName string `json:"contentName"`
-	Content     string `json:"content"`
-	Role        string `json:"role"`
+	ContentID string `json:"contentId"`
+	Content   string `json:"content"`
+	Role      string `json:"role"`
 }
 
 type novaAudioOutput struct {
-	ContentName string `json:"contentName"`
-	Content     string `json:"content"`
+	ContentID string `json:"contentId"`
+	Content   string `json:"content"`
 }
 
 type novaToolUse struct {
-	ContentName string          `json:"contentName"`
-	ToolUseId   string          `json:"toolUseId"`
-	ToolName    string          `json:"toolName"`
-	Content     json.RawMessage `json:"content"`
+	ContentID string          `json:"contentId"`
+	ToolUseId string          `json:"toolUseId"`
+	ToolName  string          `json:"toolName"`
+	Content   json.RawMessage `json:"content"`
 }
 
 type novaContentEnd struct {
-	ContentName string `json:"contentName"`
-	Type        string `json:"type"`
-	StopReason  string `json:"stopReason"`
+	ContentID    string `json:"contentId"`
+	CompletionID string `json:"completionId"`
+	Type         string `json:"type"`
+	StopReason   string `json:"stopReason"`
+}
+
+type novaCompletionEnd struct {
+	CompletionID string `json:"completionId"`
+	StopReason   string `json:"stopReason"`
 }
 
 // Push decodes one Nova output document and returns the neutral events it
-// yields (possibly none — lifecycle/usage events are dropped). A decode
+// yields (possibly none — usage and internal lifecycle events are dropped). A decode
 // error is returned as a single TypeError event, never as a Go error, so
 // one malformed frame cannot tear down an otherwise-healthy session.
 func (n *NovaNormalizer) Push(raw []byte) []Event {
@@ -300,6 +323,8 @@ func (n *NovaNormalizer) Push(raw []byte) []Event {
 	}
 	for name, body := range env.Event {
 		switch name {
+		case "completionStart":
+			return n.onCompletionStart(body)
 		case "contentStart":
 			return n.onContentStart(body)
 		case "textOutput":
@@ -310,12 +335,24 @@ func (n *NovaNormalizer) Push(raw []byte) []Event {
 			return n.onToolUse(body)
 		case "contentEnd":
 			return n.onContentEnd(body)
+		case "completionEnd":
+			return n.onCompletionEnd(body)
 		default:
-			// completionStart, completionEnd, usageEvent, and any future
-			// lifecycle events carry nothing the neutral schema needs.
+			// usageEvent and future internal events carry nothing the neutral
+			// lifecycle schema currently exposes.
 			return nil
 		}
 	}
+	return nil
+}
+
+func (n *NovaNormalizer) onCompletionStart(body json.RawMessage) []Event {
+	var cs novaCompletionStart
+	if err := json.Unmarshal(body, &cs); err != nil || cs.CompletionID == "" {
+		return nil
+	}
+	n.currentCompletion = cs.CompletionID
+	n.completions[cs.CompletionID] = &completionMeta{}
 	return nil
 }
 
@@ -333,13 +370,36 @@ func (n *NovaNormalizer) onContentStart(body json.RawMessage) []Event {
 			final = amf.GenerationStage == "FINAL"
 		}
 	}
-	if cs.ContentName != "" {
-		n.byName[cs.ContentName] = contentMeta{typ: cs.Type, role: cs.Role, final: final}
-		n.lastName = cs.ContentName
+	completionID := firstNonEmpty(cs.CompletionID, n.currentCompletion)
+	if completionID != "" {
+		n.currentCompletion = completionID
+		if n.completions[completionID] == nil {
+			// Be tolerant of a lost completionStart frame while retaining
+			// completion-level lifecycle semantics for the remaining blocks.
+			n.completions[completionID] = &completionMeta{}
+		}
 	}
-	// An assistant content block beginning is the start of a response turn.
-	if roleToNeutral(cs.Role) == RoleAssistant {
-		return []Event{{Type: TypeTurnStart, Role: RoleAssistant}}
+	if cs.ContentID != "" {
+		n.byName[cs.ContentID] = contentMeta{
+			role: cs.Role, final: final, completionID: completionID,
+		}
+		n.lastName = cs.ContentID
+	}
+	role := roleToNeutral(cs.Role)
+	if role == RoleUser {
+		return []Event{{Type: TypeTurnStart, Role: role}}
+	}
+	if role == RoleAssistant {
+		if completionID == "" {
+			// The published contract always supplies completionId. Preserve a
+			// useful boundary if an older/malformed producer omits it.
+			return []Event{{Type: TypeTurnStart, Role: role}}
+		}
+		state := n.completions[completionID]
+		if !state.assistantStarted {
+			state.assistantStarted = true
+			return []Event{{Type: TypeTurnStart, Role: role}}
+		}
 	}
 	return nil
 }
@@ -349,7 +409,7 @@ func (n *NovaNormalizer) onTextOutput(body json.RawMessage) []Event {
 	if err := json.Unmarshal(body, &to); err != nil {
 		return nil
 	}
-	meta := n.meta(to.ContentName)
+	meta := n.meta(to.ContentID)
 	role := roleToNeutral(firstNonEmpty(to.Role, meta.role))
 	if role == "" {
 		role = RoleAssistant
@@ -395,31 +455,85 @@ func (n *NovaNormalizer) onContentEnd(body json.RawMessage) []Event {
 	if err := json.Unmarshal(body, &ce); err != nil {
 		return nil
 	}
-	meta := n.meta(ce.ContentName)
-	if ce.ContentName != "" {
-		delete(n.byName, ce.ContentName)
+	meta := n.meta(ce.ContentID)
+	completionID := firstNonEmpty(ce.CompletionID, meta.completionID, n.currentCompletion)
+	if ce.ContentID != "" {
+		delete(n.byName, ce.ContentID)
 	}
-	// Only assistant content ending is a turn boundary the client cares
-	// about; ending the user's ASR text block or a tool block is internal.
-	typ := firstNonEmpty(ce.Type, meta.typ)
-	if roleToNeutral(meta.role) != RoleAssistant && typ != novaTypeAudio {
+	role := roleToNeutral(meta.role)
+	if role == RoleUser {
+		if ce.StopReason == "" {
+			return nil
+		}
+		return []Event{{
+			Type: TypeTurnEnd, Role: role, StopReason: ce.StopReason,
+			Interrupted: ce.StopReason == "INTERRUPTED",
+		}}
+	}
+	if role != RoleAssistant {
 		return nil
 	}
+
+	// The assistant's speculative TEXT, AUDIO, and final TEXT blocks all end
+	// independently inside one completion. Only an interruption is surfaced
+	// immediately so clients can purge faster-than-real-time queued audio;
+	// normal completionEnd owns the single settled turn boundary.
+	if ce.StopReason == "INTERRUPTED" {
+		if state := n.completions[completionID]; state != nil {
+			if state.assistantEnded {
+				return nil
+			}
+			state.assistantEnded = true
+		}
+		return []Event{{
+			Type: TypeTurnEnd, Role: RoleAssistant, StopReason: ce.StopReason,
+			Interrupted: true,
+		}}
+	}
+	if completionID != "" {
+		return nil
+	}
+	// Defensive fallback for an output producer that omits completionId.
 	if ce.StopReason == "" {
 		return nil
 	}
 	return []Event{{
+		Type:       TypeTurnEnd,
+		Role:       RoleAssistant,
+		StopReason: ce.StopReason,
+	}}
+}
+
+func (n *NovaNormalizer) onCompletionEnd(body json.RawMessage) []Event {
+	var ce novaCompletionEnd
+	if err := json.Unmarshal(body, &ce); err != nil {
+		return nil
+	}
+	completionID := firstNonEmpty(ce.CompletionID, n.currentCompletion)
+	state := n.completions[completionID]
+	if completionID != "" {
+		delete(n.completions, completionID)
+		if n.currentCompletion == completionID {
+			n.currentCompletion = ""
+		}
+	}
+	if state == nil || !state.assistantStarted || state.assistantEnded {
+		return nil
+	}
+	state.assistantEnded = true
+	return []Event{{
 		Type:        TypeTurnEnd,
+		Role:        RoleAssistant,
 		StopReason:  ce.StopReason,
 		Interrupted: ce.StopReason == "INTERRUPTED",
 	}}
 }
 
-func (n *NovaNormalizer) meta(contentName string) contentMeta {
-	if contentName == "" {
-		contentName = n.lastName
+func (n *NovaNormalizer) meta(contentID string) contentMeta {
+	if contentID == "" {
+		contentID = n.lastName
 	}
-	return n.byName[contentName]
+	return n.byName[contentID]
 }
 
 // toolArgs normalizes Nova's toolUse content into a JSON object. Nova may

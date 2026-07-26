@@ -50,7 +50,7 @@ import org.json.JSONObject
  * forked from the [NovaBridgeTransport] WSS skeleton.
  *
  * Unlike Nova this is *client-direct*: the device opens a WebSocket straight
- * to `generativelanguage.googleapis.com` (the v1alpha `…Constrained` method)
+ * to `generativelanguage.googleapis.com` (the v1beta `…Constrained` method)
  * authenticated by a single-use ephemeral token in the `?access_token=` query
  * param (URL-encoded — kept as URL auth for parity with web, gemini-plan.md
  * §3.5). The broker's API key never reaches the device.
@@ -172,6 +172,7 @@ class GeminiLiveTransport @Inject constructor(
     private var assistantTurnId: String? = null
     private val userTurnText = StringBuilder()
     private val assistantTurnText = StringBuilder()
+    private val turnUsage = GeminiTurnUsageBuffer()
 
     // Tool-call bookkeeping: Gemini's functionResponse requires the call's
     // name alongside its id, and cancelled calls must not be answered.
@@ -368,6 +369,10 @@ class GeminiLiveTransport @Inject constructor(
             setupReady?.complete(Unit)
         }
 
+        // usageMetadata can share the turnComplete envelope. Observe it first
+        // so handleServerContent can consume the final snapshot at that exact
+        // turn boundary.
+        json.optJSONObject("usageMetadata")?.let(turnUsage::observe)
         json.optJSONObject("serverContent")?.let(::handleServerContent)
 
         json.optJSONObject("toolCall")?.let { toolCall ->
@@ -412,12 +417,6 @@ class GeminiLiveTransport @Inject constructor(
             scheduleReconnect()
         }
 
-        if (json.has("usageMetadata")) {
-            // No cost/usage surface exists in the Android transports (the
-            // OpenAI path doesn't propagate usage either); republish for
-            // diagnostics observers, mirroring the parser's Other events.
-            emit(RealtimeEvent.Other("usageMetadata", json))
-        }
     }
 
     private fun handleServerContent(sc: JSONObject) {
@@ -461,6 +460,9 @@ class GeminiLiveTransport @Inject constructor(
         if (sc.optBoolean("turnComplete")) {
             finalizeUserTurn()
             finalizeAssistantTurn()
+            // Latest-wins + consume-once prevents repeated metadata/completion
+            // envelopes from double-counting the same Gemini turn.
+            turnUsage.consume()?.let { emit(RealtimeEvent.Usage(it)) }
         }
     }
 
@@ -759,6 +761,7 @@ class GeminiLiveTransport @Inject constructor(
             userTurnText.setLength(0)
             assistantTurnText.setLength(0)
         }
+        turnUsage.reset()
         pendingToolNames.clear()
         cancelledToolCalls.clear()
         resumptionHandle = null

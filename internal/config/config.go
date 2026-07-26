@@ -25,18 +25,11 @@ import (
 // tooling and populated with real values by the deploy workflow from
 // GitHub secrets/variables — never by application code.
 const (
-	ParamOpenAIAPIKey = "/live-ninja/prod/openai/api_key"
-	ParamGeminiAPIKey = "/live-ninja/prod/gemini/api_key"
-	// ParamGeminiServiceAccountJSON holds a GCP service-account key JSON.
-	// Gemini Live's ephemeral-token endpoint (AuthTokenService.CreateToken)
-	// rejects API-key-only auth with ACCESS_TOKEN_TYPE_UNSUPPORTED. The direct
-	// mint path supplies service-account OAuth2 plus ParamGeminiAPIKey as a query
-	// parameter; the API key also remains the legacy fallback when this optional
-	// service-account parameter is absent.
-	ParamGeminiServiceAccountJSON = "/live-ninja/prod/gemini/service_account_json"
-	ParamLWAClientID              = "/live-ninja/prod/lwa/client_id"
-	ParamLWAClientSecret          = "/live-ninja/prod/lwa/client_secret"
-	ParamDeviceCredPepper         = "/live-ninja/prod/device/cred_pepper"
+	ParamOpenAIAPIKey     = "/live-ninja/prod/openai/api_key"
+	ParamGeminiAPIKey     = "/live-ninja/prod/gemini/api_key"
+	ParamLWAClientID      = "/live-ninja/prod/lwa/client_id"
+	ParamLWAClientSecret  = "/live-ninja/prod/lwa/client_secret"
+	ParamDeviceCredPepper = "/live-ninja/prod/device/cred_pepper"
 )
 
 // Local-dev environment variable overrides for each SSM parameter above.
@@ -44,12 +37,11 @@ const (
 // this lets a developer run any function against `go run` without AWS
 // credentials or a deployed stack.
 const (
-	EnvOverrideOpenAIAPIKey             = "OPENAI_API_KEY"
-	EnvOverrideGeminiAPIKey             = "GEMINI_API_KEY"
-	EnvOverrideGeminiServiceAccountJSON = "GEMINI_SERVICE_ACCOUNT_JSON"
-	EnvOverrideLWAClientID              = "LWA_CLIENT_ID"
-	EnvOverrideLWAClientSecret          = "LWA_CLIENT_SECRET"
-	EnvOverrideDeviceCredPepper         = "DEVICE_CRED_PEPPER"
+	EnvOverrideOpenAIAPIKey     = "OPENAI_API_KEY"
+	EnvOverrideGeminiAPIKey     = "GEMINI_API_KEY"
+	EnvOverrideLWAClientID      = "LWA_CLIENT_ID"
+	EnvOverrideLWAClientSecret  = "LWA_CLIENT_SECRET"
+	EnvOverrideDeviceCredPepper = "DEVICE_CRED_PEPPER"
 )
 
 // cacheTTL is how long a resolved SSM parameter value is kept in memory

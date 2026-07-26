@@ -567,3 +567,127 @@ func TestCheckSessionRejectsSuspended(t *testing.T) {
 	var se *SuspendedError
 	require.ErrorAs(t, g.CheckSession(ctx, "u1", "sess-1"), &se)
 }
+
+func TestCheckBridgeSessionEnforcesFreshAccessBoundary(t *testing.T) {
+	t.Run("disabled account", func(t *testing.T) {
+		g, fake, clock := newTestGate()
+		require.NoError(t, g.RecordMint(context.Background(), "u1", "sess-1", "web"))
+		seedProfile(fake, "u1", "disabled")
+
+		var inactive *AccountInactiveError
+		require.ErrorAs(t,
+			g.CheckBridgeSession(context.Background(), "u1", "sess-1", clock.t.Unix()),
+			&inactive)
+		assert.Equal(t, "disabled", inactive.Status)
+	})
+
+	t.Run("token predates tokensValidAfter", func(t *testing.T) {
+		g, fake, clock := newTestGate()
+		require.NoError(t, g.RecordMint(context.Background(), "u1", "sess-1", "web"))
+		fake.SeedItem(map[string]types.AttributeValue{
+			"pk":               &types.AttributeValueMemberS{Value: "USER#u1"},
+			"sk":               &types.AttributeValueMemberS{Value: "PROFILE"},
+			"status":           &types.AttributeValueMemberS{Value: statusActive},
+			"tokensValidAfter": &types.AttributeValueMemberN{Value: strconv.FormatInt(clock.t.Unix(), 10)},
+		})
+
+		var invalidated *TokenInvalidatedError
+		require.ErrorAs(t,
+			g.CheckBridgeSession(context.Background(), "u1", "sess-1", clock.t.Add(-time.Second).Unix()),
+			&invalidated)
+
+		// Match the authorizer's strict comparison: a token issued exactly at
+		// tokensValidAfter remains valid and can be redeemed.
+		require.NoError(t,
+			g.RedeemBridgeSession(context.Background(), "u1", "sess-1", clock.t.Unix()))
+	})
+}
+
+// ---- RedeemSession (single-use Nova bridge token) ----------------------
+
+func TestRedeemSessionMarksSlotWithoutReleasingIt(t *testing.T) {
+	g, fake, clock := newTestGate()
+	ctx := context.Background()
+	require.NoError(t, g.RecordMint(ctx, "u1", "sess-1", "web"))
+
+	slotBefore := fake.RawItem("USER#u1", "BUCKET#sess#sess-1")
+	require.NotNil(t, slotBefore)
+	require.NoError(t, g.RedeemSession(ctx, "u1", "sess-1"))
+
+	slotAfter := fake.RawItem("USER#u1", "BUCKET#sess#sess-1")
+	require.NotNil(t, slotAfter, "redemption must retain the active concurrency slot")
+	assert.Equal(t, slotBefore["exp"], slotAfter["exp"], "redemption must not extend the hard cap")
+	assert.Equal(t, slotBefore["ttl"], slotAfter["ttl"], "redemption must preserve TTL cleanup")
+	redeemedAt, ok := slotAfter["redeemedAt"].(*types.AttributeValueMemberN)
+	require.True(t, ok)
+	assert.Equal(t, strconv.FormatInt(clock.t.Unix(), 10), redeemedAt.Value)
+
+	// CheckSession deliberately remains a repeatable read-only validity check.
+	require.NoError(t, g.CheckSession(ctx, "u1", "sess-1"))
+}
+
+func TestRedeemSessionRejectsReplay(t *testing.T) {
+	g, _, _ := newTestGate()
+	ctx := context.Background()
+	require.NoError(t, g.RecordMint(ctx, "u1", "sess-1", "web"))
+	require.NoError(t, g.RedeemSession(ctx, "u1", "sess-1"))
+
+	var sr *SessionRedeemedError
+	require.ErrorAs(t, g.RedeemSession(ctx, "u1", "sess-1"), &sr)
+	assert.Equal(t, "sess-1", sr.SessionID)
+}
+
+func TestRedeemSessionHasExactlyOneWinnerUnderRace(t *testing.T) {
+	g, _, _ := newTestGate()
+	ctx := context.Background()
+	require.NoError(t, g.RecordMint(ctx, "u1", "sess-1", "web"))
+
+	const racers = 32
+	start := make(chan struct{})
+	results := make(chan error, racers)
+	for i := 0; i < racers; i++ {
+		go func() {
+			<-start
+			results <- g.RedeemSession(ctx, "u1", "sess-1")
+		}()
+	}
+	close(start)
+
+	successes, replays := 0, 0
+	for i := 0; i < racers; i++ {
+		err := <-results
+		if err == nil {
+			successes++
+			continue
+		}
+		var sr *SessionRedeemedError
+		require.ErrorAs(t, err, &sr)
+		replays++
+	}
+	assert.Equal(t, 1, successes)
+	assert.Equal(t, racers-1, replays)
+}
+
+func TestRedeemSessionPreservesValidityErrors(t *testing.T) {
+	t.Run("unknown", func(t *testing.T) {
+		g, _, _ := newTestGate()
+		var su *SessionUnknownError
+		require.ErrorAs(t, g.RedeemSession(context.Background(), "u1", "nope"), &su)
+	})
+
+	t.Run("expired", func(t *testing.T) {
+		g, _, clock := newTestGate()
+		require.NoError(t, g.RecordMint(context.Background(), "u1", "sess-1", "web"))
+		clock.advance(11 * time.Minute)
+		var su *SessionUnknownError
+		require.ErrorAs(t, g.RedeemSession(context.Background(), "u1", "sess-1"), &su)
+	})
+
+	t.Run("suspended", func(t *testing.T) {
+		g, fake, _ := newTestGate()
+		require.NoError(t, g.RecordMint(context.Background(), "u1", "sess-1", "web"))
+		seedProfile(fake, "u1", "suspended")
+		var se *SuspendedError
+		require.ErrorAs(t, g.RedeemSession(context.Background(), "u1", "sess-1"), &se)
+	})
+}

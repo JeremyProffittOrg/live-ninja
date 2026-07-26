@@ -21,7 +21,7 @@ class RealtimeSessionParseTest {
           "engine": "gemini-flash-live",
           "model": "gemini-3.1-flash-live-preview",
           "voice": "Kore",
-          "geminiEndpoint": "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained",
+          "geminiEndpoint": "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained",
           "accessToken": {
             "value": "auth_tokens/abc123",
             "expiresAt": "2026-07-19T12:30:00Z",
@@ -40,7 +40,7 @@ class RealtimeSessionParseTest {
         assertEquals(RealtimeSession.MODE_GEMINI_DIRECT, session.mode)
         assertEquals(
             "wss://generativelanguage.googleapis.com/ws/" +
-                "google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained",
+                "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained",
             session.geminiEndpoint,
         )
         val token = session.accessToken
@@ -95,7 +95,35 @@ class RealtimeSessionParseTest {
     }
 
     @Test
-    fun novaBridge_shapeUnchanged() {
+    fun novaBridge_parsesRequiredSessionConfig() {
+        val body = JSONObject(
+            """
+            {
+              "mode": "nova-bridge",
+              "wsUrl": "wss://nova.live.jeremy.ninja/session?sid=rs-3",
+              "token": "bridge-token",
+              "sessionConfig": {
+                "voice": "matthew",
+                "sampleRateIn": 16000,
+                "sampleRateOut": 24000,
+                "systemPrompt": "Be concise."
+              },
+              "sessionId": "rs-3"
+            }
+            """.trimIndent(),
+        )
+        val session = RealtimeSessionApi.parseSession(body, 200, null)
+
+        assertEquals(RealtimeSession.MODE_NOVA_BRIDGE, session.mode)
+        assertEquals("wss://nova.live.jeremy.ninja/session?sid=rs-3", session.wsUrl)
+        assertEquals("bridge-token", session.bridgeToken)
+        assertEquals("matthew", session.sessionConfig?.optString("voice"))
+        assertEquals(16_000, session.sessionConfig?.optInt("sampleRateIn"))
+        assertNull(session.geminiEndpoint)
+    }
+
+    @Test
+    fun novaBridge_missingSessionConfig_throwsInvalidResponse() {
         val body = JSONObject(
             """
             {
@@ -106,11 +134,12 @@ class RealtimeSessionParseTest {
             }
             """.trimIndent(),
         )
-        val session = RealtimeSessionApi.parseSession(body, 200, null)
 
-        assertEquals(RealtimeSession.MODE_NOVA_BRIDGE, session.mode)
-        assertEquals("wss://nova.live.jeremy.ninja/session?sid=rs-3", session.wsUrl)
-        assertEquals("bridge-token", session.bridgeToken)
-        assertNull(session.geminiEndpoint)
+        try {
+            RealtimeSessionApi.parseSession(body, 200, null)
+            fail("expected invalid_response when sessionConfig is absent")
+        } catch (e: RealtimeSessionException) {
+            assertEquals("invalid_response", e.kind)
+        }
     }
 }

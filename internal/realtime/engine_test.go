@@ -179,18 +179,22 @@ func TestBuildBridgeSession(t *testing.T) {
 	ctx := context.Background()
 	fixedExp := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
 
-	var gotUser, gotDevice, gotSurface, gotSession string
-	mint := func(_ context.Context, userID, deviceID, surface, sessionID string) (string, time.Time, error) {
+	var gotUser, gotDevice, gotSurface, gotSession, gotConfigDigest string
+	mint := func(_ context.Context, userID, deviceID, surface, sessionID, configDigest string) (string, time.Time, error) {
 		gotUser, gotDevice, gotSurface, gotSession = userID, deviceID, surface, sessionID
+		gotConfigDigest = configDigest
 		return "tok.en.jwt", fixedExp, nil
 	}
 
-	bs, err := BuildBridgeSession(ctx, mint, "", "u1", "dev-1", "device", "sess-abc")
+	bs, err := BuildBridgeSession(ctx, mint, "", "u1", "dev-1", "device", "sess-abc", "sha256-config")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if gotUser != "u1" || gotDevice != "dev-1" || gotSurface != "device" || gotSession != "sess-abc" {
 		t.Fatalf("minter got wrong args: %q %q %q %q", gotUser, gotDevice, gotSurface, gotSession)
+	}
+	if gotConfigDigest != "sha256-config" {
+		t.Fatalf("minter config digest = %q, want sha256-config", gotConfigDigest)
 	}
 	if bs.Token != "tok.en.jwt" || !bs.ExpiresAt.Equal(fixedExp) {
 		t.Fatalf("bridge session token/expiry wrong: %+v", bs)
@@ -208,23 +212,28 @@ func TestBuildBridgeSession_CustomBaseAndErrors(t *testing.T) {
 	ctx := context.Background()
 
 	// Nil minter -> configuration error.
-	if _, err := BuildBridgeSession(ctx, nil, "", "u1", "d1", "web", "s1"); err == nil {
+	if _, err := BuildBridgeSession(ctx, nil, "", "u1", "d1", "web", "s1", "cfg"); err == nil {
 		t.Fatalf("expected error for nil minter")
+	}
+	if _, err := BuildBridgeSession(ctx, func(_ context.Context, _, _, _, _, _ string) (string, time.Time, error) {
+		return "t", time.Now(), nil
+	}, "", "u1", "d1", "web", "s1", ""); err == nil {
+		t.Fatalf("expected error for empty config digest")
 	}
 
 	// Minter error is wrapped.
-	failing := func(_ context.Context, _, _, _, _ string) (string, time.Time, error) {
+	failing := func(_ context.Context, _, _, _, _, _ string) (string, time.Time, error) {
 		return "", time.Time{}, errors.New("kms down")
 	}
-	if _, err := BuildBridgeSession(ctx, failing, "wss://custom.example", "u1", "d1", "web", "s1"); err == nil {
+	if _, err := BuildBridgeSession(ctx, failing, "wss://custom.example", "u1", "d1", "web", "s1", "cfg"); err == nil {
 		t.Fatalf("expected error from failing minter")
 	}
 
 	// Custom base URL with a trailing slash is normalized (no double slash).
-	ok := func(_ context.Context, _, _, _, _ string) (string, time.Time, error) {
+	ok := func(_ context.Context, _, _, _, _, _ string) (string, time.Time, error) {
 		return "t", time.Now(), nil
 	}
-	bs, err := BuildBridgeSession(ctx, ok, "wss://custom.example/", "u1", "d1", "web", "s1")
+	bs, err := BuildBridgeSession(ctx, ok, "wss://custom.example/", "u1", "d1", "web", "s1", "cfg")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 	"github.com/JeremyProffittOrg/live-ninja/internal/testutil"
+	"github.com/JeremyProffittOrg/live-ninja/internal/voiceengine"
 )
 
 // fakeGeminiMint scripts the geminiMintAPI seam.
@@ -26,7 +27,18 @@ type fakeGeminiMint struct {
 	instr  string
 }
 
-func (f *fakeGeminiMint) Mint(_ context.Context, voice, instructions string) (*realtime.GeminiMintResult, error) {
+type fakeRealtimeMint struct {
+	result *realtime.MintResult
+	err    error
+	calls  int
+}
+
+func (f *fakeRealtimeMint) Mint(context.Context, string, string, string, string, string) (*realtime.MintResult, error) {
+	f.calls++
+	return f.result, f.err
+}
+
+func (f *fakeGeminiMint) MintForSurface(_ context.Context, voice, instructions, _ string) (*realtime.GeminiMintResult, error) {
 	f.calls++
 	f.voice = voice
 	f.instr = instructions
@@ -194,17 +206,32 @@ func TestMintNovaPinNeverTouchesGemini(t *testing.T) {
 	assert.Equal(t, 0, gm.calls)
 }
 
+func TestMintNovaFailureFallsBackAndAttributesOpenAI(t *testing.T) {
+	ddb := testutil.NewFakeDynamo()
+	seedEnginePin(t, ddb, "u1", "nova-sonic")
+	b := newGeminiTestBroker(ddb, nil)
+	openAI := &fakeRealtimeMint{result: &realtime.MintResult{
+		ClientSecret: realtime.ClientSecret{Value: "ek_test", ExpiresAt: "2026-07-25T21:00:00Z"},
+		Model:        realtime.DefaultRealtimeModel,
+		Voice:        "cedar",
+	}}
+	b.minter = openAI
+
+	resp, err := b.Handle(context.Background(), Request{UserID: "u1", Surface: "web"})
+	require.NoError(t, err)
+	require.Empty(t, resp.Error)
+	assert.Equal(t, "openai-direct", resp.Mode)
+	assert.Equal(t, string(voiceengine.EngineOpenAIRealtime), resp.Engine)
+	assert.Equal(t, realtime.DefaultRealtimeModel, resp.Model)
+	assert.Contains(t, resp.QuotaWarning, "Nova Sonic is unavailable")
+	assert.Equal(t, 1, openAI.calls)
+}
+
 // TestMintGeminiFailureWithoutDefaultEngineDoesNotPanic guards the fallback's
 // escape hatch. When a Gemini mint fails the broker now cascades to the default
 // engine rather than returning 502 — but with no OpenAI minter configured there
 // is nothing to cascade to, and dereferencing the nil minter would turn a handled
 // error into a panicking Lambda. The original Gemini error must survive intact.
-//
-// The happy-path cascade (Gemini fails -> OpenAI mints successfully) is
-// deliberately NOT covered here: broker.minter is a concrete *realtime.Minter
-// rather than an interface, so it cannot be faked without a wider refactor. That
-// path is currently only exercised in production, which is worth stating plainly
-// rather than implying more coverage than exists.
 func TestMintGeminiFailureWithoutDefaultEngineDoesNotPanic(t *testing.T) {
 	ddb := testutil.NewFakeDynamo()
 	seedEnginePin(t, ddb, "u1", "gemini-flash-live")
@@ -215,4 +242,25 @@ func TestMintGeminiFailureWithoutDefaultEngineDoesNotPanic(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "mint_failed", resp.Error)
 	assert.Equal(t, 502, resp.Code)
+}
+
+func TestMintGeminiFailureFallsBackAndAttributesOpenAI(t *testing.T) {
+	ddb := testutil.NewFakeDynamo()
+	seedEnginePin(t, ddb, "u1", "gemini-flash-live")
+	b := newGeminiTestBroker(ddb, &fakeGeminiMint{err: errors.New("google unavailable")})
+	openAI := &fakeRealtimeMint{result: &realtime.MintResult{
+		ClientSecret: realtime.ClientSecret{Value: "ek_test", ExpiresAt: "2026-07-25T21:00:00Z"},
+		Model:        realtime.DefaultRealtimeModel,
+		Voice:        "cedar",
+	}}
+	b.minter = openAI
+
+	resp, err := b.Handle(context.Background(), Request{UserID: "u1", Surface: "web"})
+	require.NoError(t, err)
+	require.Empty(t, resp.Error)
+	assert.Equal(t, "openai-direct", resp.Mode)
+	assert.Equal(t, "openai-realtime", resp.Engine)
+	assert.Equal(t, realtime.DefaultRealtimeModel, resp.Model)
+	assert.Contains(t, resp.QuotaWarning, "Gemini Live is unavailable")
+	assert.Equal(t, 1, openAI.calls)
 }

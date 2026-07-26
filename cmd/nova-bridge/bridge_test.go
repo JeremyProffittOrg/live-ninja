@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -10,7 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/JeremyProffittOrg/live-ninja/internal/observ"
+	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 	"github.com/JeremyProffittOrg/live-ninja/internal/voiceengine"
 )
 
@@ -168,36 +173,81 @@ func TestSessionPump_EndToEnd(t *testing.T) {
 	// Client script: configure, then stream one audio frame.
 	client := newFakeClient([]voiceengine.Event{
 		{Type: voiceengine.TypeSessionStart, Config: &voiceengine.Config{
-			Voice: "tiffany",
-			Tools: []voiceengine.ToolSpec{{Name: "get_weather", Description: "weather"}},
+			Voice:        "tiffany",
+			SystemPrompt: "You are the test assistant.",
+			Tools:        []voiceengine.ToolSpec{{Name: "get_weather", Description: "weather"}},
 		}},
+		{Type: voiceengine.TypeUserText, Text: "also show the forecast"},
 		{Type: voiceengine.TypeAudioIn, Audio: "QUJD", SampleRate: 16000},
+		{Type: voiceengine.TypeTurnCommit},
 	})
 
-	// Nova script: a final user transcript, an assistant turn (text + audio),
-	// a barge-in end, and a tool call.
+	// Nova v1 script: one completion contains final USER ASR, speculative
+	// ASSISTANT text, AUDIO, and final ASSISTANT text. The audio block is
+	// interrupted; completionEnd must not create a second assistant boundary.
+	// A second completion exercises a server-side tool call.
 	nova := newFakeNova([][]byte{
+		novaDoc(t, "completionStart", map[string]any{"completionId": "completion-1"}),
 		novaDoc(t, "contentStart", map[string]any{
-			"contentName": "u1", "type": "TEXT", "role": "USER",
+			"completionId": "completion-1", "contentId": "u1", "type": "TEXT", "role": "USER",
 			"additionalModelFields": `{"generationStage":"FINAL"}`,
 		}),
-		novaDoc(t, "textOutput", map[string]any{"contentName": "u1", "content": "what's the weather", "role": "USER"}),
-		novaDoc(t, "contentEnd", map[string]any{"contentName": "u1", "type": "TEXT", "stopReason": "END_TURN"}),
+		novaDoc(t, "textOutput", map[string]any{
+			"completionId": "completion-1", "contentId": "u1", "content": "what's the weather",
+		}),
+		novaDoc(t, "contentEnd", map[string]any{
+			"completionId": "completion-1", "contentId": "u1", "type": "TEXT", "stopReason": "END_TURN",
+		}),
 
 		novaDoc(t, "contentStart", map[string]any{
-			"contentName": "a1", "type": "TEXT", "role": "ASSISTANT",
+			"completionId": "completion-1", "contentId": "spec1", "type": "TEXT", "role": "ASSISTANT",
+			"additionalModelFields": `{"generationStage":"SPECULATIVE"}`,
+		}),
+		novaDoc(t, "textOutput", map[string]any{
+			"completionId": "completion-1", "contentId": "spec1", "content": "Let me check.",
+		}),
+		novaDoc(t, "contentEnd", map[string]any{
+			"completionId": "completion-1", "contentId": "spec1", "type": "TEXT", "stopReason": "END_TURN",
+		}),
+
+		novaDoc(t, "contentStart", map[string]any{
+			"completionId": "completion-1", "contentId": "audio1", "type": "AUDIO", "role": "ASSISTANT",
+		}),
+		novaDoc(t, "audioOutput", map[string]any{
+			"completionId": "completion-1", "contentId": "audio1", "content": "QUJD",
+		}),
+		novaDoc(t, "contentEnd", map[string]any{
+			"completionId": "completion-1", "contentId": "audio1", "type": "AUDIO", "stopReason": "INTERRUPTED",
+		}),
+
+		novaDoc(t, "contentStart", map[string]any{
+			"completionId": "completion-1", "contentId": "final1", "type": "TEXT", "role": "ASSISTANT",
 			"additionalModelFields": `{"generationStage":"FINAL"}`,
 		}),
-		novaDoc(t, "textOutput", map[string]any{"contentName": "a1", "content": "Let me check.", "role": "ASSISTANT"}),
-		novaDoc(t, "contentEnd", map[string]any{"contentName": "a1", "type": "TEXT", "stopReason": "END_TURN"}),
+		novaDoc(t, "textOutput", map[string]any{
+			"completionId": "completion-1", "contentId": "final1", "content": "Let me check.",
+		}),
+		novaDoc(t, "contentEnd", map[string]any{
+			"completionId": "completion-1", "contentId": "final1", "type": "TEXT", "stopReason": "END_TURN",
+		}),
+		novaDoc(t, "completionEnd", map[string]any{
+			"completionId": "completion-1", "stopReason": "END_TURN",
+		}),
 
-		novaDoc(t, "contentStart", map[string]any{"contentName": "a2", "type": "AUDIO", "role": "ASSISTANT"}),
-		novaDoc(t, "audioOutput", map[string]any{"contentName": "a2", "content": "QUJD"}),
-		novaDoc(t, "contentEnd", map[string]any{"contentName": "a2", "type": "AUDIO", "stopReason": "INTERRUPTED"}),
-
+		novaDoc(t, "completionStart", map[string]any{"completionId": "completion-2"}),
+		novaDoc(t, "contentStart", map[string]any{
+			"completionId": "completion-2", "contentId": "t1", "type": "TOOL", "role": "TOOL",
+		}),
 		novaDoc(t, "toolUse", map[string]any{
-			"contentName": "t1", "toolUseId": "call-1", "toolName": "get_weather",
+			"completionId": "completion-2", "contentId": "t1",
+			"toolUseId": "call-1", "toolName": "get_weather",
 			"content": `{"city":"Denver"}`,
+		}),
+		novaDoc(t, "contentEnd", map[string]any{
+			"completionId": "completion-2", "contentId": "t1", "type": "TOOL", "stopReason": "TOOL_USE",
+		}),
+		novaDoc(t, "completionEnd", map[string]any{
+			"completionId": "completion-2", "stopReason": "TOOL_USE",
 		}),
 	})
 
@@ -216,24 +266,18 @@ func TestSessionPump_EndToEnd(t *testing.T) {
 		for ev := range client.out {
 			collectMu.Lock()
 			collected = append(collected, ev)
-			done := countType(collected, voiceengine.TypeToolResult) >= 1
 			collectMu.Unlock()
-			if done {
-				return
-			}
 		}
 	}()
 
 	runDone := make(chan error, 1)
 	go func() { runDone <- sess.Run(context.Background()) }()
 
-	// Wait until the tool result has been echoed (all nova docs processed),
-	// then hang up both ends to end the session deterministically.
-	select {
-	case <-collectDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for tool result echo")
-	}
+	// Wait until the server-executed tool result has reached Nova (all
+	// scripted Nova docs have been processed), then hang up both ends.
+	require.Eventually(t, func() bool {
+		return contains(nova.sentEventNames(), "toolResult")
+	}, 5*time.Second, 10*time.Millisecond, "timed out waiting for Nova tool result")
 	close(nova.novaDone)
 	close(client.hangup)
 
@@ -251,24 +295,39 @@ func TestSessionPump_EndToEnd(t *testing.T) {
 	collectMu.Lock()
 	defer collectMu.Unlock()
 
-	// 1. Client received assistant audio.
+	// 1. The first client-bound event acknowledges successful initialization;
+	//    clients do not start capture until this arrives.
+	if len(collected) == 0 || collected[0].Type != voiceengine.TypeSessionStart {
+		t.Fatalf("first client event = %v, want session.start", typesOf(collected))
+	}
+	// 2. Client received assistant audio.
 	if countType(collected, voiceengine.TypeAudioOut) < 1 {
 		t.Errorf("client never received audio.out; got %v", typesOf(collected))
 	}
-	// 2. Client received a final assistant transcript.
+	// 3. Client received a final assistant transcript.
 	if !hasTranscript(collected, voiceengine.RoleAssistant, "Let me check.", true) {
 		t.Errorf("missing final assistant transcript; got %v", collected)
 	}
-	// 3. Barge-in surfaced as an interrupted turn end.
+	// 4. Barge-in surfaced as an interrupted turn end.
 	if !hasInterruptedTurnEnd(collected) {
 		t.Errorf("barge-in (INTERRUPTED) did not surface as turn.end interrupted; got %v", typesOf(collected))
 	}
-	// 4. Tool call + result echoed to client.
-	if countType(collected, voiceengine.TypeToolCall) < 1 || countType(collected, voiceengine.TypeToolResult) < 1 {
-		t.Errorf("tool call/result not echoed to client; got %v", typesOf(collected))
+	if got := countTurnType(collected, voiceengine.TypeTurnStart, voiceengine.RoleAssistant); got != 1 {
+		t.Errorf("assistant turn.start count = %d, want 1; got %v", got, collected)
+	}
+	if got := countTurnType(collected, voiceengine.TypeTurnEnd, voiceengine.RoleAssistant); got != 1 {
+		t.Errorf("assistant turn.end count = %d, want 1; got %v", got, collected)
+	}
+	// 5. Server tools execute only in the bridge; the client must not
+	// redispatch either the call or its result.
+	if countType(collected, voiceengine.TypeToolCall) != 0 || countType(collected, voiceengine.TypeToolResult) != 0 {
+		t.Errorf("server tool leaked to client; got %v", typesOf(collected))
+	}
+	if !hasTurnStart(collected, voiceengine.RoleUser) || !hasTurnEnd(collected, voiceengine.RoleUser) {
+		t.Errorf("Nova server-VAD user boundaries missing; got %v", collected)
 	}
 
-	// 5. Nova received the init handshake, the audio frame, the tool result,
+	// 6. Nova received the init handshake, the audio frame, the tool result,
 	//    and the graceful close trio.
 	names := nova.sentEventNames()
 	for _, want := range []string{"sessionStart", "promptStart", "contentStart", "audioInput", "toolResult", "promptEnd", "sessionEnd"} {
@@ -276,8 +335,23 @@ func TestSessionPump_EndToEnd(t *testing.T) {
 			t.Errorf("nova never received %q; sent sequence: %v", want, names)
 		}
 	}
+	nova.mu.Lock()
+	sentBytes := bytes.Join(nova.sent, []byte("\n"))
+	nova.mu.Unlock()
+	if !bytes.Contains(sentBytes, []byte(`"get_weather"`)) {
+		t.Errorf("Nova promptStart did not bind configured tools")
+	}
+	if !bytes.Contains(sentBytes, []byte(`"You are the test assistant."`)) {
+		t.Errorf("Nova did not receive the configured system prompt")
+	}
+	if bytes.Contains(sentBytes, []byte(`"also show the forecast"`)) {
+		t.Errorf("unsupported Nova v1 USER text leaked into the Bedrock stream")
+	}
+	if !hasErrorCode(collected, "nova_user_text_unsupported") {
+		t.Errorf("client did not receive typed Nova v1 USER text rejection; got %v", collected)
+	}
 
-	// 6. Sink received the tool invocation and a final transcript flush.
+	// 7. Sink received the tool invocation and a final transcript flush.
 	sinkMu.Lock()
 	defer sinkMu.Unlock()
 	if gotToolBody.Tool != "get_weather" {
@@ -288,6 +362,149 @@ func TestSessionPump_EndToEnd(t *testing.T) {
 	}
 	if !turnsHaveText(gotTurns, "what's the weather") || !turnsHaveText(gotTurns, "Let me check.") {
 		t.Errorf("sink transcript missing expected turns: %+v", gotTurns)
+	}
+}
+
+func TestExplicitBargeInSuppressesStaleAudioUntilNextAssistantCompletion(t *testing.T) {
+	client := newFakeClient(nil)
+	sess := newSession(
+		observ.NewLogger(io.Discard, "error"),
+		client,
+		newSinkClient(http.DefaultClient, "", ""),
+		"s1",
+		"web",
+		nil,
+	)
+
+	require.NoError(t, sess.dispatch(context.Background(), voiceengine.Event{
+		Type: voiceengine.TypeTurnStart, Role: voiceengine.RoleAssistant,
+	}))
+	require.NoError(t, sess.handleClientEvent(context.Background(), voiceengine.Event{
+		Type: voiceengine.TypeBargeIn,
+	}))
+	require.NoError(t, sess.dispatch(context.Background(), voiceengine.Event{
+		Type: voiceengine.TypeAudioOut, Audio: "QUJD",
+	}))
+	assert.Equal(t, 1, len(client.out), "cancelled-turn audio must be dropped")
+
+	require.NoError(t, sess.dispatch(context.Background(), voiceengine.Event{
+		Type: voiceengine.TypeTurnEnd, Role: voiceengine.RoleAssistant, Interrupted: true,
+	}))
+	require.NoError(t, sess.dispatch(context.Background(), voiceengine.Event{
+		Type: voiceengine.TypeAudioOut, Audio: "REVG",
+	}))
+	assert.Equal(t, 2, len(client.out),
+		"audio arriving after INTERRUPTED contentEnd still belongs to the cancelled completion")
+
+	require.NoError(t, sess.dispatch(context.Background(), voiceengine.Event{
+		Type: voiceengine.TypeTurnStart, Role: voiceengine.RoleAssistant,
+	}))
+	require.NoError(t, sess.dispatch(context.Background(), voiceengine.Event{
+		Type: voiceengine.TypeAudioOut, Audio: "R0hJ",
+	}))
+	first := <-client.out
+	second := <-client.out
+	third := <-client.out
+	fourth := <-client.out
+	assert.Equal(t, voiceengine.TypeTurnStart, first.Type)
+	assert.Equal(t, voiceengine.TypeTurnEnd, second.Type)
+	assert.True(t, second.Interrupted)
+	assert.Equal(t, voiceengine.TypeTurnStart, third.Type)
+	assert.Equal(t, voiceengine.TypeAudioOut, fourth.Type)
+	assert.Equal(t, "R0hJ", fourth.Audio)
+}
+
+func TestNaturalInterruptionSuppressesTrailingAudioUntilNextAssistantCompletion(t *testing.T) {
+	client := newFakeClient(nil)
+	sess := newSession(
+		observ.NewLogger(io.Discard, "error"),
+		client,
+		newSinkClient(http.DefaultClient, "", ""),
+		"s1",
+		"web",
+		nil,
+	)
+
+	assert.False(t, sess.suppressAudio.Load())
+	require.NoError(t, sess.dispatch(context.Background(), voiceengine.Event{
+		Type: voiceengine.TypeTurnStart, Role: voiceengine.RoleAssistant,
+	}))
+	require.NoError(t, sess.dispatch(context.Background(), voiceengine.Event{
+		Type: voiceengine.TypeTurnEnd, Role: voiceengine.RoleAssistant, Interrupted: true,
+	}))
+	require.NoError(t, sess.dispatch(context.Background(), voiceengine.Event{
+		Type: voiceengine.TypeAudioOut, Audio: "U1RBTEU=",
+	}))
+	assert.Equal(t, 2, len(client.out),
+		"natural INTERRUPTED notification must latch suppression before the client barge-in round trip")
+
+	require.NoError(t, sess.dispatch(context.Background(), voiceengine.Event{
+		Type: voiceengine.TypeTurnStart, Role: voiceengine.RoleAssistant,
+	}))
+	require.NoError(t, sess.dispatch(context.Background(), voiceengine.Event{
+		Type: voiceengine.TypeAudioOut, Audio: "TkVX",
+	}))
+
+	var got []voiceengine.Event
+	for len(client.out) > 0 {
+		got = append(got, <-client.out)
+	}
+	assert.Len(t, got, 4)
+	assert.Equal(t, voiceengine.TypeTurnStart, got[0].Type)
+	assert.True(t, got[1].Interrupted)
+	assert.Equal(t, voiceengine.TypeTurnStart, got[2].Type)
+	assert.Equal(t, "TkVX", got[3].Audio)
+}
+
+func TestUserTextIsRejectedWithoutWritingNovaV1Protocol(t *testing.T) {
+	client := newFakeClient(nil)
+	nova := newFakeNova(nil)
+	sess := newSession(
+		observ.NewLogger(io.Discard, "error"),
+		client,
+		newSinkClient(http.DefaultClient, "", ""),
+		"s1",
+		"web",
+		nil,
+	)
+	sess.nova = nova
+
+	require.NoError(t, sess.handleClientEvent(context.Background(), voiceengine.Event{
+		Type: voiceengine.TypeUserText, Text: "typed request",
+	}))
+	ev := <-client.out
+	assert.Equal(t, voiceengine.TypeError, ev.Type)
+	assert.Equal(t, "nova_user_text_unsupported", ev.Code)
+	assert.Empty(t, nova.sentEventNames(), "unsupported text must never reach Bedrock")
+}
+
+func TestSessionPumpRejectsConfigThatDoesNotMatchSignedDigest(t *testing.T) {
+	log := observ.NewLogger(io.Discard, "error")
+	client := newFakeClient([]voiceengine.Event{{
+		Type: voiceengine.TypeSessionStart,
+		Config: &voiceengine.Config{
+			SystemPrompt: "tampered prompt",
+		},
+	}})
+	openCalled := false
+	sess := newSession(log, client, newSinkClient(http.DefaultClient, "", ""), "s1", "web",
+		func(_ context.Context) (novaStream, error) {
+			openCalled = true
+			return newFakeNova(nil), nil
+		})
+	sess.expectedConfigDigest = realtime.NovaConfigDigest(
+		voiceengine.Config{SystemPrompt: "trusted prompt"},
+	)
+
+	err := sess.Run(context.Background())
+	require.Error(t, err)
+	assert.False(t, openCalled, "Bedrock must not open for a tampered config")
+	select {
+	case ev := <-client.out:
+		assert.Equal(t, voiceengine.TypeError, ev.Type)
+		assert.Equal(t, "nova_config", ev.Code)
+	default:
+		t.Fatal("client did not receive a config error")
 	}
 }
 
@@ -343,6 +560,16 @@ func countType(evs []voiceengine.Event, t voiceengine.Type) int {
 	return n
 }
 
+func countTurnType(evs []voiceengine.Event, typ voiceengine.Type, role string) int {
+	n := 0
+	for _, e := range evs {
+		if e.Type == typ && e.Role == role {
+			n++
+		}
+	}
+	return n
+}
+
 func typesOf(evs []voiceengine.Event) []voiceengine.Type {
 	out := make([]voiceengine.Type, len(evs))
 	for i, e := range evs {
@@ -363,6 +590,33 @@ func hasTranscript(evs []voiceengine.Event, role, text string, final bool) bool 
 func hasInterruptedTurnEnd(evs []voiceengine.Event) bool {
 	for _, e := range evs {
 		if e.Type == voiceengine.TypeTurnEnd && e.Interrupted {
+			return true
+		}
+	}
+	return false
+}
+
+func hasErrorCode(evs []voiceengine.Event, code string) bool {
+	for _, e := range evs {
+		if e.Type == voiceengine.TypeError && e.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func hasTurnStart(evs []voiceengine.Event, role string) bool {
+	for _, e := range evs {
+		if e.Type == voiceengine.TypeTurnStart && e.Role == role {
+			return true
+		}
+	}
+	return false
+}
+
+func hasTurnEnd(evs []voiceengine.Event, role string) bool {
+	for _, e := range evs {
+		if e.Type == voiceengine.TypeTurnEnd && e.Role == role {
 			return true
 		}
 	}

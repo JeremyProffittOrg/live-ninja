@@ -51,8 +51,9 @@ data class SessionCost(
 }
 
 /**
- * Accumulates a session's list-price cost estimate from realtime `response.done`
- * usage payloads — the Android counterpart of the web cost badge in
+ * Accumulates a session's list-price cost estimate from provider-neutral
+ * realtime usage payloads — OpenAI's `response.done` usage or normalized
+ * Gemini `usageMetadata`. This is the Android counterpart of the web badge in
  * web/static/js/conversation.mjs, deliberately using the identical formula so
  * the two surfaces cannot disagree about the same session.
  *
@@ -79,9 +80,9 @@ class SessionCostTracker {
     }
 
     /**
-     * Fold one `response.done` usage payload in and return the new running
-     * total, or null if there was nothing usable to add (no rates for this
-     * engine, or a usage object with no token details).
+     * Fold one normalized usage payload in and return the new running total,
+     * or null if there was nothing usable to add (no rates for this engine, or
+     * a usage object with no token details).
      */
     fun add(usage: JSONObject?, rates: RealtimeRates?): SessionCost? {
         if (usage == null || rates == null) return null
