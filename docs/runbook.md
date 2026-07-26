@@ -83,6 +83,11 @@ Agents/operators never read, paste, echo, or pass secret values on a command lin
 5. Allow five minutes for the in-process SSM cache to expire, exercise the affected provider,
    then revoke the old credential at the source. If the check fails, restore the previous
    GitHub secret through the same hidden prompt and dispatch `Deploy` again.
+   For Gemini, create the replacement in Google AI Studio as a current authorization key and
+   verify its bound service-account/project state. A provisioning
+   `401 ACCESS_TOKEN_TYPE_UNSUPPORTED` means Google rejected the key binding; do not work around
+   it by adding OAuth or moving the key to a query parameter. Recreate/repair the key, repeat the
+   hidden-prompt update, and rerun the production mint smoke.
 6. `cred_pepper` is create-once and is deliberately not overwritten by deploy; rotating it
    invalidates device credentials and requires a separate migration plan.
 7. KMS keys (`alias/live-ninja-auth`, `alias/live-ninja-jwt`) do not rotate manually; the

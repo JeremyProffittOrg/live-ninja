@@ -25,12 +25,14 @@ verification checklist), [SETUP.md](SETUP.md) (one-time owner setup checklist).
 
 ## Where the project actually stands (2026-07-25)
 
-The production baseline is live at `live.jeremy.ninja`, and the 2026-07-25 reliability
-implementation pass is code-complete locally but still awaiting its push, workflow result, and
-post-deploy smoke. M0–M12 are deployed; M13's corrected Gemini token-mint contract still requires
-a successful production mint and E1/E2 live-audio verification. The Android app shipped as
-v0.2.1-hal and the tool manifest is single-sourced. Remaining blockers and unverified checks are
-recorded explicitly below rather than summarized as zero.
+The 2026-07-25 reliability implementation is deployed at `live.jeremy.ninja` (`7683703`, followed
+by the Gemini REST-contract correction in `ad7bf16`). Deploy, Go, Android JVM/instrumented,
+Playwright, and Lighthouse jobs are green; `/healthz` served each commit after rollout. M0–M12
+are deployed. M13's code now matches Google's current ephemeral-token contract, but production
+minting is blocked by the configured Gemini authorization key/project state and E1/E2 remain
+unverified. The Android app shipped as v0.2.1-hal and the tool manifest is single-sourced.
+Remaining blockers and unverified checks are recorded explicitly below rather than summarized
+as zero.
 
 > **Scope decision (2026-07-24): the M5Stack Tab5 surface is OUT of this plan.** All Tab5 /
 > firmware / IoT-provisioning work — including the `ProvisionIoT` hook, device pairing, OTA,
@@ -44,7 +46,7 @@ What is left divides into six workstreams:
 - **WS-2 Base Knowledge (M15–M17)** — M15/M16 complete; M17 Phase 2 is now implemented.
 - **WS-3 Unfinished platform work** — the wake-word train/hot-swap verification and owner-only checks.
 - **WS-4 Launch (M8)** — release automation and runbook are built; signed publication, Play
-  Console work, post-change production smoke, and go/no-go remain.
+  Console work, the credential-gated Gemini smoke, and go/no-go remain.
 - **WS-6 Owner-requested capabilities** — M26 web parity and the M27–M30 implementations are
   complete; the new Android hardware paths still need owner/device verification.
 - **WS-5 Android stability & performance** — opened 2026-07-24 from live on-device evidence, and **closed 2026-07-25**: M21 all verified on hardware (21.2 echo audibly gone at 4x the reproducing volume, 21.3 wake detection proven at stock sensitivity, 21.5 auth deadlock fixed), M22 perf done (all-ABI 256 MB → arm64 108.7 MB), M23 verified end to end with a spoken tool-calling round-trip, M24 harness green in CI, M25 cost badge verified on screen *and* in the persisted CONV row.
@@ -74,24 +76,33 @@ archived plans is either confirmed working or converted into a bug with a repro.
 - `[x]` Barge-in / wake-word detection in a browser with a working mic. ⟵ qa-report Surface 8  **Owner-verified 2026-07-25.**
 - `[x]` **Android done 2026-07-25** (`costUsd=0.023532`, `surface=android`, read straight from the CONV row; web still unverified). Confirm the cost-persist chain produces a **costed CONV row** (needs one live session; typed fallback turns emit no usage events). ⟵ archive/plan.md §8 M14 item 10
 
-### 1.2 Gemini Flash Live — E1/E2  `[~]` **candidate auth fix implemented; live retry pending**
+### 1.2 Gemini Flash Live — E1/E2  `[!]` **blocked by Google authorization-key/project state**
 
-> **Root cause corrected 2026-07-25:** production returned
-> `401 UNAUTHENTICATED: API key for authentication is used with other authentication
-> credentials. Expected only one form of authentication.` The broker was posting to obsolete
-> `v1alpha/auth_tokens` with both OAuth2 and an API key. That inference-by-trial path contradicted
-> Google's published Live ephemeral-token contract.
+> **Code contract corrected and deployed 2026-07-25:** token creation and constrained Live WSS
+> use `v1beta`. The broker now posts [Google's current REST body](https://ai.google.dev/gemini-api/docs/live-api/ephemeral-tokens) directly:
+> `uses`/expiry fields plus `liveConnectConstraints`, authenticated by exactly one
+> `x-goog-api-key` header. It sends no OAuth bearer or query credential. This direct adapter is
+> intentional: pinned `google.golang.org/genai` v1.64 still rewrites the constraints into the
+> superseded `bidiGenerateContentSetup` shape. Redirects are blocked, response reads are capped,
+> transport errors cannot include the credential, and the request has a 10-second timeout. Unit
+> tests pin all of those properties and the v1beta constrained WSS endpoint.
 >
-> **Contract fix implemented 2026-07-25:** token creation and constrained Live WSS now use
-> `v1beta`; the provisioning request carries the broker-held API key only (the SDK emits
-> `x-goog-api-key`) and no bearer or query credential. The service-account secret mapping,
-> SSM read, workflow sync, and IAM grant were removed. Unit tests pin `/v1beta/auth_tokens`,
-> exactly one authentication form, `bidiGenerateContentSetup` constraints, and the v1beta WSS
-> endpoint.
+> **Production result:** both `7683703` and the exact-REST follow-up `ad7bf16` deployed green.
+> An authenticated web smoke against `ad7bf16` still received Google's
+> `401 UNAUTHENTICATED` before token creation and safely fell back to OpenAI. The preceding
+> SDK-shaped attempt exposed Google's reason as `ACCESS_TOKEN_TYPE_UNSUPPORTED`; the same key
+> failed on both API versions, so another code-side auth variant is not justified.
+> [Google's current key documentation](https://ai.google.dev/gemini-api/docs/api-key) says new
+> keys are service-account-bound authorization keys and unrestricted standard keys are rejected.
+> A [Google SDK issue](https://github.com/googleapis/python-genai/issues/2391) reproduces this
+> exact error for a broken authorization-key/service-account binding.
 >
-> The broker fallback remains confirmed in production, so a failed Gemini mint still yields a
-> working OpenAI session. **Do not call Gemini fixed until the newly deployed shape successfully
-> mints in production.** After that, E1/E2 still require real audio/time.
+> **Owner unblock:** in Google AI Studio, recreate or repair the Gemini authorization key and its
+> bound service-account/project state without exposing the value; update it with
+> `./scripts/set-secret.sh GEMINI_API_KEY`; dispatch/watch `deploy.yml`; wait five minutes for the
+> broker's SSM cache; then repeat this smoke. Do **not** add OAuth or move the key to a query
+> parameter. The production OpenAI fallback is confirmed, so the app remains usable while this
+> provider is blocked. After a successful Gemini mint, E1/E2 still require real audio/time.
 ⟵ archive/gemini-plan.md §4 Phase E · exact 6-step script in that file's §10 "Phase E status"
 - `[ ]` **E1 cross-engine parity:** pin one device to `gemini-flash-live`, one to `openai-realtime` — transcripts land in the same sink with correct `engine` tags, tools invoke identically, topics/memory extraction runs, cost priced at Gemini rates, barge-in cuts playback, persona switch changes the Gemini voice per the D4b mapping, user `geminiVoice` overrides it.
 - `[ ]` **E2 lifecycle:** a >10-min session survives the `goAway` recycle via resumption handle; a >30-min session re-fetches a fresh token and resumes; the quota gate still fires pre-mint.
