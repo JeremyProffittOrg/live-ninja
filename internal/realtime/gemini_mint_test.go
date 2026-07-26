@@ -3,10 +3,12 @@ package realtime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +17,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/genai"
 )
+
+type geminiRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f geminiRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 // TestGeminiMintBuildsConstrainedTokenAndSetup drives Mint through a fake
 // token creator and pins the M13 wire contract: single-use 30-min token,
@@ -44,7 +52,7 @@ func TestGeminiMintBuildsConstrainedTokenAndSetup(t *testing.T) {
 
 	// Constraints lock the exact session the client is allowed to open.
 	require.NotNil(t, gotCfg.LiveConnectConstraints)
-	assert.Equal(t, "gemini-3.1-flash-live-preview", gotCfg.LiveConnectConstraints.Model)
+	assert.Equal(t, "models/gemini-3.1-flash-live-preview", gotCfg.LiveConnectConstraints.Model)
 	cc := gotCfg.LiveConnectConstraints.Config
 	require.NotNil(t, cc)
 	assert.Equal(t, "Puck", cc.SpeechConfig.VoiceConfig.PrebuiltVoiceConfig.VoiceName)
@@ -107,7 +115,7 @@ func TestGeminiMintBuildsConstrainedTokenAndSetup(t *testing.T) {
 	assert.NotContains(t, lower, "bridgeurl")
 }
 
-func TestGeminiMintUsesV1BetaAPIKeyOnly(t *testing.T) {
+func TestGeminiMintUsesCurrentV1BetaRESTContract(t *testing.T) {
 	// Synthetic marker only. No production credential is loaded by this test.
 	const apiKey = "unit-test-api-key"
 	t.Setenv(config.EnvOverrideGeminiAPIKey, apiKey)
@@ -136,9 +144,10 @@ func TestGeminiMintUsesV1BetaAPIKeyOnly(t *testing.T) {
 		_, _ = io.WriteString(w, `{"name":"auth_tokens/fake-v1beta-token"}`)
 	}))
 	defer server.Close()
-	t.Setenv("GOOGLE_GEMINI_BASE_URL", server.URL+"/")
 
 	minter := NewGeminiMinter(config.NewLoaderWithClient(nil), "gemini-test-model")
+	minter.provisioningClient = server.Client()
+	minter.provisioningEndpoint = server.URL + "/v1beta/auth_tokens"
 	result, err := minter.Mint(context.Background(), "Puck", "You are terse.")
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -155,9 +164,72 @@ func TestGeminiMintUsesV1BetaAPIKeyOnly(t *testing.T) {
 	assert.Equal(t, float64(1), wireBody["uses"])
 	assert.NotContains(t, wireBody, "authToken")
 	assert.NotContains(t, wireBody, "config")
-	wireSetup, ok := wireBody["bidiGenerateContentSetup"].(map[string]any)
+	assert.NotContains(t, wireBody, "bidiGenerateContentSetup")
+	wireSetup, ok := wireBody["liveConnectConstraints"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, "models/gemini-test-model", wireSetup["model"])
+	wireConfig, ok := wireSetup["config"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, []any{"AUDIO"}, wireConfig["responseModalities"])
+}
+
+func TestGeminiProvisioningClientDoesNotFollowCredentialRedirect(t *testing.T) {
+	const apiKey = "unit-test-redirect-key"
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		targetHits.Add(1)
+	}))
+	defer target.Close()
+
+	type capturedAuth struct {
+		query, apiKeyHeader, authorization string
+	}
+	captured := make(chan capturedAuth, 1)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured <- capturedAuth{
+			query:         r.URL.Query().Get("key"),
+			apiKeyHeader:  r.Header.Get("x-goog-api-key"),
+			authorization: r.Header.Get("Authorization"),
+		}
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer origin.Close()
+
+	_, err := createGeminiAuthToken(
+		context.Background(),
+		geminiProvisioningHTTPClient(),
+		origin.URL,
+		apiKey,
+		&genai.CreateAuthTokenConfig{},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "307 Temporary Redirect")
+	assert.NotContains(t, err.Error(), apiKey)
+	assert.Zero(t, targetHits.Load())
+	got := <-captured
+	assert.Empty(t, got.query)
+	assert.Equal(t, apiKey, got.apiKeyHeader)
+	assert.Empty(t, got.authorization)
+}
+
+func TestGeminiProvisioningTransportRedactsCredentialFromErrors(t *testing.T) {
+	const apiKey = "unit-test-key+/="
+	client := &http.Client{
+		Transport: geminiRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return nil, fmt.Errorf("failed request with %s", req.Header.Get("x-goog-api-key"))
+		}),
+	}
+
+	_, err := createGeminiAuthToken(
+		context.Background(),
+		client,
+		"https://generativelanguage.googleapis.com/v1beta/auth_tokens",
+		apiKey,
+		&genai.CreateAuthTokenConfig{},
+	)
+	require.Error(t, err)
+	assert.Equal(t, "realtime: Gemini auth-token transport failed", err.Error())
+	assert.NotContains(t, err.Error(), apiKey)
 }
 
 // TestGeminiToolDeclarationsMirrorManifest: every OpenAI-manifest tool

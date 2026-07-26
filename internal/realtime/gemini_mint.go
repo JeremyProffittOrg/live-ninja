@@ -21,9 +21,12 @@ package realtime
 //     protocol does not).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"reflect"
 	"sort"
@@ -42,6 +45,8 @@ const DefaultGeminiLiveModel = "gemini-3.1-flash-live-preview"
 // GeminiAPIVersion is shared by token minting and the direct Live endpoint.
 // Ephemeral tokens are accepted only when both use the same API version.
 const GeminiAPIVersion = "v1beta"
+
+const geminiAuthTokensEndpoint = "https://generativelanguage.googleapis.com/" + GeminiAPIVersion + "/auth_tokens"
 
 // GeminiLiveEndpoint is the WSS endpoint clients open with the minted
 // ephemeral token. Ephemeral tokens are only honored by the v1beta
@@ -89,8 +94,10 @@ type GeminiMintResult struct {
 	ToolManifest  json.RawMessage
 }
 
-// geminiTokenCreator is the one SDK call the minter makes, injectable for
-// tests (production: a genai.Client's AuthTokens service).
+// geminiTokenCreator is the token call injectable for tests. Production uses
+// the current v1beta REST shape directly because genai v1.64 still converts
+// LiveConnectConstraints to the superseded v1alpha bidiGenerateContentSetup
+// field.
 type geminiTokenCreator func(ctx context.Context, cfg *genai.CreateAuthTokenConfig) (*genai.AuthToken, error)
 
 // GeminiMinter mints config-constrained Gemini Live ephemeral tokens. Its
@@ -99,8 +106,81 @@ type geminiTokenCreator func(ctx context.Context, cfg *genai.CreateAuthTokenConf
 type GeminiMinter struct {
 	loader *config.Loader
 	model  string
-	// create overrides the SDK token call in tests; nil = production path.
+	// create overrides the token call in tests; nil = production REST path.
 	create geminiTokenCreator
+	// provisioningClient/Endpoint are overridable only for HTTP contract tests.
+	provisioningClient   *http.Client
+	provisioningEndpoint string
+}
+
+func geminiProvisioningHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+func createGeminiAuthToken(
+	ctx context.Context,
+	client *http.Client,
+	endpoint, apiKey string,
+	cfg *genai.CreateAuthTokenConfig,
+) (*genai.AuthToken, error) {
+	if strings.TrimSpace(apiKey) == "" {
+		return nil, fmt.Errorf("realtime: Gemini provisioning credential is empty")
+	}
+	if cfg == nil {
+		return nil, fmt.Errorf("realtime: Gemini provisioning config is empty")
+	}
+	body, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("realtime: marshal Gemini auth-token request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("realtime: build Gemini auth-token request")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", apiKey)
+	if client == nil {
+		client = geminiProvisioningHTTPClient()
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		// Keep transport errors URL/header-free so a future client or endpoint
+		// change cannot accidentally carry the credential into broker logs.
+		return nil, fmt.Errorf("realtime: Gemini auth-token transport failed")
+	}
+	defer resp.Body.Close()
+
+	const maxResponseBytes = 64 << 10
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		var apiErr struct {
+			Error struct {
+				Message string `json:"message"`
+				Status  string `json:"status"`
+			} `json:"error"`
+		}
+		_ = json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&apiErr)
+		message := strings.TrimSpace(strings.ReplaceAll(apiErr.Error.Message, apiKey, "[REDACTED]"))
+		switch {
+		case apiErr.Error.Status != "" && message != "":
+			return nil, fmt.Errorf("realtime: Gemini auth-token endpoint returned %s (%s): %s",
+				resp.Status, apiErr.Error.Status, message)
+		case message != "":
+			return nil, fmt.Errorf("realtime: Gemini auth-token endpoint returned %s: %s", resp.Status, message)
+		default:
+			return nil, fmt.Errorf("realtime: Gemini auth-token endpoint returned %s", resp.Status)
+		}
+	}
+
+	var token genai.AuthToken
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&token); err != nil {
+		return nil, fmt.Errorf("realtime: decode Gemini auth-token response: %w", err)
+	}
+	return &token, nil
 }
 
 // NewGeminiMinter builds a GeminiMinter. model comes from GEMINI_LIVE_MODEL
@@ -109,7 +189,12 @@ func NewGeminiMinter(loader *config.Loader, model string) *GeminiMinter {
 	if model == "" {
 		model = DefaultGeminiLiveModel
 	}
-	return &GeminiMinter{loader: loader, model: model}
+	return &GeminiMinter{
+		loader:               loader,
+		model:                model,
+		provisioningClient:   geminiProvisioningHTTPClient(),
+		provisioningEndpoint: geminiAuthTokensEndpoint,
+	}
 }
 
 // GeminiLiveModelFromEnv resolves the broker's Gemini Live model id.
@@ -372,7 +457,7 @@ func buildGeminiConstraints(model, voice, instructions string) *genai.LiveConnec
 func buildGeminiConstraintsForSurface(model, voice, instructions, surface string) *genai.LiveConnectConstraints {
 	tools := []*genai.Tool{{FunctionDeclarations: sdkFunctionDeclarationsForSurface(surface)}}
 	return &genai.LiveConnectConstraints{
-		Model: model,
+		Model: "models/" + model,
 		Config: &genai.LiveConnectConfig{
 			ResponseModalities: []genai.Modality{genai.ModalityAudio},
 			SpeechConfig: &genai.SpeechConfig{
@@ -441,22 +526,23 @@ func (m *GeminiMinter) MintForSurface(ctx context.Context, voice, instructions, 
 		tok, err = m.create(ctx, tokenCfg)
 	} else {
 		// The provisioning service accepts exactly one authentication form.
-		// The current v1beta contract uses the broker-held API key in
-		// x-goog-api-key; adding OAuth2 (whether the key is in a header or query)
-		// is rejected as mixed authentication.
+		// Follow the current v1beta REST contract exactly: x-goog-api-key only
+		// and liveConnectConstraints in the body. The pinned Go SDK still
+		// rewrites that field to v1alpha's bidiGenerateContentSetup, so the
+		// small REST adapter above owns this one provisioning call.
 		apiKey, keyErr := m.loader.Get(ctx, config.ParamGeminiAPIKey, config.EnvOverrideGeminiAPIKey)
 		if keyErr != nil {
 			return nil, fmt.Errorf("realtime: resolve gemini credential: %w", keyErr)
 		}
-		client, clientErr := genai.NewClient(ctx, &genai.ClientConfig{
-			Backend:     genai.BackendGeminiAPI,
-			APIKey:      apiKey,
-			HTTPOptions: genai.HTTPOptions{APIVersion: GeminiAPIVersion},
-		})
-		if clientErr != nil {
-			return nil, fmt.Errorf("realtime: gemini client init: %w", clientErr)
+		client := m.provisioningClient
+		if client == nil {
+			client = geminiProvisioningHTTPClient()
 		}
-		tok, err = client.AuthTokens.Create(ctx, tokenCfg)
+		endpoint := m.provisioningEndpoint
+		if endpoint == "" {
+			endpoint = geminiAuthTokensEndpoint
+		}
+		tok, err = createGeminiAuthToken(ctx, client, endpoint, apiKey, tokenCfg)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("realtime: gemini auth token mint: %w", err)
