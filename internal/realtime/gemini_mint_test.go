@@ -165,9 +165,23 @@ func TestGeminiMintUsesCurrentV1BetaRESTContract(t *testing.T) {
 	assert.NotContains(t, wireBody, "authToken")
 	assert.NotContains(t, wireBody, "config")
 	assert.NotContains(t, wireBody, "liveConnectConstraints")
-	assert.NotContains(t, wireBody, "fieldMask")
 	wireSetup, ok := wireBody["bidiGenerateContentSetup"].(map[string]any)
 	require.True(t, ok)
+	fieldMask, ok := wireBody["fieldMask"].(string)
+	require.True(t, ok)
+	maskFields := strings.Split(fieldMask, ",")
+	assert.ElementsMatch(t, []string{
+		"contextWindowCompression.slidingWindow",
+		"generationConfig.responseModalities",
+		"generationConfig.speechConfig",
+		"inputAudioTranscription",
+		"model",
+		"outputAudioTranscription",
+		"systemInstruction.parts",
+		"tools",
+	}, maskFields)
+	assert.NotContains(t, maskFields, "sessionResumption",
+		"the reconnecting client must be able to supply the latest resumption handle")
 	assert.Equal(t, "models/gemini-test-model", wireSetup["model"])
 	wireConfig, ok := wireSetup["generationConfig"].(map[string]any)
 	require.True(t, ok)

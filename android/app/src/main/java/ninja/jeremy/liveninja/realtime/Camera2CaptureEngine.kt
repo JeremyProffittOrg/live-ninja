@@ -57,6 +57,16 @@ class Camera2CaptureEngine @Inject constructor(
         requireNotNull(appContext.getSystemService(DisplayManager::class.java)) {
             "DisplayManager is unavailable"
         }
+    // CameraDevice.close() is asynchronous: OEM Camera2 implementations post
+    // the terminal onClosed callback after close() returns. Keep one callback
+    // looper alive for this process-lifetime singleton so teardown callbacks
+    // never race a per-capture HandlerThread.quitSafely().
+    private val callbackThread by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        HandlerThread("live-ninja-camera").apply { start() }
+    }
+    private val callbackHandler by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        Handler(callbackThread.looper)
+    }
 
     internal suspend fun capture(command: CameraCaptureCommand): CapturedCameraMedia {
         ensurePermission()
@@ -87,8 +97,6 @@ class Camera2CaptureEngine @Inject constructor(
             ImageFormat.JPEG,
             2,
         )
-        val callbackThread = HandlerThread("live-ninja-camera-photo").apply { start() }
-        val callbackHandler = Handler(callbackThread.looper)
         var device: CameraDevice? = null
         var session: CameraCaptureSession? = null
         val output = newOutputFile(CameraCaptureKind.PHOTO)
@@ -139,10 +147,10 @@ class Camera2CaptureEngine @Inject constructor(
                 e,
             )
         } finally {
+            reader.setOnImageAvailableListener(null, null)
             session?.close()
             device?.close()
             reader.close()
-            callbackThread.quitSafely()
         }
     }
 
@@ -153,8 +161,6 @@ class Camera2CaptureEngine @Inject constructor(
         val target = resolveCamera(lens)
         val size = chooseVideoSize(target.characteristics)
         val output = newOutputFile(CameraCaptureKind.VIDEO)
-        val callbackThread = HandlerThread("live-ninja-camera-video").apply { start() }
-        val callbackHandler = Handler(callbackThread.looper)
         var recorder: MediaRecorder? = null
         var device: CameraDevice? = null
         var session: CameraCaptureSession? = null
@@ -207,7 +213,6 @@ class Camera2CaptureEngine @Inject constructor(
             device?.close()
             runCatching { recorder?.reset() }
             runCatching { recorder?.release() }
-            callbackThread.quitSafely()
         }
     }
 

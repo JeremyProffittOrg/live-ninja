@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/testutil"
+	"github.com/JeremyProffittOrg/live-ninja/internal/voiceengine"
 )
 
 // fakeClock is a settable clock injected into Gate.now.
@@ -406,7 +407,8 @@ func TestConcurrentSessionLimit(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		_, err := g.CheckMint(ctx, "u1")
 		require.NoError(t, err, "mint %d must pass", i+1)
-		require.NoError(t, g.RecordMint(ctx, "u1", fmt.Sprintf("sess-%d", i), "web"))
+		require.NoError(t, g.RecordMint(ctx, "u1", fmt.Sprintf("sess-%d", i), "web",
+			voiceengine.EngineOpenAIRealtime))
 		clock.advance(5 * time.Second)
 	}
 
@@ -428,7 +430,8 @@ func TestConcurrentSessionLimit(t *testing.T) {
 
 func TestRecordMintSessionCapBookkeeping(t *testing.T) {
 	g, fake, clock := newTestGate()
-	require.NoError(t, g.RecordMint(context.Background(), "u1", "sess-1", "web"))
+	require.NoError(t, g.RecordMint(context.Background(), "u1", "sess-1", "web",
+		voiceengine.EngineOpenAIRealtime))
 
 	now := clock.t.UTC()
 	end := now.Add(600 * time.Second)
@@ -477,7 +480,8 @@ func TestHardeningEnvOverrides(t *testing.T) {
 
 func TestRecordMintWritesLedger(t *testing.T) {
 	g, fake, clock := newTestGate()
-	require.NoError(t, g.RecordMint(context.Background(), "u1", "sess-1", "web"))
+	require.NoError(t, g.RecordMint(context.Background(), "u1", "sess-1", "web",
+		voiceengine.EngineGeminiFlashLive))
 
 	day := clock.t.UTC().Format("2006-01-02")
 	usage := fake.RawItem("USER#u1", "USAGE#"+day)
@@ -491,12 +495,21 @@ func TestRecordMintWritesLedger(t *testing.T) {
 	role, _ := marker["role"].(*types.AttributeValueMemberS)
 	require.NotNil(t, role)
 	assert.Equal(t, "system", role.Value)
+	engine, _ := marker["engine"].(*types.AttributeValueMemberS)
+	require.NotNil(t, engine)
+	assert.Equal(t, string(voiceengine.EngineGeminiFlashLive), engine.Value,
+		"the ledger marker must identify the engine that actually minted")
 
 	// A second mint the same day increments the counter.
-	require.NoError(t, g.RecordMint(context.Background(), "u1", "sess-2", "web"))
+	require.NoError(t, g.RecordMint(context.Background(), "u1", "sess-2", "web",
+		voiceengine.EngineNovaSonic))
 	usage = fake.RawItem("USER#u1", "USAGE#"+day)
 	mints, _ = usage["dayMints"].(*types.AttributeValueMemberN)
 	assert.Equal(t, "2", mints.Value)
+
+	require.Error(t, g.RecordMint(context.Background(), "u1", "sess-bad", "web",
+		voiceengine.Engine("not-an-engine")))
+	assert.Nil(t, fake.RawItem("USER#u1", "LOG#sess-bad#000000"))
 }
 
 // ---- CheckSession (M12 nova-bridge redemption) --------------------------
@@ -508,7 +521,8 @@ func TestCheckSessionRedeemsRecordedMint(t *testing.T) {
 	// The broker's mint flow: full gate, then bookkeeping.
 	_, err := g.CheckMint(ctx, "u1")
 	require.NoError(t, err)
-	require.NoError(t, g.RecordMint(ctx, "u1", "sess-1", "web"))
+	require.NoError(t, g.RecordMint(ctx, "u1", "sess-1", "web",
+		voiceengine.EngineOpenAIRealtime))
 
 	// The bridge redeems the SAME session — must pass even though the
 	// session's own concurrency slot exists (the CheckMint double-gate bug).
@@ -524,7 +538,8 @@ func TestCheckSessionPassesAtConcurrencyCap(t *testing.T) {
 
 	// Fill every concurrency slot (default cap 3).
 	for i := 0; i < 3; i++ {
-		require.NoError(t, g.RecordMint(ctx, "u1", fmt.Sprintf("sess-%d", i), "web"))
+		require.NoError(t, g.RecordMint(ctx, "u1", fmt.Sprintf("sess-%d", i), "web",
+			voiceengine.EngineOpenAIRealtime))
 		clock.advance(5 * time.Second)
 	}
 
@@ -552,7 +567,8 @@ func TestCheckSessionRejectsUnknownAndExpired(t *testing.T) {
 	require.ErrorAs(t, g.CheckSession(ctx, "u1", ""), &su)
 
 	// Minted but past the hard session cap (slot exp = mint + 600s).
-	require.NoError(t, g.RecordMint(ctx, "u1", "sess-1", "web"))
+	require.NoError(t, g.RecordMint(ctx, "u1", "sess-1", "web",
+		voiceengine.EngineOpenAIRealtime))
 	clock.advance(11 * time.Minute)
 	require.ErrorAs(t, g.CheckSession(ctx, "u1", "sess-1"), &su)
 }
@@ -561,7 +577,8 @@ func TestCheckSessionRejectsSuspended(t *testing.T) {
 	g, fake, _ := newTestGate()
 	ctx := context.Background()
 
-	require.NoError(t, g.RecordMint(ctx, "u1", "sess-1", "web"))
+	require.NoError(t, g.RecordMint(ctx, "u1", "sess-1", "web",
+		voiceengine.EngineOpenAIRealtime))
 	seedProfile(fake, "u1", "suspended")
 
 	var se *SuspendedError
@@ -571,7 +588,8 @@ func TestCheckSessionRejectsSuspended(t *testing.T) {
 func TestCheckBridgeSessionEnforcesFreshAccessBoundary(t *testing.T) {
 	t.Run("disabled account", func(t *testing.T) {
 		g, fake, clock := newTestGate()
-		require.NoError(t, g.RecordMint(context.Background(), "u1", "sess-1", "web"))
+		require.NoError(t, g.RecordMint(context.Background(), "u1", "sess-1", "web",
+			voiceengine.EngineOpenAIRealtime))
 		seedProfile(fake, "u1", "disabled")
 
 		var inactive *AccountInactiveError
@@ -583,7 +601,8 @@ func TestCheckBridgeSessionEnforcesFreshAccessBoundary(t *testing.T) {
 
 	t.Run("token predates tokensValidAfter", func(t *testing.T) {
 		g, fake, clock := newTestGate()
-		require.NoError(t, g.RecordMint(context.Background(), "u1", "sess-1", "web"))
+		require.NoError(t, g.RecordMint(context.Background(), "u1", "sess-1", "web",
+			voiceengine.EngineOpenAIRealtime))
 		fake.SeedItem(map[string]types.AttributeValue{
 			"pk":               &types.AttributeValueMemberS{Value: "USER#u1"},
 			"sk":               &types.AttributeValueMemberS{Value: "PROFILE"},
@@ -608,7 +627,8 @@ func TestCheckBridgeSessionEnforcesFreshAccessBoundary(t *testing.T) {
 func TestRedeemSessionMarksSlotWithoutReleasingIt(t *testing.T) {
 	g, fake, clock := newTestGate()
 	ctx := context.Background()
-	require.NoError(t, g.RecordMint(ctx, "u1", "sess-1", "web"))
+	require.NoError(t, g.RecordMint(ctx, "u1", "sess-1", "web",
+		voiceengine.EngineOpenAIRealtime))
 
 	slotBefore := fake.RawItem("USER#u1", "BUCKET#sess#sess-1")
 	require.NotNil(t, slotBefore)
@@ -629,7 +649,8 @@ func TestRedeemSessionMarksSlotWithoutReleasingIt(t *testing.T) {
 func TestRedeemSessionRejectsReplay(t *testing.T) {
 	g, _, _ := newTestGate()
 	ctx := context.Background()
-	require.NoError(t, g.RecordMint(ctx, "u1", "sess-1", "web"))
+	require.NoError(t, g.RecordMint(ctx, "u1", "sess-1", "web",
+		voiceengine.EngineOpenAIRealtime))
 	require.NoError(t, g.RedeemSession(ctx, "u1", "sess-1"))
 
 	var sr *SessionRedeemedError
@@ -640,7 +661,8 @@ func TestRedeemSessionRejectsReplay(t *testing.T) {
 func TestRedeemSessionHasExactlyOneWinnerUnderRace(t *testing.T) {
 	g, _, _ := newTestGate()
 	ctx := context.Background()
-	require.NoError(t, g.RecordMint(ctx, "u1", "sess-1", "web"))
+	require.NoError(t, g.RecordMint(ctx, "u1", "sess-1", "web",
+		voiceengine.EngineOpenAIRealtime))
 
 	const racers = 32
 	start := make(chan struct{})
@@ -677,7 +699,8 @@ func TestRedeemSessionPreservesValidityErrors(t *testing.T) {
 
 	t.Run("expired", func(t *testing.T) {
 		g, _, clock := newTestGate()
-		require.NoError(t, g.RecordMint(context.Background(), "u1", "sess-1", "web"))
+		require.NoError(t, g.RecordMint(context.Background(), "u1", "sess-1", "web",
+			voiceengine.EngineOpenAIRealtime))
 		clock.advance(11 * time.Minute)
 		var su *SessionUnknownError
 		require.ErrorAs(t, g.RedeemSession(context.Background(), "u1", "sess-1"), &su)
@@ -685,7 +708,8 @@ func TestRedeemSessionPreservesValidityErrors(t *testing.T) {
 
 	t.Run("suspended", func(t *testing.T) {
 		g, fake, _ := newTestGate()
-		require.NoError(t, g.RecordMint(context.Background(), "u1", "sess-1", "web"))
+		require.NoError(t, g.RecordMint(context.Background(), "u1", "sess-1", "web",
+			voiceengine.EngineOpenAIRealtime))
 		seedProfile(fake, "u1", "suspended")
 		var se *SuspendedError
 		require.ErrorAs(t, g.RedeemSession(context.Background(), "u1", "sess-1"), &se)

@@ -15,12 +15,15 @@ import ninja.jeremy.liveninja.log.LogCategory
 import java.io.IOException
 import java.net.URLEncoder
 import java.time.Instant
+import java.util.ArrayDeque
 import java.util.Base64
 import java.util.Collections
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -44,6 +47,143 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
 import org.json.JSONObject
+
+/**
+ * Thread-safe, consume-once lifecycle state for Gemini session handles.
+ * A handle is usable only while the latest server update says resumable;
+ * once selected for a replacement it cannot be replayed until that new
+ * socket publishes another safe checkpoint.
+ */
+internal class GeminiResumptionState {
+    private var handle: String? = null
+    private var canResume = false
+    private var reconnectPending = false
+
+    @Synchronized
+    fun reset() {
+        handle = null
+        canResume = false
+        reconnectPending = false
+    }
+
+    @Synchronized
+    fun observe(resumable: Boolean, newHandle: String?) {
+        canResume = resumable && !newHandle.isNullOrBlank()
+        handle = if (canResume) newHandle else null
+    }
+
+    @Synchronized
+    fun requestReconnect() {
+        reconnectPending = true
+    }
+
+    /**
+     * A tool call or client control frame advances the model beyond any
+     * previously issued checkpoint. Keep a pending goAway request, but require
+     * a fresh resumable update before selecting its handle.
+     */
+    @Synchronized
+    fun invalidateCheckpoint() {
+        handle = null
+        canResume = false
+    }
+
+    @Synchronized
+    fun takePendingIfReady(blocked: Boolean): String? {
+        if (!reconnectPending || blocked || !canResume) return null
+        return consume()
+    }
+
+    @Synchronized
+    fun takeAfterDrop(): String? {
+        if (!canResume) return null
+        return consume()
+    }
+
+    private fun consume(): String? {
+        val result = handle
+        handle = null
+        canResume = false
+        reconnectPending = false
+        return result
+    }
+}
+
+/**
+ * FIFO of fully translated Gemini control frames completed while the live
+ * socket is deliberately inactive during break-before-make replacement.
+ *
+ * The transport calls every method while holding its socket lock. A head is
+ * removed only after WebSocket.send accepts it, so a rejected send retains the
+ * unsent suffix without replaying any frame already accepted.
+ */
+internal class GeminiControlQueue {
+    private val pending = ArrayDeque<String>()
+
+    fun enqueue(payload: String) {
+        pending.addLast(payload)
+    }
+
+    fun flush(send: (String) -> Boolean): Boolean {
+        while (pending.isNotEmpty()) {
+            if (!send(pending.first())) return false
+            pending.removeFirst()
+        }
+        return true
+    }
+
+    fun clear() {
+        pending.clear()
+    }
+
+    val size: Int
+        get() = pending.size
+}
+
+/**
+ * Setup and terminal events can race on OkHttp's callback thread. This gate
+ * makes a socket active only after its caller has finished local setup; a
+ * close in the gap is remembered and makes activation fail.
+ */
+internal class GeminiSocketLifecycle {
+    val ready = CompletableDeferred<Unit>()
+    private var terminal: IOException? = null
+    private var active = false
+    private var registered = false
+
+    @Synchronized
+    fun register() {
+        registered = true
+    }
+
+    @Synchronized
+    fun isRegistered(): Boolean = registered
+
+    @Synchronized
+    fun markSetupComplete() {
+        if (terminal == null && !ready.isCompleted) ready.complete(Unit)
+    }
+
+    /** Returns true only when the socket had already been activated. */
+    @Synchronized
+    fun markTerminal(error: IOException): Boolean {
+        if (terminal == null) terminal = error
+        if (!ready.isCompleted) ready.completeExceptionally(error)
+        return active
+    }
+
+    @Synchronized
+    fun activate() {
+        terminal?.let { throw it }
+        active = true
+    }
+}
+
+private data class GeminiOpenedSocket(
+    val webSocket: WebSocket,
+    val lifecycle: GeminiSocketLifecycle,
+    val generation: Long,
+)
 
 /**
  * Gemini Live implementation of [RealtimeTransport] (M13 gemini-flash-live),
@@ -74,10 +214,11 @@ import org.json.JSONObject
  *     `toolCallCancellation.ids` drops the matching pending responses.
  *   * Lifecycle: connections recycle ~10 min. `sessionResumptionUpdate`
  *     handles are stored; on `goAway` the transport reconnects to the same
- *     endpoint+token (valid for resumption reconnects within the token's
- *     ~30-min window) sending `setup` + `sessionResumption.handle`; past the
- *     token expiry it re-fetches the session bootstrap for a fresh token —
- *     the same reconnect-re-mint pattern as the Nova bridge.
+ *     endpoint+token while it remains valid, sending `setup` +
+ *     `sessionResumption.handle`. Past token expiry the conversation ends:
+ *     the broker does not yet expose a same-session continuation mint, and
+ *     fetching a normal bootstrap would allocate a second quota/session
+ *     identity while silently retaining the old transcript identity.
  *
  * Echo (WS-5 M21.2): like [NovaBridgeTransport] and unlike [WebRtcTransport],
  * this path carries **no software APM** — raw `AudioRecord` frames are base64'd
@@ -90,7 +231,6 @@ import org.json.JSONObject
 class GeminiLiveTransport @Inject constructor(
     @ApplicationContext private val context: Context,
     private val httpClient: OkHttpClient,
-    private val sessionApi: RealtimeSessionApi,
     private val echoGuard: EchoGuardPolicy,
 ) : RealtimeTransport {
 
@@ -119,6 +259,10 @@ class GeminiLiveTransport @Inject constructor(
 
     @Volatile
     private var webSocket: WebSocket? = null
+    private val socketLock = Any()
+    @Volatile
+    private var socketActive = false
+    private var sessionGeneration = 0L
     private var setupReady: CompletableDeferred<Unit>? = null
 
     // ---- session bootstrap (prime() + connect() params) ----
@@ -137,12 +281,9 @@ class GeminiLiveTransport @Inject constructor(
     @Volatile
     private var tokenExpiresAtMs: Long = 0L
 
-    /** Latest resumable `sessionResumptionUpdate` handle (survives goAway reconnects). */
-    @Volatile
-    private var resumptionHandle: String? = null
+    private val resumption = GeminiResumptionState()
+    private val controlQueue = GeminiControlQueue()
 
-    @Volatile
-    private var reconnecting = false
     private var reconnectJob: Job? = null
 
     private var audioRecord: AudioRecord? = null
@@ -183,7 +324,7 @@ class GeminiLiveTransport @Inject constructor(
         // Deep-copy so later bootstrap reuse can't be mutated from outside.
         sessionConfig = session.sessionConfig?.let { JSONObject(it.toString()) }
         tokenExpiresAtMs = parseRfc3339Ms(session.accessToken?.expiresAt)
-        resumptionHandle = null // fresh session — no handle yet
+        resumption.reset()
     }
 
     override suspend fun connect(ephemeralToken: String, callsUrl: String) {
@@ -195,8 +336,16 @@ class GeminiLiveTransport @Inject constructor(
             }
             _state.value = TransportState.CONNECTING
             try {
-                doConnect(token = ephemeralToken, wsEndpoint = callsUrl)
+                val generation = synchronized(socketLock) {
+                    ++sessionGeneration
+                }
+                val opened = doConnect(
+                    token = ephemeralToken,
+                    wsEndpoint = callsUrl,
+                    generation = generation,
+                )
                 _state.value = TransportState.CONNECTED
+                activateSocket(opened)
             } catch (t: Throwable) {
                 releaseSession()
                 _state.value = TransportState.FAILED
@@ -205,14 +354,18 @@ class GeminiLiveTransport @Inject constructor(
         }
     }
 
-    private suspend fun doConnect(token: String, wsEndpoint: String) {
+    private suspend fun doConnect(
+        token: String,
+        wsEndpoint: String,
+        generation: Long,
+    ): GeminiOpenedSocket {
         if (wsEndpoint.isEmpty()) throw IOException("gemini endpoint was empty")
         if (token.isEmpty()) throw IOException("gemini access token was empty")
         if (sessionConfig == null) throw IOException("gemini transport not primed with sessionConfig")
         endpoint = wsEndpoint
         tokenValue = token
 
-        openSocket()
+        val opened = openSocket(expectedGeneration = generation)
         // Per-session read of the owner switch (M21.2).
         echoGate.enabled = echoGuard.halfDuplexMicGuard
         LNLog.i(LogCategory.AUDIO, TAG, "half-duplex mic guard: ${echoGate.enabled}")
@@ -220,22 +373,56 @@ class GeminiLiveTransport @Inject constructor(
         startCapture()
         startPlayback()
         running = true
+        return opened
     }
 
     /** Opens a socket to [endpoint]+[tokenValue] and awaits `setupComplete`. */
-    private suspend fun openSocket() {
-        val ready = CompletableDeferred<Unit>()
-        setupReady = ready
+    private suspend fun openSocket(
+        resumeHandle: String? = null,
+        expectedGeneration: Long,
+    ): GeminiOpenedSocket {
+        val lifecycle = GeminiSocketLifecycle()
+        setupReady = lifecycle.ready
 
         val request = Request.Builder().url(buildUrl(endpoint, tokenValue)).build()
-        val ws = httpClient.newWebSocket(request, GeminiListener())
-        webSocket = ws
+        // Readiness belongs to this exact socket. A delayed callback from a
+        // predecessor must never complete/fail a replacement's setup gate.
+        val ws = httpClient.newWebSocket(request, GeminiListener(lifecycle, resumeHandle))
+        synchronized(socketLock) {
+            if (sessionGeneration != expectedGeneration) {
+                runCatching { ws.close(1000, "stale session generation") }
+                throw IOException("gemini session ended before socket registration")
+            }
+            webSocket = ws
+            socketActive = false
+        }
+        lifecycle.register()
 
         try {
-            withTimeout(SETUP_TIMEOUT_MS) { ready.await() }
+            withTimeout(SETUP_TIMEOUT_MS) { lifecycle.ready.await() }
         } catch (_: TimeoutCancellationException) {
             runCatching { ws.close(1000, "setup timeout") }
             throw IOException("gemini live did not complete setup within ${SETUP_TIMEOUT_MS}ms")
+        }
+        return GeminiOpenedSocket(ws, lifecycle, expectedGeneration)
+    }
+
+    private fun activateSocket(opened: GeminiOpenedSocket) {
+        opened.lifecycle.activate()
+        synchronized(socketLock) {
+            if (
+                sessionGeneration != opened.generation ||
+                webSocket !== opened.webSocket
+            ) {
+                throw IOException("gemini live closed before socket activation")
+            }
+            // setupComplete has been accepted and this exact generation is
+            // still current. Flush queued tool/control frames before exposing
+            // the socket to new sends; socketLock preserves FIFO ordering.
+            if (!controlQueue.flush(opened.webSocket::send)) {
+                throw IOException("gemini live rejected a queued control frame")
+            }
+            socketActive = true
         }
     }
 
@@ -249,20 +436,48 @@ class GeminiLiveTransport @Inject constructor(
             "access_token=" + URLEncoder.encode(token, "UTF-8")
     }
 
-    /** `{"setup": <sessionConfig>}`, with the stored resumption handle when resuming. */
-    private fun buildSetupFrame(): JSONObject {
+    /** `{"setup": <sessionConfig>}`, with a consume-once handle when resuming. */
+    private fun buildSetupFrame(resumeHandle: String?): JSONObject {
         val body = JSONObject(requireNotNull(sessionConfig).toString())
-        resumptionHandle?.let { body.put("sessionResumption", JSONObject().put("handle", it)) }
+        resumeHandle?.let { body.put("sessionResumption", JSONObject().put("handle", it)) }
         return JSONObject().put("setup", body)
     }
+
+    /** Send, queue, and reconnect-detach share [socketLock], so no frame can
+     * advance the old connection after a safe checkpoint has been consumed. */
+    private fun sendOnCurrentSocket(payload: String): Boolean =
+        synchronized(socketLock) {
+            if (!socketActive) false else webSocket?.send(payload) ?: false
+        }
+
+    /**
+     * Control frames are retained while a replacement is in setup. Audio uses
+     * [sendOnCurrentSocket] directly and remains intentionally dropped during
+     * this window so it cannot advance past the consumed resumption handle.
+     */
+    private fun sendOrQueueControl(payload: String): Boolean =
+        synchronized(socketLock) {
+            if (!running) return false
+            if (!socketActive) {
+                controlQueue.enqueue(payload)
+                return true
+            }
+            webSocket?.send(payload) ?: false
+        }
 
     // ---- outbound control (translate the shared OpenAI-shaped events) ----
 
     override fun sendEvent(event: JSONObject) {
-        val ws = webSocket ?: return
         val translated = translateOutbound(event) ?: return
-        runCatching { ws.send(translated.toString()) }
+        // Client content and tool responses move server state beyond any
+        // earlier handle. A later reconnect must wait for a fresh checkpoint.
+        resumption.invalidateCheckpoint()
+        val accepted = runCatching { sendOrQueueControl(translated.toString()) }
             .onFailure { LNLog.w(LogCategory.REALTIME, TAG, "gemini sendEvent failed", it) }
+            .getOrDefault(false)
+        if (!accepted) {
+            LNLog.w(LogCategory.REALTIME, TAG, "gemini control frame was not accepted")
+        }
     }
 
     /**
@@ -359,24 +574,44 @@ class GeminiLiveTransport @Inject constructor(
 
     // ---- inbound server messages ----
 
-    private fun handleTextMessage(raw: String) {
+    private fun handleTextMessage(raw: String, lifecycle: GeminiSocketLifecycle) {
         val json = runCatching { JSONObject(raw) }.getOrNull() ?: return
 
         // Fields ride on the same BidiGenerateContentServerMessage envelope,
         // so check independently rather than treating them as exclusive.
         if (json.has("setupComplete")) {
             emit(RealtimeEvent.SessionCreated(null))
-            setupReady?.complete(Unit)
+            lifecycle.markSetupComplete()
         }
 
-        // usageMetadata can share the turnComplete envelope. Observe it first
-        // so handleServerContent can consume the final snapshot at that exact
-        // turn boundary.
+        // usageMetadata can share the turnComplete envelope. Observe it before
+        // serverContent consumes the final snapshot at that exact boundary.
         json.optJSONObject("usageMetadata")?.let(turnUsage::observe)
-        json.optJSONObject("serverContent")?.let(::handleServerContent)
+
+        // Apply lifecycle metadata before toolCall. If both share a frame, the
+        // tool call below retires this checkpoint and requires a later update
+        // that includes the pending function-call state.
+        json.optJSONObject("sessionResumptionUpdate")?.let { update ->
+            val handle = update.optString("newHandle")
+            resumption.observe(update.optBoolean("resumable"), handle)
+        }
+
+        if (json.has("goAway")) {
+            // Wait until playback has ended and the server has declared a
+            // safe resumption checkpoint. A historical handle can otherwise
+            // roll back generation or an in-flight tool call.
+            LNLog.i(LogCategory.REALTIME, TAG, "gemini goAway (timeLeft=${json.optJSONObject("goAway")?.optString("timeLeft")})")
+            resumption.requestReconnect()
+        }
 
         json.optJSONObject("toolCall")?.let { toolCall ->
             val calls = toolCall.optJSONArray("functionCalls") ?: return@let
+            if (calls.length() > 0) {
+                // Function execution advances the session beyond a historical
+                // checkpoint. Resume only after the server publishes one that
+                // includes the pending tool-call state.
+                resumption.invalidateCheckpoint()
+            }
             for (i in 0 until calls.length()) {
                 val call = calls.optJSONObject(i) ?: continue
                 val id = call.optString("id")
@@ -403,20 +638,11 @@ class GeminiLiveTransport @Inject constructor(
             }
         }
 
-        json.optJSONObject("sessionResumptionUpdate")?.let { update ->
-            val handle = update.optString("newHandle")
-            if (update.optBoolean("resumable") && handle.isNotEmpty()) {
-                resumptionHandle = handle
-            }
-        }
-
-        if (json.has("goAway")) {
-            // Server recycles the connection (~10 min). Reconnect proactively
-            // with the stored resumption handle; the session continues.
-            LNLog.i(LogCategory.REALTIME, TAG, "gemini goAway (timeLeft=${json.optJSONObject("goAway")?.optString("timeLeft")})")
-            scheduleReconnect()
-        }
-
+        json.optJSONObject("serverContent")?.let(::handleServerContent)
+        // Decide only after every state-changing field in this envelope has
+        // been applied. In particular, never consume a same-frame checkpoint
+        // before toolCall has had the chance to invalidate it.
+        maybeScheduleReconnect()
     }
 
     private fun handleServerContent(sc: JSONObject) {
@@ -540,55 +766,74 @@ class GeminiLiveTransport @Inject constructor(
 
     // ---- goAway / resumption lifecycle ----
 
-    private fun scheduleReconnect() {
-        if (!running) return
-        if (reconnectJob?.isActive == true) return
-        reconnectJob = scope.launch {
-            try {
-                reconnect()
-                LNLog.i(LogCategory.REALTIME, TAG, "gemini session resumed (handle=${resumptionHandle != null})")
-            } catch (t: Throwable) {
-                LNLog.w(LogCategory.REALTIME, TAG, "gemini resumption reconnect failed", t)
-                if (_state.value == TransportState.CONNECTED) {
-                    _state.value = TransportState.FAILED
-                }
-            }
+    private fun maybeScheduleReconnect() {
+        beginReconnect {
+            resumption.takePendingIfReady(blocked = assistantSpeaking)
         }
     }
 
-    /**
-     * Reopen the WSS session, resuming via the stored handle. Within the
-     * token's ~30-min window the same endpoint+token reconnects (resumption
-     * reconnects are not bounded by the first-connect window); past it, the
-     * session bootstrap is re-fetched for a fresh token — mirroring the Nova
-     * bridge's reconnect-re-mint pattern. Audio capture/playback keep running
-     * throughout; uplink pauses while [webSocket] is null.
-     */
-    private suspend fun reconnect() {
-        reconnecting = true
-        try {
-            val old = webSocket
-            webSocket = null // capture loop skips frames until the new socket is ready
-            old?.let { runCatching { it.close(1000, "resuming") } }
-
-            if (System.currentTimeMillis() >= tokenExpiresAtMs - TOKEN_EXPIRY_MARGIN_MS) {
-                val session = sessionApi.fetchSession()
-                if (session.mode != RealtimeSession.MODE_GEMINI_DIRECT ||
-                    session.geminiEndpoint == null || session.accessToken == null ||
-                    session.sessionConfig == null
-                ) {
-                    throw IOException("re-fetched session is no longer gemini-direct")
+    /** Atomically consume a handle and detach uplink from the old socket. */
+    private fun beginReconnect(takeHandle: () -> String?): Boolean {
+        lateinit var handle: String
+        lateinit var old: WebSocket
+        lateinit var job: Job
+        var generation = 0L
+        synchronized(socketLock) {
+            if (!running || !socketActive) return false
+            val current = webSocket ?: return false
+            handle = takeHandle() ?: return false
+            old = current
+            webSocket = null
+            socketActive = false
+            generation = sessionGeneration
+            job = scope.launch(start = CoroutineStart.LAZY) {
+                try {
+                    reconnect(handle, generation)
+                    if (synchronized(socketLock) {
+                            running &&
+                                socketActive &&
+                                sessionGeneration == generation
+                        }
+                    ) {
+                        LNLog.i(LogCategory.REALTIME, TAG, "gemini session resumed")
+                    }
+                    // A goAway can arrive with setupComplete; honor it after the
+                    // replacement becomes active rather than consuming it early.
+                    maybeScheduleReconnect()
+                } catch (_: CancellationException) {
+                    // Deliberate stop invalidates the generation and cancels a
+                    // lazy/in-flight replacement. It is not a transport fault.
+                } catch (t: Throwable) {
+                    LNLog.w(LogCategory.REALTIME, TAG, "gemini resumption reconnect failed", t)
+                    if (_state.value == TransportState.CONNECTED) {
+                        releaseSession()
+                        _state.value = TransportState.FAILED
+                    }
                 }
-                endpoint = session.geminiEndpoint
-                tokenValue = session.accessToken.value
-                tokenExpiresAtMs = parseRfc3339Ms(session.accessToken.expiresAt)
-                sessionConfig = JSONObject(session.sessionConfig.toString())
             }
-
-            openSocket()
-        } finally {
-            reconnecting = false
+            // Publish before leaving the lock. releaseSession() takes the same
+            // lock, invalidates the generation, and cancels this job even if
+            // it has not started yet.
+            reconnectJob = job
         }
+        runCatching { old.close(1000, "resuming") }
+        job.start()
+        return true
+    }
+
+    /**
+     * Reopen the WSS session, resuming via the stored handle while the
+     * original token is still valid. The broker currently cannot renew the
+     * same logical session identity, so expiry fails closed rather than
+     * allocating a second slot/ledger. Audio capture/playback keep running
+     * during an in-window reconnect; uplink pauses while [webSocket] is null.
+     */
+    private suspend fun reconnect(handle: String, generation: Long) {
+        if (System.currentTimeMillis() >= tokenExpiresAtMs - TOKEN_EXPIRY_MARGIN_MS) {
+            throw IOException("gemini authorization expired; broker continuation is required")
+        }
+        val opened = openSocket(handle, generation)
+        activateSocket(opened)
     }
 
     private fun parseRfc3339Ms(value: String?): Long =
@@ -630,7 +875,6 @@ class GeminiLiveTransport @Inject constructor(
                 val read = record.read(buffer, 0, buffer.size)
                 if (read <= 0) continue
                 if (!micLive()) continue
-                val ws = webSocket ?: continue
                 // JSON + base64 uplink framing (NOT raw binary like Nova).
                 val b64 = Base64.getEncoder().encodeToString(
                     if (read == buffer.size) buffer else buffer.copyOf(read),
@@ -642,7 +886,7 @@ class GeminiLiveTransport @Inject constructor(
                         JSONObject().put("data", b64).put("mimeType", UPLINK_MIME),
                     ),
                 )
-                runCatching { ws.send(frame.toString()) }
+                runCatching { sendOnCurrentSocket(frame.toString()) }
             }
         }
     }
@@ -723,13 +967,24 @@ class GeminiLiveTransport @Inject constructor(
     // ---- teardown ----
 
     private fun releaseSession() {
-        running = false
+        var closingSocket: WebSocket? = null
+        var closingReconnect: Job? = null
+        synchronized(socketLock) {
+            running = false
+            ++sessionGeneration
+            closingReconnect = reconnectJob
+            reconnectJob = null
+            closingSocket = webSocket
+            webSocket = null
+            socketActive = false
+            controlQueue.clear()
+        }
+        closingReconnect?.cancel()
+        closingSocket?.let { runCatching { it.close(1000, "client closing") } }
+
         assistantSpeaking = false
         userMuted = false
         echoGate.reset()
-        reconnecting = false
-        reconnectJob?.cancel()
-        reconnectJob = null
 
         captureJob?.cancel()
         captureJob = null
@@ -739,9 +994,6 @@ class GeminiLiveTransport @Inject constructor(
 
         setupReady?.let { if (!it.isCompleted) it.completeExceptionally(IOException("session closed")) }
         setupReady = null
-
-        webSocket?.let { runCatching { it.close(1000, "client closing") } }
-        webSocket = null
 
         audioRecord?.let {
             runCatching { it.stop() }
@@ -764,7 +1016,7 @@ class GeminiLiveTransport @Inject constructor(
         turnUsage.reset()
         pendingToolNames.clear()
         cancelledToolCalls.clear()
-        resumptionHandle = null
+        resumption.reset()
         sessionConfig = null
         tokenExpiresAtMs = 0L
         restoreAudioMode()
@@ -776,42 +1028,50 @@ class GeminiLiveTransport @Inject constructor(
         }
     }
 
-    private inner class GeminiListener : WebSocketListener() {
+    private inner class GeminiListener(
+        private val lifecycle: GeminiSocketLifecycle,
+        private val resumeHandle: String?,
+    ) : WebSocketListener() {
 
         override fun onOpen(webSocket: WebSocket, response: Response) {
             // Client-sent session setup (Gemini's replacement for OpenAI's
             // server-side session config): the raw frame body minted by the
             // broker, plus the resumption handle when reconnecting.
-            runCatching { webSocket.send(buildSetupFrame().toString()) }
+            runCatching {
+                if (!webSocket.send(buildSetupFrame(resumeHandle).toString())) {
+                    throw IOException("socket rejected Gemini setup")
+                }
+            }
                 .onFailure {
-                    setupReady?.let { ready ->
-                        if (!ready.isCompleted) {
-                            ready.completeExceptionally(IOException("gemini setup send failed", it))
-                        }
-                    }
+                    lifecycle.markTerminal(IOException("gemini setup send failed", it))
                 }
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             if (isStale(webSocket)) return
-            handleTextMessage(text)
+            handleTextMessage(text, lifecycle)
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
             // Gemini Live serves JSON messages as binary WS frames too; the
             // payload is still UTF-8 JSON.
             if (isStale(webSocket)) return
-            handleTextMessage(bytes.utf8())
+            handleTextMessage(bytes.utf8(), lifecycle)
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            val ready = setupReady
-            if (ready != null && !ready.isCompleted) {
-                ready.completeExceptionally(IOException("gemini live connection failed: ${t.message}", t))
+            if (isStale(webSocket)) return
+            val active = lifecycle.markTerminal(
+                IOException("gemini live connection failed: ${t.message}", t),
+            )
+            if (!active) return
+            if (beginReconnect { resumption.takeAfterDrop() }) {
+                // A transport may lose the goAway warning. Resume from the
+                // latest server-declared safe checkpoint when one exists.
                 return
             }
-            if (isStale(webSocket) || reconnecting) return
             if (_state.value == TransportState.CONNECTED) {
+                releaseSession()
                 _state.value = TransportState.FAILED
             }
         }
@@ -821,26 +1081,26 @@ class GeminiLiveTransport @Inject constructor(
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            val ready = setupReady
-            if (ready != null && !ready.isCompleted) {
-                ready.completeExceptionally(IOException("gemini live closed before setup ($code $reason)"))
-                return
-            }
-            if (isStale(webSocket) || reconnecting) return
-            if (running && resumptionHandle != null) {
+            if (isStale(webSocket)) return
+            val active = lifecycle.markTerminal(
+                IOException("gemini live closed ($code $reason)"),
+            )
+            if (!active) return
+            if (beginReconnect { resumption.takeAfterDrop() }) {
                 // Recycle without (or racing) a goAway: resume the session.
-                scheduleReconnect()
                 return
             }
             if (_state.value == TransportState.CONNECTED) {
+                releaseSession()
                 _state.value = TransportState.CLOSED
             }
         }
 
         /** True when this callback belongs to a socket we already replaced. */
         private fun isStale(ws: WebSocket): Boolean {
-            val current = this@GeminiLiveTransport.webSocket
-            return current != null && current !== ws
+            return synchronized(socketLock) {
+                this@GeminiLiveTransport.webSocket !== ws && lifecycle.isRegistered()
+            }
         }
     }
 

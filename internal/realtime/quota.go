@@ -15,6 +15,7 @@ import (
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/observ"
+	"github.com/JeremyProffittOrg/live-ninja/internal/voiceengine"
 )
 
 // Quota gate per contracts/metering.md — enforcement is always PRE-SPEND:
@@ -921,7 +922,14 @@ func (g *Gate) readUsageNumbers(ctx context.Context, userID, sk string, attrs ..
 // transcript sink and usage-rollup anchor a session's turns even if the
 // client never posts a transcript; its expiresAt records the hard cut-off
 // (FR-V08) so downstream metering can clamp session seconds to it.
-func (g *Gate) RecordMint(ctx context.Context, userID, sessionID, surface string) error {
+func (g *Gate) RecordMint(
+	ctx context.Context,
+	userID, sessionID, surface string,
+	engine voiceengine.Engine,
+) error {
+	if !engine.Valid() {
+		return fmt.Errorf("realtime: record mint with invalid engine %q", engine)
+	}
 	now := g.now().UTC()
 	sessionEnd := now.Add(time.Duration(g.sessionCapSeconds) * time.Second)
 
@@ -948,7 +956,7 @@ func (g *Gate) RecordMint(ctx context.Context, userID, sessionID, surface string
 			"role":      &ddbtypes.AttributeValueMemberS{Value: "system"},
 			"text":      &ddbtypes.AttributeValueMemberS{Value: "session-start"},
 			"surface":   &ddbtypes.AttributeValueMemberS{Value: surface},
-			"engine":    &ddbtypes.AttributeValueMemberS{Value: "openai-realtime"},
+			"engine":    &ddbtypes.AttributeValueMemberS{Value: string(engine)},
 			"ts":        &ddbtypes.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
 			"expiresAt": &ddbtypes.AttributeValueMemberS{Value: sessionEnd.Format(time.RFC3339)},
 			"ttl":       numberAV(float64(now.Add(time.Duration(g.retentionDays) * 24 * time.Hour).Unix())),

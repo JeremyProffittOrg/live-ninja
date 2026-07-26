@@ -1,9 +1,21 @@
 package realtime
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
 	"testing"
+
+	"github.com/JeremyProffittOrg/live-ninja/internal/config"
 )
+
+type mintRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f mintRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 // TestBuildTurnDetection locks the micEagerness -> turn_detection mapping:
 // semantic_vad always; eagerness forwarded only for the explicit choices;
@@ -102,5 +114,49 @@ func TestBuildAudioInputJSONShape(t *testing.T) {
 	}
 	if decoded.NoiseReduction.Type != "near_field" {
 		t.Fatalf("noise_reduction.type = %q, want near_field", decoded.NoiseReduction.Type)
+	}
+}
+
+func TestMiniMinterBindsExactModelInRequestAndResult(t *testing.T) {
+	t.Setenv(config.EnvOverrideOpenAIAPIKey, "test")
+	minter := NewMinter(config.NewLoaderWithClient(nil), MiniRealtimeModel)
+
+	var requestModel string
+	minter.httpc = &http.Client{Transport: mintRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var payload struct {
+			Session struct {
+				Model string `json:"model"`
+			} `json:"session"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		requestModel = payload.Session.Model
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewBufferString(`{"value":"ephemeral-test","expires_at":1785096000}`)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+
+	result, err := minter.Mint(context.Background(), "", "cedar", "", "", "web")
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	if requestModel != MiniRealtimeModel {
+		t.Fatalf("request session.model = %q, want %q", requestModel, MiniRealtimeModel)
+	}
+	if result.Model != MiniRealtimeModel {
+		t.Fatalf("result model = %q, want %q", result.Model, MiniRealtimeModel)
+	}
+
+	var session struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(result.SessionConfig, &session); err != nil {
+		t.Fatalf("decode returned session config: %v", err)
+	}
+	if session.Model != MiniRealtimeModel {
+		t.Fatalf("returned session config model = %q, want %q", session.Model, MiniRealtimeModel)
 	}
 }

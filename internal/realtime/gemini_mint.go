@@ -124,13 +124,46 @@ func geminiProvisioningHTTPClient() *http.Client {
 
 // geminiAuthTokenRequest is the final REST wire shape emitted by the official
 // Go SDK after it converts the ergonomic LiveConnectConstraints input and
-// flattens the nested setup object. It deliberately contains no fieldMask:
-// omitting one locks the complete provisioned Live setup.
+// flattens the nested setup object. The field mask locks every provisioned
+// setup field except sessionResumption: the client must be allowed to add the
+// latest server-issued handle when the Live connection recycles. With an
+// empty fieldMask Google ignores the client's entire setup frame, including
+// that handle, and a uses:1 token cannot resume.
 type geminiAuthTokenRequest struct {
 	Uses                     *int32          `json:"uses,omitempty"`
 	ExpireTime               *time.Time      `json:"expireTime,omitempty"`
 	NewSessionExpireTime     *time.Time      `json:"newSessionExpireTime,omitempty"`
+	FieldMask                string          `json:"fieldMask"`
 	BidiGenerateContentSetup json.RawMessage `json:"bidiGenerateContentSetup"`
+}
+
+// geminiSetupFieldMask mirrors the official SDK's one-level field-mask
+// expansion while deliberately leaving sessionResumption client-controlled.
+// Empty message fields (for example inputAudioTranscription:{}) still need a
+// top-level mask entry because their presence enables the feature.
+func geminiSetupFieldMask(setupJSON json.RawMessage) (string, error) {
+	var setup map[string]any
+	if err := json.Unmarshal(setupJSON, &setup); err != nil {
+		return "", fmt.Errorf("realtime: decode Gemini provisioning setup: %w", err)
+	}
+	fields := make([]string, 0, len(setup))
+	for field, value := range setup {
+		if field == "sessionResumption" {
+			continue
+		}
+		if nested, ok := value.(map[string]any); ok && len(nested) > 0 {
+			for child := range nested {
+				fields = append(fields, field+"."+child)
+			}
+			continue
+		}
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+	if len(fields) == 0 {
+		return "", fmt.Errorf("realtime: Gemini provisioning setup has no lockable fields")
+	}
+	return strings.Join(fields, ","), nil
 }
 
 func createGeminiAuthToken(
@@ -149,8 +182,13 @@ func createGeminiAuthToken(
 	if len(setupJSON) == 0 {
 		return nil, fmt.Errorf("realtime: Gemini provisioning setup is empty")
 	}
+	fieldMask, err := geminiSetupFieldMask(setupJSON)
+	if err != nil {
+		return nil, err
+	}
 	wireCfg := geminiAuthTokenRequest{
 		Uses:                     cfg.Uses,
+		FieldMask:                fieldMask,
 		BidiGenerateContentSetup: setupJSON,
 	}
 	if !cfg.ExpireTime.IsZero() {

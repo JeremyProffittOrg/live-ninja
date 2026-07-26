@@ -264,3 +264,70 @@ func TestMintGeminiFailureFallsBackAndAttributesOpenAI(t *testing.T) {
 	assert.Contains(t, resp.QuotaWarning, "Gemini Live is unavailable")
 	assert.Equal(t, 1, openAI.calls)
 }
+
+func TestMintOpenAIEnginePinRoutesAndAttributesActualEngine(t *testing.T) {
+	const configuredModel = "gpt-realtime-configured-test"
+
+	tests := []struct {
+		name              string
+		pin               voiceengine.Engine
+		wantModel         string
+		wantStandardCalls int
+		wantMiniCalls     int
+	}{
+		{
+			name:              "standard pin uses configured model minter",
+			pin:               voiceengine.EngineOpenAIRealtime,
+			wantModel:         configuredModel,
+			wantStandardCalls: 1,
+		},
+		{
+			name:          "mini pin uses fixed mini model minter",
+			pin:           voiceengine.EngineOpenAIRealtimeMini,
+			wantModel:     realtime.MiniRealtimeModel,
+			wantMiniCalls: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ddb := testutil.NewFakeDynamo()
+			seedEnginePin(t, ddb, "u1", string(tc.pin))
+			logs := &bytes.Buffer{}
+			standard := &fakeRealtimeMint{result: &realtime.MintResult{
+				ClientSecret: realtime.ClientSecret{Value: "ek_standard", ExpiresAt: "2026-07-26T20:00:00Z"},
+				Model:        configuredModel,
+				Voice:        "cedar",
+			}}
+			mini := &fakeRealtimeMint{result: &realtime.MintResult{
+				ClientSecret: realtime.ClientSecret{Value: "ek_mini", ExpiresAt: "2026-07-26T20:00:00Z"},
+				Model:        realtime.MiniRealtimeModel,
+				Voice:        "cedar",
+			}}
+			b := newGeminiTestBroker(ddb, nil)
+			b.log = slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			b.minter = standard
+			b.miniMinter = mini
+
+			resp, err := b.Handle(context.Background(), Request{UserID: "u1", Surface: "web"})
+			require.NoError(t, err)
+			require.Empty(t, resp.Error)
+			assert.Equal(t, "openai-direct", resp.Mode)
+			assert.Equal(t, string(tc.pin), resp.Engine)
+			assert.Equal(t, tc.wantModel, resp.Model)
+			assert.Equal(t, tc.wantStandardCalls, standard.calls)
+			assert.Equal(t, tc.wantMiniCalls, mini.calls)
+
+			marker := ddb.RawItem("USER#u1", "LOG#"+resp.SessionID+"#000000")
+			require.NotNil(t, marker)
+			recordedEngine, ok := marker["engine"].(*ddbtypes.AttributeValueMemberS)
+			require.True(t, ok)
+			assert.Equal(t, string(tc.pin), recordedEngine.Value)
+
+			minted := logLinesWith(t, logs, "session minted")
+			require.Len(t, minted, 1)
+			assert.Equal(t, string(tc.pin), minted[0]["engine"])
+			assert.Equal(t, tc.wantModel, minted[0]["model"])
+		})
+	}
+}

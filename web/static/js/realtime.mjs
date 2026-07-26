@@ -141,9 +141,10 @@ const NOVA_DEFAULT_OUT_RATE = 24_000;
 const NOVA_CAPTURE_FRAMES = 2048;
 
 // Gemini Live (M13): how long to wait for `setupComplete` after the socket
-// opens, and how close to the ephemeral token's expiresAt a goAway
-// reconnect still reuses the same token — inside the skew the client
-// re-fetches the session bootstrap (fresh token) before resuming.
+// opens, and how close to the ephemeral token's expiresAt a reconnect may
+// still reuse it. The current broker has no same-session continuation mint:
+// once inside this skew the client must end the conversation rather than
+// allocate a second broker session while resuming Google's model session.
 const GEMINI_SETUP_TIMEOUT_MS = 12_000;
 const GEMINI_TOKEN_EXPIRY_SKEW_MS = 60_000;
 // Gemini frames arrive as binary (ArrayBuffer) JSON — audio rides base64
@@ -432,14 +433,16 @@ export class RealtimeSession extends EventTarget {
   #geminiWs = null;
   #geminiMinted = null; // {endpoint, token, expiresAtMs, sessionConfig}
   #geminiResumeHandle = ''; // latest sessionResumptionUpdate handle
-  #geminiReconnecting = false; // a goAway/expiry reconnect is in flight
-  #geminiReconnectPending = false; // goAway mid-speech: reconnect at turn end
+  #geminiCanResume = false; // current state is safe to resume without rollback
+  #geminiReconnecting = false; // a safe-handle replacement is in flight
+  #geminiReconnectPending = false; // goAway awaiting a safe checkpoint
   #geminiTurn = 0; // itemId counter (g-user-N / g-asst-N)
   #geminiUserItem = ''; // open user transcription itemId ('' = none)
   #geminiAsstItem = ''; // open assistant transcription itemId
   #geminiThinking = false; // 'thinking' emitted for the current turn
   #geminiCallNames = new Map(); // toolCall id → function name (toolResponse needs it)
   #geminiCancelled = new Set(); // toolCallCancellation ids: suppress late results
+  #geminiControlQueue = []; // wire control frames completed during socket replacement
   #geminiUsage = null; // latest usageMetadata, surfaced at turnComplete
 
   constructor({ sessionPath = SESSION_PATH, callsUrl = OPENAI_CALLS_URL } = {}) {
@@ -1223,9 +1226,9 @@ export class RealtimeSession extends EventTarget {
   // with an ephemeral token in the URL, JSON+base64 uplink frames, and
   // Gemini's event vocabulary translated to the shared CustomEvents.
   // Lifecycle: Google recycles the connection ~every 10 minutes (goAway) —
-  // the client reconnects with the latest sessionResumptionUpdate handle,
-  // re-fetching a fresh bootstrap (new token) once the current token nears
-  // expiresAt (the Nova-style per-reconnect re-mint, gemini-plan.md §3.2).
+  // the client reconnects with the latest sessionResumptionUpdate handle
+  // while the original broker-minted token remains valid. A later broker
+  // continuation flow is required before reconnecting with a fresh token.
 
   /** Stash the parts of a gemini-direct bootstrap that reconnects need. */
   #adoptGeminiMint(minted) {
@@ -1264,8 +1267,9 @@ export class RealtimeSession extends EventTarget {
    * Constrained method only accepts ?access_token= auth), send the
    * broker-authored `setup` frame on open — swapping in the stored
    * resumption handle on reconnects — and gate on `setupComplete`. On
-   * success the socket is installed as the live one (make-before-break for
-   * mid-call reconnects); rejects on error/close/timeout before the gate. */
+   * success the socket is installed as the live one; rejects on
+   * error/close/timeout before the gate. Reconnects stop the predecessor
+   * first so no new input can advance beyond the consumed safe handle. */
   #openGeminiSocket() {
     const { endpoint, token, sessionConfig } = this.#geminiMinted;
     const url = endpoint + '?access_token=' + encodeURIComponent(token);
@@ -1336,8 +1340,7 @@ export class RealtimeSession extends EventTarget {
     });
   }
 
-  /** Swap `ws` in as the live Gemini socket: detach + close any predecessor
-   * (goAway reconnects are make-before-break) and attach the steady-state
+  /** Swap `ws` in as the live Gemini socket and attach the steady-state
    * handlers — from here on a close/error is a mid-call drop, except while
    * a reconnect is in flight (its own failure path owns the drop). */
   #installGeminiSocket(ws) {
@@ -1353,10 +1356,16 @@ export class RealtimeSession extends EventTarget {
     this.#geminiWs = ws;
     ws.onmessage = (e) => this.#onGeminiMessage(e);
     ws.onerror = () => {
-      if (this.#geminiWs === ws && !this.#geminiReconnecting) this.#handleDrop('gemini');
+      if (this.#geminiWs !== ws || this.#geminiReconnecting) return;
+      if (this.#geminiCanResume && this.#geminiResumeHandle) void this.#geminiReconnect();
+      else this.#handleDrop('gemini');
     };
     ws.onclose = () => {
-      if (this.#geminiWs === ws && !this.#geminiReconnecting) this.#handleDrop('gemini');
+      if (this.#geminiWs !== ws || this.#geminiReconnecting) return;
+      // Google normally sends goAway first, but a transport can lose that
+      // warning. A retained handle still makes the close recoverable.
+      if (this.#geminiCanResume && this.#geminiResumeHandle) void this.#geminiReconnect();
+      else this.#handleDrop('gemini');
     };
   }
 
@@ -1386,23 +1395,31 @@ export class RealtimeSession extends EventTarget {
 
     if (evt.sessionResumptionUpdate) {
       const u = evt.sessionResumptionUpdate;
-      if (u.resumable && u.newHandle) this.#geminiResumeHandle = u.newHandle;
+      this.#geminiCanResume = u.resumable === true && !!u.newHandle;
+      if (this.#geminiCanResume) this.#geminiResumeHandle = u.newHandle;
     }
 
     if (evt.goAway) {
       // Connection recycle warning (~10-min lifetime). Reconnect
       // proactively with the stored handle; mid-utterance, defer to the
-      // turn boundary so the recycle doesn't audibly clip the assistant.
-      if (this.#speaking) this.#geminiReconnectPending = true;
-      else void this.#geminiReconnect();
+      // next server-declared resumable point so the recycle neither clips
+      // the assistant nor rolls back an in-flight generation/tool call.
+      this.#geminiReconnectPending = true;
     }
 
     if (evt.toolCall && Array.isArray(evt.toolCall.functionCalls)) {
       // Same router flow as every engine: the dispatcher POSTs
       // /api/v1/tools/invoke and answers through sendEvent → #geminiSend,
       // which needs the call's name again — remember it per id.
-      for (const fc of evt.toolCall.functionCalls) {
-        if (!fc || !fc.id || !fc.name) continue;
+      const calls = evt.toolCall.functionCalls.filter((fc) => fc && fc.id && fc.name);
+      if (calls.length) {
+        // The model is now waiting on new client-side state that the prior
+        // checkpoint cannot contain. Retire that handle before considering a
+        // pending goAway; only a later server update may authorize resumption.
+        this.#geminiCanResume = false;
+        this.#geminiResumeHandle = '';
+      }
+      for (const fc of calls) {
         this.#geminiCallNames.set(fc.id, fc.name);
         this.#tools.dispatch({
           name: fc.name,
@@ -1423,6 +1440,10 @@ export class RealtimeSession extends EventTarget {
     }
 
     if (evt.serverContent) this.#onGeminiServerContent(evt.serverContent);
+    // Evaluate a pending goAway only after every state-changing field in
+    // this frame (especially toolCall) has had a chance to retire an older
+    // checkpoint.
+    this.#maybeGeminiReconnect();
   }
 
   #onGeminiServerContent(sc) {
@@ -1521,10 +1542,7 @@ export class RealtimeSession extends EventTarget {
     }
     this.#emitGeminiUsage();
     this.#emit('responsedone');
-    if (this.#geminiReconnectPending) {
-      this.#geminiReconnectPending = false;
-      void this.#geminiReconnect();
-    }
+    this.#maybeGeminiReconnect();
   }
 
   /** usageMetadata → the OpenAI-shaped usage payload the page's cost badge
@@ -1604,46 +1622,130 @@ export class RealtimeSession extends EventTarget {
     this.#emit('bargein');
   }
 
-  /** goAway/expiry reconnect: open a replacement connection resuming the
-   * same server-side session via the stored handle (make-before-break —
-   * #installGeminiSocket retires the old socket once the new one is ready).
+  /** goAway reconnect: open a replacement connection resuming the
+   * same server-side session via the stored handle. The safe checkpoint is
+   * consumed once and the old socket is stopped before replacement setup,
+   * preventing mic input or late events from making that handle stale.
    * Within the token's window the same token reopens (a uses:1 token
-   * permits resumption reconnects); near/past expiresAt a fresh bootstrap
-   * is fetched first — the Nova-style per-reconnect re-mint. */
+   * permits resumption reconnects). Near/past expiresAt, end the logical
+   * conversation: minting through the existing endpoint would create a
+   * second broker session/slot and split its transcript and usage ledger. */
   async #geminiReconnect() {
     if (this.#closing || !this.#connected || this.#geminiReconnecting) return;
+    if (!this.#geminiCanResume || !this.#geminiResumeHandle) {
+      this.#handleDrop('gemini-no-resumption');
+      return;
+    }
+    if (
+      !this.#geminiMinted ||
+      Date.now() >= this.#geminiMinted.expiresAtMs - GEMINI_TOKEN_EXPIRY_SKEW_MS
+    ) {
+      this.#handleDrop('gemini-token-expired');
+      return;
+    }
+    // A transport failure may force a goAway-deferred reconnect before the
+    // old turnComplete arrives. Consume that pending request now so a late
+    // turnComplete cannot launch a redundant second replacement socket.
+    this.#geminiReconnectPending = false;
     this.#geminiReconnecting = true;
-    try {
-      if (Date.now() >= this.#geminiMinted.expiresAtMs - GEMINI_TOKEN_EXPIRY_SKEW_MS) {
-        const { body, warning } = await mintOnce(this.sessionPath);
-        if (warning) this.#emit('quotawarning', { message: warning });
-        if (!body || body.mode !== 'gemini-direct') {
-          // The pin changed mid-session — treat it as a drop; the next
-          // conversation picks up the new engine.
-          throw new RealtimeError('gemini_failed', 'The voice service no longer offers a Gemini session.');
-        }
-        // Keep the original sessionId: the conversation (and its transcript
-        // log) continues across the re-mint; the resumption handle carries
-        // the model-side context into the fresh token's session.
-        this.#adoptGeminiMint(body);
+    this.#geminiCanResume = false;
+    const old = this.#geminiWs;
+    this.#geminiWs = null; // capture pauses until the replacement passes setup
+    if (old) {
+      old.onopen = old.onmessage = old.onerror = old.onclose = null;
+      try {
+        old.close();
+      } catch {
+        /* already closed */
       }
+    }
+    try {
       await this.#openGeminiSocket();
     } catch {
       this.#geminiReconnecting = false;
       this.#handleDrop('gemini-reconnect');
       return;
     }
+    // Tool invocations and typed/control events can complete while the old
+    // socket is stopped and the replacement is still in setup. Deliver them
+    // in original order only after setupComplete installed the new socket.
+    // A failed flush is terminal: replaying an ambiguously-sent tool result
+    // on another handle could execute the model-side continuation twice.
+    if (!this.#flushGeminiControlQueue()) {
+      this.#geminiReconnecting = false;
+      this.#handleDrop('gemini-reconnect-flush');
+      return;
+    }
     this.#geminiReconnecting = false;
   }
 
+  /** Reconnect only at a server-declared safe checkpoint. A false
+   * sessionResumptionUpdate is authoritative: using an older handle while
+   * generation or a tool call is in flight can silently roll model state
+   * back, so keep the request pending until a later safe update arrives. */
+  #maybeGeminiReconnect() {
+    if (
+      !this.#geminiReconnectPending ||
+      this.#speaking ||
+      !this.#geminiCanResume ||
+      !this.#geminiResumeHandle
+    ) {
+      return;
+    }
+    void this.#geminiReconnect();
+  }
+
+  /** Send a Gemini control frame, or retain it while break-before-make has
+   * deliberately removed the live socket. Audio never uses this path and is
+   * still dropped during replacement so it cannot advance past the consumed
+   * resumption handle. */
   #geminiWsSend(obj) {
     const ws = this.#geminiWs;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      if (
+        this.#connected &&
+        !this.#closing &&
+        (this.#geminiReconnecting || (this.#geminiCanResume && this.#geminiResumeHandle))
+      ) {
+        this.#geminiControlQueue.push(obj);
+        if (!this.#geminiReconnecting) void this.#geminiReconnect();
+        return;
+      }
+      throw new RealtimeError('not_connected', 'The voice session is not connected.');
+    }
     try {
       ws.send(JSON.stringify(obj));
     } catch {
-      /* socket raced closed — drop handler owns recovery */
+      // WebSocket.send throwing means the frame was not accepted. Preserve
+      // it across a safe-handle replacement; without one, fail closed.
+      if (
+        this.#connected &&
+        !this.#closing &&
+        (this.#geminiReconnecting || (this.#geminiCanResume && this.#geminiResumeHandle))
+      ) {
+        this.#geminiControlQueue.push(obj);
+        if (!this.#geminiReconnecting) void this.#geminiReconnect();
+        return;
+      }
+      throw new RealtimeError('not_connected', 'The voice session is not connected.');
     }
+  }
+
+  /** Flush queued control frames exactly once after replacement setup. The
+   * queue head is removed only after WebSocket.send accepts it, preserving
+   * order and retaining the unsent suffix if the socket races closed. */
+  #flushGeminiControlQueue() {
+    const ws = this.#geminiWs;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    while (this.#geminiControlQueue.length) {
+      try {
+        ws.send(JSON.stringify(this.#geminiControlQueue[0]));
+      } catch {
+        return false;
+      }
+      this.#geminiControlQueue.shift();
+    }
+    return true;
   }
 
   // Uplink audio framing: base64 PCM16 inside a JSON realtimeInput frame —
@@ -1781,9 +1883,11 @@ export class RealtimeSession extends EventTarget {
     this.#geminiAsstItem = '';
     this.#geminiThinking = false;
     this.#geminiResumeHandle = '';
+    this.#geminiCanResume = false;
     this.#geminiMinted = null;
     this.#geminiCallNames.clear();
     this.#geminiCancelled.clear();
+    this.#geminiControlQueue.length = 0;
     if (this.#geminiWs) {
       this.#geminiWs.onopen = null;
       this.#geminiWs.onmessage = null;
@@ -1897,7 +2001,12 @@ export class RealtimeSession extends EventTarget {
       return;
     }
     if (this.#mode === 'gemini-direct') {
-      if (!this.#geminiWs || this.#geminiWs.readyState !== WebSocket.OPEN) {
+      const socketOpen = this.#geminiWs && this.#geminiWs.readyState === WebSocket.OPEN;
+      const replacementCanAccept =
+        this.#connected &&
+        !this.#closing &&
+        (this.#geminiReconnecting || (this.#geminiCanResume && this.#geminiResumeHandle));
+      if (!socketOpen && !replacementCanAccept) {
         throw new RealtimeError('not_connected', 'The voice session is not connected.');
       }
       this.#geminiSend(obj);

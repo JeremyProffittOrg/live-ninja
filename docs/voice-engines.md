@@ -8,11 +8,16 @@ and that difference is the whole reason this document exists.
 | Engine pin value      | Backend                         | Media path                         | Where audio is relayed |
 |-----------------------|---------------------------------|------------------------------------|------------------------|
 | `openai-realtime`     | OpenAI Realtime (`gpt-realtime`)| **Client-direct** WSS to OpenAI    | Nowhere — client ⇄ OpenAI |
-| `openai-realtime-mini`| OpenAI Realtime mini            | **Client-direct** WSS to OpenAI    | Nowhere — client ⇄ OpenAI |
+| `openai-realtime-mini`| OpenAI Realtime mini (`gpt-realtime-mini`) | **Client-direct** WSS to OpenAI | Nowhere — client ⇄ OpenAI |
 | `nova-sonic`          | Amazon Bedrock **Nova Sonic** (`amazon.nova-sonic-v1:0`, `us-east-1`) | **Backend-bridged** WSS to our Nova bridge | client ⇄ Nova bridge ⇄ Bedrock |
 | `gemini-flash-live`   | Google **Gemini Live API** (`gemini-3.1-flash-live-preview`, native audio; M13) | **Client-direct** WSS to Google | Nowhere — client ⇄ Google |
 
 `openai-realtime` is the platform default (`settings.schema.json#/properties/voiceEngine/default`).
+The mini pin uses its own fixed minter rather than inheriting `OPENAI_REALTIME_MODEL`, so its
+response and ledger cannot claim mini while silently requesting the full model. OpenAI currently
+marks the [`gpt-realtime-mini` alias as deprecated](https://developers.openai.com/api/docs/models/gpt-realtime-mini);
+the project preserves its explicit PRD target here, with a future model migration kept separate
+from this routing correction.
 
 ---
 
@@ -115,14 +120,18 @@ the config deliberately excludes every device-local tool.
 }
 ```
 
-The token is **single-use** (session resumption reconnects don't count as a
-use), constrained at mint to the exact model/voice/instructions/tools, and
-carried as `?access_token=<url-escaped token>` on the WSS URL (browsers can't
-set upgrade headers). Past `expiresAt` (~30 min) the client re-fetches this
-route for a fresh token and resumes via its stored resumption handle. The
-field names are deliberately outside the `wsUrl`/`bridgeUrl` family: legacy
-clients detect Nova by field *presence*, so the Gemini shape must never trip
-that heuristic.
+The token is **single-use** (session-resumption reconnects don't count as a
+use), constrained at mint to the exact model/voice/instructions/tools while
+leaving only `sessionResumption` client-controlled, and carried as
+`?access_token=<url-escaped token>` on the WSS URL (browsers can't set upgrade
+headers). While the original token is valid, clients can replace a dropped or
+`goAway` socket with the latest server-issued resumption handle. At
+`expiresAt`, clients fail closed: the ordinary mint route creates a new broker
+`sessionId`, ledger marker, and concurrency slot, so it cannot safely continue
+the old logical session. Long-lived continuation needs an authenticated
+same-session renewal contract before it can be enabled. The field names are
+deliberately outside the `wsUrl`/`bridgeUrl` family: legacy clients detect Nova
+by field *presence*, so the Gemini shape must never trip that heuristic.
 
 The bridge token is **single-use, scoped to that one `sessionId`, and bound to
 the exact server-generated session config**. WebSocket

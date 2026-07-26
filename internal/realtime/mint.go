@@ -27,6 +27,12 @@ import (
 // default gpt-realtime).
 const DefaultRealtimeModel = "gpt-realtime"
 
+// MiniRealtimeModel is the fixed OpenAI model used by the
+// openai-realtime-mini engine pin. Unlike the default engine, this target
+// deliberately does not follow OPENAI_REALTIME_MODEL: changing that setting
+// must not silently turn the cheaper engine pin back into the full model.
+const MiniRealtimeModel = "gpt-realtime-mini"
+
 // clientSecretsURL is OpenAI's ephemeral-token mint endpoint. The token
 // returned is config-bound: the session object sent here (model, voice,
 // instructions, tools, turn detection) is fixed server-side and cannot be

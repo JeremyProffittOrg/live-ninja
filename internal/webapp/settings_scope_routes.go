@@ -257,6 +257,17 @@ func settingsSectionEnvelope(doc map[string]any, devices []store.Device,
 		if device.Status != store.DeviceStatusActive {
 			continue
 		}
+		// Legacy device rows predate metadata/capability declarations. Emit
+		// empty JSON collections rather than null so strict mobile decoders can
+		// adopt the section envelope without falling back to local settings.
+		metadata := device.Metadata
+		if metadata == nil {
+			metadata = map[string]string{}
+		}
+		capabilities := device.Capabilities
+		if capabilities == nil {
+			capabilities = []string{}
+		}
 		effective := store.EffectiveSettings(doc, device.DeviceID)
 		settings, _ := store.ExtractSettingsSection(effective, section)
 		surface := device.Surface
@@ -267,8 +278,8 @@ func settingsSectionEnvelope(doc map[string]any, devices []store.Device,
 			"deviceId":     device.DeviceID,
 			"name":         device.Name,
 			"surface":      surface,
-			"metadata":     device.Metadata,
-			"capabilities": device.Capabilities,
+			"metadata":     metadata,
+			"capabilities": capabilities,
 			"isCurrent":    device.DeviceID == currentDeviceID,
 			"inherited":    store.DeviceSectionInherited(doc, device.DeviceID, section),
 			"settings":     settings,

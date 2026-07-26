@@ -47,7 +47,7 @@ class TranscriptUploaderTest {
 
         val turns = api.requests.flatMap { it.turns }
         assertEquals(2, turns.size)
-        assertEquals(listOf(0, 1), turns.map { it.seq })
+        assertEquals(listOf(1, 2), turns.map { it.seq })
         assertEquals(listOf("user", "assistant"), turns.map { it.role })
         assertTrue(turns.all { it.engine == TranscriptUploader.ENGINE_GEMINI })
         assertTrue("the last request must close the session", api.requests.last().final)

@@ -54,7 +54,10 @@ export function createTranscriptSink({
   // reply it prompted (addTurn's `before`) — server rows keep transcript
   // order. Entries that have been attempted keep their seq forever (the
   // server dedupes on seq, so a retried batch must resend identical rows).
-  let nextSeq = 0;
+  // The broker owns LOG#<sessionId>#000000 as its session-start ledger
+  // marker. Client transcript turns begin at 1 or the first spoken turn
+  // collides with that marker and is silently deduplicated away.
+  let nextSeq = 1;
   let pending = []; // [{seq: number|null, role, text, engine}]
   let timer = null;
   let inFlight = false;
@@ -90,7 +93,7 @@ export function createTranscriptSink({
     if (sessionId && (pending.length || finalPending)) void flush();
     sessionId = id || '';
     engine = sessionEngine || '';
-    nextSeq = 0;
+    nextSeq = 1;
     pending = [];
     finalPending = false;
     finalSent = false;

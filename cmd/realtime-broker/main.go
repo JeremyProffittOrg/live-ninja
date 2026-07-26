@@ -196,10 +196,11 @@ type realtimeMintAPI interface {
 }
 
 type broker struct {
-	log      *slog.Logger
-	gate     *realtime.Gate
-	minter   realtimeMintAPI
-	fallback fallbackAPI
+	log        *slog.Logger
+	gate       *realtime.Gate
+	minter     realtimeMintAPI
+	miniMinter realtimeMintAPI
+	fallback   fallbackAPI
 
 	// ddb/table back the per-mint Guide Entity injection (guides.go): the
 	// broker Queries the caller's GUIDE# prefix and appends enabled guides
@@ -408,15 +409,31 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 		guideSuffix = realtime.GuideInstructions(guides)
 	}
 
+	openAIMinter := b.minter
+	if engine == voiceengine.EngineOpenAIRealtimeMini {
+		openAIMinter = b.miniMinter
+	}
+	metricDimensions := map[string]string{
+		"Surface": req.Surface,
+		"Engine":  string(engine),
+	}
+	if openAIMinter == nil {
+		l.Error("realtime-broker: OpenAI minter unavailable",
+			slog.String("engine", string(engine)))
+		observ.EmitMetric(metricsNamespace, "MintErrors", 1, "Count", metricDimensions)
+		return Response{Error: "mint_failed", Code: http.StatusBadGateway,
+			Message: "Could not mint a realtime session token; use the fallback cascade."}
+	}
+
 	start := time.Now()
-	res, err := b.minter.Mint(ctx, req.Persona, voice, req.MicEagerness, baseKnowledge+accentDirective+guideSuffix, req.Surface)
+	res, err := openAIMinter.Mint(ctx, req.Persona, voice, req.MicEagerness, baseKnowledge+accentDirective+guideSuffix, req.Surface)
 	observ.EmitMetric(metricsNamespace, "EphemeralTokenMintLatency",
-		float64(time.Since(start).Milliseconds()), "Milliseconds",
-		map[string]string{"Surface": req.Surface})
+		float64(time.Since(start).Milliseconds()), "Milliseconds", metricDimensions)
 	if err != nil {
-		l.Error("realtime-broker: ephemeral token mint failed", slog.String("error", err.Error()))
-		observ.EmitMetric(metricsNamespace, "MintErrors", 1, "Count",
-			map[string]string{"Surface": req.Surface})
+		l.Error("realtime-broker: ephemeral token mint failed",
+			slog.String("error", err.Error()),
+			slog.String("engine", string(engine)))
+		observ.EmitMetric(metricsNamespace, "MintErrors", 1, "Count", metricDimensions)
 		return Response{Error: "mint_failed", Code: http.StatusBadGateway,
 			Message: "Could not mint a realtime session token; use the fallback cascade."}
 	}
@@ -424,9 +441,10 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 	// Post-spend bookkeeping (session ledger LOG# seq-0 marker + dayMints
 	// bump). Best-effort: the token is already minted and burning its
 	// 60s TTL, so a bookkeeping failure is logged, not fatal.
-	if err := b.gate.RecordMint(ctx, req.UserID, sessionID, req.Surface); err != nil {
+	if err := b.gate.RecordMint(ctx, req.UserID, sessionID, req.Surface, engine); err != nil {
 		l.Warn("realtime-broker: mint bookkeeping failed", slog.String("error", err.Error()),
-			slog.String("sessionId", sessionID))
+			slog.String("sessionId", sessionID),
+			slog.String("engine", string(engine)))
 	}
 
 	observ.EmitMetric(metricsNamespace, "SessionsBrokered", 1, "Count",
@@ -506,7 +524,9 @@ func (b *broker) handleNovaBridge(ctx context.Context, l *slog.Logger, req Reque
 	// client-direct token, a Nova bootstrap without this record is unusable,
 	// so fail before returning the URL rather than handing the client a
 	// guaranteed-to-be-rejected session.
-	if err := b.gate.RecordMint(ctx, req.UserID, sessionID, req.Surface); err != nil {
+	if err := b.gate.RecordMint(
+		ctx, req.UserID, sessionID, req.Surface, voiceengine.EngineNovaSonic,
+	); err != nil {
 		l.Error("realtime-broker: nova bridge session record failed", slog.String("error", err.Error()),
 			slog.String("sessionId", sessionID))
 		observ.EmitMetric(metricsNamespace, "MintErrors", 1, "Count",
@@ -587,7 +607,9 @@ func (b *broker) handleGeminiDirect(ctx context.Context, l *slog.Logger, req Req
 
 	// Post-spend bookkeeping (same ledger marker + dayMints bump as the other
 	// engines). Best-effort: the token is already minted.
-	if err := b.gate.RecordMint(ctx, req.UserID, sessionID, req.Surface); err != nil {
+	if err := b.gate.RecordMint(
+		ctx, req.UserID, sessionID, req.Surface, voiceengine.EngineGeminiFlashLive,
+	); err != nil {
 		l.Warn("realtime-broker: gemini mint bookkeeping failed", slog.String("error", err.Error()),
 			slog.String("sessionId", sessionID))
 	}
@@ -875,6 +897,7 @@ func main() {
 		log:           logger,
 		gate:          gate,
 		minter:        realtime.NewMinter(loader, model),
+		miniMinter:    realtime.NewMinter(loader, realtime.MiniRealtimeModel),
 		geminiMint:    realtime.NewGeminiMinter(loader, realtime.GeminiLiveModelFromEnv()),
 		fallback:      realtime.NewFallbackClient(loader),
 		ddb:           ddb,

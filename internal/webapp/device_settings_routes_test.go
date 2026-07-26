@@ -410,6 +410,31 @@ func TestSettingsSectionCurrentAllEffectiveAndConflict(t *testing.T) {
 	assert.Equal(t, http.StatusConflict, resp.StatusCode, "stale section writes must return 409")
 }
 
+func TestSettingsSectionNormalizesLegacyDeviceCollections(t *testing.T) {
+	app, _, st := newDeviceSettingsApp(t, "")
+	_, err := st.UpsertClientDevice(t.Context(), &store.Device{
+		DeviceID: testDeviceOne,
+		UserID:   "user-1",
+		Name:     "Legacy display",
+		Surface:  store.SurfaceWeb,
+	})
+	require.NoError(t, err)
+	require.NoError(t, st.BindClientSessionDevice(
+		t.Context(), "user-1", "session-1", testDeviceOne,
+	))
+
+	resp, envelope := deviceSettingsRequest(t, app, http.MethodGet,
+		"/api/v1/settings/sections/wakeWord", testDeviceOne, "", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, envelope)
+	rows := envelope["devices"].([]any)
+	require.Len(t, rows, 1)
+	row := rows[0].(map[string]any)
+	assert.Empty(t, row["metadata"])
+	assert.Empty(t, row["capabilities"])
+	assert.IsType(t, map[string]any{}, row["metadata"])
+	assert.IsType(t, []any{}, row["capabilities"])
+}
+
 func TestSettingsSelectedRejectsForeignDevice(t *testing.T) {
 	app, _, st := newDeviceSettingsApp(t, "")
 	seedClientDevice(t, st, "user-1", testDeviceOne, "Office PC")

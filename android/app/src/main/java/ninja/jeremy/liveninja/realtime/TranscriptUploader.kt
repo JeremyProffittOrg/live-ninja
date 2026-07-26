@@ -67,7 +67,10 @@ class TranscriptUploader internal constructor(
 
     private var sessionId: String? = null
     private var engine: String = ENGINE_OPENAI
-    private var nextSeq = 0
+    // Sequence zero belongs to the broker's session-start ledger marker.
+    // Starting client turns at zero makes the first spoken turn collide
+    // with that marker and disappear under the idempotent write contract.
+    private var nextSeq = 1
     private val pending = mutableListOf<TranscriptUploadTurnDto>()
     private var timerJob: Job? = null
 
@@ -80,7 +83,7 @@ class TranscriptUploader internal constructor(
         mutex.withLock {
             this.sessionId = sessionId?.takeIf { it.isNotBlank() }
             this.engine = engine
-            nextSeq = 0
+            nextSeq = 1
             pending.clear()
             timerJob?.cancel()
             timerJob = null
