@@ -151,6 +151,24 @@ const GEMINI_TOKEN_EXPIRY_SKEW_MS = 60_000;
 // INSIDE the JSON, so every frame decodes through here (never raw PCM).
 const GEMINI_TEXT_DECODER = new TextDecoder();
 
+// Production Gemini lifecycle diagnostics. Keep this deliberately
+// credential-free: the token and resumption handle never leave private
+// fields, while the event/reason/close-code trail is enough to distinguish a
+// missing safe checkpoint from a rejected replacement socket.
+function debugGeminiLifecycle(event, detail = {}) {
+  try {
+    console.debug(
+      '[realtime] gemini lifecycle ' +
+        JSON.stringify({
+          event,
+          ...detail,
+        }),
+    );
+  } catch {
+    /* diagnostics must never affect the media path */
+  }
+}
+
 /** Typed error for session bootstrap / connection failures. `code` is the
  * server envelope's `error` (quota_exceeded, rate_limited,
  * broker_unavailable, ...) or a client-side code (sdp_failed). */
@@ -1273,6 +1291,14 @@ export class RealtimeSession extends EventTarget {
   #openGeminiSocket() {
     const { endpoint, token, sessionConfig } = this.#geminiMinted;
     const url = endpoint + '?access_token=' + encodeURIComponent(token);
+    const resuming = !!this.#geminiResumeHandle;
+    debugGeminiLifecycle('socket-opening', {
+      resuming,
+      tokenRemainingSeconds: Math.max(
+        0,
+        Math.round((this.#geminiMinted.expiresAtMs - Date.now()) / 1000),
+      ),
+    });
     let ws;
     try {
       ws = new WebSocket(url);
@@ -1303,6 +1329,7 @@ export class RealtimeSession extends EventTarget {
       );
 
       ws.onopen = () => {
+        debugGeminiLifecycle('socket-open', { resuming });
         // sessionConfig is the exact `setup` body the broker minted the
         // token against (belt-and-suspenders for the known Google bug where
         // constraints-only systemInstruction is intermittently ignored). A
@@ -1314,11 +1341,19 @@ export class RealtimeSession extends EventTarget {
         try {
           ws.send(JSON.stringify({ setup }));
         } catch {
-          /* the close handler owns the failure */
+          debugGeminiLifecycle('setup-send-rejected', { resuming });
+          fail(new RealtimeError('gemini_failed', 'Could not start the Gemini voice session.'));
         }
       };
       ws.onmessage = (e) => {
         const evt = this.#parseGeminiFrame(e.data);
+        if (evt && evt.error) {
+          debugGeminiLifecycle('setup-error-frame', {
+            resuming,
+            code: String(evt.error.code || ''),
+            status: String(evt.error.status || ''),
+          });
+        }
         if (!evt || !('setupComplete' in evt)) return; // nothing else is expected pre-gate
         if (this.#closing) {
           fail(new RealtimeError('gemini_failed', 'The session was closed.'));
@@ -1327,14 +1362,21 @@ export class RealtimeSession extends EventTarget {
         settled = true;
         clearTimeout(timer);
         this.#installGeminiSocket(ws);
+        debugGeminiLifecycle('setup-complete', { resuming });
         resolve();
       };
-      ws.onerror = () =>
+      ws.onerror = () => {
+        debugGeminiLifecycle('setup-socket-error', { resuming });
         fail(new RealtimeError('gemini_failed', 'The Gemini voice connection failed.'));
+      };
       ws.onclose = (e) => {
         // A pre-setup rejection (bad/expired token) surfaces here — include
         // the close code so the error banner is diagnosable.
         const code = e && e.code ? ' (close ' + e.code + ')' : '';
+        debugGeminiLifecycle('setup-socket-close', {
+          resuming,
+          closeCode: (e && e.code) || 0,
+        });
         fail(new RealtimeError('gemini_failed', 'Gemini refused the connection' + code + '.'));
       };
     });
@@ -1356,16 +1398,43 @@ export class RealtimeSession extends EventTarget {
     this.#geminiWs = ws;
     ws.onmessage = (e) => this.#onGeminiMessage(e);
     ws.onerror = () => {
+      debugGeminiLifecycle('socket-error', {
+        reconnecting: this.#geminiReconnecting,
+        resumable: this.#geminiCanResume,
+        safeHandlePresent: !!this.#geminiResumeHandle,
+      });
       if (this.#geminiWs !== ws || this.#geminiReconnecting) return;
-      if (this.#geminiCanResume && this.#geminiResumeHandle) void this.#geminiReconnect();
-      else this.#handleDrop('gemini');
+      if (this.#geminiCanResume && this.#geminiResumeHandle) {
+        void this.#geminiReconnect();
+      } else {
+        debugGeminiLifecycle('reconnect-blocked', {
+          reason: 'no-safe-handle',
+          trigger: 'socket-error',
+        });
+        this.#handleDrop('gemini');
+      }
     };
-    ws.onclose = () => {
+    ws.onclose = (e) => {
+      debugGeminiLifecycle('socket-close', {
+        closeCode: (e && e.code) || 0,
+        wasClean: !!(e && e.wasClean),
+        reconnecting: this.#geminiReconnecting,
+        resumable: this.#geminiCanResume,
+        safeHandlePresent: !!this.#geminiResumeHandle,
+      });
       if (this.#geminiWs !== ws || this.#geminiReconnecting) return;
       // Google normally sends goAway first, but a transport can lose that
       // warning. A retained handle still makes the close recoverable.
-      if (this.#geminiCanResume && this.#geminiResumeHandle) void this.#geminiReconnect();
-      else this.#handleDrop('gemini');
+      if (this.#geminiCanResume && this.#geminiResumeHandle) {
+        void this.#geminiReconnect();
+      } else {
+        debugGeminiLifecycle('reconnect-blocked', {
+          reason: 'no-safe-handle',
+          trigger: 'socket-close',
+          closeCode: (e && e.code) || 0,
+        });
+        this.#handleDrop('gemini');
+      }
     };
   }
 
@@ -1391,12 +1460,22 @@ export class RealtimeSession extends EventTarget {
 
     // One frame can carry several fields (usageMetadata rides beside
     // serverContent) — check presence, never switch exclusively.
+    if (evt.error) {
+      debugGeminiLifecycle('live-error-frame', {
+        code: String(evt.error.code || ''),
+        status: String(evt.error.status || ''),
+      });
+    }
     if (evt.usageMetadata) this.#geminiUsage = evt.usageMetadata;
 
     if (evt.sessionResumptionUpdate) {
       const u = evt.sessionResumptionUpdate;
       this.#geminiCanResume = u.resumable === true && !!u.newHandle;
-      if (this.#geminiCanResume) this.#geminiResumeHandle = u.newHandle;
+      this.#geminiResumeHandle = this.#geminiCanResume ? u.newHandle : '';
+      debugGeminiLifecycle('resumption-update', {
+        resumable: this.#geminiCanResume,
+        safeHandlePresent: !!this.#geminiResumeHandle,
+      });
     }
 
     if (evt.goAway) {
@@ -1405,6 +1484,11 @@ export class RealtimeSession extends EventTarget {
       // next server-declared resumable point so the recycle neither clips
       // the assistant nor rolls back an in-flight generation/tool call.
       this.#geminiReconnectPending = true;
+      debugGeminiLifecycle('go-away', {
+        timeLeft: String(evt.goAway.timeLeft || ''),
+        resumable: this.#geminiCanResume,
+        safeHandlePresent: !!this.#geminiResumeHandle,
+      });
     }
 
     if (evt.toolCall && Array.isArray(evt.toolCall.functionCalls)) {
@@ -1633,6 +1717,11 @@ export class RealtimeSession extends EventTarget {
   async #geminiReconnect() {
     if (this.#closing || !this.#connected || this.#geminiReconnecting) return;
     if (!this.#geminiCanResume || !this.#geminiResumeHandle) {
+      debugGeminiLifecycle('reconnect-blocked', {
+        reason: 'no-safe-handle',
+        resumable: this.#geminiCanResume,
+        safeHandlePresent: !!this.#geminiResumeHandle,
+      });
       this.#handleDrop('gemini-no-resumption');
       return;
     }
@@ -1640,6 +1729,7 @@ export class RealtimeSession extends EventTarget {
       !this.#geminiMinted ||
       Date.now() >= this.#geminiMinted.expiresAtMs - GEMINI_TOKEN_EXPIRY_SKEW_MS
     ) {
+      debugGeminiLifecycle('reconnect-blocked', { reason: 'token-expired' });
       this.#handleDrop('gemini-token-expired');
       return;
     }
@@ -1649,6 +1739,12 @@ export class RealtimeSession extends EventTarget {
     this.#geminiReconnectPending = false;
     this.#geminiReconnecting = true;
     this.#geminiCanResume = false;
+    debugGeminiLifecycle('reconnect-start', {
+      tokenRemainingSeconds: Math.max(
+        0,
+        Math.round((this.#geminiMinted.expiresAtMs - Date.now()) / 1000),
+      ),
+    });
     const old = this.#geminiWs;
     this.#geminiWs = null; // capture pauses until the replacement passes setup
     if (old) {
@@ -1661,8 +1757,11 @@ export class RealtimeSession extends EventTarget {
     }
     try {
       await this.#openGeminiSocket();
-    } catch {
+    } catch (err) {
       this.#geminiReconnecting = false;
+      debugGeminiLifecycle('reconnect-failed', {
+        code: String((err && err.code) || ''),
+      });
       this.#handleDrop('gemini-reconnect');
       return;
     }
@@ -1673,10 +1772,12 @@ export class RealtimeSession extends EventTarget {
     // on another handle could execute the model-side continuation twice.
     if (!this.#flushGeminiControlQueue()) {
       this.#geminiReconnecting = false;
+      debugGeminiLifecycle('reconnect-failed', { code: 'control-queue-flush' });
       this.#handleDrop('gemini-reconnect-flush');
       return;
     }
     this.#geminiReconnecting = false;
+    debugGeminiLifecycle('reconnect-complete');
   }
 
   /** Reconnect only at a server-declared safe checkpoint. A false
@@ -1839,8 +1940,13 @@ export class RealtimeSession extends EventTarget {
   }
 
   /** Deliberate end (spec `ending` state): close everything, stop tracks. */
-  close() {
+  close(cause = 'user') {
     if (this.#closing) return;
+    if (this.#mode === 'gemini-direct') {
+      debugGeminiLifecycle('client-close', {
+        cause: cause === 'idle-timeout' ? 'idle-timeout' : 'user',
+      });
+    }
     this.#closing = true;
     this.#teardown();
     this.#emit('closed');
@@ -1848,6 +1954,9 @@ export class RealtimeSession extends EventTarget {
 
   #handleDrop(reason) {
     if (this.#closing || !this.#connected) return;
+    if (this.#mode === 'gemini-direct') {
+      debugGeminiLifecycle('connection-drop', { reason: String(reason || '') });
+    }
     this.#closing = true;
     this.#teardown();
     this.#emit('connectionlost', { reason });

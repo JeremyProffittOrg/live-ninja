@@ -466,7 +466,7 @@ export class MicController extends EventTarget {
   }
 
   /** Deliberate end (End control or grace timeout): flush point → teardown. */
-  end() {
+  end(cause = 'user') {
     if (!this.#session) {
       this.#clearGrace();
       this.#setState(MicState.IDLE);
@@ -478,7 +478,8 @@ export class MicController extends EventTarget {
     this.#emit('ending', { session: this.#session });
     const s = this.#session;
     this.#session = null;
-    s.close(); // 'closed' listener finishes the transition to idle
+    s.close(cause === 'idle-timeout' ? 'idle-timeout' : 'user');
+    // 'closed' listener finishes the transition to idle
   }
 
   /** wakeword.mjs entry point: a local wake-word match (hands-free mode). */
@@ -531,13 +532,14 @@ export class MicController extends EventTarget {
     on('retrywait', (e) => {
       this.#setStatus(`Rate limited — retrying in ${e.detail.seconds}s…`);
     });
-    on('connectionlost', () => {
+    on('connectionlost', (e) => {
       // Spec §2.5: transcript preserved; retry mints a fresh session.
       this.#session = null;
       this.#fail({
         code: 'connection_lost',
         message: 'Connection to the voice service dropped.',
         retryable: true,
+        detail: String((e.detail && e.detail.reason) || ''),
       });
     });
     on('closed', () => {
@@ -564,7 +566,7 @@ export class MicController extends EventTarget {
     if (ms > 0) {
       this.#graceTimer = setTimeout(() => {
         this.#graceTimer = null;
-        this.end();
+        this.end('idle-timeout');
       }, ms);
     }
   }
