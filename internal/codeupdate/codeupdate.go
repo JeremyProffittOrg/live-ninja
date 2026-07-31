@@ -108,6 +108,22 @@ type Record struct {
 	Model  string `json:"model,omitempty"`
 	Deploy bool   `json:"deploy"`
 
+	// Instructions is what the owner actually asked for, in their own words.
+	//
+	// Owner decision, 2026-07-31: this row is the only durable copy. Everything
+	// else that carries the words is transient — the SQS message is consumed,
+	// and the launch email is outside this system. The first incident on this
+	// feature was nearly unrecoverable for exactly that reason: the request had
+	// failed and nothing left in the account could say what had been asked for.
+	//
+	// The privacy cost is real and is bounded deliberately: the row already
+	// carries RecordTTL, so the words live 24 hours and no longer, they stay in
+	// the owner's own partition behind the same per-call authorization as the
+	// rest of the record, and they are never logged. They are also deliberately
+	// NOT added to the code_update_status response — the reader here is a human
+	// diagnosing a failed run, not the model.
+	Instructions string `json:"instructions,omitempty"`
+
 	// Rewritten records whether the launched prompt was the Opus rewrite or the
 	// owner's own words. It is reported, never silent: a rewrite that failed is
 	// something the owner should know about their own instructions.

@@ -265,6 +265,10 @@ func handleCodeUpdateStart(ctx context.Context, deps *Deps, inv Invocation, args
 			CLI:       agent,
 			Model:     req.Model,
 			Deploy:    deploy,
+			// The owner's own words, from the same trimmed value the queue
+			// message carries — so the row and the request can never disagree
+			// about what was asked for. See Record.Instructions for why.
+			Instructions: req.Instructions,
 		}); err != nil {
 			deps.Log.Error("tools: code_update_start record write failed", "error", err.Error())
 			return nil, toolErrf(CodeUpstreamError, "could not record the update request")

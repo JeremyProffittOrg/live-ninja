@@ -3,9 +3,12 @@ package codeupdate
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -183,6 +186,77 @@ func TestExpiredTokenRowReadsAsAbsent(t *testing.T) {
 	now = now.Add(RecordTTL + time.Second)
 	if _, err := s.GetToken(context.Background(), "req-1"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("expired row returned %v, want ErrNotFound so the caller's uniform 401 covers it", err)
+	}
+}
+
+// Owner decision 2026-07-31: the row is the only durable copy of what was
+// asked for, because the SQS message is consumed and the launch email leaves
+// the system. It must survive the status updates the dispatcher writes over the
+// run — SetStatus is an UpdateItem, and a later write must not blank it — and
+// it must age out with the row rather than outliving it.
+func TestInstructionsPersistAcrossTheRunAndExpireWithTheRow(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	db := newFakeDDB()
+	s := NewStore(db, "live-ninja", func() time.Time { return now })
+	const asked = "tighten the retry logic on the Bedrock client"
+
+	if err := s.Put(context.Background(), Record{
+		RequestID: "req-1", UserID: "u1", Status: StatusQueued,
+		Repo: "o/r", Node: DefaultNode, CLI: "claude", Instructions: asked,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rewritten := true
+	for _, u := range []StatusUpdate{
+		{Status: StatusPreprocessing},
+		{Status: StatusLaunching, Rewritten: &rewritten},
+		{Status: StatusLaunched, EventID: "e-1", RunID: "run-1"},
+	} {
+		if err := s.SetStatus(context.Background(), "u1", "req-1", u); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.Get(context.Background(), "u1", "req-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Instructions != asked {
+		t.Errorf("instructions = %q, want %q — the run's own status writes erased them",
+			got.Instructions, asked)
+	}
+	if got.Status != StatusLaunched {
+		t.Errorf("status = %q, want %q", got.Status, StatusLaunched)
+	}
+
+	// The privacy bound is the row's own TTL, not a separate policy.
+	if ttl, ok := db.items["USER#u1|"+SortKey("req-1")]["ttl"].(*ddbtypes.AttributeValueMemberN); !ok {
+		t.Fatal("the row carrying the owner's words has no ttl")
+	} else if want := itoa(int(now.Add(RecordTTL).Unix())); ttl.Value != want {
+		t.Errorf("ttl = %s, want %s (RecordTTL)", ttl.Value, want)
+	}
+}
+
+// The words are for a human diagnosing a failed run, not for the model. The
+// status tool builds its response field by field, and this asserts the owner's
+// instructions are not among them.
+func TestInstructionsAreNotReturnedByTheStatusTool(t *testing.T) {
+	src, err := os.ReadFile("../tools/codeupdate.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	start := strings.Index(body, "func handleCodeUpdateStatus")
+	if start < 0 {
+		t.Fatal("handleCodeUpdateStatus not found; this test needs rewiring")
+	}
+	end := strings.Index(body[start:], "\nfunc ")
+	if end < 0 {
+		end = len(body) - start
+	}
+	if handler := body[start : start+end]; strings.Contains(handler, "rec.Instructions") {
+		t.Error("code_update_status returns the owner's instructions; they are persisted for " +
+			"incident forensics, not to be handed back to the model")
 	}
 }
 

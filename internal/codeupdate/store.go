@@ -93,11 +93,12 @@ func (s *Store) Put(ctx context.Context, rec Record) error {
 		"ttl":       &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(now.Add(RecordTTL).Unix(), 10)},
 	}
 	for k, v := range map[string]string{
-		"model":       rec.Model,
-		"rewriteNote": rec.RewriteNote,
-		"eventId":     rec.EventID,
-		"runId":       rec.RunID,
-		"error":       rec.Error,
+		"model":        rec.Model,
+		"instructions": rec.Instructions,
+		"rewriteNote":  rec.RewriteNote,
+		"eventId":      rec.EventID,
+		"runId":        rec.RunID,
+		"error":        rec.Error,
 	} {
 		if v != "" {
 			item[k] = &ddbtypes.AttributeValueMemberS{Value: v}
@@ -376,8 +377,9 @@ func recordFromItem(item map[string]ddbtypes.AttributeValue) Record {
 		Repo:        str("repo"),
 		Node:        str("node"),
 		CLI:         str("cli"),
-		Model:       str("model"),
-		Deploy:      boolean("deploy"),
+		Model:        str("model"),
+		Instructions: str("instructions"),
+		Deploy:       boolean("deploy"),
 		Rewritten:   boolean("rewritten"),
 		RewriteNote: str("rewriteNote"),
 		EventID:     str("eventId"),

@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	awslambda "github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 
@@ -50,6 +52,29 @@ const cuRepoListing = `{"repos":[
 	{"repo":"JeremyProffittOrg/ghost-agent-docs"}
 ]}`
 
+// cuDDB captures the CODEUPD# rows the store writes. Only PutItem is modelled
+// with any care — the rest exist to satisfy codeupdate.DDB.
+type cuDDB struct {
+	puts []map[string]ddbtypes.AttributeValue
+}
+
+func (f *cuDDB) PutItem(_ context.Context, in *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+	f.puts = append(f.puts, in.Item)
+	return &dynamodb.PutItemOutput{}, nil
+}
+
+func (f *cuDDB) GetItem(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+	return &dynamodb.GetItemOutput{}, nil
+}
+
+func (f *cuDDB) UpdateItem(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+	return &dynamodb.UpdateItemOutput{}, nil
+}
+
+func (f *cuDDB) Query(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+	return &dynamodb.QueryOutput{}, nil
+}
+
 func cuDeps(g *cuGhost, q *cuSQS) *Deps {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return &Deps{
@@ -58,6 +83,14 @@ func cuDeps(g *cuGhost, q *cuSQS) *Deps {
 		Ghost:              ghost.New(ghost.Config{API: g, Function: "ghost-cli-command", Log: log}),
 		CodeUpdateQueueURL: "https://sqs/code-update",
 	}
+}
+
+// cuDepsWithStore is cuDeps plus a real store over a capturing fake, for the
+// assertions that care what actually lands on the row.
+func cuDepsWithStore(g *cuGhost, q *cuSQS, db *cuDDB) *Deps {
+	d := cuDeps(g, q)
+	d.CodeUpdate = codeupdate.NewStore(db, "live-ninja", nil)
+	return d
 }
 
 func cuInvocation() Invocation {
@@ -195,6 +228,39 @@ func TestCodeUpdateStartEnqueuesWithDefaults(t *testing.T) {
 	}
 	if req.RequestID == "" || req.RequestedAt == "" {
 		t.Error("the queued request is missing its id or timestamp")
+	}
+}
+
+// Owner decision 2026-07-31: the CODEUPD# row keeps what was asked for. The row
+// is written before the queue message, and it must carry the SAME trimmed text
+// the message does — a row that disagrees with the request it describes is worse
+// than no row, because it would be believed during an incident.
+func TestStartRecordsWhatTheOwnerAskedFor(t *testing.T) {
+	q, db := &cuSQS{}, &cuDDB{}
+	deps := cuDepsWithStore(&cuGhost{body: cuRepoListing}, q, db)
+
+	if _, err := handleCodeUpdateStart(context.Background(), deps, cuInvocation(),
+		startArgs(map[string]any{"instructions": "  tighten the retry logic on the Bedrock client  "})); err != nil {
+		t.Fatalf("code_update_start: %v", err)
+	}
+	if len(db.puts) != 1 {
+		t.Fatalf("wrote %d rows, want 1", len(db.puts))
+	}
+	got, ok := db.puts[0]["instructions"].(*ddbtypes.AttributeValueMemberS)
+	if !ok {
+		t.Fatal("the row does not carry the owner's instructions")
+	}
+	want := decodeQueued(t, q).Instructions
+	if got.Value != want {
+		t.Errorf("row instructions = %q, queued instructions = %q — they must not diverge",
+			got.Value, want)
+	}
+	if got.Value != "tighten the retry logic on the Bedrock client" {
+		t.Errorf("instructions = %q, want the trimmed spoken text", got.Value)
+	}
+	// Bounded by the row's own TTL, which is the whole privacy argument.
+	if _, ok := db.puts[0]["ttl"].(*ddbtypes.AttributeValueMemberN); !ok {
+		t.Error("the row carrying the owner's words has no ttl")
 	}
 }
 
