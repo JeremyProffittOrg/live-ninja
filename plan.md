@@ -141,17 +141,35 @@ and the node is `live`/`connected`); it is held only by the agent version above.
   principal is non-empty, which on the internal-invoke path is a tautology.
 - `[ ]` **S** — **`GET /schedule` returns each event's full prompt, which contains the live `cu_` run
   token.** Bounded (the token only emails the owner, 8 posts, 24 h) but it should be redacted.
-- `[ ]` **H** — **`stageLaunchPrompt` writes `0600`, which Windows ignores** — the staged prompt file
-  lands `-rw-r--r--` and carries the run token. Needs a real ACL. (From v1.1.52's own report.)
+- `[ ]` **H** — **Emit `no_push` from the cloud.** The agent honours it as of ghost-cli v1.1.53; no
+  cloud sends it yet, so the pre-push hook is inert and the deploy gate is still prompt-only in
+  practice. Remaining work: live-ninja sends `deploy` on the `/schedule` call, ghost-cli maps
+  `deploy == false` to `no_push: true` in the LAUNCH params. **PRECONDITION: the whole fleet must be
+  on >= v1.1.53 first.** `parseCommand` uses `DisallowUnknownFields`, so an agent older than the
+  field rejects the ENTIRE envelope — shipping the cloud half early breaks every un-updated node
+  (Lenovo14, rog-18, rog-flow, elite001, acer-gpu, Windows1/2, Left/Right-Board ...).
+
 
 ### 2.3 Closed this pass — do not redo
+
+- `[x]` **Staged prompt now has a real ACL.** `os.WriteFile(..., 0o600)` sets no permissions on
+  Windows — Go maps the mode onto the read-only attribute and the file inherits its parent's DACL,
+  so it landed `-rw-r--r--` in `%TEMP%` carrying the run token. `writeOwnerOnlyFile` creates it with
+  a PROTECTED DACL granting only the running user and SYSTEM. **ghost-cli v1.1.53/54**, verified live
+  on OFFICEPC: `NT AUTHORITY\SYSTEM` + `OFFICEPC\Jeremy`, no inherited ACEs.
+- `[x]` **The deploy gate is no longer only a sentence in the prompt.** `launcher.ApplyNoPush`
+  installs a `pre-push` hook in the workspace for a launch that is not deploy-authorized, and
+  REMOVES its own hook when one is — a stale hook would otherwise block a legitimate push and look
+  like a git fault. A hook the owner wrote is never touched. Proven against real git: push refused
+  with the commit still allowed, and pushing restored after removal. **Agent half only — see 2.2.**
 
 - `[x]` **Prompt transport.** The node agent typed 3400 keystrokes into the TUI; the head was lost to
   volume and the verifier keyed on the destroyed head, so all four retries fired and the deploy gate
   never arrived. Fixed in **ghost-cli v1.1.52**: prompts over 300 runes are staged to a file and only
   a pointer is typed. Two wrong turns are recorded in the archived report — read it before touching
-  that path again. **Fixed in the repo, NOT yet on the node** — see §1.4, and the standing rule that
-  an agent fix is not done until it is tagged, released *and rolled*.
+  that path again. **Rolled**: OFFICEPC is on v1.1.54 and a live launch confirmed the pointer on
+  attempt 1 with `verified=true`. Other nodes converge on their next ~4 h poll (`latest.json` =
+  1.1.54).
 - `[x]` **The `live-ninja` grant is now deploy-owned.** It was hand-seeded in SSM, and *every*
   ghost-cli deploy overwrote `/ghost-cli/authz-allowlist` with an owner-only document, silently
   killing the feature. The two-entry document now lives in ghost-cli's `AUTHZ_ALLOWLIST_JSON` repo
