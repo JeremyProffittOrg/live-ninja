@@ -28,16 +28,16 @@ code and deployed**: the prompt transport (ghost-cli v1.1.52) and the Opus statu
 (live-ninja `744d930`). §2.1's persistence question was decided by the owner and shipped
 (`658f112`).
 
-**The one thing left on §1 is the live proof, and it is blocked — see §1.4.** The node is running
-agent `1.1.51-dev`, which predates the prompt-transport fix. That did not matter while the rewrite
-was being discarded, because the launched prompt was always the owner's short wording. Now that the
-rewrite is actually collected, a ~3400-character brief reaches the node for the first time — and on
-`1.1.51-dev` it is typed as 3400 keystrokes, which is exactly the defect v1.1.52 exists to fix.
-Verifying before the node is rolled would burn a session to re-prove a known bug.
+**§1 is now proven live.** A `preprocess:true` request on 2026-07-31 at 21:22:45Z collected its
+rewrite and launched in **22.8 seconds** — the same work that used to run to the 240 s ceiling and
+report a timeout that never happened. Full evidence in §1.4.
+
+The one path still never exercised end to end is a real **spoken** run. Everything beneath the voice
+tool is now verified against production.
 
 ---
 
-## §1 — Opus pre-processing remediation `[~]` — code shipped `744d930`, live proof blocked
+## §1 — Opus pre-processing remediation `[~]` — fixed, deployed and PROVEN LIVE (`744d930`)
 
 ### 1.1 The defect
 
@@ -101,21 +101,34 @@ nothing timed out.
 - `[x]` Adversarial review: 16 agents, four lenses, 12 findings raised and **all 12 refuted** on the
   source. Nothing survived to fix.
 
-### 1.4 Verify in production `[!]` — blocked on rolling the node agent
+### 1.4 Verify in production `[~]` — the rewrite is PROVEN live; the spoken path is not
 
-- `[!]` **Roll OFFICEPC to ghost-cli ≥ v1.1.52 first.** The node reports `1.1.51-dev`
-  (`GET /nodes`, 2026-07-31 15:48Z). `stageLaunchPrompt` does not exist at `v1.1.51` and does at
-  `v1.1.52` — verified with `git grep` at both tags. Releases stamp the version via
-  `-ldflags -X main.Version` (`agent-release.yml:149`), so a `-dev` suffix means a local build, not
-  a release. Tags exist up to `v1.1.53`. Until this is rolled, the first genuinely long prompt this
-  system has ever produced gets typed in as 3400 keystrokes.
-- `[ ]` **S** — Then one `preprocess:true` request end to end. Success = worker log
-  `rewritten:true` within ~60 s (not ~240 s), and the launched prompt visibly the expanded brief.
-- `[ ]` **S** — Then one real **spoken** run, which is the only path that still has never been
-  exercised (the voice tool defaults `preprocess` to true, so this covers both at once).
+- `[x]` **Node rolled.** OFFICEPC reported `1.1.51-dev` at 15:48Z, which predates `stageLaunchPrompt`
+  (absent at `v1.1.51`, present at `v1.1.52`; releases stamp the version via `-ldflags -X
+  main.Version`, so a `-dev` suffix is a local build). It is now on **`1.1.54`** and the verification
+  below ran against it.
+- `[x]` **One `preprocess:true` request, end to end, 2026-07-31 21:22:45Z.** Request
+  `019fba0e-e310-73fa-9ad1-74440cffc139`, repo `ftwr-codeagent-canary`, deploy gate closed.
+  **The rewrite was collected and launched in 22.8 s.** ghost-cli's own log tells the story the
+  old code could not read:
 
-Owner authorised the canary run on 2026-07-31 (`ftwr-codeagent-canary` is on the launch allowlist
-and the node is `live`/`connected`); it is held only by the agent version above.
+  | | | |
+  |---|---|---|
+  | poll 1 | 6 s | `pending` |
+  | poll 2 | 12 s | `pending` |
+  | poll 3 | 17 s | `pending` |
+  | job completed | 18 s | — |
+  | **poll 4** | **22 s** | **`done`** |
+
+  Poll 4 is the exact instant the bug used to fire: `done` matched no `case`, the loop kept going to
+  240 s, and the owner was told it timed out. It now launches immediately —
+  `codeupdate: launched … "rewritten":true` at 21:23:21Z, run `019fba0f-6dc9-76dd-b659-652250588f28`,
+  row `status=launched` / `rewritten=true` with no `rewriteNote` and no `error`. DLQ empty.
+  `rewritten=true` is set only on the branch that assigns `body = refined`, so the launched prompt
+  IS the expanded brief by construction, not by inference.
+- `[ ]` **S** — One real **spoken** run — still the only path never exercised end to end. The voice
+  tool defaults `preprocess` to true, so it covers the tool layer and the rewrite at once. Everything
+  below the tool is now proven.
 
 ---
 
