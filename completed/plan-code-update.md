@@ -1,3 +1,10 @@
+> **MIGRATED — archived 2026-07-31.**
+> This document is history. It is no longer the source of truth and is not maintained.
+> The voice code-update feature it plans is BUILT, DEPLOYED and IN USE; its remaining items moved to the new root plan.
+> Active work lives in [../plan.md](../plan.md); deliberately-deferred items in [../backlog.md](../backlog.md).
+
+---
+
 # Plan — Voice-driven code updates (live-ninja → ghost-cli)
 
 **Goal.** Say *"update an application"* to Live Ninja, name the app, describe the change, and
