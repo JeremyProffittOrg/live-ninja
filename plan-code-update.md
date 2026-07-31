@@ -47,12 +47,45 @@ email cap; the `limit` param was inert (handler read `float64`, the router hands
 never enforced in code, so an expired token still authenticated; and the persona splice produced a
 doubled em dash.
 
+### End-to-end verification against production (2026-07-30)
+
+Both stacks deployed green. Verified live, in order:
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Internal invoke reaches ghost-cli | `GET /launch/repos` → 200, **223 repos**, most-recently-pushed first |
+| 2 | Method scoping | `PUT /schedule` → `InternalInvokeError: PUT /schedule is not reachable by internal invoke` |
+| 3 | Authz gate BEFORE seeding | 403, log reason `deny: principal not in allowlist` — exactly as predicted |
+| 4 | Authz gate AFTER seeding | 403 with reason `deny: target node not in principal ACL` — the principal is now recognized, `operator` grants launch, and the node ACL is doing the refusing |
+| 5 | run_now semantics | event stored `enabled=false`, `cron=""`, `next_run=""`; run row `RUNNING`, `trigger=run_now` |
+| 6 | Launched prompt | contains `DO NOT PUSH` (gate closed), the progress `curl`, a live `cu_` token, and ends with the exact output directive |
+| 7 | Launch confirmation email | SES `code-update-started` sent |
+| 8 | Progress endpoint (live HTTPS) | valid token → `200 {"accepted":true,"remaining":7}` |
+| 9 | Progress endpoint, wrong secret / no credential | `401 {"error":"unauthorized"}` — **identical bodies**, and a 401 rather than a 403 proves the API Gateway authorizer allowlist fix landed |
+| 10 | Progress email | SES `code-update-progress` sent |
+
+**Found only by running it:** the node's IoT Thing name is `OFFICEPC`, uppercase. `DefaultNode` was
+`officepc`. ghost-cli's node ACL compares exactly with no case folding, and the name is interpolated
+into `cockpit/nodes/<name>/cmd` — so the launch was refused as a permissions error, and with a
+wildcard principal it would instead have published to a topic nothing subscribes to and left the run
+wedged `RUNNING` until the 2 h grace. Fixed and pinned by a test. No amount of code reading would
+have surfaced this.
+
+**Not verified here:** the coding session finishing on the node and ghost-cli's completion summary
+email. That leg is ghost-cli's pre-existing `lambda/summary` path, unchanged by this work, and needs
+the node online with the agent running.
+
 ### Follow-ups NOT fixed here (pre-existing ghost-cli gaps, now reachable)
 
 - **`POST /schedule/preprocess` is authorized but never audited.** It is a write gated on
   `ActionLaunch` and a billable Opus spend, yet `SchedulePromptHandler` has no audit sink — so one of
   the five internally-reachable routes writes no hash-chain entry. Fixing it means threading an
   `authz.AuditSink` into that handler, which is a ghost-cli design change beyond this integration.
+- **The run token is readable from the stored event prompt.** `GET /schedule` returns each event's
+  full prompt, and the prompt is where the plaintext token lives — so any principal that can read the
+  schedule can read a live run's token. Impact is bounded (the token authorizes exactly one thing:
+  emailing the OWNER about that run, capped at 8 posts, expiring in 24 h), but the cleaner shape is
+  to redact `cu_` tokens from the prompt in ghost-cli's GET response.
 - **`GET /launch/repos` performs no `Authorize` call.** It checks only that a principal is non-empty,
   which on the internal-invoke path is a tautology. Impact here is nil (listing repos is exactly what
   this integration is for), but a viewer-scoped principal could enumerate every repo the GitHub App
