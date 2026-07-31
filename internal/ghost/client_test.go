@@ -98,7 +98,7 @@ func TestOnlyAllowlistedResourcesAreUsed(t *testing.T) {
 	f := &fakeInvoke{responses: []proxyResponse{
 		ok(`{"repos":[]}`),
 		{StatusCode: 202, Body: `{"job_id":"j"}`},
-		ok(`{"status":"DONE","prompt":"x"}`),
+		ok(`{"status":"done","prompt":"x"}`),
 		{StatusCode: 202, Body: `{"event_id":"e","run":{"run_id":"r"}}`},
 		ok(`{"events":[]}`),
 		ok(`{"nodes":[]}`),
@@ -256,8 +256,59 @@ func TestUnconfiguredClient(t *testing.T) {
 	}
 }
 
+// The preprocess job statuses are a CROSS-REPO CONTRACT with ghost-cli, and the
+// third one this codebase has (with the output directive and the invoke
+// discriminator). Like those, it is pinned to LITERALS rather than derived,
+// because the failure mode is silence: these were "PENDING"/"DONE"/"FAILED"
+// here while ghost-cli has always written "pending"/"done"/"error", so no case
+// could ever match. A finished rewrite was collected by nothing, the poll ran to
+// its 240 s ceiling, and the owner was told the rewrite "did not finish in time"
+// — of a job that had finished in thirty seconds. Every preprocess:true request
+// burned four minutes of worker time, one unit of the Opus quota and one Bedrock
+// call, and threw the result away.
+//
+// The uppercase values were not invented: ghost-cli has a SECOND status
+// vocabulary, for RUN rows, and that one really is uppercase — RUNNING /
+// COMPLETED / FAILED (lambda/command/schedule_run.go:27-30), which this client
+// also consumes. Two vocabularies in one API is the trap; the only defence is
+// pinning each one where it is read.
+func TestPreprocessStatusesMatchGhostCLI(t *testing.T) {
+	// ghost-cli: lambda/command/schedule_prompt_job.go:60-63
+	//   preprocessStatusPending = "pending"
+	//   preprocessStatusDone    = "done"
+	//   preprocessStatusError   = "error"
+	// Served verbatim as the "status" field by lambda/command/schedule_prompt_status.go,
+	// which normalises every other row state to one of these three.
+	for _, tc := range []struct{ got, want string }{
+		{PreprocessPending, "pending"},
+		{PreprocessDone, "done"},
+		{PreprocessError, "error"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("status literal = %q, want %q (ghost-cli lambda/command/schedule_prompt_job.go:60-63)",
+				tc.got, tc.want)
+		}
+	}
+}
+
+// The comparison folds case so that a future casing change on either side of the
+// contract costs a slow path, not a discarded rewrite. It must not fold anything
+// else — a status that merely contains "done" is not done.
+func TestPreprocessIsFoldsCaseOnly(t *testing.T) {
+	for _, status := range []string{"done", "DONE", "Done", " done "} {
+		if !PreprocessIs(status, PreprocessDone) {
+			t.Errorf("PreprocessIs(%q, done) = false, want true", status)
+		}
+	}
+	for _, status := range []string{"", "don", "done-ish", "not done", "pending"} {
+		if PreprocessIs(status, PreprocessDone) {
+			t.Errorf("PreprocessIs(%q, done) = true, want false", status)
+		}
+	}
+}
+
 func TestPreprocessReturnsJobID(t *testing.T) {
-	f := &fakeInvoke{responses: []proxyResponse{{StatusCode: 202, Body: `{"job_id":"job-7","status":"PENDING"}`}}}
+	f := &fakeInvoke{responses: []proxyResponse{{StatusCode: 202, Body: `{"job_id":"job-7","status":"pending"}`}}}
 	jobID, err := testClient(f).Preprocess(context.Background(),
 		PreprocessRequest{Prompt: "tighten the retry", CLI: "claude", Node: "officepc",
 			Repo: "o/live-ninja", OutputFile: "update-report.md"}, "corr-1")
@@ -277,14 +328,14 @@ func TestPreprocessReturnsJobID(t *testing.T) {
 }
 
 func TestPreprocessWithoutJobIDIsAnError(t *testing.T) {
-	f := &fakeInvoke{responses: []proxyResponse{{StatusCode: 202, Body: `{"status":"PENDING"}`}}}
+	f := &fakeInvoke{responses: []proxyResponse{{StatusCode: 202, Body: `{"status":"pending"}`}}}
 	if _, err := testClient(f).Preprocess(context.Background(), PreprocessRequest{}, ""); !errors.Is(err, ErrUpstream) {
 		t.Errorf("err = %v, want ErrUpstream", err)
 	}
 }
 
 func TestPreprocessStatusPassesJobIDAsQuery(t *testing.T) {
-	f := &fakeInvoke{responses: []proxyResponse{ok(`{"job_id":"job-7","status":"DONE","prompt":"rewritten"}`)}}
+	f := &fakeInvoke{responses: []proxyResponse{ok(`{"job_id":"job-7","status":"done","prompt":"rewritten"}`)}}
 	st, err := testClient(f).PreprocessStatus(context.Background(), "job-7", "")
 	if err != nil {
 		t.Fatalf("PreprocessStatus: %v", err)

@@ -39,7 +39,13 @@ const (
 	// times a day, buys the model an accurate picture of a subsystem that can
 	// start code changes on the owner's machine. Trim the map before raising
 	// this again.
-	maxSystemMapChars    = 9200
+	//
+	// Raised 9200 -> 9600 on 2026-07-31 for the third cross-repo contract (the
+	// preprocess job statuses), whose mismatch had been discarding every Opus
+	// rewrite and reporting it as a timeout. The map was read for fat first and
+	// none was found — it was at 9136/9200, so the one sentence did not fit.
+	// ~130 extra input tokens per analysis. Trim before raising again.
+	maxSystemMapChars    = 9600
 	maxContractChars     = 2500
 	maxWindowChars       = 6000
 	maxPriorRCAChars     = 2000

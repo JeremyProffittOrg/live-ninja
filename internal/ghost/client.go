@@ -300,12 +300,29 @@ func (c *Client) Preprocess(ctx context.Context, req PreprocessRequest, corrID s
 	return parsed.JobID, nil
 }
 
-// Preprocess job statuses, matching ghost-cli's job rows.
+// Preprocess job statuses. These are a CROSS-REPO CONTRACT: they are the
+// literal values ghost-cli stores on a job row and serves from
+// GET /schedule/preprocess-status (lambda/command/schedule_prompt_job.go:60-63,
+// read out by lambda/command/schedule_prompt_status.go). They are LOWERCASE, and
+// the failure value is "error" — "failed" never existed on the wire.
+//
+// This is pinned by TestPreprocessStatusesMatchGhostCLI because the failure is
+// invisible: a status this client cannot recognise does not raise anything, it
+// just makes every poll look unfinished, so a rewrite that arrived in thirty
+// seconds is discarded four minutes later as a timeout that never happened.
 const (
-	PreprocessPending = "PENDING"
-	PreprocessDone    = "DONE"
-	PreprocessFailed  = "FAILED"
+	PreprocessPending = "pending"
+	PreprocessDone    = "done"
+	PreprocessError   = "error"
 )
+
+// PreprocessIs reports whether a status value received from ghost-cli names the
+// given state. It folds case deliberately: if either side of this contract ever
+// changes the casing of its literals, the mismatch must degrade to a slow path
+// that still works, never to a silent one that discards good work.
+func PreprocessIs(status, want string) bool {
+	return strings.EqualFold(strings.TrimSpace(status), want)
+}
 
 // PreprocessStatus is one poll of a rewrite job.
 type PreprocessStatus struct {

@@ -126,11 +126,13 @@ web timeout is 30s); `cmd/codeupdate-dispatch` (SQS) mints the run token, drives
 launches, and emails the exact prompt sent; `internal/webapp/codeupdate_routes.go` serves the public
 `POST /v1/code-update/progress` the agent reports to (the node has no mail credential).
 `internal/ghost` reaches ghost-cli by direct invoke of its internal-invoke path; ghost-cli pins the
-principal and still gates every launch through its capability matrix and audit log. Two cross-repo
+principal and still gates every launch through its capability matrix and audit log. Three cross-repo
 contracts fail SILENTLY (pinned by tests both sides): the output directive
 (`internal/codeupdate/prompt.go`) must match ghost-cli's byte for byte or the run never completes
-and no summary email fires; the invoke task discriminator must match or every call 401s. Only the
-owner's instructions reach Opus — token, deploy gate and directive are appended afterwards.
+and no summary email fires; the invoke task discriminator must match or every call 401s; the
+preprocess job statuses are lowercase `pending`/`done`/`error` (`internal/ghost`) — a mismatch
+discards every finished rewrite and reports it to the owner as a timeout that never happened. Only
+the owner's instructions reach Opus — token, deploy gate and directive are appended afterwards.
 
 # FAILING INVOCATION
 tool: get_weather

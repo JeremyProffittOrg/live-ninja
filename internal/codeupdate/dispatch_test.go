@@ -167,6 +167,8 @@ type fakeGhost struct {
 	prepBody      string
 	statusReplies []string // consumed in order by /schedule/preprocess-status
 	statusIdx     int
+	statusCode    int      // HTTP status for polls; 0 means 200
+	statusPolls   int      // every poll, including those served by the fallback
 	launchBodies  []string // captured request bodies for /schedule
 	prepBodies    []string // captured request bodies for /schedule/preprocess
 }
@@ -191,12 +193,19 @@ func (f *fakeGhost) Invoke(_ context.Context, in *awslambda.InvokeInput, _ ...fu
 		f.prepBodies = append(f.prepBodies, ev.Body)
 		return reply(f.prepStatus, f.prepBody)
 	case "/schedule/preprocess-status":
+		f.statusPolls++
+		code := f.statusCode
+		if code == 0 {
+			code = 200
+		}
 		if f.statusIdx < len(f.statusReplies) {
 			body := f.statusReplies[f.statusIdx]
 			f.statusIdx++
-			return reply(200, body)
+			return reply(code, body)
 		}
-		return reply(200, `{"status":"PENDING"}`)
+		// The fallback is what a job that never finishes looks like, so it must
+		// be ghost-cli's real literal, not a plausible-looking one.
+		return reply(200, `{"status":"pending"}`)
 	}
 	return reply(404, `{"error":"no"}`)
 }
@@ -347,13 +356,18 @@ func TestDispatchTokenRowFailureIsTransientAndLaunchesNothing(t *testing.T) {
 	}
 }
 
+// Every status literal in this file is ghost-cli's real, LOWERCASE wire value.
+// It used to be uppercase, which is what production never sends — so this test
+// asserted the rewrite was used against a reply the dispatcher could not have
+// received, and passed for the entire lifetime of the bug it was written to
+// catch. See TestPreprocessStatusesMatchGhostCLI in internal/ghost.
 func TestDispatchUsesOpusRewriteWhenRequested(t *testing.T) {
 	g := &fakeGhost{
 		launchStatus:  202,
 		launchBody:    okLaunchBody,
 		prepStatus:    202,
-		prepBody:      `{"job_id":"job-1","status":"PENDING"}`,
-		statusReplies: []string{`{"status":"PENDING"}`, `{"status":"DONE","prompt":"REWRITTEN BRIEF"}`},
+		prepBody:      `{"job_id":"job-1","status":"pending"}`,
+		statusReplies: []string{`{"status":"pending"}`, `{"status":"done","prompt":"REWRITTEN BRIEF"}`},
 	}
 	db, q := newFakeDDB(), &fakeSQS{}
 	d := newTestDispatcher(g, db, q)
@@ -379,13 +393,19 @@ func TestPreprocessFailureLaunchesOriginalAndReportsIt(t *testing.T) {
 		"start rejected": {launchStatus: 202, launchBody: okLaunchBody,
 			prepStatus: 429, prepBody: `{"error":"quota"}`},
 		"job failed": {launchStatus: 202, launchBody: okLaunchBody,
-			prepStatus: 202, prepBody: `{"job_id":"j","status":"PENDING"}`,
-			statusReplies: []string{`{"status":"FAILED","error":"boom"}`}},
+			prepStatus: 202, prepBody: `{"job_id":"j","status":"pending"}`,
+			statusReplies: []string{`{"status":"error","error":"boom"}`}},
+		"upstream deadline": {launchStatus: 202, launchBody: okLaunchBody,
+			prepStatus: 202, prepBody: `{"job_id":"j","status":"pending"}`,
+			statusReplies: []string{`{"status":"error","error":"timed out after 600s"}`}},
 		"empty prompt": {launchStatus: 202, launchBody: okLaunchBody,
-			prepStatus: 202, prepBody: `{"job_id":"j","status":"PENDING"}`,
-			statusReplies: []string{`{"status":"DONE","prompt":"   "}`}},
+			prepStatus: 202, prepBody: `{"job_id":"j","status":"pending"}`,
+			statusReplies: []string{`{"status":"done","prompt":"   "}`}},
+		"unknown status": {launchStatus: 202, launchBody: okLaunchBody,
+			prepStatus: 202, prepBody: `{"job_id":"j","status":"pending"}`,
+			statusReplies: []string{`{"status":"SUCCEEDED"}`}},
 		"never finishes": {launchStatus: 202, launchBody: okLaunchBody,
-			prepStatus: 202, prepBody: `{"job_id":"j","status":"PENDING"}`},
+			prepStatus: 202, prepBody: `{"job_id":"j","status":"pending"}`},
 	}
 	for name, g := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -414,13 +434,132 @@ func TestPreprocessFailureLaunchesOriginalAndReportsIt(t *testing.T) {
 	}
 }
 
+// A vocabulary mismatch must announce itself. The original bug was invisible
+// precisely because an unreadable status was indistinguishable from an unfinished
+// one: the loop spun to its ceiling and reported a timeout. A status neither side
+// defines now ends the wait after the poll that produced it, and the note must
+// not claim a deadline passed that never did.
+func TestUnknownPreprocessStatusFailsFastRatherThanTimingOut(t *testing.T) {
+	unknown := &fakeGhost{
+		launchStatus: 202, launchBody: okLaunchBody,
+		prepStatus: 202, prepBody: `{"job_id":"j","status":"pending"}`,
+		statusReplies: []string{`{"status":"SUCCEEDED","prompt":"REWRITTEN BRIEF"}`},
+	}
+	db, q := newFakeDDB(), &fakeSQS{}
+	d := newTestDispatcher(unknown, db, q)
+	req := testRequest()
+	req.Preprocess = true
+
+	if err := d.Dispatch(context.Background(), req); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if unknown.statusPolls != 1 {
+		t.Errorf("polled %d times, want 1 — an unreadable status must not be waited out",
+			unknown.statusPolls)
+	}
+	if body := q.messages[0].Text; strings.Contains(body, noteTimedOut) {
+		t.Errorf("the owner was told the rewrite timed out, which it did not:\n%s", body)
+	}
+	// And the unusable rewrite is not launched.
+	if strings.Contains(launchedPrompt(t, unknown), "REWRITTEN BRIEF") {
+		t.Error("a rewrite from an unrecognised terminal status was used anyway")
+	}
+
+	// By contrast, a job that stays pending is a real timeout: it is waited out
+	// to the deadline and reported as one.
+	stuck := &fakeGhost{
+		launchStatus: 202, launchBody: okLaunchBody,
+		prepStatus: 202, prepBody: `{"job_id":"j","status":"pending"}`,
+	}
+	db2, q2 := newFakeDDB(), &fakeSQS{}
+	if err := newTestDispatcher(stuck, db2, q2).Dispatch(context.Background(), req); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if want := int(30 * time.Second / preprocessPollInterval); stuck.statusPolls != want {
+		t.Errorf("polled %d times, want %d — a pending job is waited out", stuck.statusPolls, want)
+	}
+	if !strings.Contains(q2.messages[0].Text, noteTimedOut) {
+		t.Errorf("a genuine timeout was not reported as one:\n%s", q2.messages[0].Text)
+	}
+}
+
+// A job that cannot be found is terminal, not slow. ghost-cli writes the row
+// before it answers 202 and keeps it for one hour, so a 404 means the row aged
+// out or was never ours — waiting it out only produces a false timeout four
+// minutes later. The unreachable job is detected before the status switch is
+// ever reached, so the switch's own fast-fail does not cover this.
+func TestUnreachablePreprocessJobFailsFast(t *testing.T) {
+	for name, reply := range map[string]string{
+		"job not found": `{"error":"job not found"}`,
+		"poll refused":  `{"error":"unauthorized"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			code := 404
+			if name == "poll refused" {
+				code = 403
+			}
+			g := &fakeGhost{
+				launchStatus: 202, launchBody: okLaunchBody,
+				prepStatus: 202, prepBody: `{"job_id":"j","status":"pending"}`,
+				statusCode: code, statusReplies: []string{reply},
+			}
+			db, q := newFakeDDB(), &fakeSQS{}
+			d := newTestDispatcher(g, db, q)
+			req := testRequest()
+			req.Preprocess = true
+
+			if err := d.Dispatch(context.Background(), req); err != nil {
+				t.Fatalf("Dispatch: %v", err)
+			}
+			if g.statusPolls != 1 {
+				t.Errorf("polled %d times, want 1 — an unreachable job must not be waited out",
+					g.statusPolls)
+			}
+			if body := q.messages[0].Text; strings.Contains(body, noteTimedOut) {
+				t.Errorf("the owner was told the rewrite timed out, which it did not:\n%s", body)
+			}
+			if !strings.Contains(launchedPrompt(t, g), "tighten the retry logic") {
+				t.Error("the owner's original instructions were lost")
+			}
+		})
+	}
+}
+
+// An error status is reported as an error, not as a timeout. The two are
+// different facts about a run and the confirmation email must not confuse them.
+func TestPreprocessErrorIsReportedAsAnErrorNotATimeout(t *testing.T) {
+	g := &fakeGhost{
+		launchStatus: 202, launchBody: okLaunchBody,
+		prepStatus: 202, prepBody: `{"job_id":"j","status":"pending"}`,
+		statusReplies: []string{`{"status":"error","error":"model refused"}`},
+	}
+	db, q := newFakeDDB(), &fakeSQS{}
+	d := newTestDispatcher(g, db, q)
+	req := testRequest()
+	req.Preprocess = true
+
+	if err := d.Dispatch(context.Background(), req); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	body := q.messages[0].Text
+	if !strings.Contains(body, noteRewriteError) {
+		t.Errorf("the email does not report the rewrite error:\n%s", body)
+	}
+	if strings.Contains(body, noteTimedOut) {
+		t.Errorf("an error was reported as a timeout:\n%s", body)
+	}
+	if g.statusPolls != 1 {
+		t.Errorf("polled %d times, want 1 — a terminal error ends the wait", g.statusPolls)
+	}
+}
+
 // Only the owner's instructions may reach Bedrock — never the run token, never
 // the directives. This is the assembly-order property, asserted end to end.
 func TestPreprocessNeverReceivesTheToken(t *testing.T) {
 	g := &fakeGhost{
 		launchStatus: 202, launchBody: okLaunchBody,
-		prepStatus: 202, prepBody: `{"job_id":"j","status":"PENDING"}`,
-		statusReplies: []string{`{"status":"DONE","prompt":"REWRITTEN"}`},
+		prepStatus: 202, prepBody: `{"job_id":"j","status":"pending"}`,
+		statusReplies: []string{`{"status":"done","prompt":"REWRITTEN"}`},
 	}
 	db, q := newFakeDDB(), &fakeSQS{}
 	d := newTestDispatcher(g, db, q)
@@ -453,12 +592,12 @@ func TestPreprocessNeverReceivesTheToken(t *testing.T) {
 func TestRewriteCarryingTheDirectiveIsCanonicalized(t *testing.T) {
 	directive := OutputDirective(DefaultOutputFile)
 	body, _ := json.Marshal(map[string]string{
-		"status": "DONE",
+		"status": "done",
 		"prompt": "REWRITTEN BRIEF\n\n" + directive,
 	})
 	g := &fakeGhost{
 		launchStatus: 202, launchBody: okLaunchBody,
-		prepStatus: 202, prepBody: `{"job_id":"j","status":"PENDING"}`,
+		prepStatus: 202, prepBody: `{"job_id":"j","status":"pending"}`,
 		statusReplies: []string{string(body)},
 	}
 	db, q := newFakeDDB(), &fakeSQS{}
@@ -638,10 +777,10 @@ func TestDuplicateDeliveryDoesNotReMintOrRelaunch(t *testing.T) {
 func TestEmptyRewriteFallsBackToTheOwnersWords(t *testing.T) {
 	directive := OutputDirective(DefaultOutputFile)
 	for _, prompt := range []string{"", "   ", directive, "\n\n" + directive + "\n"} {
-		body, _ := json.Marshal(map[string]string{"status": "DONE", "prompt": prompt})
+		body, _ := json.Marshal(map[string]string{"status": "done", "prompt": prompt})
 		g := &fakeGhost{
 			launchStatus: 202, launchBody: okLaunchBody,
-			prepStatus: 202, prepBody: `{"job_id":"j","status":"PENDING"}`,
+			prepStatus: 202, prepBody: `{"job_id":"j","status":"pending"}`,
 			statusReplies: []string{string(body)},
 		}
 		db, q := newFakeDDB(), &fakeSQS{}

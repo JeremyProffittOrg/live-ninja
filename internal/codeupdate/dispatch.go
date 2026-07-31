@@ -50,6 +50,7 @@ const (
 	noteNotRequested = "not requested — launched with your original wording"
 	noteTimedOut     = "the Opus rewrite did not finish in time — launched with your original wording"
 	noteFailed       = "the Opus rewrite failed — launched with your original wording"
+	noteRewriteError = "the Opus rewrite reported an error — launched with your original wording"
 	noteQuota        = "the Opus rewrite quota is exhausted — launched with your original wording"
 	noteUnavailable  = "prompt preprocessing is not available right now — launched with your original wording"
 )
@@ -197,7 +198,11 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) error {
 			// Reported, never silent: the owner asked for an update, not for a
 			// rewrite, so the update proceeds — but the confirmation email says
 			// which words were actually sent.
-			log.Warn("codeupdate: preprocessing unavailable", slog.String("note", n))
+			// The reason is logged as well as noted: the note is written for the
+			// owner, and it is deliberately vague about which of several causes
+			// applied. Diagnosing a wire-vocabulary drift needs the value.
+			log.Warn("codeupdate: preprocessing unavailable",
+				slog.String("note", n), slog.String("reason", rerr.Error()))
 			note = n
 		default:
 			body = refined
@@ -291,13 +296,23 @@ func (d *Dispatcher) preprocess(ctx context.Context, req Request, body string) (
 		}
 		st, err := d.Ghost.PreprocessStatus(ctx, jobID, req.RequestID)
 		if err != nil {
-			// One poll failing is not the job failing; keep polling until the
-			// deadline rather than throwing away a rewrite that may be seconds
-			// from landing.
+			// A job that cannot be found is not a job that is running late: the
+			// row is created synchronously before the 202, so a 404 means it
+			// aged out of its one-hour TTL or was never ours, and no amount of
+			// waiting brings it back. Same for a refused poll. Waiting those out
+			// reports them to the owner as a timeout, which is the same lie the
+			// status-vocabulary bug told.
+			if errors.Is(err, ghost.ErrNotFound) || errors.Is(err, ghost.ErrNotAuthorized) {
+				return "", noteFailed, fmt.Errorf("preprocess job %s is unreachable: %w", jobID, err)
+			}
+			// Anything else — a 5xx, a throttle, a transport blip — is one poll
+			// failing, not the job failing. Keep polling until the deadline
+			// rather than throwing away a rewrite that may be seconds from
+			// landing.
 			continue
 		}
-		switch st.Status {
-		case ghost.PreprocessDone:
+		switch {
+		case ghost.PreprocessIs(st.Status, ghost.PreprocessDone):
 			// A rewrite that is empty — or that is nothing but ghost-cli's own
 			// output directive, which its canonicalizer emits when the model
 			// returned no usable body — carries no task at all. Launching it
@@ -310,8 +325,22 @@ func (d *Dispatcher) preprocess(ctx context.Context, req Request, body string) (
 				return "", noteFailed, errors.New("preprocess returned no usable prompt")
 			}
 			return refined, "", nil
-		case ghost.PreprocessFailed:
-			return "", noteFailed, errors.New("preprocess reported failure")
+		case ghost.PreprocessIs(st.Status, ghost.PreprocessError):
+			// ghost-cli reports its own expired deadline this way too, so the
+			// message it chose is the one worth repeating; it is documented as
+			// provider-free and safe to carry.
+			return "", noteRewriteError, fmt.Errorf("preprocess reported an error: %s",
+				strings.TrimSpace(st.Error))
+		case ghost.PreprocessIs(st.Status, ghost.PreprocessPending):
+			// Still working. Keep polling.
+		default:
+			// A status neither side's vocabulary contains. Spinning to the
+			// deadline would report this as a timeout, which is exactly how the
+			// PENDING/pending mismatch hid for a full release — so it fails
+			// immediately and names the value it could not read.
+			return "", noteFailed, fmt.Errorf(
+				"preprocess returned unrecognised status %q (ghost-cli sends %q, %q or %q)",
+				st.Status, ghost.PreprocessPending, ghost.PreprocessDone, ghost.PreprocessError)
 		}
 	}
 	return "", noteTimedOut, errors.New("preprocess timed out")
