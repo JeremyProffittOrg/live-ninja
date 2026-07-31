@@ -598,6 +598,14 @@ func buildAPIToolsRegistry(deps *Deps) *tools.Registry {
 		SchedulerGroup:   os.Getenv("SCHEDULER_GROUP"),
 		SchedulerRoleARN: os.Getenv("SCHEDULER_ROLE_ARN"),
 		Reauthorize:      apiReauthorize(deps),
+
+		// Voice-driven code updates. Same wiring lesson as the memory seam
+		// below: without these three lines template.yaml can set every env var
+		// and grant every permission, and the code_update_* tools would still
+		// answer not_configured in-session with nothing else looking wrong.
+		Ghost:              deps.Ghost,
+		CodeUpdate:         deps.CodeUpdate,
+		CodeUpdateQueueURL: deps.CodeUpdateQueueURL,
 	}
 	if deps.Deliv != nil { // M9 deliverable_* tools (nil interface stays nil → not_configured)
 		toolDeps.Deliverables = deps.Deliv

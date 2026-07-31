@@ -86,6 +86,16 @@ var (
 		// Root-scoped PWA assets (served by Fiber outside /static/).
 		"/sw.js":       true,
 		"/favicon.ico": true,
+
+		// Mid-run progress from a coding agent on one of the owner's own
+		// machines. It carries a per-run `cu_` bearer token, NOT a session JWT,
+		// so the full verification below would reject it outright — the route
+		// authenticates its own credential in
+		// internal/webapp/codeupdate_routes.go (constant-time hash compare
+		// against a hashed, TTL-bounded row, uniform 401 on every failure, and
+		// a conditional post cap). Same pattern as the /api/v1/auth/* entries
+		// above: public at this layer, credential-checked in the handler.
+		"/v1/code-update/progress": true,
 	}
 
 	publicPrefixes = []string{

@@ -61,7 +61,8 @@ Tool catalog by name and file: comms `send_email` (sendemail.go); scheduling `se
 (weather.go), `web_lookup` / `web_research` (weblookup.go, research.go); notes `remember_note` /
 `recall_note` (notes.go); deliverables `deliverable_create|zip|deliver`, `file_list|read|create`
 (deliverable.go, file.go); memory `memory_search`, `memory_write`, `entity_get`, `plan_upsert`,
-`forget` (memory.go); `profile_suggest` (profilesuggest.go). `Unadvertised` params
+`forget` (memory.go); `profile_suggest` (profilesuggest.go); code updates
+`code_update_repos|start|status` (codeupdate.go). `Unadvertised` params
 are enforced but never shown to the model (e.g.
 set_timer's legacy "seconds" alias, kept working but not taught). `OutOfRangeHint` deliberately
 redirects the model to a sibling tool on a bound violation (set_timer overflow -> set_reminder) —
@@ -116,6 +117,20 @@ JWTs, per-call re-authorization, owner-plus-allowlist access.
 - No `Scan`, ever, on a serving path.
 - This RCA pipeline itself executes nothing: its only outputs are one email and pending
   `PROFSUGG#` rows, so a suggestion must be phrased as something a human applies by hand.
+
+## Voice-driven code updates (2026-07-30)
+
+"Update an application" starts a Claude/Codex session on the owner's PC via ghost-cli. Split by what
+can block: `internal/tools/codeupdate.go` validates and ENQUEUES (the Opus rewrite takes 30-90s, the
+web timeout is 30s); `cmd/codeupdate-dispatch` (SQS) mints the run token, drives the rewrite,
+launches, and emails the exact prompt sent; `internal/webapp/codeupdate_routes.go` serves the public
+`POST /v1/code-update/progress` the agent reports to (the node has no mail credential).
+`internal/ghost` reaches ghost-cli by direct invoke of its internal-invoke path; ghost-cli pins the
+principal and still gates every launch through its capability matrix and audit log. Two cross-repo
+contracts fail SILENTLY (pinned by tests both sides): the output directive
+(`internal/codeupdate/prompt.go`) must match ghost-cli's byte for byte or the run never completes
+and no summary email fires; the invoke task discriminator must match or every call 401s. Only the
+owner's instructions reach Opus — token, deploy gate and directive are appended afterwards.
 
 # FAILING INVOCATION
 tool: get_weather

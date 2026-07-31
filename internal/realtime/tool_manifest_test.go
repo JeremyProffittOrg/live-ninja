@@ -16,7 +16,7 @@ import (
 // from tools.CatalogManifest(), and toolManifestJSON is a package-level
 // func() var initialised from toolManifest. Go resolves package-level
 // dependency order automatically, but this pins it: ToolManifestJSON()
-// must be non-empty and parse to the full 26-tool catalog, each entry a
+// must be non-empty and parse to the full 29-tool catalog, each entry a
 // complete OpenAI function-tool declaration.
 func TestToolManifestJSONInitOrder(t *testing.T) {
 	raw := ToolManifestJSON()
@@ -24,7 +24,7 @@ func TestToolManifestJSONInitOrder(t *testing.T) {
 
 	var entries []map[string]any
 	require.NoError(t, json.Unmarshal(raw, &entries))
-	require.Len(t, entries, 26, "the full tool catalog must be bound")
+	require.Len(t, entries, 29, "the full tool catalog must be bound")
 
 	for i, e := range entries {
 		assert.Equal(t, "function", e["type"], "entry %d type", i)

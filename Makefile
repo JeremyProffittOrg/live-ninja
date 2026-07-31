@@ -12,7 +12,7 @@ SHELL := /bin/sh
 # service) are Docker images built + pushed to ECR by the deploy workflow, not
 # Lambda `bootstrap` binaries — keep them OUT of FUNCTIONS so `make build` never
 # tries to `go build` a cmd/ dir for them.
-FUNCTIONS := web authorizer realtime-broker iot-ingest usage-rollup email-dispatch deliverables-zipper shadow-ingest topics-extract account-purge rca-analyzer
+FUNCTIONS := web authorizer realtime-broker iot-ingest usage-rollup email-dispatch deliverables-zipper shadow-ingest topics-extract account-purge rca-analyzer codeupdate-dispatch
 
 .PHONY: all build test vet lint clean
 

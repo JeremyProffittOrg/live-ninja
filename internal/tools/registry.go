@@ -47,6 +47,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/scheduler"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/codeupdate"
+	"github.com/JeremyProffittOrg/live-ninja/internal/ghost"
 	"github.com/JeremyProffittOrg/live-ninja/internal/observ"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 )
@@ -376,9 +378,21 @@ type Deps struct {
 	TableName string       // env TABLE_NAME
 	Log       *slog.Logger
 
-	SQS           SQSAPI // send_email enqueue
+	SQS           SQSAPI // send_email + code_update_start enqueue
 	EmailQueueURL string // env EMAIL_QUEUE_URL
 	OwnerEmail    string // env OWNER_EMAIL — default (and only unconfirmed) email recipient
+
+	// Ghost is the ghost-cli fleet client behind the code_update_* tools; nil
+	// (or an unconfigured client) makes them report not_configured rather than
+	// pretend the fleet is unreachable.
+	Ghost *ghost.Client
+	// CodeUpdate persists the CODEUPD# request records code_update_status
+	// reads; nil disables that tool the same way.
+	CodeUpdate *codeupdate.Store
+	// CodeUpdateQueueURL is env CODE_UPDATE_QUEUE_URL — the queue
+	// cmd/codeupdate-dispatch drains. Empty makes code_update_start report
+	// not_configured, because the launch happens in that worker, not here.
+	CodeUpdateQueueURL string
 
 	Scheduler        SchedulerAPI // set_timer / set_reminder
 	SchedulerGroup   string       // env SCHEDULER_GROUP
@@ -552,6 +566,11 @@ func definitions() []*Definition {
 		forgetDefinition(),
 		webResearchDefinition(),
 		profileSuggestDefinition(),
+		// Voice-driven code updates: pick a repo, brief a coding agent, and run
+		// it on one of the owner's machines (internal/ghost + cmd/codeupdate-dispatch).
+		codeUpdateReposDefinition(),
+		codeUpdateStartDefinition(),
+		codeUpdateStatusDefinition(),
 		// Device-local session controls: declared here so the manifest advertises
 		// them, executed by the client (see devicesession.go).
 		stopListeningDefinition(),

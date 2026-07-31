@@ -28,6 +28,7 @@ import (
 	"time"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/firehose"
 	lambdasvc "github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -35,8 +36,10 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
+	"github.com/JeremyProffittOrg/live-ninja/internal/codeupdate"
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
 	"github.com/JeremyProffittOrg/live-ninja/internal/deliv"
+	"github.com/JeremyProffittOrg/live-ninja/internal/ghost"
 	"github.com/JeremyProffittOrg/live-ninja/internal/memory"
 	"github.com/JeremyProffittOrg/live-ninja/internal/observ"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
@@ -103,6 +106,11 @@ func main() {
 	app.Get("/sw.js", swHandler)
 	webapp.RegisterCompatRoute(app, deps)
 	webapp.RegisterAndroidDistributionRoutes(app, deps)
+	// The code-update progress endpoint is public by necessity: the caller is a
+	// coding agent on the owner's PC holding a per-run token and no session. It
+	// must therefore be registered HERE, ahead of ExtractAuthContext/CSRF, and
+	// outside the /api/v1 group whose prefix middleware would reject it.
+	webapp.RegisterCodeUpdateRoutes(app, deps)
 
 	// Auth context extraction (authorizer passthrough header, Bearer JWT
 	// fallback) + CSRF double-submit enforcement for cookie-bearing POSTs,
@@ -194,6 +202,7 @@ func buildDeps(ctx context.Context, cfg config.App, logger *slog.Logger) (*webap
 
 	lambdaClient := lambdasvc.NewFromConfig(awsCfg)
 	s3Client := s3.NewFromConfig(awsCfg)
+	ddbClient := dynamodb.NewFromConfig(awsCfg)
 	deps := &webapp.Deps{
 		Store:                  st,
 		LWA:                    lwa,
@@ -212,6 +221,29 @@ func buildDeps(ctx context.Context, cfg config.App, logger *slog.Logger) (*webap
 		AndroidArtifactsBucket: os.Getenv("ANDROID_RELEASES_BUCKET"),
 		AndroidLatestKey:       os.Getenv("ANDROID_LATEST_KEY"),
 		AndroidAssetLinksKey:   os.Getenv("ANDROID_ASSETLINKS_KEY"),
+		CodeUpdateQueueURL:     os.Getenv("CODE_UPDATE_QUEUE_URL"),
+	}
+	// Voice-driven code updates. All three pieces are wired together or not at
+	// all: the ghost client reaches the fleet, the store tracks a request, and
+	// the dispatcher supplies the progress endpoint's email leg. Missing config
+	// leaves the code_update_* tools reporting not_configured and the progress
+	// route answering 503 — never a silent no-op.
+	if fn := os.Getenv("GHOST_COMMAND_FUNCTION_ARN"); fn != "" {
+		deps.Ghost = ghost.New(ghost.Config{API: lambdaClient, Function: fn, Log: logger})
+		deps.CodeUpdate = codeupdate.NewStore(ddbClient, cfg.TableName, nil)
+		deps.CodeUpdateDispatcher = &codeupdate.Dispatcher{
+			Ghost:         deps.Ghost,
+			Store:         deps.CodeUpdate,
+			SQS:           deps.SQS,
+			EmailQueueURL: cfg.EmailQueueURL,
+			OwnerEmail:    os.Getenv("OWNER_EMAIL"),
+			Log:           logger,
+		}
+		if deps.CodeUpdateQueueURL == "" {
+			logger.Warn("code_update_start disabled (CODE_UPDATE_QUEUE_URL not set)")
+		}
+	} else {
+		logger.Warn("voice code updates disabled (GHOST_COMMAND_FUNCTION_ARN not set)")
 	}
 	if deps.TelemetryStreamName == "" {
 		logger.Warn("telemetry lake disabled (TELEMETRY_FIREHOSE_STREAM_NAME not set)")

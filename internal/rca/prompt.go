@@ -30,7 +30,16 @@ const (
 	// Character budgets. ~3.5 chars/token for English prose + JSON, so the
 	// 24000-char ceiling lands at roughly 6.9K input tokens — inside the <=8K
 	// budget with headroom for the system prompt and Bedrock's own framing.
-	maxSystemMapChars    = 8000
+	//
+	// maxSystemMapChars was raised 8000 -> 9200 on 2026-07-30 when the map
+	// gained the voice-driven code-update subsystem. It had been sitting at
+	// 7980/8000, so ANY new subsystem would have silently truncated the map
+	// mid-sentence in every RCA prompt. Raising it is the deliberate choice:
+	// ~340 extra input tokens per analysis, against an analyzer that runs ~10
+	// times a day, buys the model an accurate picture of a subsystem that can
+	// start code changes on the owner's machine. Trim the map before raising
+	// this again.
+	maxSystemMapChars    = 9200
 	maxContractChars     = 2500
 	maxWindowChars       = 6000
 	maxPriorRCAChars     = 2000

@@ -19,8 +19,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
+	"github.com/JeremyProffittOrg/live-ninja/internal/codeupdate"
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
 	"github.com/JeremyProffittOrg/live-ninja/internal/deliv"
+	"github.com/JeremyProffittOrg/live-ninja/internal/ghost"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 )
 
@@ -100,6 +102,18 @@ type Deps struct {
 	// (telemetry_routes.go) — never a silent no-op.
 	Firehose            FirehosePutBatchAPI
 	TelemetryStreamName string
+
+	// CodeUpdate is the CODEUPD# store behind the code_update_* tools and the
+	// public progress endpoint; CodeUpdateDispatcher supplies the email leg of
+	// that endpoint. CodeUpdateQueueURL (CODE_UPDATE_QUEUE_URL env) is the queue
+	// cmd/codeupdate-dispatch drains. Any of them unset leaves the tools
+	// reporting not_configured and the progress route answering 503 — never a
+	// silent no-op.
+	CodeUpdate           *codeupdate.Store
+	CodeUpdateDispatcher *codeupdate.Dispatcher
+	CodeUpdateQueueURL   string
+	// Ghost is the ghost-cli fleet client the code_update_* tools use.
+	Ghost *ghost.Client
 }
 
 // emailMessage mirrors cmd/email-dispatch's EmailMessage — the SQS body

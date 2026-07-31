@@ -17,10 +17,32 @@ Parameters:
   HostedZoneId:
     Type: AWS::Route53::HostedZone::Id
     Description: Route 53 hosted zone that DomainName lives in.
+  GhostCommandFunctionArn:
+    Type: String
+    Default: arn:aws:lambda:us-east-1:759775734231:function:ghost-cli-command
+    Description: >-
+      ARN of ghost-cli's command Lambda, reached by direct invoke for the
+      voice-driven code-update feature (repo listing, Opus prompt rewrite, and
+      the run_now launch). The function name is pinned in ghost-cli's own
+      template, so the ARN is deterministic; override it from repo variable
+      GHOST_COMMAND_FUNCTION_ARN if that ever changes. A cross-stack
+      Fn::ImportValue was deliberately NOT used - it would couple the two
+      stacks' lifecycles for no benefit.
+
+      This value is interpolated into an IAM policy Resource, so it must always
+      be a syntactically valid Lambda ARN - an empty string produces a malformed
+      policy and fails the deploy. To disable the feature, point it at a
+      non-existent function in this account (e.g. ...:function:disabled): the
+      grant is then harmless, every invoke fails, and the code_update_* tools
+      report not_configured.
+    AllowedPattern: "^arn:aws:lambda:[a-z0-9-]+:[0-9]{12}:function:[A-Za-z0-9_-]+$"
+    ConstraintDescription: >-
+      Must be a full Lambda function ARN. It is used as an IAM policy Resource,
+      where an empty or partial value would produce a malformed policy.
   OpenAIRealtimeModel:
     Type: String
     Default: gpt-realtime
-    Description: OpenAI Realtime model id the realtime broker mints client 
+    Description: OpenAI Realtime model id the realtime broker mints client
       secrets for.
   OpenAIMonthlyBudgetUsd:
     Type: Number
@@ -289,6 +311,13 @@ Resources:
           # LOG# retention override (days; code default is 30).
           ACCOUNT_PURGE_FUNCTION_NAME: !Ref AccountPurgeFunction
           RETENTION_DAYS: "30"
+          # Voice-driven code updates. The web function only ENQUEUES (the
+          # launch happens in CodeUpdateDispatchFunction) and reads status, so
+          # it needs the queue URL plus the ghost function for the repo listing
+          # the code_update_repos tool serves. Either unset leaves the
+          # code_update_* tools reporting not_configured.
+          CODE_UPDATE_QUEUE_URL: !Ref CodeUpdateQueue
+          GHOST_COMMAND_FUNCTION_ARN: !Ref GhostCommandFunctionArn
       Events:
         CatchAll:
           Type: HttpApi
@@ -354,12 +383,28 @@ Resources:
           - sqs:SendMessage
           Resource:
           - !GetAtt RcaQueue.Arn
+        - Sid: CodeUpdateEnqueue
+          Effect: Allow
+          Action:
+          - sqs:SendMessage
+          Resource:
+          - !GetAtt CodeUpdateQueue.Arn
         - Sid: InvokeRealtimeBroker
           Effect: Allow
           Action:
           - lambda:InvokeFunction
           Resource:
           - !GetAtt RealtimeBrokerFunction.Arn
+          # Read-only reach into ghost-cli: the code_update_repos tool's repo
+          # listing and code_update_status's run lookup. The LAUNCH itself is
+          # never issued from here - it happens in CodeUpdateDispatchFunction
+          # after the Opus rewrite, which the 30s web timeout cannot wait for.
+        - Sid: InvokeGhostCommandFunction
+          Effect: Allow
+          Action:
+          - lambda:InvokeFunction
+          Resource:
+          - !Ref GhostCommandFunctionArn
         - Sid: DeviceControlPublish
           Effect: Allow
           Action:
@@ -1030,6 +1075,133 @@ Resources:
               dynamodb:LeadingKeys:
               - "USER#*"
 
+  # ------------------------------------------------------------------
+  # Voice-driven code updates: the dispatch worker.
+  #
+  # Turns a queued request into a running coding session on one of the owner's
+  # machines: mint a per-run progress token, optionally have Opus rewrite the
+  # owner's instructions (via ghost-cli, which owns that Bedrock call), assemble
+  # the final prompt, create a run_now schedule event on ghost-cli, and email the
+  # owner exactly what was sent.
+  #
+  # It holds NO Bedrock grant of its own. The rewrite happens inside ghost-cli's
+  # command function under ghost-cli's own quota and capability gate, which is
+  # what keeps this worker's blast radius to "can ask ghost-cli to do the five
+  # things its internal-invoke allowlist permits".
+  # ------------------------------------------------------------------
+  CodeUpdateDispatchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: live-ninja-codeupdate-dispatch
+      # Lambda caps Description at 256 chars; CloudFormation rejects a longer
+      # one at CreateFunction and rolls back the whole changeset.
+      Description: >-
+        Voice code-update dispatcher - SQS consumer over live-ninja-code-update.
+        Mints the run progress token, drives ghost-cli's Opus prompt rewrite,
+        launches the coding session, and emails the owner the exact prompt sent.
+      CodeUri: .build/codeupdate-dispatch/
+      LoggingConfig:
+        LogGroup: !Ref CodeUpdateDispatchLogGroup
+      MemorySize: 512
+      Timeout: 300
+      Environment:
+        Variables:
+          # The ghost-cli command function reached by direct invoke. Unset
+          # disables the whole feature (the tools report not_configured); it is
+          # never defaulted to a guess.
+          GHOST_COMMAND_FUNCTION_ARN: !Ref GhostCommandFunctionArn
+          EMAIL_QUEUE_URL: !Ref EmailQueue
+          OWNER_EMAIL: proffitt.jeremy@gmail.com
+          # The progress endpoint the generated prompt tells the coding agent to
+          # curl is derived from this, so it can never point somewhere the rest
+          # of the app does not. REQUIRED: without it the worker builds an empty
+          # progress URL and omits the reporting block from every prompt — the
+          # owner would simply never receive a progress email, with nothing
+          # anywhere reading as broken.
+          DOMAIN_NAME: !Ref DomainName
+          CODE_UPDATE_OUTPUT_FILE: update-report.md
+          # Shorter than ghost-cli's own 600s preprocessing ceiling on purpose:
+          # past a few minutes the right answer is to launch with the owner's
+          # original wording and say so, not to hold a queue message open.
+          PREPROCESS_POLL_TIMEOUT_SECONDS: "240"
+      Events:
+        CodeUpdateJobs:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt CodeUpdateQueue.Arn
+            # BatchSize 1: one request can occupy up to 280s (the per-record
+            # budget in cmd/codeupdate-dispatch) waiting on the Opus rewrite, so
+            # a second in the same invocation could not finish inside the 300s
+            # Timeout.
+            BatchSize: 1
+            FunctionResponseTypes:
+            - ReportBatchItemFailures
+      Policies:
+      - Version: "2012-10-17"
+        Statement:
+        - Sid: QueueConsume
+          Effect: Allow
+          Action:
+          - sqs:ReceiveMessage
+          - sqs:DeleteMessage
+          - sqs:GetQueueAttributes
+          Resource:
+          - !GetAtt CodeUpdateQueue.Arn
+        - Sid: EmailEnqueue
+          Effect: Allow
+          Action:
+          - sqs:SendMessage
+          Resource:
+          - !GetAtt EmailQueue.Arn
+          # Same-account invoke of ghost-cli's command function. Scoped to that
+          # ONE function ARN: this is the entire cross-service surface of the
+          # feature, and ghost-cli's own resource allowlist bounds which of its
+          # routes the invoke can reach. No resource policy is needed on the
+          # ghost-cli side because the caller is in this account.
+        - Sid: InvokeGhostCommandFunction
+          Effect: Allow
+          Action:
+          - lambda:InvokeFunction
+          Resource:
+          - !Ref GhostCommandFunctionArn
+          # Two DynamoDB statements, mirroring the two rows this worker owns.
+          #
+          # CODEUPD#* is the run-token row: keyed by request id alone, because
+          # the coding agent on the node knows the token and nothing else.
+          #
+          # USER#* is the status record. PutItem/UpdateItem there is broader
+          # than the sort-key prefix we actually write, because DynamoDB has no
+          # IAM condition key for a sort key - the same accepted limitation, and
+          # the same compensating control, documented at length on the RCA
+          # analyzer above: every write here goes through internal/codeupdate's
+          # Store, whose sort key is built by SortKey() from a server-generated
+          # UUIDv7 and never from model output.
+        - Sid: TableCodeUpdateTokenRows
+          Effect: Allow
+          Action:
+          - dynamodb:GetItem
+          - dynamodb:PutItem
+          - dynamodb:UpdateItem
+          Resource:
+          - !GetAtt Table.Arn
+          Condition:
+            ForAllValues:StringLike:
+              dynamodb:LeadingKeys:
+              - "CODEUPD#*"
+        - Sid: TableCodeUpdateStatusRows
+          Effect: Allow
+          Action:
+          - dynamodb:GetItem
+          - dynamodb:Query
+          - dynamodb:PutItem
+          - dynamodb:UpdateItem
+          Resource:
+          - !GetAtt Table.Arn
+          Condition:
+            ForAllValues:StringLike:
+              dynamodb:LeadingKeys:
+              - "USER#*"
+
   AccountPurgeFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -1200,6 +1372,15 @@ Resources:
     Properties:
       LogGroupName: /live-ninja/lambda/rca-analyzer
       RetentionInDays: 5
+
+  CodeUpdateDispatchLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /live-ninja/lambda/codeupdate-dispatch
+      # 7 days per the house retention rule. The older groups in this stack
+      # predate it and are left alone here rather than changed as a side effect
+      # of an unrelated feature.
+      RetentionInDays: 7
 
   # M7 account-purge Lambda (cmd/account-purge, added in this milestone —
   # FunctionName must be live-ninja-account-purge). Default-name group is
@@ -1666,6 +1847,38 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: live-ninja-rca-dlq
+      MessageRetentionPeriod: 1209600
+
+  # ------------------------------------------------------------------
+  # Voice-driven code updates: the queue between the code_update_start tool
+  # and cmd/codeupdate-dispatch.
+  #
+  # The queue exists because the Opus rewrite that precedes a launch runs
+  # 30-90s and the web function's timeout is 30s, so a realtime tool call
+  # cannot wait for it. It also makes the request durable: once the owner has
+  # said what they want, ending the conversation must not cancel the work.
+  # ------------------------------------------------------------------
+  CodeUpdateQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: live-ninja-code-update
+      # >= the consumer's Timeout (300s), same rule RcaQueue follows: a shorter
+      # visibility window would redeliver a request still being dispatched and
+      # could start two coding sessions on the same machine.
+      VisibilityTimeout: 360
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt CodeUpdateDeadLetterQueue.Arn
+        # 3, matching RcaQueue: cmd/codeupdate-dispatch reports ONLY transient
+        # failures as batch item failures (every permanent one is emailed to the
+        # owner and dropped), so three attempts covers a real blip and bounds
+        # what a wedged message can cost.
+        maxReceiveCount: 3
+
+  CodeUpdateDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: live-ninja-code-update-dlq
       MessageRetentionPeriod: 1209600
 
   # ------------------------------------------------------------------
