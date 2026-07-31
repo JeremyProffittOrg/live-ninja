@@ -75,6 +75,28 @@ have surfaced this.
 email. That leg is ghost-cli's pre-existing `lambda/summary` path, unchanged by this work, and needs
 the node online with the agent running.
 
+### Post-launch (2026-07-31)
+
+The feature is in real use — four launches through the full path, all with the deploy gate closed.
+My verification run reached **COMPLETED** and ghost-cli's summary email fired, so all three email
+legs are confirmed end to end.
+
+**Fixed: the allowlist entry was transient.** ghost-cli's deploy overwrites
+`/ghost-cli/authz-allowlist` on every run, and with `AUTHZ_ALLOWLIST_JSON` unset it writes an
+owner-only document — silently dropping `live-ninja`. That is what produced the 08:22 `not
+authorized` failure. The two-entry document now lives in the `AUTHZ_ALLOWLIST_JSON` repo variable,
+so it survives deploys. A hand-written SSM value was never going to hold.
+
+**Still unverified: the Opus rewrite.** Every launch so far carries `rewritten: false` — they were
+all sent with `preprocess:false`. The headline behaviour ("use Opus to pre-process the prompt unless
+told not to") has therefore never actually executed in production. One spoken run, or one enqueue
+with `preprocess:true`, closes this.
+
+**Known conflict in the prompt.** A read-only instruction ("change nothing") contradicts the
+mandatory output directive ("write update-report.md"). My verification run obeyed the former, wrote
+no report, and `lambda/summary` logged `NoSuchKey` and sent a status-only email. Harmless here, but
+an owner asking for a pure investigation would hit the same thing.
+
 ### Follow-ups NOT fixed here (pre-existing ghost-cli gaps, now reachable)
 
 - **`POST /schedule/preprocess` is authorized but never audited.** It is a write gated on
