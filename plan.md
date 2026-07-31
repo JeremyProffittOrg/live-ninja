@@ -220,6 +220,7 @@ Unchanged in substance; these were open when [completed/plan.md](completed/plan.
 - **Truncate the prompt *body*, never the assembled string.** The operating rules sit at the end;
   truncating the whole thing eats the deploy gate first.
 - **`docs/system-map.md` rides in every RCA prompt** under a character budget. Adding a subsystem
-  means raising the budget deliberately (currently 9200).
+  means raising the budget deliberately (currently 9600, raised from 9200 on 2026-07-31 for the
+  third cross-repo contract; the reasoning for each raise is recorded in `internal/rca/prompt.go`).
 - **A read-only instruction conflicts with the mandatory output directive.** "Change nothing" plus
   "write `update-report.md`" means the report is never written and the summary email arrives empty.
