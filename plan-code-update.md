@@ -21,6 +21,43 @@ completed success). live-ninja side **implemented, tests green, awaiting deploy*
 | WS-D progress ingest | done | `internal/webapp/codeupdate_routes.go` (public `/v1/code-update/progress`) |
 | WS-E infra + docs | done, awaiting deploy | `template.yaml` (queue/DLQ/worker/log group/IAM/param), `Makefile`, `.github/workflows/deploy.yml`, `contracts/api.md`, `docs/system-map.md` |
 
+### Adversarial review (2026-07-30, 6 lenses x refutation pass)
+
+34 findings raised, **16 refuted**, **18 confirmed and fixed** — except two, recorded as
+follow-ups below. The two criticals were both real and both would have hurt:
+
+1. **The deploy gate could be silently deleted.** `fit()` truncated the ASSEMBLED prompt, which
+   put the body first and the operating rules last, so truncation ate the tail. ghost-cli's own
+   preprocessor bounds its rewrite at 16384 runes, so any rewrite that ran long arrived already at
+   the ceiling and deterministically pushed the gate off the end. What survived was "Follow this
+   repository's own CLAUDE.md" — whose first line, in these repos, is that pushing to `main` IS the
+   production deploy. **A `deploy:false` voice command would have instructed the push it exists to
+   forbid, and the confirmation email would still have read "Deploy: NO".** Fixed by reserving the
+   fixed-size rules out of the budget and truncating the body; the test now asserts the gate, the
+   token and the progress block all survive at nine body lengths across the danger band. My original
+   test only checked the rune count and the trailing directive, which is exactly why it passed.
+2. **A 264-char Lambda `Description`** (cap: 256) would have failed `CreateFunction` and rolled back
+   the entire changeset — nothing in the release would have shipped.
+
+Also fixed: the progress route was missing from the API Gateway authorizer's public allowlist (every
+post would have 403'd before reaching the handler); the internal-invoke allowlist was resource-only,
+so `/schedule` exposed PUT and DELETE; `GET /schedule` had no principal check at all; a redelivered
+queue message re-minted the run token, revoking the live session's credential and resetting its
+email cap; the `limit` param was inert (handler read `float64`, the router hands `int`); the TTL was
+never enforced in code, so an expired token still authenticated; and the persona splice produced a
+doubled em dash.
+
+### Follow-ups NOT fixed here (pre-existing ghost-cli gaps, now reachable)
+
+- **`POST /schedule/preprocess` is authorized but never audited.** It is a write gated on
+  `ActionLaunch` and a billable Opus spend, yet `SchedulePromptHandler` has no audit sink — so one of
+  the five internally-reachable routes writes no hash-chain entry. Fixing it means threading an
+  `authz.AuditSink` into that handler, which is a ghost-cli design change beyond this integration.
+- **`GET /launch/repos` performs no `Authorize` call.** It checks only that a principal is non-empty,
+  which on the internal-invoke path is a tautology. Impact here is nil (listing repos is exactly what
+  this integration is for), but a viewer-scoped principal could enumerate every repo the GitHub App
+  can reach.
+
 ### Defects the tests caught during implementation
 
 - **Double output directive.** ghost-cli's preprocessor *always* appends `outputDirective` to its

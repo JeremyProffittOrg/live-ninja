@@ -208,3 +208,20 @@ func TestPutTokenIsCreateOnly(t *testing.T) {
 		t.Errorf("token hash = %q; the refused mint overwrote the original", got.TokenHash)
 	}
 }
+
+// The node name is an EXACT IoT Thing name. ghost-cli's ACL compares it
+// byte-for-byte with no case folding, and it is interpolated into the command
+// topic (cockpit/nodes/<name>/cmd) — so a case slip either fails the capability
+// check or publishes to a topic nothing subscribes to, leaving the run wedged
+// RUNNING until a 2h grace marks it FAILED. Neither failure names the cause.
+//
+// Verified against the live fleet on 2026-07-30: `aws iot list-things` lists
+// OFFICEPC. If the node is ever renamed, this constant moves with it.
+func TestDefaultNodeIsTheExactThingName(t *testing.T) {
+	if DefaultNode != "OFFICEPC" {
+		t.Fatalf("DefaultNode = %q, want the exact IoT Thing name %q", DefaultNode, "OFFICEPC")
+	}
+	if strings.ToLower(DefaultNode) == DefaultNode {
+		t.Error("DefaultNode was lower-cased; ghost-cli's node ACL does not case-fold")
+	}
+}

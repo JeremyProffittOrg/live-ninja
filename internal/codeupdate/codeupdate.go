@@ -31,8 +31,17 @@ const QueueMessageVersion = 1
 
 // Defaults. Node and CLI are the answers to "update an application" when the
 // owner does not say where or with what.
+//
+// DefaultNode is the node's EXACT IoT Thing name, uppercase and all. Two
+// independent things match it byte-for-byte and neither tells you when you are
+// wrong: ghost-cli's node ACL (authz.Entry.AllowsNode is an exact compare, no
+// case folding) and the command topic the envelope is published to
+// (cockpit/nodes/<name>/cmd). A lowercase "officepc" therefore fails the
+// capability check, or — if the principal held a wildcard — publishes to a topic
+// nothing is subscribed to, and the run sits RUNNING until the 2h grace marks it
+// FAILED. Verified against the live fleet: `aws iot list-things` lists OFFICEPC.
 const (
-	DefaultNode       = "officepc"
+	DefaultNode       = "OFFICEPC"
 	DefaultCLI        = "claude"
 	DefaultOutputFile = "update-report.md"
 )
