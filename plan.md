@@ -17,20 +17,27 @@ Archived (history preserved in full, banners at the top of each):
 
 ---
 
-## Where things actually stand (2026-07-31)
+## Where things actually stand (2026-07-31, second pass)
 
 Voice-driven code updates are **live and being used** — four launches through the full path today,
 all with the deploy gate closed, DLQ empty. All three email legs (started / progress / completion
 summary) are confirmed end to end.
 
-Two production defects were found by *running it*, not by reviewing it. One is fixed (ghost-cli
-v1.1.52, prompt transport). **One is open and is the subject of §1: the Opus pre-processing path has
-never once succeeded, and cannot, because live-ninja compares ghost-cli's job status against the
-wrong string.**
+Two production defects were found by *running it*, not by reviewing it. Both are now **fixed in
+code and deployed**: the prompt transport (ghost-cli v1.1.52) and the Opus status vocabulary
+(live-ninja `744d930`). §2.1's persistence question was decided by the owner and shipped
+(`658f112`).
+
+**The one thing left on §1 is the live proof, and it is blocked — see §1.4.** The node is running
+agent `1.1.51-dev`, which predates the prompt-transport fix. That did not matter while the rewrite
+was being discarded, because the launched prompt was always the owner's short wording. Now that the
+rewrite is actually collected, a ~3400-character brief reaches the node for the first time — and on
+`1.1.51-dev` it is typed as 3400 keystrokes, which is exactly the defect v1.1.52 exists to fix.
+Verifying before the node is rolled would burn a session to re-prove a known bug.
 
 ---
 
-## §1 — Opus pre-processing remediation `[ ]` **← highest priority**
+## §1 — Opus pre-processing remediation `[~]` — code shipped `744d930`, live proof blocked
 
 ### 1.1 The defect
 
@@ -63,45 +70,52 @@ quota, and one Bedrock Opus call — all discarded. It is *reported* (the confir
 Opus rewrite did not finish in time"), so it is not silent, but it is wrong and it is misleading:
 nothing timed out.
 
-### 1.2 The fix
+### 1.2 The fix `[x]` — shipped in `744d930`
 
-- `[ ]` **H** — `internal/ghost/client.go`: correct the constants to ghost-cli's actual wire values,
-  and add the missing one.
-  ```go
-  PreprocessPending = "pending"
-  PreprocessDone    = "done"
-  PreprocessError   = "error"   // ghost-cli's failure value; "failed" never existed
-  ```
-- `[ ]` **H** — Compare **case-insensitively** at the call sites
-  (`strings.EqualFold`), so a future case change on either side degrades to a slow path rather than a
-  silent one. Keep `PreprocessFailed` as a deprecated alias only if something already reads it —
-  otherwise delete it so it cannot be used by mistake.
-- `[ ]` **H** — `internal/codeupdate/dispatch.go`: switch on the corrected values; treat any
-  **unrecognised** status as a hard error after one poll rather than spinning to the deadline, and log
-  it with the offending value. A vocabulary mismatch must announce itself, not look like a timeout.
-- `[ ]` **S** — Distinguish the notes: `noteTimedOut` must mean the deadline genuinely passed.
-  Add a distinct note for "the rewrite reported an error" so the confirmation email stops
-  telling the owner something untrue.
+- `[x]` `internal/ghost/client.go`: the constants are ghost-cli's actual wire values —
+  `pending` / `done` / `error`. `PreprocessFailed` was deleted, not aliased; nothing read it.
+- `[x]` `ghost.PreprocessIs` compares with `strings.EqualFold` (plus `TrimSpace`), so a future
+  casing change on either side costs a slow path rather than a discarded rewrite.
+- `[x]` `internal/codeupdate/dispatch.go` switches on the corrected values, and an **unrecognised**
+  status ends the wait after the poll that produced it, naming the value it could not read.
+- `[x]` `noteRewriteError` distinguishes "the rewrite reported an error" from `noteTimedOut`, which
+  now means only that the deadline genuinely passed.
+- `[x]` **Found during review, same defect class, not in the original plan:** every poll *error* was
+  swallowed as retryable, so a 404 (TTL-expired row, or a job that was never ours) also spun the
+  full 240 s and reported the same false timeout. `ErrNotFound` / `ErrNotAuthorized` are now
+  terminal; everything else still retries, because one poll failing is not the job failing.
 
-### 1.3 The test that should have caught it
+### 1.3 The test that should have caught it `[x]` — shipped in `744d930`
 
-This is a **cross-repo wire contract** and it belongs with the other two that are already pinned
-(the output directive and the invoke discriminator). All three fail silently when broken.
+- `[x]` `TestPreprocessStatusesMatchGhostCLI` pins the three literals with the file:line reference,
+  in the same shape as `TestInternalInvokeTaskMatchesGhostCLI`. This is the **third** pinned
+  cross-repo contract; `docs/system-map.md` now says three, and the RCA map budget was raised
+  9200 → 9600 to fit it (deliberate, recorded in `internal/rca/prompt.go`).
+- `[x]` Every uppercase fixture is gone. `TestDispatchUsesOpusRewriteWhenRequested` now drives the
+  real lowercase values; it had passed for the whole life of the bug because its fixture returned
+  `"DONE"`, which production never sends.
+- `[x]` `TestUnknownPreprocessStatusFailsFastRatherThanTimingOut` (one poll, and a pending job still
+  waits out its deadline), `TestPreprocessErrorIsReportedAsAnErrorNotATimeout`, and
+  `TestUnreachablePreprocessJobFailsFast`. All were mutation-checked: each fails when the fix is
+  reverted.
+- `[x]` Adversarial review: 16 agents, four lenses, 12 findings raised and **all 12 refuted** on the
+  source. Nothing survived to fix.
 
-- `[ ]` **H** — `internal/ghost/client_test.go`: pin the three status literals against ghost-cli's,
-  with the file:line reference, exactly as `TestInternalInvokeTaskMatchesGhostCLI` does.
-- `[ ]` **S** — A dispatcher test that drives the **real lowercase** values end to end and asserts
-  `rewritten:true` and that the rewrite reached the launched prompt. The existing
-  `TestDispatchUsesOpusRewriteWhenRequested` passes only because its fixture returns `"DONE"` — it
-  encodes the bug as the expectation. Fix the fixture, and it fails until §1.2 lands.
-- `[ ]` **S** — A test that an unknown status value fails fast rather than timing out.
+### 1.4 Verify in production `[!]` — blocked on rolling the node agent
 
-### 1.4 Verify in production
-
-- `[ ]` **S** — One `preprocess:true` request end to end. Success = worker log `rewritten:true`
-  within ~60 s (not ~240 s), and the launched prompt visibly the expanded brief.
+- `[!]` **Roll OFFICEPC to ghost-cli ≥ v1.1.52 first.** The node reports `1.1.51-dev`
+  (`GET /nodes`, 2026-07-31 15:48Z). `stageLaunchPrompt` does not exist at `v1.1.51` and does at
+  `v1.1.52` — verified with `git grep` at both tags. Releases stamp the version via
+  `-ldflags -X main.Version` (`agent-release.yml:149`), so a `-dev` suffix means a local build, not
+  a release. Tags exist up to `v1.1.53`. Until this is rolled, the first genuinely long prompt this
+  system has ever produced gets typed in as 3400 keystrokes.
+- `[ ]` **S** — Then one `preprocess:true` request end to end. Success = worker log
+  `rewritten:true` within ~60 s (not ~240 s), and the launched prompt visibly the expanded brief.
 - `[ ]` **S** — Then one real **spoken** run, which is the only path that still has never been
   exercised (the voice tool defaults `preprocess` to true, so this covers both at once).
+
+Owner authorised the canary run on 2026-07-31 (`ftwr-codeagent-canary` is on the launch allowlist
+and the node is `live`/`connected`); it is held only by the agent version above.
 
 ---
 
@@ -109,14 +123,14 @@ This is a **cross-repo wire contract** and it belongs with the other two that ar
 
 ### 2.1 Ours
 
-- `[ ]` **H** — **Three run rows stuck `RUNNING`** (`newgh-smoke-test` 08:31, `ai-template` 08:51,
-  `ftwr-codeagent-canary` 09:08) — sessions killed during testing. ghost-cli's per-repo in-flight
-  guard refuses new launches on those repos until the 2 h grace expires. Either wait it out or
-  resolve the rows; **do not** weaken the guard, which is working as designed.
-- `[ ]` **S** — **Decide whether `CODEUPD#` should persist `instructions`.** It currently does not
-  (`internal/codeupdate/store.go`), so the owner's words survive only in the consumed SQS message and
-  the launch email. That is a defensible privacy choice, but it made the first incident nearly
-  unrecoverable. Decide deliberately; either answer is fine, an accident is not.
+- `[x]` **Three run rows stuck `RUNNING`** (`newgh-smoke-test` 08:31, `ai-template` 08:51,
+  `ftwr-codeagent-canary` 09:08) — sessions killed during testing. The 2 h grace expired by 11:08;
+  it was waited out, which was the right answer. **Do not** weaken the per-repo in-flight guard —
+  it is working as designed, and it is the reason a killed session cannot be relaunched over.
+- `[x]` **`CODEUPD#` persists `instructions`.** Owner decision 2026-07-31: persist, bounded by the
+  row's existing `RecordTTL` (24 h), in the owner's own partition, never logged, and deliberately
+  **not** returned by `code_update_status` — the reader is a human diagnosing a failed run, not the
+  model, and a test pins that. Shipped in `658f112`.
 
 ### 2.2 ghost-cli follow-ups (pre-existing gaps our path makes reachable)
 
@@ -136,7 +150,8 @@ This is a **cross-repo wire contract** and it belongs with the other two that ar
   volume and the verifier keyed on the destroyed head, so all four retries fired and the deploy gate
   never arrived. Fixed in **ghost-cli v1.1.52**: prompts over 300 runes are staged to a file and only
   a pointer is typed. Two wrong turns are recorded in the archived report — read it before touching
-  that path again.
+  that path again. **Fixed in the repo, NOT yet on the node** — see §1.4, and the standing rule that
+  an agent fix is not done until it is tagged, released *and rolled*.
 - `[x]` **The `live-ninja` grant is now deploy-owned.** It was hand-seeded in SSM, and *every*
   ghost-cli deploy overwrote `/ghost-cli/authz-allowlist` with an owner-only document, silently
   killing the feature. The two-entry document now lives in ghost-cli's `AUTHZ_ALLOWLIST_JSON` repo
