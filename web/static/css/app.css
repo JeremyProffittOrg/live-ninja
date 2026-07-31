@@ -1961,6 +1961,19 @@ html[data-ln-style="hal9000"] .conv-main { background: #23232b; }
   border-radius: 0 var(--ln-r-md) var(--ln-r-md) 0;
   box-shadow: var(--ln-shadow-sm);
 }
+/* Help opener: a shorter bar stacked directly above the Settings bar on the
+   same edge, so the two read as one cluster. Settings spans 30dvh..70dvh
+   (top:50%, height:40dvh, translateY(-50%)), so anchoring this one's BOTTOM
+   edge (translateY(-100%)) one gap above 30dvh keeps the pair aligned at any
+   viewport height. The drawer it opens reuses .conv-drawer wholesale — the
+   help panel's close bar is the same .conv-settings-tab--close as settings'. */
+.conv-settings-tab--help {
+  height: 16vh;
+  height: 16dvh;
+  min-height: calc(var(--ln-touch) * 2);
+  top: calc(50% - 20dvh - var(--ln-sp-2));
+  transform: translateY(-100%);
+}
 
 /* Native <dialog> drawer: showModal() supplies focus trap + Escape;
    conversation.mjs closes on scrim click. Padding lives on the inner
@@ -2079,6 +2092,36 @@ dialog.conv-drawer[open] {
 .conv-drawer__cost-label { font-weight: 700; text-transform: uppercase; font-size: var(--ln-fs-xs); letter-spacing: 0.05em; }
 .conv-drawer__cost-value { color: var(--ln-text); font-weight: 700; font-variant-numeric: tabular-nums; }
 .conv-drawer__cost-sub { font-size: var(--ln-fs-xs); color: var(--ln-text-dim); }
+
+/* ---- Help drawer content. The drawer CHROME is shared with settings
+   (.conv-drawer / .conv-drawer__inner / .conv-drawer__head / __body, which
+   already supply the slide-in animation, the 720px content cap, and the
+   scroll), so only the prose inside needs rules of its own. ---- */
+.conv-help__section p:last-child,
+.conv-help__section dl:last-child,
+.conv-help__section ul:last-child { margin-bottom: 0; }
+.conv-help__list {
+  margin: 0;
+  padding-left: var(--ln-sp-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ln-sp-2);
+  color: var(--ln-text-muted);
+}
+.conv-help__list li { line-height: 1.55; }
+.conv-help__section strong { color: var(--ln-text); font-weight: 700; }
+.conv-help__defs { margin: 0; }
+.conv-help__defs dt {
+  margin-top: var(--ln-sp-3);
+  font-weight: 700;
+  color: var(--ln-text);
+}
+.conv-help__defs dt:first-child { margin-top: 0; }
+.conv-help__defs dd {
+  margin: var(--ln-sp-1) 0 0;
+  line-height: 1.55;
+  color: var(--ln-text-muted);
+}
 
 /* ====================================================================
    ABOUT YOU / BASE KNOWLEDGE (M15)

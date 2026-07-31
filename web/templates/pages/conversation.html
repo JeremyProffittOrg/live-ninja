@@ -1007,6 +1007,137 @@
   <button class="ln-btn ln-btn--ghost" id="drawerToastActionBtn" type="button" hidden></button>
 </div>
 
+{{- /* ============================ HELP DRAWER ============================
+       Same slide-out as #settingsDrawer above: a fixed right-edge tab opens a
+       native <dialog class="conv-drawer">, showModal() supplies the focus trap
+       + Escape, and conversation.mjs closes on scrim click. The help tab sits
+       directly above the Settings tab on the same edge so the two read as one
+       control cluster.
+
+       This panel is STATIC end-user copy — no JS state, no fetch, no settings
+       document. conversation.mjs only opens and closes it. Deliberately NOT an
+       accordion: initSettingsAccordion() is scoped to #settingsDrawer and its
+       trigger attribute is counted exactly by
+       internal/webapp/settings_accordion_ui_test.go, so help sections are
+       plain headings inside a scrollable body instead.
+
+       MAINTENANCE: this copy is the user-facing contract for what the app can
+       do. Any new feature, setting, or capability updates it in the SAME
+       commit — see the "Help section maintenance" section of CLAUDE.md /
+       agents.md. */}}
+<button class="conv-settings-tab conv-settings-tab--help" type="button" id="helpDrawerBtn"
+        aria-label="Open help" aria-haspopup="dialog"
+        aria-controls="helpDrawer" aria-expanded="false">
+  <span class="conv-settings-tab__icon" aria-hidden="true">?</span>
+  <span class="conv-settings-tab__label" aria-hidden="true">Help</span>
+</button>
+<dialog class="conv-drawer" id="helpDrawer" aria-labelledby="helpDrawerTitle">
+  <button class="conv-settings-tab conv-settings-tab--close" type="button"
+          id="helpDrawerClose" aria-label="Close help" autofocus>
+    <span class="conv-settings-tab__icon" aria-hidden="true">‹</span>
+    <span class="conv-settings-tab__label" aria-hidden="true">Close</span>
+  </button>
+  <div class="conv-drawer__inner">
+    <div class="conv-drawer__head">
+      <h2 class="conv-drawer__title" id="helpDrawerTitle">Help</h2>
+    </div>
+
+    <div class="conv-drawer__body">
+      <p class="ln-muted conv-drawer__intro">Live Ninja is a hands-free voice assistant. You talk, it answers out loud, and it remembers what matters between conversations.</p>
+
+      <section class="ln-card set-section conv-help__section" aria-labelledby="helpStart">
+        <h3 class="ln-card__title" id="helpStart">Getting started</h3>
+        <ul class="conv-help__list">
+          <li><strong>Press the mic button</strong> (🎙) in the left rail and start talking. Press it again to stop.</li>
+          <li><strong>Or go hands-free:</strong> turn on <em>Always listening</em> next to the mic button and say your wake phrase — the phrase in use is shown right under the switch.</li>
+          <li><strong>Prefer to type?</strong> Use the box at the bottom of the transcript. Typed and spoken turns land in the same conversation.</li>
+          <li>The pill at the top right of the rail tells you where you are: <em>Idle</em>, <em>Listening</em>, <em>Thinking</em>, or <em>Speaking</em>.</li>
+          <li>Just start talking again to interrupt a reply — you don't have to wait for it to finish.</li>
+        </ul>
+      </section>
+
+      <section class="ln-card set-section conv-help__section" aria-labelledby="helpCan">
+        <h3 class="ln-card__title" id="helpCan">What you can ask for</h3>
+        <p class="ln-muted">Live Ninja does more than answer questions — it can act on your behalf.</p>
+        <ul class="conv-help__list">
+          <li><strong>Weather and time</strong> for your saved places, so you never have to spell out where you are.</li>
+          <li><strong>Look things up on the web</strong> — a quick answer, or a longer piece of research.</li>
+          <li><strong>Remember and forget things</strong> — people, places, projects, tasks and plans. Ask it to remember something and it sticks across devices.</li>
+          <li><strong>Timers and reminders</strong> — "set a timer for ten minutes", "remind me on Friday".</li>
+          <li><strong>Send an email</strong> with what you just worked out.</li>
+          <li><strong>Make files for you</strong> — notes, documents and bundles that show up under Downloads.</li>
+          <li><strong>Control the device it's running on</strong> where that's supported, including volume, camera and photos.</li>
+          <li><strong>Start a fresh conversation</strong> or stop listening, just by saying so.</li>
+        </ul>
+        <p class="ln-hint">Turn on <em>Show tool calls</em> at the bottom of the rail to watch these actions happen in the transcript.</p>
+      </section>
+
+      <section class="ln-card set-section conv-help__section" aria-labelledby="helpWhere">
+        <h3 class="ln-card__title" id="helpWhere">Where everything lives</h3>
+        <dl class="conv-help__defs">
+          <dt>History</dt>
+          <dd>Every conversation, tagged by topic. Filter by topic, device, or date, and see what each conversation cost.</dd>
+          <dt>Memory</dt>
+          <dd>Everything Live Ninja remembers about your world. Edit any of it, or make it forget. <em>Guides</em> are standing instructions applied in every conversation, on every device.</dd>
+          <dt>Personas</dt>
+          <dd>How Live Ninja talks. Pick a built-in personality, write your own, or share yours. Each persona carries its own voice — switch personas from the picker in the rail.</dd>
+          <dt>Downloads</dt>
+          <dd>Files Live Ninja has created for you. Files are kept for 180 days; share links expire after about 15 minutes.</dd>
+          <dt>This month</dt>
+          <dd>Your running usage estimate, at the bottom of the Settings panel. The badge beside the state pill shows what the current conversation has cost so far.</dd>
+        </dl>
+      </section>
+
+      <section class="ln-card set-section conv-help__section" aria-labelledby="helpSettings">
+        <h3 class="ln-card__title" id="helpSettings">Settings explained</h3>
+        <p class="ln-muted">Open the <em>Settings</em> tab on the right edge. Changes save automatically for the device you're on — open <em>Device settings</em> in any section to compare devices or copy that section elsewhere.</p>
+        <dl class="conv-help__defs">
+          <dt>About you</dt>
+          <dd>What Live Ninja knows before you say anything — your name, your home and work places, and facts worth keeping. Picking a place from the list is what makes weather and local time reliable. Suggestions it makes while you talk wait here for your approval.</dd>
+          <dt>Wake word</dt>
+          <dd>The phrase that starts a hands-free conversation. Choose from the built-in phrases, and where training is available, add your own (2–4 words works best).</dd>
+          <dt>Persona</dt>
+          <dd>How Live Ninja speaks and behaves. Pick a preset or write your own instructions.</dd>
+          <dt>Voice engine</dt>
+          <dd>Which speech-to-speech model powers your conversations. All engines share the same tools, memory, and transcripts — only cost, latency, and voice quality differ.</dd>
+          <dt>Turn detection</dt>
+          <dd>How it decides you've finished speaking. <em>Semantic VAD</em> judges from meaning and is the recommended setting; <em>Server VAD</em> simply waits for a fixed silence gap. Mic pickup sensitivity and how long it keeps listening after a reply live here too.</dd>
+          <dt>Appearance</dt>
+          <dd>Light or dark theme, the visual style of the app and of the live panel, and your accent colour.</dd>
+          <dt>Microphone</dt>
+          <dd>Which input this browser uses. Device names only appear after you've allowed microphone access once.</dd>
+          <dt>Privacy</dt>
+          <dd>Whether transcripts are stored and for how long — 7, 30, or 90 days, or not at all.</dd>
+          <dt>Account</dt>
+          <dd>Name your devices so settings and history are easy to tell apart, or sign out of this browser or everywhere.</dd>
+        </dl>
+      </section>
+
+      <section class="ln-card set-section conv-help__section" aria-labelledby="helpKeys">
+        <h3 class="ln-card__title" id="helpKeys">Keyboard and navigation</h3>
+        <ul class="conv-help__list">
+          <li><strong>Esc</strong> closes this panel, the Settings panel, and any dialog.</li>
+          <li>Clicking the dimmed area outside a panel closes it too.</li>
+          <li><strong>Tab</strong> moves through controls; focus stays inside a panel while it's open and returns to the tab that opened it when you close it.</li>
+          <li><strong>Enter</strong> sends what you've typed in the message box.</li>
+        </ul>
+      </section>
+
+      <section class="ln-card set-section conv-help__section" aria-labelledby="helpTips">
+        <h3 class="ln-card__title" id="helpTips">Tips and troubleshooting</h3>
+        <ul class="conv-help__list">
+          <li><strong>It can't hear you?</strong> Run <em>Mic Test</em> in the rail — it shows your live level and the exact steps to unblock the microphone in your browser.</li>
+          <li><strong>Wake phrase not triggering?</strong> Raise the wake sensitivity in Settings → Wake word, or pick a longer phrase. Very short phrases false-trigger and very quiet rooms need more sensitivity.</li>
+          <li><strong>It cuts you off mid-sentence?</strong> Switch turn detection to Semantic VAD, or lower the mic pickup sensitivity.</li>
+          <li><strong>Changed persona or voice mid-conversation?</strong> That applies to the next conversation — start a new one to hear it.</li>
+          <li><strong>Settings look different on another device?</strong> Most settings are per device on purpose. Use <em>Device settings</em> in a section to apply it everywhere.</li>
+          <li><strong>Want it to stop remembering something?</strong> Ask it to forget, or delete the entry on the Memory page.</li>
+        </ul>
+      </section>
+    </div>
+  </div>
+</dialog>
+
 {{- /* Remote assistant audio (realtime.mjs attaches the WebRTC track and
        routes it through a GainNode for the barge-in ramp). */}}
 <audio id="remoteAudio" autoplay hidden></audio>

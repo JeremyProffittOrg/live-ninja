@@ -19,3 +19,54 @@ reference each other and must stay consistent.
    keys) anywhere. OIDC only.
 5. Work on `main`, push after committing, and watch the triggered run to confirm the
    deploy is green before declaring success.
+
+## Help section maintenance
+
+The app ships an in-product **Help** slide-out: the right-edge `?` tab on `/conversation`,
+directly above the Settings tab. It is the only place a user is told what Live Ninja can
+do, and it is static hand-written copy — nothing generates it, so nothing catches it going
+stale except this rule.
+
+**Rule: any change to a feature, setting, capability, page, or tool updates the Help copy
+in the SAME commit.** A shipped feature the Help panel does not mention is an incomplete
+change, not a follow-up.
+
+Where it lives:
+
+| What | Path |
+| --- | --- |
+| Help content (all user-facing copy) | `web/templates/pages/conversation.html` — the `HELP DRAWER` block, `<dialog id="helpDrawer">` |
+| Open/close wiring | `web/static/js/conversation.mjs` — the "docked help drawer" block |
+| Panel styling | `web/static/css/app.css` — `.conv-settings-tab--help` and the `.conv-help__*` rules |
+| Drift guard | `internal/webapp/help_drawer_ui_test.go` |
+
+The drawer chrome (`.conv-drawer`, `.conv-settings-tab`, the slide-in animation) is shared
+with the Settings drawer on purpose. Reuse those classes; do not clone them, or the two
+panels drift apart visually.
+
+Checklist when you add or change something user-visible:
+
+- [ ] Named a new **settings section**? Add a `<dt>`/`<dd>` pair under _Settings explained_,
+      using the section's own title verbatim so `help_drawer_ui_test.go` matches it.
+- [ ] Added an **assistant capability / tool** (something the user can ask for)? Add a bullet
+      under _What you can ask for_, phrased as the thing the user says, not the tool name.
+- [ ] Added a **page** or a rail control? Add it under _Where everything lives_ or
+      _Getting started_.
+- [ ] Changed a **default** or removed an option? Fix every sentence that still describes
+      the old behaviour — search the help block for the option's name.
+- [ ] Added a new **failure mode** users will hit? Add a bullet under
+      _Tips and troubleshooting_ that says what to do, not what went wrong.
+- [ ] Ran `go test ./internal/webapp/ -run TestHelpDrawer`.
+
+Writing template for a new entry:
+
+```html
+<dt>Feature name, exactly as the UI labels it</dt>
+<dd>What it does for the user in one sentence. Then, if it has a non-obvious
+    default or a common mistake, one more sentence. No implementation detail,
+    no API names, no milestone numbers.</dd>
+```
+
+Tone: second person, present tense, short sentences, scannable. Describe what the user
+gets, never how it is built. Do not document anything that is gated off or unreleased —
+the panel must stay honest about what actually works today.

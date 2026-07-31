@@ -1491,6 +1491,44 @@ if (settingsDrawer && settingsDrawerBtn && typeof settingsDrawer.showModal === '
   }
 }
 
+// ---- docked help drawer --------------------------------------------------
+//
+// Same mechanics as the settings drawer directly above: native
+// <dialog>.showModal() for the focus trap, Escape, and inerting; scrim click
+// via the e.target === dialog check (padding lives on .conv-drawer__inner, so
+// a click landing on the dialog element itself is always the backdrop); focus
+// returns to the opening tab on close.
+//
+// The panel's content is static markup in conversation.html — there is no
+// state to hydrate and nothing to fetch, so this block is open/close only.
+// Keep the help copy current with the app: see the "Help section maintenance"
+// section of CLAUDE.md / agents.md.
+
+const helpDrawer = $('helpDrawer');
+const helpDrawerBtn = $('helpDrawerBtn');
+const helpDrawerClose = $('helpDrawerClose');
+
+if (helpDrawer && helpDrawerBtn && typeof helpDrawer.showModal === 'function') {
+  helpDrawerBtn.addEventListener('click', () => {
+    if (!helpDrawer.open) helpDrawer.showModal();
+    helpDrawerBtn.setAttribute('aria-expanded', 'true');
+    // Long panel: always start at the top, even on a re-open after scrolling.
+    const inner = helpDrawer.querySelector('.conv-drawer__inner');
+    if (inner) inner.scrollTop = 0;
+    if (helpDrawerClose) helpDrawerClose.focus({ preventScroll: true });
+  });
+  if (helpDrawerClose) {
+    helpDrawerClose.addEventListener('click', () => helpDrawer.close());
+  }
+  helpDrawer.addEventListener('click', (e) => {
+    if (e.target === helpDrawer) helpDrawer.close();
+  });
+  helpDrawer.addEventListener('close', () => {
+    helpDrawerBtn.setAttribute('aria-expanded', 'false');
+    helpDrawerBtn.focus({ preventScroll: true });
+  });
+}
+
 // Month-to-date cost line in the Menu drawer (GET /api/v1/costs — the sum
 // of every saved conversation's persisted per-session estimate). Fetched
 // on each drawer open, cached 60s so repeated opens stay free; a failed
