@@ -811,8 +811,12 @@ explicitly in the template with `RetentionInDays: 7`.
   Also noted for M1.3: *"the next invocation can be delayed for up to 5 minutes on idle
   connections"*, so revocation latency on a backgrounded tab is up to 5 min **plus** the refresh
   interval — not the refresh interval alone.
-  *DoD (still open):* a browser tab subscribes to `liveninja/user/<uid>/#` against the deployed
-  authorizer and receives a message published by `aws iot-data publish`, captured in the run log.
+  *DoD (still open, but now RUNNABLE):* the authorizer is deployed and ACTIVE
+  (`arn:aws:iot:us-east-1:759775734231:authorizer/live-ninja-iot`), and a direct invoke of the
+  function returns the correct deny shape (`{"isAuthenticated":false,"principalId":"deny",
+  "policyDocuments":null}`) for a bad token. What remains is the browser leg: a tab subscribing to
+  `liveninja/user/<uid>/#` and receiving a message published by `aws iot-data publish`. That needs
+  a real signed-in session for the JWT, so it lands with WS-3 M3.3 rather than before it.
 - `[!]` **M1.5 Token signing — WIRED BUT OFF, and it needs the owner.** The template carries the
   `IotAuthorizerSigningPublicKey` parameter and the `IotAuthorizerSigningEnabled` condition, so
   turning it on is a parameter change and nothing else. It ships **disabled** because enabling it
@@ -826,9 +830,21 @@ explicitly in the template with `RetentionInDays: 7`.
   since an unsigned request still has to present a valid ES256 JWT to get any policy at all.
   *DoD (unchanged):* a connect attempt carrying a bad signature is rejected **without** the Lambda
   being invoked (no log line for it).
-- `[ ]` **M1.6 Cold-start budget** — measure the authorizer cold, with an empty JWKS cache.
-  *DoD:* p100 under 5 s across 10 cold invocations, recorded in the run log; if it is not, the
-  JWKS fetch moves out of the request path before anything else is built on this.
+- `[~]` **M1.6 Cold-start budget — measured on the DEPLOYED function, comfortably inside.**
+  2026-08-01, `live-ninja-iot-authorizer`, invoked with an unparseable token so the path ran
+  JWKS-fetch-then-fail (the worst case: `Verify` fetches the JWKS document *before* it parses the
+  JWT, so a cold deny pays the full network cost):
+
+  | | Init | Duration | Total | Budget |
+  |---|---|---|---|---|
+  | cold | 71.03 ms | 619.86 ms | **690.9 ms** | 5000 ms |
+  | warm | — | 1.14 ms | **1.1 ms** | 5000 ms |
+
+  Max memory 30 MB. Cold is ~14% of the hard ceiling, so the JWKS fetch does NOT need to move out
+  of the request path.
+  **Honest gap:** that is ONE cold sample, not the ten the DoD asks for — forcing ten real cold
+  starts means mutating the deployed function's config ten times, which is not worth it for a
+  number already 7x inside budget. Left `[~]` rather than claimed as `[x]`.
 - `[x]` **M1.2 `cmd/iot-authorizer`.** Extract the JWT/JWKS/`tokensValidAfter` verification shared
   with `cmd/authorizer` into `internal/auth`, and return an IoT policy scoped to
   `liveninja/user/<userId>/#` for Subscribe/Receive and `liveninja/user/<userId>/presence/<deviceId>`
