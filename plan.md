@@ -633,10 +633,27 @@ a number, and it is the cheapest way to re-check a pure-layout change on this pa
   With every id in the list the picker still renders General(1). It is presentation only:
   `ResolvePersona` never reads it, so a hidden persona still mints a working session if another
   device or a stored document still names it.
-- `[!]` **Android's persona list is stale and unrelated to any of this** — `SettingsViewModel.kt`
-  `PERSONA_PRESETS` is a hardcoded `default` / `focused` / `friendly` trio that predates the
-  personas platform and never reads `GET /api/v1/personas`. Out of scope for this pass; it needs
-  the Android picker rewritten against the API before groups mean anything there.
+- `[x]` **Android's persona picker now reads the API** (was `[!]` earlier the same day). It was a
+  hardcoded list offering `focused` / `friendly` / `coach` / `analyst` — **none of which exist in
+  the server registry**. `ResolvePersona` falls back to `default` for an unknown id, so choosing
+  "Coach Ninja" on Android silently gave you the standard persona and nothing said so. That is a
+  latent bug this closes, not just a refresh.
+  New `net/PersonaDtos.kt` + `listPersonas()` on `LiveNinjaApi`; `refreshPersonas()` mirrors
+  `refreshGeminiVoices()` (failure leaves the list alone rather than emptying the picker). The
+  dropdown is grouped with the same fixed order as web. `buildPersonaPresets` is pure and unit
+  tested (6 cases) for the three rules that make it safe: hidden personas are dropped, the
+  SELECTED persona survives even when hidden (otherwise the picker shows a different persona than
+  the document holds and the next save writes that back), `default` is never dropped, a stored id
+  the catalog no longer lists is kept and labelled rather than silently swapped, and an empty
+  catalog falls back instead of offering only "custom". The picker is rebuilt on every document
+  change, so hiding a persona on the web reaches Android on the next sync with no refetch.
+- `[!]` **The Android picker is NOT yet visually verified on the tablet.** Reinstalling wiped the
+  app's shared_prefs (directory recreated at install time; no crash and no exception in logcat —
+  the app started clean), so the device is back at onboarding step 1 of 8, which needs an
+  interactive Amazon sign-in. A populated picker also needs a signed-in session, because the
+  catalog fetch is authenticated. **Unblocked by:** the owner signing in on `R52XC06P9KJ` once,
+  after which `Settings > Persona` shows the grouped catalog. Compilation, the full Android unit
+  suite and the six `PersonaPresetBuilderTest` cases all pass.
 - Researched by a 10-agent workflow against **26 dated sources published 2026-05-02 → 2026-07-31**,
   then adversarially critiqued for capability leaks, spoken-form survivability (they arrive as one
   to three sentences of audio, so the rigour has to show up as *which question is asked first*) and

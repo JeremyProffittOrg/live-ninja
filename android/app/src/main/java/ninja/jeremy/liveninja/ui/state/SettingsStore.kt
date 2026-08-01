@@ -47,6 +47,12 @@ data class SettingsDocument(
     val wakeEngine: String,
     val sensitivity: Float,
     val personaPresetId: String,
+    /**
+     * Persona IDs switched off in the picker (`persona.hidden`, 2026-08-01).
+     * Presentation only — the server's ResolvePersona ignores it, so a hidden
+     * persona still mints a working session when a document still names it.
+     */
+    val hiddenPersonas: Set<String>,
     val personaSystemInstructions: String?,
     val voice: String,
     /**
@@ -303,6 +309,9 @@ class SettingsStore @Inject constructor(
             wakeEngine = raw.optString("wakeEngine", "openwakeword"),
             sensitivity = raw.optDouble("sensitivity", 0.5).toFloat(),
             personaPresetId = persona?.optString("presetId", "default") ?: "default",
+            hiddenPersonas = persona?.optJSONArray("hidden")?.let { arr ->
+                (0 until arr.length()).mapNotNull { arr.optString(it).takeIf(String::isNotEmpty) }.toSet()
+            } ?: emptySet(),
             personaSystemInstructions = persona?.let {
                 if (it.isNull("systemInstructions")) null else it.optString("systemInstructions")
             },

@@ -81,6 +81,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
@@ -1061,6 +1062,32 @@ private fun CustomWakeJobCard(
     }
 }
 
+/**
+ * Persona picker group order — mirrors realtime.GroupOrder
+ * (internal/realtime/personas.go) and the web picker's PERSONA_GROUP_ORDER.
+ */
+private val PERSONA_GROUP_ORDER = listOf("General", "PDLC", "ESP32", "Fun")
+
+/** One selectable persona row: name over its blurb. */
+@Composable
+private fun PersonaMenuItem(preset: PersonaPreset, onClick: () -> Unit) {
+    DropdownMenuItem(
+        text = {
+            Column {
+                Text(preset.label)
+                if (preset.description.isNotEmpty()) {
+                    Text(
+                        preset.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        },
+        onClick = onClick,
+    )
+}
+
 /** Persona picker, custom instructions, and the OpenAI voice identity. */
 @Composable
 private fun PersonaSection(
@@ -1098,23 +1125,41 @@ private fun PersonaSection(
             expanded = personaExpanded,
             onDismissRequest = { personaExpanded = false },
         ) {
-            personaPresets.forEach { preset ->
-                DropdownMenuItem(
-                    text = {
-                        Column {
-                            Text(preset.label)
-                            Text(
-                                preset.description,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    },
-                    onClick = {
+            // Grouped exactly like the web picker's <optgroup>s (owner
+            // 2026-08-01). The order is fixed here rather than taken from the
+            // response, so a new group cannot reorder the menu on its own;
+            // anything carrying an unrecognised group still renders, under a
+            // heading of its own name, because a persona the server offers and
+            // the picker hides is the failure worth ruling out. Entries with no
+            // group at all (the "custom" option, and a server that predates
+            // grouping) render last with no heading.
+            val grouped = personaPresets.filter { it.group.isNotEmpty() }.groupBy { it.group }
+            val ordered = PERSONA_GROUP_ORDER.filter(grouped::containsKey) +
+                grouped.keys.filterNot(PERSONA_GROUP_ORDER::contains).sorted()
+
+            ordered.forEach { groupName ->
+                Text(
+                    groupName.uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .padding(start = 16.dp, top = 12.dp, bottom = 4.dp)
+                        // A heading is not selectable; say so rather than
+                        // letting TalkBack read it as another menu item.
+                        .semantics { heading() },
+                )
+                grouped.getValue(groupName).forEach { preset ->
+                    PersonaMenuItem(preset) {
                         onSetPersona(preset.id)
                         personaExpanded = false
-                    },
-                )
+                    }
+                }
+            }
+            personaPresets.filter { it.group.isEmpty() }.forEach { preset ->
+                PersonaMenuItem(preset) {
+                    onSetPersona(preset.id)
+                    personaExpanded = false
+                }
             }
         }
     }

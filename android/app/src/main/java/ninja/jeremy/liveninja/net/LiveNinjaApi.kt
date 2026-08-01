@@ -157,6 +157,14 @@ interface LiveNinjaApi {
     @GET("api/v1/realtime/voices")
     suspend fun listVoices(): VoiceCatalogResponse
 
+    /**
+     * Persona catalog backing the Settings picker. IDs only — the server
+     * resolves instructions at mint, so nothing here can be used to inject
+     * them (personas.go). Grouped client-side by [PersonaInfoDto.group].
+     */
+    @GET("api/v1/realtime/personas")
+    suspend fun listPersonas(): PersonaCatalogResponse
+
     // ---- Conversation history + topics (M11, FR-TOP-04/05) ----
 
     /**

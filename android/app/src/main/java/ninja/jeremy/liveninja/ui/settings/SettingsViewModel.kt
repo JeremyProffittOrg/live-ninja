@@ -30,6 +30,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import ninja.jeremy.liveninja.log.LogExporter
 import ninja.jeremy.liveninja.log.LogSink
+import ninja.jeremy.liveninja.net.PersonaInfoDto
 import ninja.jeremy.liveninja.net.LiveNinjaApi
 import ninja.jeremy.liveninja.net.WakeWordCreateRequest
 import ninja.jeremy.liveninja.ui.state.AccountActions
@@ -45,8 +46,19 @@ import ninja.jeremy.liveninja.wake.WakePreferences
 import org.json.JSONObject
 import retrofit2.HttpException
 
-/** One persona catalog entry (server resolves the actual instructions by ID). */
-data class PersonaPreset(val id: String, val label: String, val description: String)
+/**
+ * One persona catalog entry (server resolves the actual instructions by ID).
+ *
+ * [group] is the picker section from the server ("General" | "PDLC" | "ESP32"
+ * | "Fun"); empty means the server predates grouping, or this is a locally
+ * synthesized entry like "custom".
+ */
+data class PersonaPreset(
+    val id: String,
+    val label: String,
+    val description: String,
+    val group: String = "",
+)
 
 /**
  * One selectable Gemini Live voice (M13, D4) — populated from the
@@ -244,7 +256,15 @@ class SettingsViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            settingsStore.document.collect { doc -> _state.update { it.copy(doc = doc) } }
+            settingsStore.document.collect { doc ->
+                _state.update {
+                    // The picker depends on the document (persona.hidden and
+                    // the selected id), so it is rebuilt here rather than only
+                    // when the catalog is fetched — hiding a persona on the web
+                    // reaches this picker on the next sync, with no refetch.
+                    it.copy(doc = doc, personaPresets = buildPersonaPresets(personaCatalog))
+                }
+            }
         }
         viewModelScope.launch {
             catalog.refresh()
@@ -261,6 +281,7 @@ class SettingsViewModel @Inject constructor(
             }
         }
         refreshGeminiVoices()
+        refreshPersonas()
         // Resume polling a training job that outlived the previous process
         // (Batch jobs run up to 20 min; the SES "ready" email is the backstop).
         startPollingCustomJob()
@@ -1056,6 +1077,74 @@ class SettingsViewModel @Inject constructor(
         editPortableSection(SettingsSection.VOICE_ENGINE) { it.put("geminiVoice", voiceId) }
 
     /**
+     * Fetch the persona catalog from `GET /api/v1/realtime/personas` and build
+     * the picker list.
+     *
+     * Three things this has to get right, none of which the old hardcoded list
+     * did:
+     *
+     *  - **Hidden personas.** `persona.hidden` (2026-08-01) is the picker
+     *    off-switch. It is presentation only — the server's ResolvePersona
+     *    never reads it — so it is applied here and nowhere else.
+     *  - **The selected persona always survives.** If the stored `presetId`
+     *    is not in the fetched catalog (hidden, deleted, or a server older
+     *    than this build), it is appended rather than dropped. Without that
+     *    the picker silently displays a DIFFERENT persona than the one in the
+     *    document, and the next save writes that wrong value back.
+     *  - **`custom` is client-side.** The schema defines it; the server
+     *    catalog does not list it, so it is appended last.
+     *
+     * Failure leaves the current list untouched (offline keeps the fallback,
+     * or whatever was fetched last), matching refreshGeminiVoices().
+     */
+    /** Last catalog fetched, so a document change can rebuild without refetching. */
+    private var personaCatalog: List<PersonaInfoDto> = emptyList()
+
+    private fun refreshPersonas() {
+        viewModelScope.launch {
+            val catalog = try {
+                api.listPersonas()
+            } catch (_: Exception) {
+                return@launch // transient — the fallback list stays usable
+            }
+            personaCatalog = catalog.personas
+            _state.update { it.copy(personaPresets = buildPersonaPresets(personaCatalog)) }
+        }
+    }
+
+    /** Catalog -> picker list. Pure, so the rules above are unit-testable. */
+    internal fun buildPersonaPresets(catalog: List<PersonaInfoDto>): List<PersonaPreset> {
+        if (catalog.isEmpty()) return PERSONA_PRESETS
+        val selectedId = settingsStore.document.value.personaPresetId
+        val hidden = settingsStore.document.value.hiddenPersonas
+        val presets = catalog
+            .filter { it.id == selectedId || it.id == "default" || it.id !in hidden }
+            .map {
+                PersonaPreset(
+                    id = it.id,
+                    label = it.name ?: it.id,
+                    description = it.description.orEmpty(),
+                    group = it.group,
+                )
+            }
+            .toMutableList()
+
+        // A stored persona the catalog does not list is kept, labelled so the
+        // state is visible rather than silently corrected.
+        if (selectedId.isNotEmpty() &&
+            selectedId != CUSTOM_PERSONA_ID &&
+            presets.none { it.id == selectedId }
+        ) {
+            presets += PersonaPreset(selectedId, selectedId, "Kept as-is — not in the catalog")
+        }
+        if (presets.none { it.id == "default" }) {
+            presets.add(0, PERSONA_PRESETS.first())
+        }
+        presets += PersonaPreset(CUSTOM_PERSONA_ID, "Custom", "Write your own system instructions")
+        return presets
+    }
+
+    /**
      * Fetch the Gemini Live voice catalog (`geminiVoices` on
      * GET /api/v1/realtime/voices). Failure leaves the current list — the
      * picker shows its offline note instead of an empty combobox.
@@ -1281,14 +1370,24 @@ class SettingsViewModel @Inject constructor(
          * the backend — the server resolves instructions server-side
          * (anti-prompt-injection, settings.schema.json `persona`).
          */
+        /**
+         * Offline/first-paint fallback ONLY. The real catalog comes from
+         * `GET /api/v1/realtime/personas` (refreshPersonas()).
+         *
+         * This list used to be the whole catalog, and it was wrong: it offered
+         * `focused`, `friendly`, `coach` and `analyst`, none of which exist in
+         * the server registry. ResolvePersona falls back to `default` for an
+         * unknown id, so picking "Coach Ninja" on Android silently gave you the
+         * standard persona and nothing said so. Only the two ids that are real
+         * everywhere survive here: `default`, which the server guarantees, and
+         * `custom`, which is a client-side concept the schema defines.
+         */
         val PERSONA_PRESETS = listOf(
-            PersonaPreset("default", "Assistant", "Balanced, helpful default"),
-            PersonaPreset("focused", "Focused Ninja", "Concise, task-first"),
-            PersonaPreset("friendly", "Friendly Ninja", "Warm, conversational"),
-            PersonaPreset("coach", "Coach Ninja", "Motivating, direct"),
-            PersonaPreset("analyst", "Analyst Ninja", "Precise, data-driven"),
-            PersonaPreset("custom", "Custom", "Write your own system instructions"),
+            PersonaPreset("default", "Live Ninja", "Fast, warm, and practical", "General"),
+            PersonaPreset(CUSTOM_PERSONA_ID, "Custom", "Write your own system instructions"),
         )
+
+        const val CUSTOM_PERSONA_ID = "custom"
     }
 }
 
