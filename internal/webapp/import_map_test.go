@@ -23,7 +23,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io/fs"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -64,6 +66,12 @@ func TestImportMapCoversEveryModule(t *testing.T) {
 		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".mjs") {
 			return err
 		}
+		// S3-backed trees are excluded on purpose and have their own test —
+		// fingerprinting them 403s, because that bucket holds only the real
+		// filenames. See servedFromS3 in assets.go.
+		if servedFromS3("/" + p) {
+			return nil
+		}
 		modules = append(modules, "/"+p)
 		return nil
 	}))
@@ -85,6 +93,46 @@ func TestImportMapCoversEveryModule(t *testing.T) {
 	for key := range imports {
 		assert.Truef(t, strings.HasSuffix(key, ".mjs"),
 			"import map contains a non-module key %q", key)
+	}
+}
+
+// TestImportMapSkipsEveryS3BackedPath: CloudFront routes some /static/ trees
+// to the assets-s3 origin rather than to this app, and that bucket holds the
+// real filenames only — a fingerprinted key does not exist there, so S3 answers
+// 403 and the import fails outright. Production did exactly that to
+// /static/vendor/ort/ort.wasm.min.<hash>.mjs on 2026-08-01.
+//
+// This reads template.yaml rather than restating the prefixes, so adding a new
+// S3-backed behaviour there fails here instead of 403-ing in production.
+func TestImportMapSkipsEveryS3BackedPath(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "template.yaml"))
+	require.NoError(t, err, "template.yaml is the source of truth for these prefixes")
+
+	// Each behaviour is "- PathPattern: /static/x/*" followed by its
+	// TargetOriginId a line or two later.
+	behaviour := regexp.MustCompile(`(?m)^\s*-\s*PathPattern:\s*(/static/[^\s*]*)\*\s*\n\s*TargetOriginId:\s*(\S+)`)
+	var s3Patterns []string
+	for _, m := range behaviour.FindAllStringSubmatch(string(raw), -1) {
+		if strings.Contains(m[2], "s3") {
+			s3Patterns = append(s3Patterns, m[1])
+		}
+	}
+	require.NotEmpty(t, s3Patterns,
+		"found no S3-backed /static/ behaviours — the template parse is wrong, not the template")
+
+	// Every S3-backed prefix is declared in assets.go...
+	for _, p := range s3Patterns {
+		assert.Containsf(t, s3BackedStaticPrefixes, p,
+			"template.yaml routes %s to S3, so assets.go must exclude it from the import map", p)
+	}
+	// ...and nothing under one of them was mapped.
+	assets, err := NewAssets(web.Files)
+	require.NoError(t, err)
+	for key := range parseImportMap(t, assets) {
+		for _, p := range s3Patterns {
+			assert.Falsef(t, strings.HasPrefix(key, p),
+				"%s is served from S3 and must not be fingerprinted in the import map", key)
+		}
 	}
 }
 

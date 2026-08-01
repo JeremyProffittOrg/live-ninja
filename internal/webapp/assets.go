@@ -132,7 +132,7 @@ func NewAssets(fsys fs.FS) (*Assets, error) {
 func (a *Assets) buildImportMap() {
 	imports := make(map[string]string, len(a.hashed))
 	for logical, hashed := range a.hashed {
-		if strings.HasSuffix(logical, ".mjs") {
+		if strings.HasSuffix(logical, ".mjs") && !servedFromS3(logical) {
 			imports[logical] = hashed
 		}
 	}
@@ -151,6 +151,36 @@ func (a *Assets) buildImportMap() {
 	a.importMapJSON = string(body)
 	sum := sha256.Sum256(body)
 	a.importMapCSPHash = "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
+}
+
+// s3BackedStaticPrefixes are the /static/ trees CloudFront routes to the
+// assets-s3 origin instead of this app (template.yaml, "More-specific
+// S3-backed patterns MUST precede /static/*"): the oversized onnxruntime WASM
+// bundle and the wake-word models, which cannot go through Lambda.
+//
+// They must never be fingerprinted in the import map. The bucket holds the
+// real filenames only, so a hashed key does not exist there and S3 answers
+// 403 — which is exactly what production did to
+// /static/vendor/ort/ort.wasm.min.<hash>.mjs on 2026-08-01 until this guard
+// was added. Fingerprinting them would also be pointless: they are leaves
+// reached by absolute URL, not part of the cross-module export graph the
+// import map exists to keep consistent, and wakeword.mjs already pins the
+// model payloads by SHA-256 client-side.
+//
+// TestImportMapSkipsEveryS3BackedPath keeps this list honest against
+// template.yaml.
+var s3BackedStaticPrefixes = []string{
+	"/static/vendor/",
+	"/static/models/",
+}
+
+func servedFromS3(logical string) bool {
+	for _, prefix := range s3BackedStaticPrefixes {
+		if strings.HasPrefix(logical, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // ImportMapScript is the whole <script type="importmap"> element, ready to be
