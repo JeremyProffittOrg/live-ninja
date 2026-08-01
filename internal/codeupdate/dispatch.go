@@ -233,6 +233,10 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) error {
 		Effort:     req.Effort,
 		Prompt:     prompt,
 		OutputFile: d.outputFile(),
+		// The same decision the prompt's deploy rules carry, on the wire where a
+		// mechanism can act on it. Prompt text is advice an agent may misread or
+		// never receive; this is what lets ghost-cli install the pre-push hook.
+		Deploy: req.Deploy,
 	}, req.RequestID)
 	if err != nil {
 		reason := launchFailureReason(err)

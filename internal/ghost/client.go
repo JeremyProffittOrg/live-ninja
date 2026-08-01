@@ -362,6 +362,26 @@ type LaunchRequest struct {
 	Prompt     string `json:"prompt"`
 	OutputFile string `json:"output_file"`
 	RunNow     bool   `json:"run_now"`
+
+	// Deploy tells ghost-cli whether this run may push. It is the cloud half of
+	// the pre-push hook: ghost-cli maps deploy==false to no_push:true in the
+	// LAUNCH params, and the agent's launcher.ApplyNoPush installs a real
+	// pre-push hook in the workspace, so a held run cannot push even if the
+	// prompt's DO NOT PUSH sentence never arrived (which is exactly what the
+	// v1.1.52 prompt-transport defect did).
+	//
+	// Sending this is SAFE AHEAD OF ghost-cli reading it, and that is verified,
+	// not assumed: lambda/command/schedule.go decodes the create body with a
+	// plain json.Unmarshal, so an unknown key is ignored. The strict
+	// DisallowUnknownFields decoder is on the AGENT's command envelope, one hop
+	// further on — which is why the cloud must never emit no_push to a node
+	// older than v1.1.53, and why this field alone cannot cause that.
+	//
+	// NOT omitempty, deliberately. This is a security-relevant boolean whose
+	// dangerous value is `false`; omitempty would drop exactly the "do not
+	// push" case off the wire and leave ghost-cli to infer a default. The one
+	// value that must always be transmitted is the one omitempty deletes.
+	Deploy bool `json:"deploy"`
 }
 
 // LaunchResult is the dispatched run.

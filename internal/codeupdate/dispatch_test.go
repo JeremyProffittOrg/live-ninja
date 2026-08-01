@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -797,5 +798,51 @@ func TestEmptyRewriteFallsBackToTheOwnersWords(t *testing.T) {
 		if !strings.Contains(q.messages[0].Text, "original wording") {
 			t.Error("the email does not report the fallback")
 		}
+	}
+}
+
+// The deploy decision must reach ghost-cli on the WIRE, not only as a sentence
+// inside the prompt. Prompt text is advice an agent can misread or — as the
+// v1.1.52 transport defect proved by deleting the gate from three consecutive
+// runs — never receive at all. The wire field is what lets ghost-cli install
+// the pre-push hook, so it is the half that still holds when the prose is lost.
+func TestLaunchCarriesTheDeployDecisionOnTheWire(t *testing.T) {
+	for _, deploy := range []bool{true, false} {
+		t.Run(fmt.Sprintf("deploy=%v", deploy), func(t *testing.T) {
+			g := &fakeGhost{launchStatus: 202, launchBody: okLaunchBody}
+			d := newTestDispatcher(g, newFakeDDB(), &fakeSQS{})
+			req := testRequest()
+			req.Deploy = deploy
+
+			if err := d.Dispatch(context.Background(), req); err != nil {
+				t.Fatalf("Dispatch: %v", err)
+			}
+			if len(g.launchBodies) == 0 {
+				t.Fatal("no launch was issued")
+			}
+			var sent ghost.LaunchRequest
+			if err := json.Unmarshal([]byte(g.launchBodies[0]), &sent); err != nil {
+				t.Fatal(err)
+			}
+			if sent.Deploy != deploy {
+				t.Errorf("launch sent deploy=%v, want %v", sent.Deploy, deploy)
+			}
+
+			// The key at the JSON level, not just after a round trip through the
+			// struct. `deploy:false` must be TRANSMITTED, not omitted: an
+			// omitempty here would silently delete the only value that matters
+			// and leave ghost-cli inferring a default for a held run.
+			var raw map[string]any
+			if err := json.Unmarshal([]byte(g.launchBodies[0]), &raw); err != nil {
+				t.Fatal(err)
+			}
+			got, present := raw["deploy"]
+			if !present {
+				t.Fatalf("the launch body has no \"deploy\" key at all:\n%s", g.launchBodies[0])
+			}
+			if got != deploy {
+				t.Errorf("wire deploy = %v, want %v", got, deploy)
+			}
+		})
 	}
 }

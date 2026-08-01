@@ -154,13 +154,44 @@ nothing timed out.
   principal is non-empty, which on the internal-invoke path is a tautology.
 - `[ ]` **S** — **`GET /schedule` returns each event's full prompt, which contains the live `cu_` run
   token.** Bounded (the token only emails the owner, 8 posts, 24 h) but it should be redacted.
-- `[ ]` **H** — **Emit `no_push` from the cloud.** The agent honours it as of ghost-cli v1.1.53; no
-  cloud sends it yet, so the pre-push hook is inert and the deploy gate is still prompt-only in
-  practice. Remaining work: live-ninja sends `deploy` on the `/schedule` call, ghost-cli maps
-  `deploy == false` to `no_push: true` in the LAUNCH params. **PRECONDITION: the whole fleet must be
-  on >= v1.1.53 first.** `parseCommand` uses `DisallowUnknownFields`, so an agent older than the
-  field rejects the ENTIRE envelope — shipping the cloud half early breaks every un-updated node
-  (Lenovo14, rog-18, rog-flow, elite001, acer-gpu, Windows1/2, Left/Right-Board ...).
+- `[~]` **H** — **Emit `no_push` from the cloud.** The agent honours it as of ghost-cli v1.1.53.
+  **live-ninja's half is DONE** (2026-08-01): `ghost.LaunchRequest.Deploy` is sent on every
+  `/schedule` call, non-`omitempty` so the security-relevant `false` is always transmitted. Pinned
+  by `TestLaunchCarriesTheDeployDecisionOnTheWire`.
+
+  Safe to have shipped ahead of ghost-cli reading it, and that was VERIFIED not assumed:
+  `lambda/command/schedule.go:294` decodes the create body with a plain `json.Unmarshal`, so an
+  unknown key is ignored. The strict `DisallowUnknownFields` decoder is on the AGENT's command
+  envelope, one hop further on.
+
+  **Remaining: the ghost-cli half** — read `deploy` on schedule create, carry it to
+  `buildLaunchParams` (`lambda/command/params.go:157`), emit `no_push: true` when it is false.
+
+  **The stated precondition is NOT met — measured 2026-08-01, not assumed:**
+
+  | Node | agent_version | ≥ 1.1.53 |
+  |---|---|---|
+  | Windows2, Right-Board | 1.1.55 | yes |
+  | OFFICEPC | 1.1.54 | yes |
+  | Windows1 | 1.1.49 | no |
+  | Left-Board | 1.1.39 | no |
+  | rog-18 | 1.1.33 | no |
+  | Lenovo14 | 1.0.13 | no |
+  | rog-flow | 1.0.11 | no |
+  | elite001, acer-gpu, 4x twix-gpu | no retained message | unknown |
+
+  Read from the IoT retained status messages on `cockpit/nodes/<id>/status` — the same source
+  `GET /nodes` uses. Five known-stale nodes, six unknown; the fleet has not converged and the
+  ~4 h self-update poll has plainly not carried these.
+
+  **The blast radius is narrower than the precondition implies**, which opens a second option.
+  `no_push` is only emitted when `deploy == false`, so a DEPLOY run carries no new key and a stale
+  agent is unaffected. Only a HELD run dispatched to a stale node would have its envelope
+  rejected. So either: (a) converge the fleet, then ship unconditionally; or (b) version-gate the
+  emission on the node's reported `agent_version` (`nodes.go` already reads it), which removes the
+  precondition entirely and degrades to today's prompt-only behaviour on stale nodes. (b) is more
+  code in the dispatch path; (a) is simpler but blocks on nodes that are not self-updating.
+  **Owner's call — do not pick one silently.**
 
   **Raised in importance by the 2026-08-01 default flip (§2.4).** While the default was "hold", a
   prompt-only gate failing open meant a run shipped work the owner had not asked to ship. Now that
