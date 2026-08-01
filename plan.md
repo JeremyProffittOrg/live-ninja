@@ -234,22 +234,51 @@ nothing timed out.
   violation of a stated instruction, on the exact request most likely to be sensitive. Fewer runs
   depend on it; the ones that do depend on it more.
 
-- `[ ]` **Windows1 is CRASHED and has been reporting it.** Found 2026-08-01 while measuring the
-  fleet for the item above, not by looking for it. Its retained status on
-  `cockpit/nodes/Windows1/status` is fresh (published 12:50, same minute as the healthy nodes, so
-  the agent process is alive and talking) but carries `state=CRASHED` at `agent_version=1.1.49`.
-  A crashed agent will not self-update, which is why it alone is stuck below 1.1.53 while every
-  other LIVE node is at 1.1.54+. Nothing alerts on this: it is visible only to whoever runs
-  `ghost node list` or reads the retained topic. **This is a prerequisite for the `no_push` item
-  above** — it is the only live node blocking convergence. Diagnose the crash before restarting,
-  or the restart just resets the clock on whatever caused it.
+- `[~]` **Windows1 reports CRASHED — but the earlier diagnosis of WHY was wrong.** Re-measured
+  2026-08-01 20:20Z direct from the retained topics and the ghost-cli source; the corrections
+  matter because the old reading pointed at the wrong fix.
 
-- `[ ]` **The self-update path is lagging on healthy nodes.** `releases/latest.json` is 1.1.56 and
-  has been long enough for every node to have polled (~4 h interval), yet OFFICEPC — live, healthy,
-  used all day — is on 1.1.54, and Windows2/Right-Board are on 1.1.55. No node is on the published
-  fleet version. That points at the updater rather than at the machines, and it is the reason
-  "wait for the fleet to converge" is not a plan by itself. Worth a look at whether the poll is
-  running, whether it is failing silently, and whether anything would ever say so.
+  **What is true:** `cockpit/nodes/Windows1/status` carries `state=CRASHED` at
+  `agent_version=1.1.49`, `uptime_s=163460` (45.4 h), heartbeating every ~20 s.
+
+  **Correction 1 — CRASHED is a SESSION state, not an agent state.**
+  `agent/internal/intelligence/engine.go` `sessionState.inferState` returns `state.Crashed` when a
+  session's process is observed dead and that session had seen activity ("CRASHED overrides
+  everything (process died)"). The AGENT is alive and publishing — a crashed agent would go
+  silent, and this one has not. So "the agent crashed" was never what the topic said.
+
+  **Correction 2 — "a crashed agent will not self-update" is unsupported.** There is no state
+  gate in `agent/internal/updater`. Nothing found so far ties session state to update eligibility,
+  so CRASHED does not explain the stale version and restarting the node would not fix it.
+
+  **Still open:** why Windows1 sits on 1.1.49 when the fleet manifest is 1.1.57. Needs node-side
+  updater logs — not answerable from the retained topic. The `updater: manifest version was
+  applied within the cooldown` anti-thrash path (`updater.go:264`) is the first place to look;
+  it fires when a published binary's stamped version does not match its manifest, which would
+  look exactly like "stuck" — though 1.1.57 stamps correctly for the two nodes that took it.
+  **Restarting is NOT the indicated action** on the current evidence, and it belongs to whoever
+  owns that machine (its status shows a `C:\Users\joshua` profile).
+
+- `[~]` **The fleet has PARTLY converged since this was written — re-measured 2026-08-01 20:20Z.**
+  The original claim ("no node is on the published fleet version") is no longer true, and the
+  shape of the problem changed with it.
+
+  | Node | State | Version | Canary member? |
+  |---|---|---|---|
+  | Windows2 | IDLE_ALIVE | **1.1.57** | no — took the fleet manifest |
+  | Right-Board | IDLE_ALIVE | **1.1.57** | yes |
+  | OFFICEPC | IDLE_ALIVE | **1.1.54** | **yes** |
+  | Windows1 | CRASHED (session) | **1.1.49** | no |
+
+  `releases/latest.json` and `releases/canary.json` are BOTH 1.1.57 (identical sha256), and
+  `releases/canary-nodes.json` is `{"nodes":["Right-Board","OFFICEPC"]}`. So the canary/fleet
+  split is not the cause of the spread — both manifests point at the same build.
+
+  **The sharp remaining anomaly is OFFICEPC**, and it is the opposite of what the old note said:
+  it is a *canary member*, so it should receive a build FIRST, and it is the furthest behind of
+  the three alive nodes. Two nodes taking 1.1.57 cleanly proves the manifest, the signature, the
+  bucket policy and the apply path all work — so this is specific to OFFICEPC, not "the updater".
+  Needs that node's updater log; nothing in the retained status says why.
 
 - `[ ]` **Six inventory entries have never published a status.** `elite001`, `acer-gpu`,
   `left-twix-gpu0/1`, `right-twix-gpu0/1` have no retained message at all, so `GET /nodes` renders
