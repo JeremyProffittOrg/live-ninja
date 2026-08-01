@@ -225,3 +225,51 @@ func TestValidateAndNormalizeSettings(t *testing.T) {
 		t.Errorf("client-sent version must be stripped")
 	}
 }
+
+// TestPersonaHiddenValidation pins the picker off-switch (owner 2026-08-01).
+// The list is presentation only — realtime.ResolvePersona never reads it — but
+// it round-trips through the settings document to every surface, so the route
+// is where malformed input has to stop. The "default" rule is the one that
+// matters: it is the fallback the whole resolution chain bottoms out at, and
+// allowing it to be hidden is the single way to produce an empty picker.
+func TestPersonaHiddenValidation(t *testing.T) {
+	// Build on the real default document, so this test fails for the reason
+	// it names rather than for a field it forgot.
+	base := func(hidden any) map[string]any {
+		d := store.DefaultSettings()
+		d["persona"] = map[string]any{"presetId": "default", "hidden": hidden}
+		return d
+	}
+
+	t.Run("rejects the default persona", func(t *testing.T) {
+		if msg := validateAndNormalizeSettings(base([]any{"valley-girl", "default"})); msg == "" {
+			t.Error("hiding the default persona must be rejected")
+		}
+	})
+	t.Run("rejects non-strings", func(t *testing.T) {
+		if msg := validateAndNormalizeSettings(base([]any{"valley-girl", 7})); msg == "" {
+			t.Error("a non-string persona id must be rejected")
+		}
+	})
+	t.Run("rejects a non-array", func(t *testing.T) {
+		if msg := validateAndNormalizeSettings(base("valley-girl")); msg == "" {
+			t.Error("persona.hidden must be an array")
+		}
+	})
+	t.Run("accepts and de-duplicates", func(t *testing.T) {
+		doc := base([]any{"valley-girl", "bard", "valley-girl"})
+		if msg := validateAndNormalizeSettings(doc); msg != "" {
+			t.Fatalf("valid hidden list rejected: %s", msg)
+		}
+		got := doc["persona"].(map[string]any)["hidden"].([]any)
+		if len(got) != 2 {
+			t.Errorf("duplicates should collapse, got %v", got)
+		}
+	})
+	t.Run("absent is fine", func(t *testing.T) {
+		doc := store.DefaultSettings()
+		if msg := validateAndNormalizeSettings(doc); msg != "" {
+			t.Errorf("a document without persona.hidden must stay valid: %s", msg)
+		}
+	})
+}

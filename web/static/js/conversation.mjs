@@ -338,6 +338,14 @@ let voiceCatalog = []; // [{id, name, ...}] from GET /api/v1/realtime/voices
 // built-in with its group and this list decides where the sections sit.
 const PERSONA_GROUP_ORDER = ['General', 'PDLC', 'ESP32', 'Fun'];
 
+/* Persona ids switched off in Settings (persona.hidden). Presentation only —
+ * ResolvePersona on the server never reads it, so a hidden persona still
+ * mints a working session if a stored document still names it. */
+function hiddenPersonaSet() {
+  const raw = settingsDoc && settingsDoc.persona && settingsDoc.persona.hidden;
+  return new Set(Array.isArray(raw) ? raw.filter((v) => typeof v === 'string') : []);
+}
+
 // fillPersonaSelect renders the grouped persona library into the quick-
 // switch select: Built-in / Mine / Shared <optgroup>s plus the trailing
 // client-side "custom" option (settings.schema.json persona rule). Same
@@ -372,7 +380,16 @@ function fillPersonaSelect(selectEl, groups, selectedId) {
   // group still renders, in a trailing section named after it, because a
   // persona that exists on the server and is invisible in the picker is the
   // one failure mode worth ruling out.
-  const builtins = (groups && groups.builtin) || [];
+  // Personas switched off in Settings (persona.hidden) are dropped here —
+  // this picker is the only thing that list affects. Two entries always
+  // survive it regardless: the persona currently selected (otherwise the
+  // select would show a value it does not contain, and switching away from a
+  // persona you just hid would be impossible) and "default" (which the
+  // settings route refuses to hide at all, so the picker can never empty).
+  const hidden = hiddenPersonaSet();
+  const visible = (row) =>
+    row.id === selectedId || row.id === 'default' || !hidden.has(row.id);
+  const builtins = ((groups && groups.builtin) || []).filter(visible);
   const seen = new Set();
   for (const label of PERSONA_GROUP_ORDER) {
     addGroup(label, builtins.filter((r) => (r.group || 'General') === label));
@@ -384,8 +401,8 @@ function fillPersonaSelect(selectEl, groups, selectedId) {
     seen.add(label);
     addGroup(label, builtins.filter((r) => (r.group || 'General') === label));
   }
-  addGroup('Mine', groups && groups.mine);
-  addGroup('Shared', groups && groups.shared);
+  addGroup('Mine', ((groups && groups.mine) || []).filter(visible));
+  addGroup('Shared', ((groups && groups.shared) || []).filter(visible));
   addOption(selectEl, 'custom', 'Custom instructions');
   if (!found && selectedId) {
     addOption(selectEl, selectedId, `${selectedId} (kept as-is)`);

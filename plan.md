@@ -621,6 +621,18 @@ a number, and it is the cheapest way to re-check a pure-layout change on this pa
   and `TestBuiltinPersonaGroups` fails if a persona is tagged with a group `GroupOrder` does not
   render. A `Group · Persona` caption sits under the picker, because a collapsed `<select>` shows
   only the option text and the `<optgroup>` heading disappears with the list.
+- `[x]` **Per-persona picker off-switch** (owner request, same day). `persona.hidden` in
+  `contracts/settings.schema.json` — additive, validated in `settings_routes.go`, registered as a
+  known key in `store/settings.go` so an inherit/apply-all does not mistake it for a foreign
+  additive field. Settings → Persona renders one fieldset per group with a whole-group button.
+  **Opt-OUT by design**: only the switched-off ids are stored, so a persona added in a future
+  deploy appears on its own — an allow-list would silently hide everything new.
+  Two rails, both verified in a browser against the real registry: the persona currently
+  SELECTED always renders even when hidden (otherwise the `<select>` shows a value it does not
+  contain), and `default` can never be hidden — the route rejects it — so the picker cannot empty.
+  With every id in the list the picker still renders General(1). It is presentation only:
+  `ResolvePersona` never reads it, so a hidden persona still mints a working session if another
+  device or a stored document still names it.
 - `[!]` **Android's persona list is stale and unrelated to any of this** — `SettingsViewModel.kt`
   `PERSONA_PRESETS` is a hardcoded `default` / `focused` / `friendly` trio that predates the
   personas platform and never reads `GET /api/v1/personas`. Out of scope for this pass; it needs

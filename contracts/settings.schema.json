@@ -68,6 +68,17 @@
           "description": "Free-text system-instruction override. Only meaningful/editable when presetId == \"custom\"; null/absent otherwise. Capped length enforced server-side (see api.md PUT /v1/settings validation).",
           "maxLength": 4000,
           "default": null
+        },
+        "hidden": {
+          "type": "array",
+          "description": "Persona IDs the user has switched OFF in the picker (owner request 2026-08-01). Presentation only: it hides entries from the persona pickers and NOTHING else — the server's ResolvePersona deliberately ignores it, so a stale client, another device, or a persona still referenced by presetId always resolves to a working session. Opt-OUT by design: a new built-in appears automatically rather than needing to be enabled, which an allow-list would get backwards. \"default\" may never appear here; it is the fallback that guarantees the picker is never empty.",
+          "default": [],
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
         }
       }
     },

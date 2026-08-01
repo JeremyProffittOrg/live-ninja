@@ -299,6 +299,40 @@ func validateAndNormalizeSettings(doc map[string]any) string {
 		// stale instruction text along.
 		persona["systemInstructions"] = nil
 	}
+	// persona.hidden: the picker's off-switch (owner 2026-08-01). It is
+	// PRESENTATION ONLY — realtime.ResolvePersona never consults it, so a
+	// hidden persona still mints a working session if some other device or a
+	// stale document still names it. Validated anyway, because it round-trips
+	// through the settings document to every surface.
+	if raw, present := persona["hidden"]; present && raw != nil {
+		list, ok := raw.([]any)
+		if !ok {
+			return "persona.hidden must be an array of persona ids"
+		}
+		if len(list) > 256 {
+			return "persona.hidden must contain at most 256 persona ids"
+		}
+		seen := make(map[string]bool, len(list))
+		cleaned := make([]any, 0, len(list))
+		for _, item := range list {
+			id, ok := item.(string)
+			if !ok || strings.TrimSpace(id) == "" || len(id) > 64 {
+				return "persona.hidden entries must be non-empty persona ids"
+			}
+			// "default" is the fallback the whole resolution chain bottoms
+			// out at; letting it be hidden is the one way to end up with an
+			// empty picker.
+			if id == "default" {
+				return "persona.hidden may not contain the default persona"
+			}
+			if seen[id] {
+				continue // idempotent: a duplicated id is not an error
+			}
+			seen[id] = true
+			cleaned = append(cleaned, id)
+		}
+		persona["hidden"] = cleaned
+	}
 
 	if s, ok := doc["voice"].(string); !ok || strings.TrimSpace(s) == "" || len(s) > 64 {
 		return "voice must be a non-empty voice id"

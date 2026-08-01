@@ -1867,6 +1867,45 @@ html[data-ln-style="hal9000"] .conv-main { background: #23232b; }
   align-items: center;
   gap: var(--ln-sp-2);
 }
+/* ---- Persona visibility list (Settings > Persona, owner 2026-08-01) ----
+   One fieldset per picker group, each with a whole-group button and a row per
+   persona. Columns so 28 rows do not become a scroll of their own; single
+   column once there is no room for two. */
+.persona-visibility {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: var(--ln-sp-4);
+  margin-top: var(--ln-sp-2);
+}
+.persona-visibility__group {
+  min-width: 0;
+  margin: 0;
+  padding: var(--ln-sp-3);
+  border: 1px solid var(--ln-border);
+  border-radius: var(--ln-r-md);
+}
+.persona-visibility__legend {
+  padding: 0 var(--ln-sp-2);
+  font-size: var(--ln-fs-xs);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ln-text-muted);
+}
+.persona-visibility__all { margin-bottom: var(--ln-sp-2); }
+/* The toggle rows are .ln-toggle, so they already carry the 44px min-height
+   and the track/thumb; this only stops a long persona name from overflowing. */
+.persona-visibility__row {
+  width: 100%;
+  min-width: 0;
+}
+.persona-visibility__row > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* "Group · Persona" under the picker. The <optgroup> heading is only on
    screen while the list is open, so this is where the group survives the
    list closing. Hidden (via the `hidden` attribute) for personas that have

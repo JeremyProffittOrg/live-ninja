@@ -430,7 +430,10 @@ func retainUnknownSettingsField(field string, value any) (any, bool) {
 	}
 	switch field {
 	case "persona":
-		deleteKnownMapKeys(object, "presetId", "systemInstructions")
+		// "hidden" is a known key (persona picker off-switch, 2026-08-01):
+		// without it here it would be mistaken for a foreign additive field
+		// and preserved as device-specific through an inherit/apply-all.
+		deleteKnownMapKeys(object, "presetId", "systemInstructions", "hidden")
 	case "personaPrefs":
 		for personaID, raw := range object {
 			entry, ok := raw.(map[string]any)

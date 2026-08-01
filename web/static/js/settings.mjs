@@ -1061,7 +1061,110 @@ async function loadPersonaCatalog() {
   customOpt.value = 'custom';
   customOpt.textContent = 'Custom — write your own instructions';
   personaSel.appendChild(customOpt);
+  renderPersonaVisibility(list);
   renderField('persona');
+}
+
+// ---- persona visibility (owner 2026-08-01) --------------------------------
+// Twenty-eight built-ins is more than most people want to scroll past, so each
+// one gets an off-switch. Stored as persona.hidden, an OPT-OUT list: only the
+// ids that are switched off are written, so a persona added in a future deploy
+// appears on its own instead of needing to be enabled. An allow-list would get
+// that backwards and silently hide everything new.
+//
+// This is presentation only. The server's ResolvePersona never reads it, so a
+// persona switched off here still mints a working session if another device or
+// a stored document still names it — which is exactly why the default persona
+// has no switch at all: it is the fallback that keeps the picker non-empty.
+const personaVisibility = $('personaVisibility');
+const PERSONA_GROUP_ORDER = ['General', 'PDLC', 'ESP32', 'Fun'];
+
+function hiddenPersonaSet() {
+  const raw = doc.persona && doc.persona.hidden;
+  return new Set(Array.isArray(raw) ? raw.filter((v) => typeof v === 'string') : []);
+}
+
+function writeHiddenPersonas(next) {
+  if (!doc.persona || typeof doc.persona !== 'object') doc.persona = { presetId: 'default' };
+  // Sorted so two devices that switch the same personas off converge on the
+  // same array and the document stops looking changed when it is not.
+  doc.persona = { ...doc.persona, hidden: [...next].sort() };
+  markChanged('persona');
+}
+
+function renderPersonaVisibility(list) {
+  if (!personaVisibility) return;
+  const hidden = hiddenPersonaSet();
+  personaVisibility.replaceChildren();
+
+  const groups = new Map();
+  for (const p of list) {
+    if (p.id === 'default') continue; // no switch: it is the fallback
+    const g = p.group || 'General';
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(p);
+  }
+  const order = [
+    ...PERSONA_GROUP_ORDER.filter((g) => groups.has(g)),
+    ...[...groups.keys()].filter((g) => !PERSONA_GROUP_ORDER.includes(g)),
+  ];
+
+  for (const groupName of order) {
+    const rows = groups.get(groupName);
+    const fs = document.createElement('fieldset');
+    fs.className = 'persona-visibility__group';
+
+    const legend = document.createElement('legend');
+    legend.className = 'persona-visibility__legend';
+    legend.textContent = groupName;
+    fs.appendChild(legend);
+
+    // Whole-group switch. Turning a group of nine off one checkbox at a time
+    // is the reason this control exists at all.
+    const all = document.createElement('button');
+    all.type = 'button';
+    all.className = 'ln-btn ln-btn--ghost ln-btn--compact persona-visibility__all';
+    const anyShown = () => rows.some((p) => !hiddenPersonaSet().has(p.id));
+    all.textContent = anyShown() ? `Hide all ${groupName}` : `Show all ${groupName}`;
+    all.addEventListener('click', () => {
+      const next = hiddenPersonaSet();
+      if (anyShown()) {
+        for (const p of rows) next.add(p.id);
+      } else {
+        for (const p of rows) next.delete(p.id);
+      }
+      writeHiddenPersonas(next);
+      renderPersonaVisibility(list);
+    });
+    fs.appendChild(all);
+
+    for (const p of rows) {
+      const label = document.createElement('label');
+      label.className = 'ln-toggle persona-visibility__row';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = !hidden.has(p.id);
+      cb.addEventListener('change', () => {
+        const next = hiddenPersonaSet();
+        if (cb.checked) next.delete(p.id);
+        else next.add(p.id);
+        writeHiddenPersonas(next);
+        // Re-render so the group button's label follows the new state.
+        renderPersonaVisibility(list);
+      });
+      const track = document.createElement('span');
+      track.className = 'ln-toggle-track';
+      track.setAttribute('aria-hidden', 'true');
+      const thumb = document.createElement('span');
+      thumb.className = 'ln-toggle-thumb';
+      track.appendChild(thumb);
+      const text = document.createElement('span');
+      text.textContent = p.name || p.id;
+      label.append(cb, track, text);
+      fs.appendChild(label);
+    }
+    personaVisibility.appendChild(fs);
+  }
 }
 
 personaSel.addEventListener('change', () => {

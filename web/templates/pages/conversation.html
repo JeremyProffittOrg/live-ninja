@@ -625,6 +625,30 @@
         <p class="ln-hint">Each persona carries its own voice and accent — use Edit next to the persona picker to change how it sounds.</p>
       </div>
 
+      {{- /* Which personas appear in the picker (owner 2026-08-01). Twenty-
+             eight built-ins is more than most people want to scroll past, so
+             each can be switched off. Written to persona.hidden as an
+             OPT-OUT list: anything not named stays on, which is what makes a
+             persona added in a future deploy show up on its own instead of
+             needing to be enabled.
+
+             Presentation only — the server's ResolvePersona ignores it
+             entirely, so a persona switched off here still mints a working
+             session if another device or a stored document still names it.
+             Rendered client-side by settings.mjs (renderPersonaVisibility)
+             from GET /api/v1/realtime/personas, grouped the same way the
+             picker is. The default persona has no switch: it is the fallback
+             that guarantees the picker is never empty. */}}
+      <div class="ln-field">
+        <span class="ln-label" id="personaVisibilityLabel">Show in the picker</span>
+        <p class="ln-hint" id="personaVisibilityHint">Turn off the personas you don't use. This only
+          changes what the picker lists — it never deletes anything, and a persona you have
+          selected keeps working.</p>
+        <div class="persona-visibility" id="personaVisibility"
+             role="group" aria-labelledby="personaVisibilityLabel"
+             aria-describedby="personaVisibilityHint"></div>
+      </div>
+
       <div class="ln-field" id="customInstructionsField" hidden>
         <label for="systemInstructions">Custom instructions</label>
         <textarea class="ln-textarea" id="systemInstructions" maxlength="4000"
@@ -1231,7 +1255,9 @@
 
             The built-ins come in groups. <em>General</em> is the standard Live Ninja. <em>PDLC</em> holds three working personas for thinking a project through — <em>Product Owner</em>, <em>Staff Engineer</em> and <em>Staff SRE</em>. <em>ESP32</em> holds one engineer per chip in the family — the plain ESP32, S2, S3, C2, C3, C5, C6, H2 and P4 — each of which knows the traps specific to its own silicon. <em>Fun</em> is everything else.
 
-            The PDLC and ESP32 personas are not characters: they are there to disagree with you. Each will say when it thinks you are wrong, give the reason, and offer the alternative.</dd>
+            The PDLC and ESP32 personas are not characters: they are there to disagree with you. Each will say when it thinks you are wrong, give the reason, and offer the alternative.
+
+            <strong>Too many to scroll?</strong> Settings → Persona → <em>Show in the picker</em> switches any of them off, one at a time or a whole group at once. It only changes what the picker lists — nothing is deleted, the persona you have selected always stays visible even if you switch it off, and the standard Live Ninja can't be hidden at all, so the list can never end up empty.</dd>
           <dt>Downloads</dt>
           <dd>Files Live Ninja has created for you. Files are kept for 180 days; share links expire after about 15 minutes.</dd>
           <dt>This month</dt>
