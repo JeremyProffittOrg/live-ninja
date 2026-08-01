@@ -887,34 +887,74 @@ matched either way.
 
 ### WS-2 — Publish side `[ ]` (depends on WS-1 only for topic shape, can start in parallel)
 
-- `[ ]` **M2.1 Topic namespace.** `liveninja/user/<userId>/doc`, `/memory`, `/presence/<deviceId>`.
+- `[x]` **M2.1 Topic namespace.** `liveninja/user/<userId>/doc`, `/memory`, `/presence/<deviceId>`.
   Guard: a Thing may never be named `user`, or it would collide with the existing
   `liveninja/<thingName>/telemetry` namespace.
   *DoD:* `go test ./internal/sync/ -run TestTopicNamespace` covers the collision guard.
-- `[ ]` **M2.2 `Publisher.PublishEvent`.** Extend `internal/sync`'s existing publisher. Payload
+- `[x]` **M2.2 `Publisher.PublishEvent`.** Extend `internal/sync`'s existing publisher. Payload
   carries `{type, id, version, actorDeviceId, actorPersona, summary}` — `actorDeviceId` is what lets
   a client ignore its own edit.
   *DoD:* `go test ./internal/sync/` passes.
-- `[ ]` **M2.3 Hook the writes.** Publish after `deliverable_create` / `file_create`,
+- `[x]` **M2.3 Hook the writes.** Publish after `deliverable_create` / `file_create`,
   `memory_write` and `plan_upsert` commit. Publishing must never fail the tool call — log and
   continue.
   *DoD:* `go test ./internal/tools/` passes with a case asserting a publisher error does not
   surface as a tool error.
 
+**Landed 2026-08-01 (WS-2 complete + WS-3 M3.1/M3.2).**
+
+`internal/sync/events.go` publishes user-scoped notifications on
+`liveninja/user/<uid>/{doc,memory}`, matching exactly what the IoT policy grants. The payload is a
+NOTIFICATION, never content: clients already read live state through their own authenticated tool
+calls, so shipping document text on a topic would duplicate a source of truth and expose user data
+for no gain — `TestPublishEventCarriesNoContent` pins that. `IsReservedThingName` refuses a Thing
+called `user`, which would otherwise let one device publish onto and subscribe to every user's
+event stream through its own device policy.
+
+The fan-out is hooked CENTRALLY in `Registry.Invoke`, not in four handlers: one place cannot be
+forgotten when a fifth tool starts changing shared state, and it only runs on a genuinely
+successful, non-duplicate call. `changeEventKind` is an allowlist of four tools, so silence is the
+default and a new tool must opt in to waking every device the user owns. It NEVER fails the call —
+the write already succeeded and was already reported to the model, so turning a missed ping into a
+tool error would tell the user their file was not created when it was.
+
+`web/static/js/mqtt.mjs` is a hand-rolled MQTT 3.1.1 client, because this app has no JS bundler and
+the CSP forbids CDN scripts. 13 byte-level tests (`tests/web/unit/mqtt.test.mjs`, `node --test`)
+cover the varint boundaries from the spec's own table, the SUBSCRIBE reserved bit brokers reject a
+connection without, and the two cases a naive implementation gets wrong: several packets coalesced
+into ONE WebSocket frame, and one packet SPLIT across frames. A message boundary is not a packet
+boundary, and treating it as one works in testing then drops messages under load.
+
 ### WS-3 — Web client `[ ]` (depends on WS-1)
 
-- `[ ]` **M3.1 Minimal MQTT 3.1.1 codec, `web/static/js/mqtt.mjs`.** CONNECT/CONNACK, SUBSCRIBE/
+- `[x]` **M3.1 Minimal MQTT 3.1.1 codec, `web/static/js/mqtt.mjs`.** CONNECT/CONNACK, SUBSCRIBE/
   SUBACK, PUBLISH (QoS 0 in), PINGREQ/PINGRESP, DISCONNECT. Hand-rolled deliberately: there is no
   bundler and the CSP forbids CDN scripts, so vendoring mqtt.js would mean checking a UMD bundle
   into `static/js` and stamping it through the import map.
   *DoD:* `node --test` unit tests over the packet encoder/decoder pass.
-- `[ ]` **M3.2 CSP.** Add the account's IoT ATS `wss://` origin to `connect-src`
+- `[x]` **M3.2 CSP.** Add the account's IoT ATS `wss://` origin to `connect-src`
   (`internal/webapp/pages_routes.go:56`).
   *DoD:* `go test ./internal/webapp/ -run TestCSP` passes with a case pinning the IoT origin.
-- `[ ]` **M3.3 Connect + LWT presence.** Subscribe on session start; set an MQTT Last Will on
-  `presence/<deviceId>` so a dropped connection self-clears.
-  *DoD:* two browser tabs — killing one removes its presence in the other within 30s.
-- `[ ]` **M3.4 Auto-nudge.** On a `doc`/`memory` event whose `actorDeviceId` is not this device,
+- `[!]` **M3.3 Connect + LWT presence — BLOCKED on a credential the browser does not have.**
+  Found while wiring it 2026-08-01, and it invalidates an assumption the plan carried from the
+  start: **the web client authenticates by COOKIE, not by a bearer token.** `conversation.mjs`
+  fetches with `credentials: 'same-origin'` and never touches an `Authorization` header, so the
+  access JWT lives in an HttpOnly cookie and JavaScript cannot read it. The MQTT CONNECT packet
+  needs the token VALUE. There is nothing to put in it.
+
+  **Do NOT fix this by returning the session JWT from an endpoint.** That would move a full API
+  credential into JS memory and hand any XSS the whole API surface, to save writing one route.
+
+  **The fix (new milestone M3.5, ahead of this one):** a purpose-scoped token.
+  `GET /api/v1/iot/credentials` (cookie-authenticated like every other page fetch) returns
+  `{endpoint, authorizerName, clientId, token, expiresAt}` where `token` is a short-lived JWT
+  minted with a DISTINCT audience — say `aud: "iot"` — that `cmd/iot-authorizer` **requires** and
+  `cmd/authorizer` **rejects**. Then a stolen IoT token opens a subscription to one user's own
+  event stream and nothing else, which is the whole blast radius. The two authorizers already
+  share `internal/auth.TokenVerifier`, so the audience split is the one thing that must NOT be
+  shared — and a test asserting each rejects the other's audience is what keeps it that way.
+  *DoD (unchanged):* two browser tabs — killing one removes its presence in the other within 30s.
+- `[ ]` **M3.4 Auto-nudge** (blocked behind M3.3/M3.5). On a `doc`/`memory` event whose `actorDeviceId` is not this device,
   inject through the existing `sendUserText()` path so the agent announces the change.
   **Suppress your own edits** and honour the WS-5 speaking lock.
   *DoD:* device A edits the doc; device B's agent speaks the change unprompted; device A stays

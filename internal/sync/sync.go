@@ -49,6 +49,11 @@ const ShadowName = "config"
 // interface-typed so tests inject a fake.
 type IoTDataAPI interface {
 	UpdateThingShadow(ctx context.Context, params *iotdataplane.UpdateThingShadowInput, optFns ...func(*iotdataplane.Options)) (*iotdataplane.UpdateThingShadowOutput, error)
+	// Publish carries the user-scoped event fan-out (events.go). Same
+	// data-plane client and the same lazily-resolved endpoint as the shadow
+	// path, so a user with no IoT devices still never triggers a
+	// DescribeEndpoint until something is actually published.
+	Publish(ctx context.Context, params *iotdataplane.PublishInput, optFns ...func(*iotdataplane.Options)) (*iotdataplane.PublishOutput, error)
 }
 
 // EndpointAPI is the subset of the IoT control-plane client used to

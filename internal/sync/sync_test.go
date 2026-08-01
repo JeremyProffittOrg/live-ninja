@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	stdsync "sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -16,14 +17,37 @@ import (
 
 // fakeIoT records UpdateThingShadow calls and can fail a specific thing.
 type fakeIoT struct {
-	calls     []shadowCall
-	failThing string
+	mu         stdsync.Mutex
+	calls      []shadowCall
+	failThing  string
+	published  []publishedEvent
+	publishErr error
+}
+
+// publishedEvent is one recorded user-event fan-out (events.go).
+type publishedEvent struct {
+	Topic   string
+	Payload []byte
 }
 
 type shadowCall struct {
 	thing   string
 	shadow  string
 	payload map[string]any
+}
+
+// Publish records the user-event fan-out (events.go).
+func (f *fakeIoT) Publish(ctx context.Context, params *iotdataplane.PublishInput, optFns ...func(*iotdataplane.Options)) (*iotdataplane.PublishOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.publishErr != nil {
+		return nil, f.publishErr
+	}
+	f.published = append(f.published, publishedEvent{
+		Topic:   aws.ToString(params.Topic),
+		Payload: append([]byte(nil), params.Payload...),
+	})
+	return &iotdataplane.PublishOutput{}, nil
 }
 
 func (f *fakeIoT) UpdateThingShadow(ctx context.Context, params *iotdataplane.UpdateThingShadowInput, optFns ...func(*iotdataplane.Options)) (*iotdataplane.UpdateThingShadowOutput, error) {

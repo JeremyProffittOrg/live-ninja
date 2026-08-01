@@ -51,6 +51,7 @@ import (
 	"github.com/JeremyProffittOrg/live-ninja/internal/ghost"
 	"github.com/JeremyProffittOrg/live-ninja/internal/observ"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
+	lnsync "github.com/JeremyProffittOrg/live-ninja/internal/sync"
 )
 
 // Error codes carried by ToolError. The HTTP layer maps these via
@@ -399,6 +400,11 @@ type Deps struct {
 	SchedulerRoleARN string       // env SCHEDULER_ROLE_ARN
 
 	IoT IoTDataAPI // device_control publish
+
+	// Events fans a successful shared-state change out to the user's other
+	// devices (§6 WS-2). nil — the default — disables the fan-out entirely:
+	// it is a notification, and no tool call ever fails because of it.
+	Events EventPublisher
 
 	// Deliverables backs the deliverable_create/zip/deliver tools (M9);
 	// nil → those tools report not_configured (interface in deliverable.go).
@@ -836,8 +842,71 @@ func (r *Registry) Invoke(ctx context.Context, inv Invocation) (res *Result) {
 	} else {
 		res.OK = true
 		res.Output = output
+		// §6 WS-2 M2.3 — fan the change out to this user's OTHER devices.
+		// Hooked centrally rather than in each handler: one place cannot be
+		// forgotten when a fifth tool starts changing shared state, and it can
+		// only ever run on a genuinely successful, non-duplicate call.
+		r.publishChange(ctx, l, inv, output)
 	}
 	return res
+}
+
+// changeEventKind maps a tool to the event kind its success should announce.
+// Tools absent from this map publish nothing — the default is silence, so a
+// new tool has to opt IN to waking up every other device the user owns.
+var changeEventKind = map[string]string{
+	"deliverable_create": lnsync.EventDoc,
+	"file_create":        lnsync.EventDoc,
+	"memory_write":       lnsync.EventMemory,
+	"plan_upsert":        lnsync.EventMemory,
+}
+
+// publishChange notifies the user's other devices that shared state moved.
+//
+// It NEVER fails the tool call. The write already succeeded and was already
+// reported to the model; turning a missed convenience ping into a tool error
+// would tell the user their file was not created when it was. Every failure
+// path here logs and returns.
+func (r *Registry) publishChange(ctx context.Context, l *slog.Logger, inv Invocation, output map[string]any) {
+	kind, ok := changeEventKind[inv.Tool]
+	if !ok || r.deps.Events == nil || inv.UserID == "" {
+		return
+	}
+	ev := lnsync.Event{
+		Type: kind,
+		ID:   firstString(output, "id", "fileId", "deliverableId", "entityId", "planId"),
+		// The device that made the change, so the client that made it can
+		// ignore its own edit instead of announcing it back to the user.
+		ActorDeviceID: inv.DeviceID,
+		Summary:       changeSummary(inv.Tool),
+	}
+	if err := r.deps.Events.PublishEvent(ctx, inv.UserID, ev); err != nil {
+		l.Warn("tools: change fan-out failed (the write itself succeeded)",
+			slog.String("tool", inv.Tool), slog.String("error", err.Error()))
+	}
+}
+
+// changeSummary is one short phrase, already safe to speak aloud.
+func changeSummary(tool string) string {
+	switch tool {
+	case "deliverable_create", "file_create":
+		return "updated a shared document"
+	case "memory_write":
+		return "updated shared memory"
+	case "plan_upsert":
+		return "updated the plan"
+	}
+	return "changed something shared"
+}
+
+// firstString returns the first present, non-empty string among keys.
+func firstString(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if s, ok := m[k].(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // idempotencyReleasable reports whether a handler's error code proves the
@@ -1316,3 +1385,10 @@ func (p ParamSpec) checkRange(f float64) *ToolError {
 }
 
 func floatPtr(f float64) *float64 { return &f }
+
+// EventPublisher is the change fan-out seam (internal/sync.Publisher
+// satisfies it). Interface-typed so internal/tools does not depend on a live
+// IoT client, and so tests can assert what a tool announced without one.
+type EventPublisher interface {
+	PublishEvent(ctx context.Context, userID string, ev lnsync.Event) error
+}

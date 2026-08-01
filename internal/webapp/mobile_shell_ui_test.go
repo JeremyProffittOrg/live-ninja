@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestMobileBottomBarContract: the persistent bottom toolbar and every control
@@ -330,4 +331,24 @@ func TestNewConversationSaysNEW(t *testing.T) {
 		"the + glyph must be gone from the new-conversation button")
 	assert.Contains(t, html, `aria-label="New conversation"`,
 		"the accessible name stays the full phrase, not the shorthand")
+}
+
+// TestIoTOriginIsInTheCSP (§6 WS-3 M3.2): the browser opens an MQTT-over-
+// WebSocket connection to the account's IoT ATS endpoint for the cross-device
+// change fan-out. Without this origin in connect-src the socket never opens,
+// and the failure is a CSP violation in the console rather than a connect
+// error the client can report — which is exactly the kind of thing that gets
+// diagnosed as "the feature is broken" instead of "a header is missing".
+func TestIoTOriginIsInTheCSP(t *testing.T) {
+	const origin = "wss://a17oe0gnthrosw-ats.iot.us-east-1.amazonaws.com"
+	assert.Contains(t, pageCSP, origin, "the IoT data endpoint must be an allowed connect-src")
+
+	// It has to land inside connect-src, not merely somewhere in the policy —
+	// the same trap pageCSPWith exists for.
+	connectAt := strings.Index(pageCSP, "connect-src")
+	require.GreaterOrEqual(t, connectAt, 0)
+	end := strings.Index(pageCSP[connectAt:], ";")
+	require.Greater(t, end, 0)
+	assert.Contains(t, pageCSP[connectAt:connectAt+end], origin,
+		"the origin must be inside the connect-src directive")
 }

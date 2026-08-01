@@ -53,7 +53,7 @@ const pageCSP = "default-src 'self'; " +
 	// detectors fetched via presigned S3 URLs (wakeword.mjs fetchVerified) —
 	// SHA-256-pinned client-side, so the wildcard-free bucket host is the
 	// only other extra origin.
-	"connect-src 'self' https://api.openai.com wss://generativelanguage.googleapis.com https://live-ninja-wakewords-759775734231.s3.amazonaws.com https://live-ninja-wakewords-759775734231.s3.us-east-1.amazonaws.com; " +
+	"connect-src 'self' https://api.openai.com wss://generativelanguage.googleapis.com https://live-ninja-wakewords-759775734231.s3.amazonaws.com https://live-ninja-wakewords-759775734231.s3.us-east-1.amazonaws.com wss://a17oe0gnthrosw-ats.iot.us-east-1.amazonaws.com; " +
 	"media-src 'self' blob:; " +
 	"worker-src 'self' blob:; " +
 	"base-uri 'self'; " +
@@ -80,7 +80,7 @@ type pageMeta struct {
 }
 
 var pageMetas = map[string]pageMeta{
-	"pages/landing":      {Title: "Live Ninja — your private realtime voice assistant", Path: "/"},
+	"pages/landing": {Title: "Live Ninja — your private realtime voice assistant", Path: "/"},
 	// ln-body--fixed: the conversation shell is a 100dvh flex column that
 	// owns its own scrollers, and the root scroller must not add a second
 	// one on top of it (app.css, .conv-app / body.ln-body--fixed).

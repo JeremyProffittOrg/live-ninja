@@ -49,6 +49,7 @@ import (
 	"github.com/JeremyProffittOrg/live-ninja/internal/rca"
 	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
+	lnsync "github.com/JeremyProffittOrg/live-ninja/internal/sync"
 	"github.com/JeremyProffittOrg/live-ninja/internal/tools"
 )
 
@@ -609,6 +610,17 @@ func buildAPIToolsRegistry(deps *Deps) *tools.Registry {
 	}
 	if deps.Deliv != nil { // M9 deliverable_* tools (nil interface stays nil → not_configured)
 		toolDeps.Deliverables = deps.Deliv
+	}
+	// §6 WS-2: cross-device change fan-out. Same wiring lesson as the memory
+	// seam below — without this line the topic, the authorizer and the IAM
+	// grant can all be in place and every shared-state change would still
+	// reach nobody, with nothing looking broken. SharedPublisher resolves the
+	// IoT endpoint at most once per warm container, and only on first publish.
+	if pub, perr := lnsync.SharedPublisher(ctx, deps.Log); perr == nil {
+		toolDeps.Events = pub
+	} else {
+		deps.Log.Warn("api: change fan-out unavailable; shared-state changes will not notify other devices",
+			slog.String("error", perr.Error()))
 	}
 	// M10 memory_* / entity_get / plan_upsert / forget tools: the same
 	// Titan-embedder core RegisterMemoryRoutes serves over REST, adapted
