@@ -128,6 +128,19 @@
           <span>Show tool calls</span>
         </label>
       </div>
+
+      {{- /* Mobile only (<=900px): the rail and the transcript become two
+             snap panels of one vertical scroller, so the conversation is
+             literally below this panel. Nothing on screen says so, hence
+             this affordance — it is also a real button (conversation.mjs
+             scrolls .conv-body to the transcript panel) so the reveal is
+             reachable by tap and by keyboard, not by swipe alone. Hidden
+             at desktop widths where both panels are already side by side. */}}
+      <button class="conv-scrollhint" type="button" id="convScrollHint"
+              aria-label="Show the conversation below">
+        <span class="conv-scrollhint__label">Conversation</span>
+        <span class="conv-scrollhint__chev" aria-hidden="true">⌄</span>
+      </button>
     </section>
 
     <!-- Right column: transcript + composer -->
@@ -144,6 +157,26 @@
           <button class="conv-banner__close" type="button" id="pendingBannerClose" aria-label="Dismiss this notice">×</button>
         </div>
       </div>
+      {{- /* Conversation utilities (2026-08-01). One row of three actions
+             over the transcript, mirrored inside the conversation overlay
+             below — conversation.mjs binds them by data-conv-action, not by
+             id, so both copies share one handler and neither can drift.
+               copy       — the whole transcript as plain text
+               screenshot — the same text painted to a canvas and downloaded
+                            as a PNG (no external library; nothing leaves
+                            the device)
+               tag        — opens #reviewTagDialog to record why this
+                            conversation is worth a second look */}}
+      <div class="conv-utilbar" role="toolbar" aria-label="Conversation tools">
+        <button class="ln-btn ln-btn--ghost ln-btn--compact" type="button"
+                data-conv-action="copy">Copy</button>
+        <button class="ln-btn ln-btn--ghost ln-btn--compact" type="button"
+                data-conv-action="screenshot">Screenshot</button>
+        <button class="ln-btn ln-btn--ghost ln-btn--compact" type="button"
+                data-conv-action="tag" aria-haspopup="dialog"
+                aria-controls="reviewTagDialog">Tag for review</button>
+      </div>
+
       <div class="conv-main__scroll" id="transcriptScroll">
         {{- /* Empty by design on load — no fabricated turns (spec §2.5).
                transcript.mjs appends bubbles/tool cards as text nodes. */}}
@@ -161,6 +194,51 @@
     </section>
 
   </div>
+
+  {{- /* ---------------------- MOBILE BOTTOM BAR ----------------------
+         Persistent toolbar, phone/tablet widths only (app.css hides it
+         above 900px, where the rail already carries these controls). It is
+         a flex:none row inside .conv-app, so it never overlaps the scroller
+         above it and never needs the transcript to leave room for it.
+
+         Show Conversation opens #conversationOverlay over whatever the user
+         is looking at; History/Memory/Downloads are the same three
+         destinations as the rail's nav; the Audio select is the rail's mic
+         line-up condensed into one control — the three sensitivity levels
+         write the same turnDetection.micEagerness setting the rail chips
+         write, and "Mic test…" opens the same #micTestDialog as the rail's
+         Mic Test button (it is an action, not a stored value, so the select
+         snaps back to the live setting once the dialog opens). */}}
+  <nav class="conv-bottombar" id="convBottomBar" aria-label="Conversation toolbar">
+    <button class="conv-bottombar__item conv-bottombar__item--primary" type="button"
+            id="convOverlayOpen" aria-haspopup="dialog"
+            aria-controls="conversationOverlay" aria-expanded="false">
+      <span class="conv-bottombar__icon" aria-hidden="true">💬</span>
+      <span class="conv-bottombar__label">Show Conversation</span>
+    </button>
+    <a class="conv-bottombar__item" href="/history">
+      <span class="conv-bottombar__icon" aria-hidden="true">🕘</span>
+      <span class="conv-bottombar__label">History</span>
+    </a>
+    <a class="conv-bottombar__item" href="/memory">
+      <span class="conv-bottombar__icon" aria-hidden="true">🧠</span>
+      <span class="conv-bottombar__label">Memory</span>
+    </a>
+    <a class="conv-bottombar__item" href="/downloads">
+      <span class="conv-bottombar__icon" aria-hidden="true">⬇</span>
+      <span class="conv-bottombar__label">Downloads</span>
+    </a>
+    <div class="conv-bottombar__audio">
+      <label class="ln-sr-only" for="audioQualitySelect">Audio pickup quality</label>
+      <select class="ln-select conv-bottombar__select" id="audioQualitySelect">
+        <option value="auto">Audio: Auto</option>
+        <option value="low">Audio: Low</option>
+        <option value="medium">Audio: Medium</option>
+        <option value="high">Audio: High</option>
+        <option value="mictest">Mic test…</option>
+      </select>
+    </div>
+  </nav>
 </div>
 
 {{- /* Docked settings slide-out (M30 owner spec): a right-edge bar spanning
@@ -1053,6 +1131,8 @@
           <li><strong>Prefer to type?</strong> Use the box at the bottom of the transcript. Typed and spoken turns land in the same conversation.</li>
           <li>The pill at the top right of the rail tells you where you are: <em>Idle</em>, <em>Listening</em>, <em>Thinking</em>, or <em>Speaking</em>.</li>
           <li>Just start talking again to interrupt a reply — you don't have to wait for it to finish.</li>
+          <li><strong>Start over</strong> with <em>NEW</em>, beside the orb. It ends the current conversation and begins a fresh one.</li>
+          <li><strong>On a phone or tablet</strong> the voice panel fills the screen and the conversation sits just below it: swipe up (or tap <em>Conversation</em> at the bottom of the panel) to bring it in, and scroll back down to return to the voice panel.</li>
         </ul>
       </section>
 
@@ -1085,6 +1165,14 @@
           <dd>Files Live Ninja has created for you. Files are kept for 180 days; share links expire after about 15 minutes.</dd>
           <dt>This month</dt>
           <dd>Your running usage estimate, at the bottom of the Settings panel. The badge beside the state pill shows what the current conversation has cost so far.</dd>
+          <dt>Show Conversation</dt>
+          <dd>On a phone or tablet, the button at the bottom left lays the conversation over whatever you're looking at, scrolling on its own. <em>Hide Conversation</em>, the ✕, or Esc puts it away.</dd>
+          <dt>The bar along the bottom</dt>
+          <dd>On a phone or tablet only: Show Conversation, then History, Memory and Downloads, and an <em>Audio</em> picker. Audio sets how quickly it treats a pause as the end of your turn — the same setting as <em>Mic pickup</em> under Turn detection — and <em>Mic test…</em> in that list opens the microphone check.</dd>
+          <dt>Copy, Screenshot and Tag for review</dt>
+          <dd>Above the conversation, and inside the overlay. <em>Copy</em> puts the whole conversation on your clipboard as plain text; <em>Screenshot</em> saves it as a PNG image; <em>Tag for review</em> asks why it's worth another look and keeps that note on this device.</dd>
+          <dt>Help and Settings</dt>
+          <dd>The <em>?</em> and <em>⚙</em> tabs on the edge of the screen — on the right on a computer, on the left on a phone or tablet so they stay clear of your thumb.</dd>
         </dl>
       </section>
 
@@ -1101,7 +1189,7 @@
           <dt>Voice engine</dt>
           <dd>Which speech-to-speech model powers your conversations. All engines share the same tools, memory, and transcripts — only cost, latency, and voice quality differ.</dd>
           <dt>Turn detection</dt>
-          <dd>How it decides you've finished speaking. <em>Semantic VAD</em> judges from meaning and is the recommended setting; <em>Server VAD</em> simply waits for a fixed silence gap. Mic pickup sensitivity and how long it keeps listening after a reply live here too.</dd>
+          <dd>How it decides you've finished speaking. <em>Semantic VAD</em> judges from meaning and is the recommended setting; <em>Server VAD</em> simply waits for a fixed silence gap. Mic pickup sensitivity and how long it keeps listening after a reply live here too. On a phone or tablet, the <em>Audio</em> picker in the bottom bar changes mic pickup without opening Settings.</dd>
           <dt>Appearance</dt>
           <dd>Light or dark theme, the visual style of the app and of the live panel, and your accent colour.</dd>
           <dt>Microphone</dt>
@@ -1132,10 +1220,78 @@
           <li><strong>Changed persona or voice mid-conversation?</strong> That applies to the next conversation — start a new one to hear it.</li>
           <li><strong>Settings look different on another device?</strong> Most settings are per device on purpose. Use <em>Device settings</em> in a section to apply it everywhere.</li>
           <li><strong>Want it to stop remembering something?</strong> Ask it to forget, or delete the entry on the Memory page.</li>
+          <li><strong>Something went wrong in a conversation?</strong> Use <em>Tag for review</em> and say what happened, then <em>Copy</em> or <em>Screenshot</em> it — the note stays on this device, so send the copy or the image along if you're reporting it.</li>
+          <li><strong>Copy did nothing?</strong> Some browsers only allow the clipboard on a secure page you've interacted with — tap the button again, and if it still refuses, use <em>Screenshot</em> instead.</li>
         </ul>
       </section>
     </div>
   </div>
+</dialog>
+
+{{- /* ======================= CONVERSATION OVERLAY =======================
+       Opened by "Show Conversation" in the bottom bar. Native <dialog>
+       .showModal() gives the dimmed ::backdrop, the focus trap, Escape, and
+       — because the page behind a modal dialog is inert — the
+       prevent-scroll-through the spec asks for; .conv-overlay__scroll adds
+       overscroll-behavior:contain so a flick that hits the end of the
+       transcript does not chain out to the app underneath either.
+
+       The body is a LIVE MIRROR, not a move: conversation.mjs clones
+       #transcript into it on open and re-clones on mutation, so
+       transcript.mjs keeps owning the real subtree and turns that arrive
+       while the overlay is up still show. */}}
+<dialog class="conv-overlay" id="conversationOverlay" aria-labelledby="conversationOverlayTitle">
+  <div class="conv-overlay__panel">
+    <div class="conv-overlay__head">
+      <h2 class="conv-overlay__title" id="conversationOverlayTitle">Conversation</h2>
+      <button class="conv-overlay__close" type="button" id="conversationOverlayClose"
+              aria-label="Hide conversation" autofocus>
+        <span aria-hidden="true">✕</span>
+      </button>
+    </div>
+    <div class="conv-utilbar conv-overlay__tools" role="toolbar" aria-label="Conversation tools">
+      <button class="ln-btn ln-btn--ghost ln-btn--compact" type="button"
+              data-conv-action="copy">Copy</button>
+      <button class="ln-btn ln-btn--ghost ln-btn--compact" type="button"
+              data-conv-action="screenshot">Screenshot</button>
+      <button class="ln-btn ln-btn--ghost ln-btn--compact" type="button"
+              data-conv-action="tag" aria-haspopup="dialog"
+              aria-controls="reviewTagDialog">Tag for review</button>
+    </div>
+    <div class="conv-overlay__scroll" id="conversationOverlayBody" tabindex="0"
+         role="region" aria-label="Conversation transcript"></div>
+    <p class="conv-overlay__empty" id="conversationOverlayEmpty" hidden>
+      Nothing here yet — start talking or type a message and it will appear here.
+    </p>
+    <div class="conv-overlay__foot">
+      <button class="ln-btn ln-btn--ghost" type="button" id="conversationOverlayHide">Hide Conversation</button>
+    </div>
+  </div>
+</dialog>
+
+{{- /* ========================= TAG FOR REVIEW =========================
+       Records why a conversation is worth looking at again. Stored on this
+       device (localStorage 'ln.reviewTags': session id + note + ISO
+       timestamp, newest first, capped) — deliberately local, because there
+       is no server-side review queue to post to and a silent no-op POST
+       would be worse than an honest local record. The Help panel says so in
+       those words. */}}
+<dialog class="conv-tagdialog" id="reviewTagDialog" aria-labelledby="reviewTagTitle">
+  <form class="conv-tagdialog__form" id="reviewTagForm" method="dialog">
+    <h2 class="conv-tagdialog__title" id="reviewTagTitle">Tag for review</h2>
+    <div class="ln-field">
+      <label for="reviewTagNote">Why is this worth another look?</label>
+      <textarea class="ln-textarea" id="reviewTagNote" maxlength="500" rows="4" required
+                placeholder="It misheard the address every time."
+                aria-describedby="reviewTagHint"></textarea>
+      <p class="ln-hint" id="reviewTagHint">Saved on this device with the conversation and the time.</p>
+      <p class="ln-error-text" id="reviewTagError" role="alert" hidden></p>
+    </div>
+    <div class="conv-tagdialog__actions">
+      <button class="ln-btn ln-btn--ghost" type="button" id="reviewTagCancel">Cancel</button>
+      <button class="ln-btn ln-btn--primary" type="submit" id="reviewTagSave">Save tag</button>
+    </div>
+  </form>
 </dialog>
 
 {{- /* Remote assistant audio (realtime.mjs attaches the WebRTC track and

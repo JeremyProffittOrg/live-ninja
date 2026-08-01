@@ -999,10 +999,18 @@ function trackSessionCost(sid) {
   return entry;
 }
 
+// Most recent session id seen on this page. Used by "Tag for review" below
+// to say WHICH conversation a note is about; it deliberately survives the
+// session ending, because the natural moment to tag a conversation is right
+// after it goes wrong, when the session is already closed.
+let lastSessionId = '';
+
 function attachCostBadge(session) {
   let sessCost = null;
   session.addEventListener('sessionready', (e) => {
-    sessCost = trackSessionCost(e.detail && e.detail.sessionId);
+    const sid = (e.detail && e.detail.sessionId) || '';
+    if (sid) lastSessionId = sid;
+    sessCost = trackSessionCost(sid);
     if (!costBadgeEl) return;
     costBadgeEl.hidden = false;
     renderCostBadge();
@@ -1397,6 +1405,9 @@ function syncMicChips() {
   for (const chip of micSensChips) {
     chip.setAttribute('aria-pressed', chip.dataset.eagerness === cur ? 'true' : 'false');
   }
+  // The bottom bar's Audio select is the same setting in another shape — one
+  // sync point so the two can never disagree (see the mobile shell block).
+  syncAudioSelect();
 }
 
 for (const chip of micSensChips) {
@@ -1419,6 +1430,475 @@ for (const chip of micSensChips) {
         return 'Mic sensitivity updated.';
       },
     });
+  });
+}
+
+// ==========================================================================
+// MOBILE CONVERSATION SHELL (2026-08-01)
+//
+// Everything from here to the "docked settings drawer" block below belongs to
+// the phone/tablet layout added on 2026-08-01. The CSS half lives in the
+// matching "MOBILE CONVERSATION SHELL" section at the end of app.css.
+//
+//   - Audio select in the bottom bar  -> settings turnDetection.micEagerness
+//     (the same value the rail's Low/Med/High chips write) + a "Mic test…"
+//     action that opens the existing #micTestDialog.
+//   - Conversation overlay            -> a modal <dialog> mirroring
+//     #transcript, so the conversation can be read over the voice panel.
+//   - Copy / Screenshot / Tag         -> bound by data-conv-action, so the
+//     row over the transcript and the row inside the overlay share one
+//     handler each.
+//   - Scroll hint                     -> scrolls the snap container to the
+//     transcript panel, giving the swipe-up reveal a keyboard/tap route.
+// ==========================================================================
+
+// ---- Audio pickup select (mobile bottom bar) -----------------------------
+
+const audioQualitySelect = $('audioQualitySelect');
+
+function syncAudioSelect() {
+  if (!audioQualitySelect) return;
+  audioQualitySelect.value = currentEagerness();
+}
+
+if (audioQualitySelect) {
+  audioQualitySelect.addEventListener('change', () => {
+    const choice = audioQualitySelect.value;
+    // "Mic test…" is an ACTION parked in a value list: run it and put the
+    // select straight back to the setting it actually reflects, so it never
+    // sits displaying a state that isn't stored anywhere.
+    if (choice === 'mictest') {
+      syncAudioSelect();
+      void micTest.open();
+      return;
+    }
+    const prev = currentEagerness();
+    if (choice === prev) return;
+    void saveQuickSwitch({
+      section: 'turnDetection',
+      mutate: (doc) => {
+        doc.micEagerness = choice;
+      },
+      revert: () => syncMicChips(),
+      appliedToast: () => {
+        if (choice !== 'auto' && isLive() && mic.session.updateAudioInput({ eagerness: choice })) {
+          return 'Audio pickup updated — applied to this conversation.';
+        }
+        return 'Audio pickup updated.';
+      },
+    });
+  });
+}
+
+// ---- Conversation as text / as an image ----------------------------------
+
+const transcriptRoot = $('transcript');
+
+/** Flattens the live transcript into ordered {role, body, at} rows. Reads the
+ * rendered DOM rather than keeping a parallel model: transcript.mjs owns that
+ * subtree and is the only writer, so the DOM is the one copy that is always
+ * current (including turns restored by a fallback reply). */
+function conversationRows() {
+  if (!transcriptRoot) return [];
+  const rows = [];
+  for (const bubble of transcriptRoot.querySelectorAll('.ln-bubble')) {
+    const role = (bubble.querySelector('.ln-bubble__role') || {}).textContent || '';
+    const body = (bubble.querySelector('.ln-bubble__content') || {}).textContent || '';
+    if (!body.trim()) continue; // in-progress/typing bubbles have no text yet
+    const wrap = bubble.parentElement;
+    const tsEl = wrap ? wrap.querySelector('.conv-timestamp') : null;
+    const at = tsEl && !tsEl.hidden ? (tsEl.textContent || '').trim() : '';
+    rows.push({ role: role.trim() || 'Speaker', body: body.trim(), at });
+  }
+  return rows;
+}
+
+function conversationText() {
+  return conversationRows()
+    .map((r) => (r.at ? `${r.role} (${r.at}): ${r.body}` : `${r.role}: ${r.body}`))
+    .join('\n\n');
+}
+
+async function copyConversation() {
+  const text = conversationText();
+  if (!text) {
+    toast('Nothing to copy yet — this conversation is empty.');
+    return;
+  }
+  if (await copyText(text)) toast('Conversation copied.');
+  else toast("Couldn't reach the clipboard — try Screenshot instead.", { error: true });
+}
+
+/** Reads a CSS custom property off the document root, with a literal fallback
+ * for the case where the token has been renamed out from under us. Canvas
+ * needs concrete colours; the tokens keep the image matching the user's
+ * chosen theme instead of hard-coding one palette. */
+function cssColor(name, fallback) {
+  try {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function wrapCanvasText(ctx, text, maxWidth) {
+  const lines = [];
+  for (const paragraph of String(text).split('\n')) {
+    if (paragraph === '') {
+      lines.push('');
+      continue;
+    }
+    let line = '';
+    for (const word of paragraph.split(/\s+/)) {
+      const next = line ? `${line} ${word}` : word;
+      if (ctx.measureText(next).width <= maxWidth || line === '') line = next;
+      else {
+        lines.push(line);
+        line = word;
+      }
+    }
+    lines.push(line);
+  }
+  return lines;
+}
+
+/** Paints the conversation to a canvas and returns a PNG Blob.
+ *
+ * Deliberately NOT html2canvas or any other CDN library: this page ships as
+ * static assets from our own origin with no bundler and no third-party
+ * script tags, and the transcript is plain text + role labels, so a direct
+ * 2D-canvas render is both smaller and exact. Nothing leaves the device. */
+async function conversationPNG() {
+  const rows = conversationRows();
+  if (!rows.length) return null;
+
+  const WIDTH = 760;
+  const PAD = 28;
+  const GAP = 18;
+  const BODY_LH = 22;
+  const ROLE_LH = 18;
+  const inner = WIDTH - PAD * 2;
+
+  const bg = cssColor('--ln-surface', '#0e1420');
+  const fg = cssColor('--ln-text', '#e8eef7');
+  const dim = cssColor('--ln-text-muted', '#9fb0c6');
+  const rule = cssColor('--ln-border', '#26364b');
+
+  const bodyFont = '15px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  const roleFont = '700 13px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  const titleFont = '700 20px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+
+  // Measure pass on a throwaway context — the wrap depends on the same font
+  // metrics the draw pass uses, so it has to be a real canvas context.
+  const measure = document.createElement('canvas').getContext('2d');
+  if (!measure) return null;
+  const blocks = [];
+  let height = PAD + 30 + GAP; // title + rule
+  for (const row of rows) {
+    measure.font = bodyFont;
+    const lines = wrapCanvasText(measure, row.body, inner);
+    blocks.push({ row, lines });
+    height += ROLE_LH + lines.length * BODY_LH + GAP;
+  }
+  height += PAD;
+
+  const scale = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(WIDTH * scale);
+  canvas.height = Math.round(height * scale);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.scale(scale, scale);
+
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, WIDTH, height);
+
+  let y = PAD + 20;
+  ctx.fillStyle = fg;
+  ctx.font = titleFont;
+  ctx.fillText('Live Ninja conversation', PAD, y);
+  ctx.font = roleFont;
+  ctx.fillStyle = dim;
+  const stamp = new Date().toLocaleString();
+  ctx.fillText(stamp, WIDTH - PAD - ctx.measureText(stamp).width, y);
+  y += 12;
+  ctx.strokeStyle = rule;
+  ctx.beginPath();
+  ctx.moveTo(PAD, y);
+  ctx.lineTo(WIDTH - PAD, y);
+  ctx.stroke();
+  y += GAP;
+
+  for (const block of blocks) {
+    ctx.font = roleFont;
+    ctx.fillStyle = dim;
+    const head = block.row.at ? `${block.row.role} · ${block.row.at}` : block.row.role;
+    ctx.fillText(head, PAD, y + 12);
+    y += ROLE_LH;
+    ctx.font = bodyFont;
+    ctx.fillStyle = fg;
+    for (const line of block.lines) {
+      ctx.fillText(line, PAD, y + 15);
+      y += BODY_LH;
+    }
+    y += GAP;
+  }
+
+  return await new Promise((resolve) => {
+    if (typeof canvas.toBlob === 'function') canvas.toBlob(resolve, 'image/png');
+    else resolve(null);
+  });
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoked late so slow mobile download managers still resolve the URL.
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
+async function screenshotConversation() {
+  let blob = null;
+  try {
+    blob = await conversationPNG();
+  } catch (err) {
+    toast("Couldn't build the screenshot.", {
+      error: true,
+      detail: (err && (err.message || String(err))) || 'canvas render failed',
+    });
+    return;
+  }
+  if (!blob) {
+    toast('Nothing to capture yet — this conversation is empty.');
+    return;
+  }
+  const filename = `live-ninja-conversation-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.png`;
+
+  // Deliberately a plain download rather than navigator.share(): several
+  // platforms report canShare({files}) === true and then leave share()
+  // pending forever without a user-activation gesture, which would strand
+  // the button with no image and no error. A download lands in the same
+  // place on desktop and on Android, and the OS share sheet is one tap away
+  // from there.
+  downloadBlob(blob, filename);
+  toast('Screenshot saved.');
+}
+
+// ---- Tag for review ------------------------------------------------------
+//
+// Stored on THIS DEVICE (localStorage), newest first, capped. There is no
+// server-side review queue to post to, and a POST that quietly went nowhere
+// would be worse than an honest local record — the Help panel says where the
+// note lives, and Copy/Screenshot are what carry it off the device.
+
+const REVIEW_TAGS_KEY = 'ln.reviewTags';
+const REVIEW_TAGS_MAX = 50;
+
+const reviewTagDialog = $('reviewTagDialog');
+const reviewTagForm = $('reviewTagForm');
+const reviewTagNote = $('reviewTagNote');
+const reviewTagError = $('reviewTagError');
+const reviewTagCancel = $('reviewTagCancel');
+
+function currentConversationId() {
+  return (mic.session && mic.session.sessionId) || lastSessionId || '';
+}
+
+function readReviewTags() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(REVIEW_TAGS_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeReviewTag(note) {
+  const tags = readReviewTags();
+  tags.unshift({
+    conversationId: currentConversationId(),
+    note,
+    at: new Date().toISOString(),
+  });
+  localStorage.setItem(REVIEW_TAGS_KEY, JSON.stringify(tags.slice(0, REVIEW_TAGS_MAX)));
+  return tags.length;
+}
+
+function openReviewTag() {
+  if (!reviewTagDialog || typeof reviewTagDialog.showModal !== 'function') return;
+  if (reviewTagNote) reviewTagNote.value = '';
+  if (reviewTagError) {
+    reviewTagError.hidden = true;
+    reviewTagError.textContent = '';
+  }
+  if (!reviewTagDialog.open) reviewTagDialog.showModal();
+  if (reviewTagNote) reviewTagNote.focus({ preventScroll: true });
+}
+
+if (reviewTagForm && reviewTagDialog) {
+  reviewTagForm.addEventListener('submit', (e) => {
+    // method="dialog" would close on submit; take the event so a rejected
+    // save can keep the form open with its message.
+    e.preventDefault();
+    const note = ((reviewTagNote && reviewTagNote.value) || '').trim();
+    if (!note) {
+      if (reviewTagError) {
+        reviewTagError.textContent = 'Add a line about what to look at.';
+        reviewTagError.hidden = false;
+      }
+      if (reviewTagNote) reviewTagNote.focus({ preventScroll: true });
+      return;
+    }
+    try {
+      writeReviewTag(note);
+    } catch (err) {
+      if (reviewTagError) {
+        reviewTagError.textContent =
+          "This browser wouldn't save the note — copy the conversation instead.";
+        reviewTagError.hidden = false;
+      }
+      toast("Couldn't save the review tag.", {
+        error: true,
+        detail: (err && (err.message || String(err))) || 'localStorage write failed',
+      });
+      return;
+    }
+    reviewTagDialog.close();
+    toast('Tagged for review — the note is saved on this device.');
+  });
+}
+if (reviewTagCancel && reviewTagDialog) {
+  reviewTagCancel.addEventListener('click', () => reviewTagDialog.close());
+}
+if (reviewTagDialog) {
+  reviewTagDialog.addEventListener('click', (e) => {
+    if (e.target === reviewTagDialog) reviewTagDialog.close();
+  });
+}
+
+// ---- Conversation overlay ------------------------------------------------
+
+const convOverlay = $('conversationOverlay');
+const convOverlayOpenBtn = $('convOverlayOpen');
+const convOverlayCloseBtn = $('conversationOverlayClose');
+const convOverlayHideBtn = $('conversationOverlayHide');
+const convOverlayBody = $('conversationOverlayBody');
+const convOverlayEmpty = $('conversationOverlayEmpty');
+
+let convMirrorObserver = null;
+let convMirrorFrame = 0;
+
+/** Re-clones #transcript into the overlay. A clone, not a move: transcript.mjs
+ * owns the real subtree and appends to it on every delta, so handing that
+ * element to the dialog would break live rendering the moment the overlay
+ * closed. Interactive controls inside cloned tool cards are stripped — a
+ * duplicate "Details" button would be a dead control. */
+function renderConvMirror() {
+  if (!convOverlayBody || !transcriptRoot) return;
+  const clone = transcriptRoot.cloneNode(true);
+  clone.removeAttribute('id');
+  clone.removeAttribute('role');
+  clone.removeAttribute('aria-live');
+  clone.removeAttribute('aria-relevant');
+  for (const btn of clone.querySelectorAll('button')) btn.remove();
+  const pinned =
+    convOverlayBody.scrollTop + convOverlayBody.clientHeight >= convOverlayBody.scrollHeight - 48;
+  convOverlayBody.replaceChildren(clone);
+  if (convOverlayEmpty) convOverlayEmpty.hidden = clone.childElementCount > 0;
+  if (pinned) convOverlayBody.scrollTop = convOverlayBody.scrollHeight;
+}
+
+/** Coalesces a burst of transcript mutations (one per streamed token) into a
+ * single re-clone per frame. */
+function scheduleConvMirror() {
+  if (convMirrorFrame) return;
+  convMirrorFrame = requestAnimationFrame(() => {
+    convMirrorFrame = 0;
+    renderConvMirror();
+  });
+}
+
+function openConvOverlay() {
+  if (!convOverlay || typeof convOverlay.showModal !== 'function') return;
+  renderConvMirror();
+  if (!convOverlay.open) convOverlay.showModal();
+  if (convOverlayOpenBtn) convOverlayOpenBtn.setAttribute('aria-expanded', 'true');
+  if (convOverlayBody) convOverlayBody.scrollTop = convOverlayBody.scrollHeight;
+  if (transcriptRoot && typeof MutationObserver === 'function') {
+    if (!convMirrorObserver) convMirrorObserver = new MutationObserver(scheduleConvMirror);
+    convMirrorObserver.observe(transcriptRoot, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+  }
+}
+
+if (convOverlay && convOverlayOpenBtn) {
+  convOverlayOpenBtn.addEventListener('click', openConvOverlay);
+}
+if (convOverlayCloseBtn && convOverlay) {
+  convOverlayCloseBtn.addEventListener('click', () => convOverlay.close());
+}
+if (convOverlayHideBtn && convOverlay) {
+  convOverlayHideBtn.addEventListener('click', () => convOverlay.close());
+}
+if (convOverlay) {
+  // The panel fills the dialog box, so a click that lands on the dialog
+  // element itself came from the ::backdrop scrim.
+  convOverlay.addEventListener('click', (e) => {
+    if (e.target === convOverlay) convOverlay.close();
+  });
+  convOverlay.addEventListener('close', () => {
+    if (convMirrorObserver) convMirrorObserver.disconnect();
+    if (convMirrorFrame) {
+      cancelAnimationFrame(convMirrorFrame);
+      convMirrorFrame = 0;
+    }
+    if (convOverlayOpenBtn) {
+      convOverlayOpenBtn.setAttribute('aria-expanded', 'false');
+      convOverlayOpenBtn.focus({ preventScroll: true });
+    }
+  });
+}
+
+// ---- Conversation tool buttons (transcript row + overlay row) ------------
+
+for (const btn of document.querySelectorAll('[data-conv-action]')) {
+  btn.addEventListener('click', () => {
+    switch (btn.dataset.convAction) {
+      case 'copy':
+        void copyConversation();
+        break;
+      case 'screenshot':
+        void screenshotConversation();
+        break;
+      case 'tag':
+        openReviewTag();
+        break;
+      default:
+        break;
+    }
+  });
+}
+
+// ---- Scroll-to-conversation (mobile snap container) ----------------------
+
+const convScrollHint = $('convScrollHint');
+if (convScrollHint) {
+  convScrollHint.addEventListener('click', () => {
+    const main = document.querySelector('.conv-main');
+    if (!main) return;
+    const reduce =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    main.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
   });
 }
 

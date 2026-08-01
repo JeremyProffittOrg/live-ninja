@@ -2243,3 +2243,260 @@ dialog.conv-drawer[open] {
   border: 1px solid var(--ln-teal-700);
   border-radius: var(--ln-r-pill);
 }
+
+/* ====================================================================
+   MOBILE CONVERSATION SHELL (2026-08-01) — appended-only section.
+
+   Everything here is either mobile-only or additive; nothing above this
+   point changed. The desktop conversation page keeps the 2026-07-18 shell
+   (360px rail + transcript column, edge tabs on the right).
+
+   The three pieces:
+     1. .conv-bottombar — persistent bottom toolbar, <=900px only.
+     2. .conv-body as a two-panel snap scroller, <=900px only, so swiping
+        up brings the transcript in and scrolling back down returns to the
+        voice panel.
+     3. Edge tabs (?/gear) flip to the LEFT edge with smaller glyphs, <=900px.
+   Plus the conversation overlay + tag dialog, which work at any width.
+   ==================================================================== */
+
+/* ---- Conversation utilities row (all widths) ---------------------------
+   Sits between the pending-change banner and the transcript; the same
+   markup is mirrored in the overlay (.conv-overlay__tools). */
+.conv-utilbar {
+  flex: none;
+  display: flex; flex-wrap: wrap; justify-content: flex-end;
+  gap: var(--ln-sp-2);
+  padding: var(--ln-sp-2) var(--ln-sp-5) 0;
+}
+
+/* ---- "NEW" conversation button ----------------------------------------
+   Was a round plus glyph; now the word, so it needs a pill wide enough for
+   three characters. Height stays var(--ln-touch) so the tap target is
+   unchanged. */
+.ln-orb-newconv {
+  width: auto;
+  min-width: var(--ln-touch);
+  padding: 0 var(--ln-sp-3);
+  font-size: var(--ln-fs-sm);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  border-radius: var(--ln-r-pill);
+}
+
+/* ---- Mobile bottom bar -------------------------------------------------
+   Hidden by default: at desktop widths the rail already carries History,
+   Memory, Downloads, Mic Test and the sensitivity chips, and a second copy
+   of them would just be noise. */
+.conv-bottombar { display: none; }
+
+/* ---- Scroll-to-conversation affordance (mobile only) ------------------- */
+.conv-scrollhint { display: none; }
+
+/* ---- Conversation overlay (any width) ---------------------------------
+   Native modal <dialog>: ::backdrop is the semi-transparent scrim and the
+   page behind is inert, which is what stops scroll-through. The panel is
+   capped so the scrim stays visible around it — the overlay reads as ON
+   TOP of the app, not as a new page. */
+dialog.conv-overlay {
+  width: min(720px, calc(100vw - 24px));
+  max-width: 100vw;
+  max-height: 92dvh;
+  padding: 0;
+  border: 1px solid var(--ln-border-strong);
+  border-radius: var(--ln-r-md);
+  background: var(--ln-surface-raised);
+  color: var(--ln-text);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+dialog.conv-overlay::backdrop { background: rgba(4, 8, 14, 0.62); }
+.conv-overlay__panel { display: flex; flex-direction: column; max-height: 92dvh; }
+.conv-overlay__head {
+  flex: none;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--ln-sp-3);
+  padding: var(--ln-sp-3) var(--ln-sp-4);
+  border-bottom: 1px solid var(--ln-border);
+}
+.conv-overlay__title { margin: 0; font-size: 1.1rem; }
+.conv-overlay__close {
+  width: var(--ln-touch); height: var(--ln-touch); flex: none;
+  padding: 0; font: inherit; font-size: 18px; line-height: 1;
+  color: var(--ln-text);
+  background: transparent;
+  border: 1px solid var(--ln-border-strong);
+  border-radius: var(--ln-r-sm);
+  cursor: pointer;
+}
+.conv-overlay__close:hover { background: var(--ln-surface-2); }
+.conv-overlay__close:focus-visible { outline: none; box-shadow: var(--ln-focus); }
+.conv-overlay__tools { justify-content: flex-start; padding: var(--ln-sp-3) var(--ln-sp-4) 0; }
+/* The spec's ~80vh scrollable body. overscroll-behavior:contain keeps a
+   flick that reaches either end from chaining into anything else. */
+.conv-overlay__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 80vh;
+  max-height: 80dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: var(--ln-sp-3) var(--ln-sp-4);
+}
+.conv-overlay__scroll:focus-visible { outline: none; box-shadow: var(--ln-focus); }
+.conv-overlay__empty {
+  margin: 0; padding: 0 var(--ln-sp-4) var(--ln-sp-3);
+  color: var(--ln-text-muted); font-size: var(--ln-fs-sm);
+}
+.conv-overlay__foot {
+  flex: none;
+  display: flex; justify-content: flex-end;
+  padding: var(--ln-sp-3) var(--ln-sp-4);
+  border-top: 1px solid var(--ln-border);
+}
+
+/* ---- Tag for review dialog (same idiom as .mictest) -------------------- */
+.conv-tagdialog {
+  width: min(520px, calc(100vw - 32px));
+  padding: var(--ln-sp-5);
+  border: 1px solid var(--ln-border-strong);
+  border-radius: 14px;
+  background: var(--ln-surface-raised);
+  color: var(--ln-text);
+}
+.conv-tagdialog::backdrop { background: rgba(2, 8, 18, 0.65); }
+.conv-tagdialog__title { margin: 0 0 var(--ln-sp-4); font-size: 1.15rem; }
+.conv-tagdialog__form { margin: 0; }
+.conv-tagdialog__actions {
+  display: flex; flex-wrap: wrap; justify-content: flex-end;
+  gap: var(--ln-sp-3);
+  margin-top: var(--ln-sp-4);
+}
+
+/* ==================== <=900px: the mobile shell ==================== */
+@media (max-width: 900px) {
+  /* 1. Two snap panels in one vertical scroller. Each panel is exactly the
+     scrollport's height, so the voice panel fills the screen on load and
+     the transcript is one swipe below it. The panels keep their OWN
+     overflow (.conv-rail, .conv-main__scroll), so scroll chaining does the
+     rest: run out of transcript scrolling back down and the outer scroller
+     takes over and returns you to the voice panel. */
+  .conv-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    grid-auto-rows: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scroll-snap-type: y mandatory;
+    -webkit-overflow-scrolling: touch;
+  }
+  .conv-rail,
+  .conv-main {
+    height: 100%;
+    min-height: 0;
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+  }
+  /* The edge tabs are fixed over the LEFT edge at these widths, and both
+     panels are now full-bleed (no 360px rail column to hide behind), so
+     every panel reserves the tab's width as a gutter. Without this the
+     Settings bar sits on top of the rail's Mic Test button. */
+  .conv-rail {
+    border-right: none;
+    border-bottom: 1px solid var(--ln-border);
+    padding-left: calc(var(--ln-sp-4) + var(--ln-touch));
+    padding-right: var(--ln-sp-4);
+  }
+  .conv-main { padding-left: var(--ln-touch); }
+  .conv-utilbar { padding-left: var(--ln-sp-4); padding-right: var(--ln-sp-4); }
+  .conv-composer { padding-left: var(--ln-sp-4); padding-right: var(--ln-sp-4); }
+
+  /* Swipe-up affordance, pinned under the rail's control cluster. */
+  .conv-scrollhint {
+    display: inline-flex; align-items: center; gap: var(--ln-sp-2);
+    min-height: var(--ln-touch);
+    margin-top: var(--ln-sp-2);
+    padding: 0 var(--ln-sp-4);
+    font: inherit; font-size: var(--ln-fs-sm); font-weight: 700;
+    color: var(--ln-text-muted);
+    background: transparent;
+    border: 1px solid var(--ln-border);
+    border-radius: var(--ln-r-pill);
+    cursor: pointer;
+  }
+  .conv-scrollhint:focus-visible { outline: none; box-shadow: var(--ln-focus); }
+  .conv-scrollhint__chev { font-size: 14px; line-height: 1; }
+
+  /* 2. Bottom bar. flex:none inside .conv-app, so it takes its height out
+     of the scroller above rather than floating over it. */
+  .conv-bottombar {
+    flex: none;
+    display: flex; align-items: stretch; gap: var(--ln-sp-1);
+    padding: var(--ln-sp-2) var(--ln-sp-2)
+             calc(var(--ln-sp-2) + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid var(--ln-border);
+    background: var(--ln-surface);
+    overflow-x: auto;
+  }
+  .conv-bottombar__item {
+    flex: 1 1 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 2px;
+    min-width: var(--ln-touch); min-height: var(--ln-touch);
+    padding: var(--ln-sp-1);
+    font: inherit;
+    color: var(--ln-text-muted);
+    text-decoration: none;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--ln-r-sm);
+    cursor: pointer;
+  }
+  .conv-bottombar__item:hover { background: var(--ln-surface-2); text-decoration: none; }
+  .conv-bottombar__item:focus-visible { outline: none; box-shadow: var(--ln-focus); }
+  .conv-bottombar__item--primary {
+    flex: 1.6 1 0;
+    color: var(--ln-text);
+    border-color: var(--ln-border-strong);
+    background: var(--ln-surface-2);
+  }
+  .conv-bottombar__icon { font-size: 16px; line-height: 1; }
+  .conv-bottombar__label {
+    font-size: var(--ln-fs-xs); font-weight: 700; line-height: 1.1;
+    text-align: center;
+  }
+  .conv-bottombar__audio { flex: 1.2 1 0; display: flex; align-items: center; }
+  .conv-bottombar__select {
+    width: 100%;
+    min-height: var(--ln-touch);
+    font-size: var(--ln-fs-xs);
+    padding-left: var(--ln-sp-2); padding-right: var(--ln-sp-2);
+  }
+
+  /* 3. Edge tabs move to the LEFT edge and shrink their glyphs ~27%
+     (22px -> 16px). The bar stays var(--ln-touch) wide and tens of dvh
+     tall, so the tap target is still well past 44x44 either way. */
+  .conv-settings-tab {
+    left: 0; right: auto;
+    border-left: none;
+    border-right: 1px solid var(--ln-border-strong);
+    border-radius: 0 var(--ln-r-md) var(--ln-r-md) 0;
+  }
+  .conv-settings-tab__icon { font-size: 16px; }
+  .conv-settings-tab__label { font-size: var(--ln-fs-xs); letter-spacing: 0.02em; }
+  /* The badge hangs off the tab's OUTER side, which is now the right. */
+  .conv-settings-tab__badge { left: auto; right: -8px; }
+  /* The in-drawer close bar mirrors to the opposite (right) edge, and the
+     drawer's reserved gutter follows it. */
+  .conv-settings-tab--close {
+    left: auto; right: 0;
+    border-right: none;
+    border-left: 1px solid var(--ln-border-strong);
+    border-radius: var(--ln-r-md) 0 0 var(--ln-r-md);
+  }
+  .conv-drawer__inner {
+    padding-left: var(--ln-sp-5);
+    padding-right: calc(var(--ln-sp-5) + var(--ln-touch));
+  }
+}

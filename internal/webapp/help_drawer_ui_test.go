@@ -136,4 +136,20 @@ func TestHelpDrawerCoversTheAppsCapabilities(t *testing.T) {
 	for _, want := range []string{"History", "Memory", "Personas", "Downloads"} {
 		assert.Containsf(t, help, ">"+want+"<", "help panel must describe the %s page", want)
 	}
+
+	// The mobile shell (2026-08-01). These are the controls a phone/tablet
+	// user sees that a desktop user never does, so the panel is the only
+	// place they are explained. Guarded here rather than in
+	// mobile_shell_ui_test.go because the rule they enforce is the Help
+	// rule: shipping the feature without its help entry is an incomplete
+	// change.
+	for _, want := range []string{
+		"Show Conversation",
+		"The bar along the bottom",
+		"Copy, Screenshot and Tag for review",
+		"Help and Settings",
+	} {
+		assert.Containsf(t, help, ">"+want+"<",
+			"help panel must explain the %q control", want)
+	}
 }
