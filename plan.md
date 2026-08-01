@@ -935,8 +935,24 @@ boundary, and treating it as one works in testing then drops messages under load
 - `[x]` **M3.2 CSP.** Add the account's IoT ATS `wss://` origin to `connect-src`
   (`internal/webapp/pages_routes.go:56`).
   *DoD:* `go test ./internal/webapp/ -run TestCSP` passes with a case pinning the IoT origin.
-- `[!]` **M3.3 Connect + LWT presence — BLOCKED on a credential the browser does not have.**
-  Found while wiring it 2026-08-01, and it invalidates an assumption the plan carried from the
+- `[x]` **M3.5 (NEW, landed 2026-08-01) — the narrow MQTT credential.**
+  `GET /api/v1/iot/credentials` (cookie-authenticated, behind `RequireAuth`) returns
+  `{endpoint, authorizerName, clientId, token, expiresInSeconds, topicFilter, presenceTopic}`.
+  The token carries `aud: "live-ninja-iot"` (`auth.AudienceIoT`), which `cmd/iot-authorizer`
+  **requires** and `cmd/authorizer` **refuses** — each has a test asserting it rejects the other's
+  audience, because that split is the entire security argument for handing a token to JavaScript
+  at all. A leaked one subscribes to its own owner's event stream and can do nothing else.
+  `VerifyJWT` gained an audience-parameterised sibling rather than a second copy, so the two
+  authorizers still share one verifier and differ in exactly one value.
+  The endpoint host is resolved at runtime (`Publisher.DataEndpoint`, `iot:DescribeEndpoint`, which
+  the web function already held) because it is account-specific and not derivable from a
+  CloudFormation pseudo-parameter. `sanitizeClientID` mirrors the authorizer's allowlist, so the
+  route can never hand out an id that authorizer would refuse.
+- `[~]` **M3.3 Connect + LWT presence — UNBLOCKED, client wiring still to do.**
+  The blocker below is RESOLVED by M3.5 above; it is kept because the reasoning is the
+  justification for that route existing.
+
+  Found while wiring it 2026-08-01, and it invalidated an assumption the plan carried from the
   start: **the web client authenticates by COOKIE, not by a bearer token.** `conversation.mjs`
   fetches with `credentials: 'same-origin'` and never touches an `Authorization` header, so the
   access JWT lives in an HttpOnly cookie and JavaScript cannot read it. The MQTT CONNECT packet

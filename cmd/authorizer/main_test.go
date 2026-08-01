@@ -254,3 +254,24 @@ func TestHandlerDeniesDisabledUser(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, resp.IsAuthorized)
 }
+
+// TestIoTAudienceIsRejected: the narrow MQTT token (auth.AudienceIoT) is handed
+// to JavaScript, so it is the one most likely to leak. It must never open the
+// HTTP API. cmd/iot-authorizer carries the mirror of this test.
+func TestIoTAudienceIsRejected(t *testing.T) {
+	signer, testStore := setupAuthorizer(t)
+	ctx := context.Background()
+	require.NoError(t, testStore.CreateUser(ctx, &store.User{
+		UserID: "uid-1", AmazonUserID: "amzn1.account.a",
+		Role: store.RoleOwner, Status: store.UserStatusActive,
+	}))
+
+	iotToken, err := signer.SignAccessToken(ctx, auth.Claims{
+		Sub: "uid-1", Sid: "s", Surface: "web", Aud: auth.AudienceIoT,
+	})
+	require.NoError(t, err)
+
+	resp, err := handler(ctx, authorizerRequest(http.MethodGet, "/api/v1/realtime/session", iotToken))
+	require.NoError(t, err)
+	assert.False(t, resp.IsAuthorized, "an MQTT token must not open the HTTP API")
+}

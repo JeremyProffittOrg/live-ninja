@@ -212,7 +212,11 @@ func main() {
 		logger.Error("iot-authorizer: store init failed", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
-	verifier = auth.NewTokenVerifier(jwksURL, st)
+	// AudienceIoT, not Audience: this function accepts ONLY the narrow MQTT
+	// token minted by GET /api/v1/iot/credentials, never a full API access
+	// token. cmd/authorizer refuses the reverse. That split is what bounds a
+	// stolen browser-held token to one user's own event stream.
+	verifier = auth.NewTokenVerifierForAudience(jwksURL, st, auth.AudienceIoT)
 
 	lambda.Start(handler)
 }

@@ -120,6 +120,14 @@ func (s *Signer) JWKS(ctx context.Context) ([]byte, error) {
 // tokensValidAfter kill-switch check is intentionally NOT here — it
 // needs a store lookup and belongs to the authorizer (plan.md M1).
 func VerifyJWT(token string, jwksJSON []byte) (*Claims, error) {
+	return VerifyJWTForAudience(token, jwksJSON, Audience)
+}
+
+// VerifyJWTForAudience is VerifyJWT with the expected `aud` supplied by the
+// caller. The audience is what separates an API credential from the narrow
+// MQTT one (AudienceIoT): each authorizer names the single audience it
+// accepts, so a token minted for one surface is refused by the other.
+func VerifyJWTForAudience(token string, jwksJSON []byte, audience string) (*Claims, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("%w: expected 3 segments, got %d", ErrInvalidToken, len(parts))
@@ -181,8 +189,8 @@ func VerifyJWT(token string, jwksJSON []byte) (*Claims, error) {
 	if c.Iss != Issuer {
 		return nil, fmt.Errorf("%w: iss %q, want %q", ErrInvalidToken, c.Iss, Issuer)
 	}
-	if c.Aud != Audience {
-		return nil, fmt.Errorf("%w: aud %q, want %q", ErrInvalidToken, c.Aud, Audience)
+	if c.Aud != audience {
+		return nil, fmt.Errorf("%w: aud %q, want %q", ErrInvalidToken, c.Aud, audience)
 	}
 	if c.Exp <= 0 || now.After(time.Unix(c.Exp, 0).Add(clockSkew)) {
 		return nil, ErrTokenExpired

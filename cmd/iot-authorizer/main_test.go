@@ -34,7 +34,7 @@ func setupIoTAuthorizer(t *testing.T) (*auth.Signer, *store.Store) {
 	t.Cleanup(srv.Close)
 
 	st := store.NewWithClient(testutil.NewFakeDynamo(), "live-ninja-test")
-	verifier = auth.NewTokenVerifier(srv.URL, st)
+	verifier = auth.NewTokenVerifierForAudience(srv.URL, st, auth.AudienceIoT)
 
 	t.Setenv("AWS_REGION", "us-east-1")
 	t.Setenv("AWS_ACCOUNT_ID", "759775734231")
@@ -66,7 +66,7 @@ func TestAuthorizesAndScopesPolicyToOneUser(t *testing.T) {
 	signer, st := setupIoTAuthorizer(t)
 	activeUser(t, st, "user-alice")
 
-	token, err := signer.SignAccessToken(context.Background(), auth.Claims{Sub: "user-alice", Sid: "sess-1", Surface: "web", Did: "dev-1"})
+	token, err := signer.SignAccessToken(context.Background(), auth.Claims{Sub: "user-alice", Sid: "sess-1", Surface: "web", Did: "dev-1", Aud: auth.AudienceIoT})
 	require.NoError(t, err)
 
 	resp, err := handler(context.Background(), mqttRequest(token, "web-abc123"))
@@ -94,7 +94,7 @@ func TestAuthorizesAndScopesPolicyToOneUser(t *testing.T) {
 func TestPublishIsPresenceOnly(t *testing.T) {
 	signer, st := setupIoTAuthorizer(t)
 	activeUser(t, st, "user-alice")
-	token, err := signer.SignAccessToken(context.Background(), auth.Claims{Sub: "user-alice", Sid: "s", Surface: "web"})
+	token, err := signer.SignAccessToken(context.Background(), auth.Claims{Sub: "user-alice", Sid: "s", Surface: "web", Aud: auth.AudienceIoT})
 	require.NoError(t, err)
 
 	resp, err := handler(context.Background(), mqttRequest(token, "web-1"))
@@ -124,7 +124,7 @@ func TestPublishIsPresenceOnly(t *testing.T) {
 func TestDenials(t *testing.T) {
 	signer, st := setupIoTAuthorizer(t)
 	activeUser(t, st, "user-alice")
-	good, err := signer.SignAccessToken(context.Background(), auth.Claims{Sub: "user-alice", Sid: "s", Surface: "web"})
+	good, err := signer.SignAccessToken(context.Background(), auth.Claims{Sub: "user-alice", Sid: "s", Surface: "web", Aud: auth.AudienceIoT})
 	require.NoError(t, err)
 
 	cases := []struct {
@@ -134,7 +134,7 @@ func TestDenials(t *testing.T) {
 		{"no credential at all", mqttRequest("", "web-1")},
 		{"garbage token", mqttRequest("not-a-jwt", "web-1")},
 		{"unknown subject", func() Request {
-			tok, e := signer.SignAccessToken(context.Background(), auth.Claims{Sub: "user-ghost", Sid: "s", Surface: "web"})
+			tok, e := signer.SignAccessToken(context.Background(), auth.Claims{Sub: "user-ghost", Sid: "s", Surface: "web", Aud: auth.AudienceIoT})
 			require.NoError(t, e)
 			return mqttRequest(tok, "web-1")
 		}()},
@@ -167,7 +167,7 @@ func TestRevokedTokenIsDenied(t *testing.T) {
 		TokensValidAfter: 1 << 40, // far future: every token predates it
 	}))
 
-	token, err := signer.SignAccessToken(ctx, auth.Claims{Sub: "user-alice", Sid: "s", Surface: "web"})
+	token, err := signer.SignAccessToken(ctx, auth.Claims{Sub: "user-alice", Sid: "s", Surface: "web", Aud: auth.AudienceIoT})
 	require.NoError(t, err)
 
 	resp, err := handler(ctx, mqttRequest(token, "web-1"))
@@ -183,7 +183,7 @@ func TestDisabledUserIsDenied(t *testing.T) {
 		UserID: "user-alice", AmazonUserID: "amzn1.account.a",
 		Role: store.RoleOwner, Status: "disabled",
 	}))
-	token, err := signer.SignAccessToken(ctx, auth.Claims{Sub: "user-alice", Sid: "s", Surface: "web"})
+	token, err := signer.SignAccessToken(ctx, auth.Claims{Sub: "user-alice", Sid: "s", Surface: "web", Aud: auth.AudienceIoT})
 	require.NoError(t, err)
 
 	resp, err := handler(ctx, mqttRequest(token, "web-1"))
@@ -197,7 +197,7 @@ func TestDisabledUserIsDenied(t *testing.T) {
 func TestUsernameQuerySuffixIsStripped(t *testing.T) {
 	signer, st := setupIoTAuthorizer(t)
 	activeUser(t, st, "user-alice")
-	token, err := signer.SignAccessToken(context.Background(), auth.Claims{Sub: "user-alice", Sid: "s", Surface: "web"})
+	token, err := signer.SignAccessToken(context.Background(), auth.Claims{Sub: "user-alice", Sid: "s", Surface: "web", Aud: auth.AudienceIoT})
 	require.NoError(t, err)
 
 	resp, err := handler(context.Background(),
@@ -211,11 +211,30 @@ func TestUsernameQuerySuffixIsStripped(t *testing.T) {
 func TestConnectionBoundsAreSet(t *testing.T) {
 	signer, st := setupIoTAuthorizer(t)
 	activeUser(t, st, "user-alice")
-	token, err := signer.SignAccessToken(context.Background(), auth.Claims{Sub: "user-alice", Sid: "s", Surface: "web"})
+	token, err := signer.SignAccessToken(context.Background(), auth.Claims{Sub: "user-alice", Sid: "s", Surface: "web", Aud: auth.AudienceIoT})
 	require.NoError(t, err)
 
 	resp, err := handler(context.Background(), mqttRequest(token, "web-1"))
 	require.NoError(t, err)
 	assert.Equal(t, 3600, resp.DisconnectAfterInSeconds)
 	assert.Equal(t, 300, resp.RefreshAfterInSeconds)
+}
+
+// TestApiAudienceIsRejected is the other half of the audience split. A full API
+// access token must NOT open an MQTT connection: if it did, the narrow token
+// would be pointless and any leaked session credential would reach the event
+// stream too. cmd/authorizer's mirror of this test refuses the IoT audience.
+func TestApiAudienceIsRejected(t *testing.T) {
+	signer, st := setupIoTAuthorizer(t)
+	activeUser(t, st, "user-alice")
+
+	// Default audience = auth.Audience, i.e. an ordinary API access token.
+	apiToken, err := signer.SignAccessToken(context.Background(),
+		auth.Claims{Sub: "user-alice", Sid: "s", Surface: "web"})
+	require.NoError(t, err)
+
+	resp, err := handler(context.Background(), mqttRequest(apiToken, "web-1"))
+	require.NoError(t, err)
+	assert.False(t, resp.IsAuthenticated, "an API token must not authorize MQTT")
+	assert.Empty(t, resp.PolicyDocuments)
 }

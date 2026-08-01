@@ -78,6 +78,9 @@ type Publisher struct {
 	endpoint EndpointAPI // control-plane endpoint resolver (nil in tests)
 	awsCfg   aws.Config
 	log      *slog.Logger
+	// resolvedEndpoint caches the ATS host for DataEndpoint (the publish path
+	// caches the built client instead, and the two are independent).
+	resolvedEndpoint string
 }
 
 // New builds a production Publisher from the ambient AWS config.
@@ -115,6 +118,37 @@ func SharedPublisher(ctx context.Context, log *slog.Logger) (*Publisher, error) 
 		shared, sharedErr = New(ctx, log)
 	})
 	return shared, sharedErr
+}
+
+// DataEndpoint returns the account's IoT ATS data endpoint host, resolving and
+// caching it the same way the publish path does. The web function hands it to
+// browsers so they know where to open their MQTT socket (§6 WS-3 M3.5) — it is
+// account-specific and not derivable from a CloudFormation pseudo-parameter,
+// which is why it is resolved at runtime rather than templated in.
+func (p *Publisher) DataEndpoint(ctx context.Context) (string, error) {
+	if env := strings.TrimSpace(os.Getenv("IOT_DATA_ENDPOINT")); env != "" {
+		return env, nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.resolvedEndpoint != "" {
+		return p.resolvedEndpoint, nil
+	}
+	if p.endpoint == nil {
+		return "", errors.New("sync: no endpoint resolver configured")
+	}
+	out, err := p.endpoint.DescribeEndpoint(ctx, &iot.DescribeEndpointInput{
+		EndpointType: aws.String("iot:Data-ATS"),
+	})
+	if err != nil {
+		return "", fmt.Errorf("sync: describe iot endpoint: %w", err)
+	}
+	host := aws.ToString(out.EndpointAddress)
+	if host == "" {
+		return "", errors.New("sync: resolved an empty IoT data endpoint")
+	}
+	p.resolvedEndpoint = host
+	return host, nil
 }
 
 // client returns the cached data-plane client, resolving the IoT

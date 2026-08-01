@@ -70,9 +70,10 @@ type UserGetter interface {
 // TokenVerifier caches the JWKS document and per-user snapshots across warm
 // Lambda invocations. The zero value is not usable — use NewTokenVerifier.
 type TokenVerifier struct {
-	jwksURL string
-	users   UserGetter
-	client  *http.Client
+	jwksURL  string
+	audience string
+	users    UserGetter
+	client   *http.Client
 
 	mu        sync.RWMutex
 	jwks      []byte
@@ -85,11 +86,21 @@ type TokenVerifier struct {
 // NewTokenVerifier builds a verifier over the JWKS at jwksURL and the user
 // records in users.
 func NewTokenVerifier(jwksURL string, users UserGetter) *TokenVerifier {
+	return NewTokenVerifierForAudience(jwksURL, users, Audience)
+}
+
+// NewTokenVerifierForAudience builds a verifier that accepts ONLY tokens
+// carrying the given `aud`. This is the one thing the two authorizers must not
+// share: cmd/authorizer takes Audience, cmd/iot-authorizer takes AudienceIoT,
+// and each rejects the other's — so the narrow MQTT token can never be
+// replayed against the API.
+func NewTokenVerifierForAudience(jwksURL string, users UserGetter, audience string) *TokenVerifier {
 	return &TokenVerifier{
-		jwksURL: jwksURL,
-		users:   users,
-		client:  &http.Client{Timeout: jwksHTTPTimeout},
-		cache:   make(map[string]UserSnapshot),
+		jwksURL:  jwksURL,
+		audience: audience,
+		users:    users,
+		client:   &http.Client{Timeout: jwksHTTPTimeout},
+		cache:    make(map[string]UserSnapshot),
 	}
 }
 
@@ -110,7 +121,7 @@ func (v *TokenVerifier) Verify(ctx context.Context, token string) (*Claims, User
 	// VerifyJWT already validates structure, the ES256 signature, and
 	// iss/aud/exp with clock-skew leeway. Re-checking those here with a
 	// stricter comparison would only risk rejecting a token it considers good.
-	claims, err := VerifyJWT(token, jwksJSON)
+	claims, err := VerifyJWTForAudience(token, jwksJSON, v.audience)
 	if err != nil {
 		return nil, UserSnapshot{}, fmt.Errorf("auth: verify jwt: %w", err)
 	}

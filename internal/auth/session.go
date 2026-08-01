@@ -31,6 +31,16 @@ const (
 	Issuer = "https://live.jeremy.ninja"
 	// Audience is the aud claim on every access JWT.
 	Audience = "live-ninja"
+	// AudienceIoT is the aud claim on the SEPARATE, narrow token the browser
+	// uses to open its MQTT connection (§6 WS-3 M3.5).
+	//
+	// It exists because the web client authenticates by HttpOnly cookie and
+	// therefore has no readable token, while the MQTT CONNECT packet needs a
+	// value. The tempting fix — hand the session JWT to JavaScript — would put
+	// a full API credential in reach of any XSS. This one is accepted ONLY by
+	// cmd/iot-authorizer and rejected by cmd/authorizer, so the worst a stolen
+	// one can do is subscribe to its own owner's event stream.
+	AudienceIoT = "live-ninja-iot"
 	// AccessTokenTTL is the lifetime of a minted access JWT.
 	AccessTokenTTL = 15 * time.Minute
 )

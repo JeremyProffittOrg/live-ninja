@@ -123,6 +123,7 @@ func main() {
 	webapp.RegisterAPIRoutes(app, deps)
 	webapp.RegisterAccountRoutes(app, deps)
 	webapp.RegisterSettingsRoutes(app, deps)
+	webapp.RegisterIoTRoutes(app, deps)
 	webapp.RegisterDeliverablesRoutes(app, deps)
 	webapp.RegisterWakewordRoutes(app, deps)
 	memSvc := buildMemoryService(ctx, deps, logger)
