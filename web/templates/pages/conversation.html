@@ -216,15 +216,19 @@
       <span class="conv-bottombar__icon" aria-hidden="true">💬</span>
       <span class="conv-bottombar__label">Show Conversation</span>
     </button>
-    <a class="conv-bottombar__item" href="/history">
+    {{- /* The aria-label duplicates the visible label on purpose: below
+           520px there is no room for four labels plus the select, so app.css
+           hides these three visually and the aria-label becomes the only
+           accessible name. Keep the two strings identical. */}}
+    <a class="conv-bottombar__item" href="/history" aria-label="History">
       <span class="conv-bottombar__icon" aria-hidden="true">🕘</span>
       <span class="conv-bottombar__label">History</span>
     </a>
-    <a class="conv-bottombar__item" href="/memory">
+    <a class="conv-bottombar__item" href="/memory" aria-label="Memory">
       <span class="conv-bottombar__icon" aria-hidden="true">🧠</span>
       <span class="conv-bottombar__label">Memory</span>
     </a>
-    <a class="conv-bottombar__item" href="/downloads">
+    <a class="conv-bottombar__item" href="/downloads" aria-label="Downloads">
       <span class="conv-bottombar__icon" aria-hidden="true">⬇</span>
       <span class="conv-bottombar__label">Downloads</span>
     </a>

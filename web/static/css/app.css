@@ -2500,3 +2500,28 @@ dialog.conv-overlay::backdrop { background: rgba(4, 8, 14, 0.62); }
     padding-right: calc(var(--ln-sp-5) + var(--ln-touch));
   }
 }
+
+/* ---- <=520px: phone widths ---------------------------------------------
+   Four text labels plus a select do not fit across a 390px phone — the bar
+   ends up with a truncated "Show Conversation" and a clipped select. Below
+   this width the three destination links go icon-only (their aria-label in
+   conversation.html is then the accessible name, which is why it duplicates
+   the visible text), and "Show Conversation" keeps its label because it is
+   the one control the spec asks to be clearly labelled. Every item still
+   fills the bar's full height, so the tap targets stay >=44px. */
+@media (max-width: 520px) {
+  .conv-bottombar__item:not(.conv-bottombar__item--primary) {
+    flex: 0 0 var(--ln-touch);
+  }
+  .conv-bottombar__item:not(.conv-bottombar__item--primary) .conv-bottombar__label {
+    position: absolute;
+    width: 1px; height: 1px;
+    margin: -1px; padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .conv-bottombar__icon { font-size: 20px; }
+  .conv-bottombar__item--primary .conv-bottombar__icon { font-size: 16px; }
+  .conv-bottombar__audio { flex: 0 1 104px; }
+}
