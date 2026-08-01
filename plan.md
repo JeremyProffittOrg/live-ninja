@@ -17,7 +17,19 @@ Archived (history preserved in full, banners at the top of each):
 
 ---
 
-## Where things actually stand (2026-07-31, second pass)
+## Where things actually stand (2026-08-01)
+
+**Newest first.** The mobile conversation shell shipped today (§4) — seven UI items, four green
+pipelines, verified on the physical tablet against production. Running it on real hardware turned up
+a **latent whole-page failure mode that predates it** (§4.3): the service worker serves `/static/*`
+stale-while-revalidate on the stated assumption that everything there is fingerprinted, but JS
+modules import their siblings by *logical* path, so a deploy that changes one module can hand a
+client a mismatched sibling and kill the entire page silently. **§4.3 is the active workstream** —
+the owner asked for the fingerprinted-import-specifier fix on 2026-08-01.
+
+Everything below this line is the 2026-07-31 pass and is unchanged.
+
+## Where things actually stood (2026-07-31, second pass)
 
 Voice-driven code updates are **live and being used** — four launches through the full path today,
 all with the deploy gate closed, DLQ empty. All three email legs (started / progress / completion
@@ -167,31 +179,51 @@ nothing timed out.
   **Remaining: the ghost-cli half** — read `deploy` on schedule create, carry it to
   `buildLaunchParams` (`lambda/command/params.go:157`), emit `no_push: true` when it is false.
 
-  **The stated precondition is NOT met — measured 2026-08-01, not assumed:**
+  **DECIDED (owner, 2026-08-01): option (a)** — converge the fleet first, then emit `no_push`
+  unconditionally. No version gate. The alternative considered and rejected was gating the
+  emission on each node's reported `agent_version`.
 
-  | Node | agent_version | ≥ 1.1.53 |
-  |---|---|---|
-  | Windows2, Right-Board | 1.1.55 | yes |
-  | OFFICEPC | 1.1.54 | yes |
-  | Windows1 | 1.1.49 | no |
-  | Left-Board | 1.1.39 | no |
-  | rog-18 | 1.1.33 | no |
-  | Lenovo14 | 1.0.13 | no |
-  | rog-flow | 1.0.11 | no |
-  | elite001, acer-gpu, 4x twix-gpu | no retained message | unknown |
+  **Fleet state — measured 2026-08-01 12:5x UTC, not assumed.** Read from the IoT retained status
+  messages on `cockpit/nodes/<id>/status` (the same source `GET /nodes` uses), taking the
+  RETAINED-MESSAGE TIMESTAMP as well as the version. The timestamp is what makes this table mean
+  something: a node that has not published in six weeks is not a node running an old version, it
+  is a node that is off.
 
-  Read from the IoT retained status messages on `cockpit/nodes/<id>/status` — the same source
-  `GET /nodes` uses. Five known-stale nodes, six unknown; the fleet has not converged and the
-  ~4 h self-update poll has plainly not carried these.
+  | Node | agent_version | retained at | state | ≥ 1.1.53 |
+  |---|---|---|---|---|
+  | Windows2 | 1.1.55 | 08-01 12:51 | IDLE_ALIVE | yes |
+  | Right-Board | 1.1.55 | 08-01 12:50 | IDLE_ALIVE | yes |
+  | OFFICEPC | 1.1.54 | 08-01 12:50 | IDLE_ALIVE | yes |
+  | **Windows1** | **1.1.49** | 08-01 12:50 | **CRASHED** | **no** |
+  | Left-Board | 1.1.39 | 07-28 11:44 | stale (4 d) | no |
+  | rog-18 | 1.1.33 | 07-26 00:32 | OFFLINE | no |
+  | Lenovo14 | 1.0.13 | 06-21 10:23 | stale (6 wk) | no |
+  | rog-flow | 1.0.11 | 06-21 05:07 | OFFLINE | no |
+  | elite001, acer-gpu, 4x twix-gpu | — | no retained message | unknown | unknown |
 
-  **The blast radius is narrower than the precondition implies**, which opens a second option.
-  `no_push` is only emitted when `deploy == false`, so a DEPLOY run carries no new key and a stale
-  agent is unaffected. Only a HELD run dispatched to a stale node would have its envelope
-  rejected. So either: (a) converge the fleet, then ship unconditionally; or (b) version-gate the
-  emission on the node's reported `agent_version` (`nodes.go` already reads it), which removes the
-  precondition entirely and degrades to today's prompt-only behaviour on stale nodes. (b) is more
-  code in the dispatch path; (a) is simpler but blocks on nodes that are not self-updating.
-  **Owner's call — do not pick one silently.**
+  Rollout target is **1.1.56** — `releases/latest.json` AND `releases/canary.json` in
+  `s3://ghost-cli-releases-759775734231` both read 1.1.56. So nothing is being held back by the
+  rollout; the laggards are simply not applying it.
+
+  **What this reframes.** "Converge the fleet" is mostly not a software task:
+
+  - Only **four** nodes are actually live (published within the hour). Three of them are already
+    ≥ 1.1.53. The others cannot converge while they are powered off — an update cannot be pushed
+    to a machine that is not running, so this is blocked on physical access, not on code.
+  - The ONE live node below the bar is **Windows1, and it is CRASHED** — see the separate item
+    below. It will not self-update in that state.
+  - Offline nodes are not a live brick risk either: a LAUNCH cannot reach a node that is not
+    connected. The exposure is a node that has been off for months coming back and receiving a
+    HELD launch inside its first update poll. Narrow, but real, and it is the residue option (a)
+    accepts by design.
+  - Even OFFICEPC (1.1.54, live, healthy) has not taken 1.1.56 — so the self-update path is
+    lagging on a node with no other problem. Worth understanding before declaring convergence
+    done, because it suggests the updater, not the machines, is the thing that is stuck.
+
+  **Next actions, in order:** (1) get Windows1 out of CRASHED and onto 1.1.56; (2) find out why a
+  healthy OFFICEPC sat two versions behind; (3) decide whether the six no-retained-message things
+  are decommissioned (and should leave the inventory) or dormant; (4) only then ship the ghost-cli
+  half unconditionally.
 
   **Raised in importance by the 2026-08-01 default flip (§2.4).** While the default was "hold", a
   prompt-only gate failing open meant a run shipped work the owner had not asked to ship. Now that
@@ -199,6 +231,29 @@ nothing timed out.
   *explicitly said don't* — so every failure of this prompt-only mechanism is now a direct
   violation of a stated instruction, on the exact request most likely to be sensitive. Fewer runs
   depend on it; the ones that do depend on it more.
+
+- `[ ]` **Windows1 is CRASHED and has been reporting it.** Found 2026-08-01 while measuring the
+  fleet for the item above, not by looking for it. Its retained status on
+  `cockpit/nodes/Windows1/status` is fresh (published 12:50, same minute as the healthy nodes, so
+  the agent process is alive and talking) but carries `state=CRASHED` at `agent_version=1.1.49`.
+  A crashed agent will not self-update, which is why it alone is stuck below 1.1.53 while every
+  other LIVE node is at 1.1.54+. Nothing alerts on this: it is visible only to whoever runs
+  `ghost node list` or reads the retained topic. **This is a prerequisite for the `no_push` item
+  above** — it is the only live node blocking convergence. Diagnose the crash before restarting,
+  or the restart just resets the clock on whatever caused it.
+
+- `[ ]` **The self-update path is lagging on healthy nodes.** `releases/latest.json` is 1.1.56 and
+  has been long enough for every node to have polled (~4 h interval), yet OFFICEPC — live, healthy,
+  used all day — is on 1.1.54, and Windows2/Right-Board are on 1.1.55. No node is on the published
+  fleet version. That points at the updater rather than at the machines, and it is the reason
+  "wait for the fleet to converge" is not a plan by itself. Worth a look at whether the poll is
+  running, whether it is failing silently, and whether anything would ever say so.
+
+- `[ ]` **Six inventory entries have never published a status.** `elite001`, `acer-gpu`,
+  `left-twix-gpu0/1`, `right-twix-gpu0/1` have no retained message at all, so `GET /nodes` renders
+  them as `-` and no version-based logic can reason about them. Decide whether they are
+  decommissioned (remove them from the IoT inventory so the fleet count means something) or
+  dormant-but-real (they are then a live brick risk the moment they wake and take a held launch).
 
 
 ### 2.3 Closed this pass — do not redo
