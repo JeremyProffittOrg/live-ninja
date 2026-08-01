@@ -35,6 +35,7 @@ import ninja.jeremy.liveninja.ui.settings.toggledSettingsSection
 import ninja.jeremy.liveninja.ui.theme.LiveNinjaTheme
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -180,10 +181,21 @@ class SettingsRevampComposeTest {
 
         // Opener top-LEFT, closer top-RIGHT — mirrored so the close tab can
         // never land on top of the opener it stands in for.
-        assertEquals(viewportBounds.top.value, openBounds.top.value, 0.1f)
-        assertEquals(viewportBounds.top.value, closeBounds.top.value, 0.1f)
         assertEquals(viewportBounds.left.value, openBounds.left.value, 0.1f)
         assertEquals(viewportBounds.right.value, closeBounds.right.value, 0.1f)
+
+        // Both sit at the top, at the SAME height — but not necessarily at
+        // y=0. The tab is drawn outside the Scaffold and applies the
+        // status-bar inset itself (without it, it lands under the system
+        // clock — seen on the Tab S9 FE), and the CI emulator reports a 24dp
+        // status bar where a test root on some devices reports none. Asserting
+        // an exact y=0 pins the emulator's chrome, not the layout.
+        assertEquals(openBounds.top.value, closeBounds.top.value, 0.1f)
+        val viewportHeight = (viewportBounds.bottom - viewportBounds.top).value
+        assertTrue(
+            "settings tab must sit in the top region, was ${openBounds.top}",
+            openBounds.top.value - viewportBounds.top.value < viewportHeight / 4f,
+        )
     }
 
     @Test
