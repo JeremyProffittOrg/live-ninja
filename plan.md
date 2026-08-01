@@ -615,6 +615,216 @@ a number, and it is the cheapest way to re-check a pure-layout change on this pa
   the whole registry and checks the Gemini voice too. New `TestWorkingPersonasPushBackWithoutTaking
   Power` pins both halves of the three working personas.
 
+## §6 — Cross-device agent collaboration over IoT push (planned 2026-08-01) `[ ]`
+
+**Goal.** Several devices, each running Live Ninja under a *different* persona, work on one project
+together: they share a document and a plan, and every device is told the moment either changes.
+
+**Why this design.** The sharing half already works and needs no code — every store in this system
+is keyed on `USER#<uid>`, not on the device, and `file_read` / `memory_search` are tool calls made
+*during* a session, so they already read live state. The missing half is notification, and it is
+missing for two independent reasons recorded in `internal/sync/sync.go:1-20`: there is no
+server→client channel for web or Android (no FCM, no WebSocket API — both explicitly declined), and
+even with one, the realtime session runs client↔provider directly, so the server has no seam into a
+live conversation. This section closes the first gap with IoT Core, and the second by having the
+*client* nudge its own session through the injection path it already owns.
+
+### Locked decisions (user-confirmed 2026-08-01; do not revisit)
+
+1. **Surfaces: web (browser) and Android only.** The M5Stack is out of scope for this section even
+   though it is the one surface already IoT-provisioned.
+2. **Auth: an AWS IoT custom authorizer that verifies the existing first-party ES256 access JWT.**
+   Not Cognito, not backend-vended STS. Rationale: LWA is the identity provider and there is no
+   Cognito Identity Pool; the JWT, its JWKS, and the `tokensValidAfter` kill-switch already exist
+   and are already verified by `cmd/authorizer`, so this adds one Lambda and no second identity
+   system.
+3. **On push during a live session: auto-nudge — the agent speaks up unprompted.** The operator
+   chose this over the two quieter options after the cross-device echo risk was stated. It is
+   therefore built as specified, with the turn-taking rail in WS-5 as the mitigation rather than
+   the softer behaviour as the mitigation.
+4. **Events fanned out: document/deliverable writes, memory + plan writes, and session presence.**
+   All three.
+5. **Standing authorization.** Deploying these template changes through the normal push-to-`main`
+   pipeline is pre-authorized, including the new IoT authorizer, the new Lambda, and the CSP change.
+   Creating IoT Core resources in the account is pre-authorized. Deleting or reprovisioning any
+   EXISTING M5Stack Thing or certificate is **not**.
+
+### Verified facts (each confirmed by reading the file named)
+
+- `internal/sync/sync.go:1-20` — the no-FCM / no-WebSocket decision, and that the M5Stack is
+  currently "the ONLY real-push surface".
+- `internal/sync/sync.go:79-178` — a working `Publisher` over `iotdataplane` already exists, with
+  cached `iot:DescribeEndpoint` resolution. The publish half is largely built.
+- `template.yaml:411-413` — the web function ALREADY holds `iot:Publish` on
+  `arn:…:topic/liveninja/*`. No new IAM is needed to publish.
+- `template.yaml:2472-2501` — `IotDevicePolicy` is X.509-cert based and scopes every action to
+  `liveninja/${iot:Connection.Thing.ThingName}/*`. It is a per-Thing policy and does **not** cover
+  a user-scoped topic; a browser has no Thing and no cert.
+- `internal/auth/session.go:35` — `AccessTokenTTL = 15 * time.Minute`. An MQTT connection must
+  outlive the token that opened it; see WS-1 M1.3.
+- `cmd/authorizer/main.go:1-18` — the HTTP API authorizer already does ES256 verification against
+  the cached JWKS plus the `tokensValidAfter` kill-switch. This is the logic WS-1 reuses.
+- `internal/webapp/pages_routes.go:56` — the page CSP's `connect-src` does not include any IoT
+  endpoint. A browser MQTT-over-WSS connection is blocked until it does.
+- `android/app/build.gradle.kts:151-180` — the Android app has **no MQTT client**. okhttp and
+  retrofit are present; `aws-crt`/Paho are not.
+- `web/static/js/` + `internal/webapp/assets.go` — the web app has **no JS bundler**. Modules are
+  served as plain `.mjs` through a stamped import map, and the CSP forbids CDN scripts.
+- `web/static/js/realtime.mjs:2291` — `sendUserText()` already does
+  `conversation.item.create` + `response.create`. The client-side injection primitive for the
+  auto-nudge exists and does not need inventing.
+- `internal/auth/device.go:201` — `ProvisionIoT` is the M5 Thing/cert seam. Untouched by this work.
+
+### Assumptions (NOT verified — treat as risk, prove in WS-1 M1.1)
+
+- That an IoT custom authorizer can authenticate MQTT-over-WebSocket by carrying the token in the
+  MQTT CONNECT username/password rather than an HTTP header. Browsers cannot set custom headers on
+  a WebSocket handshake, so **the whole design depends on this**. M1.1 is a spike that proves it
+  before anything else is built.
+- That `refreshAfterInSeconds` re-invokes the authorizer with the ORIGINAL connect token. If it
+  does, a 15-minute JWT cannot survive refresh and WS-1 M1.3's reconnect strategy is mandatory
+  rather than optional.
+
+### Cost
+
+IoT Core connectivity is ~$0.08 per million connection-minutes. Two devices connected continuously
+is ~86,400 connection-minutes/month, i.e. **under one cent**. Messaging at $1/million is noise at
+this volume. The new Lambda is invoked once per connect plus per policy refresh. Per the standing
+rules: **no CloudWatch alarms and no dashboards**, and the new function's log group is declared
+explicitly in the template with `RetentionInDays: 7`.
+
+---
+
+### WS-1 — IoT custom authorizer `[ ]` (blocks WS-2, WS-3, WS-4)
+
+- `[ ]` **M1.1 Spike: prove browser MQTT-over-WSS with custom auth.** Throwaway HTML against the
+  account's ATS endpoint, token in the MQTT CONNECT packet. **This gates the entire section** — if
+  it fails, stop and re-plan against Cognito (the operator's second choice).
+  *DoD:* a browser tab subscribes to `liveninja/user/<uid>/#` and receives a message published by
+  `aws iot-data publish`, with the exchange captured in the run log.
+- `[ ]` **M1.2 `cmd/iot-authorizer`.** Extract the JWT/JWKS/`tokensValidAfter` verification shared
+  with `cmd/authorizer` into `internal/auth`, and return an IoT policy scoped to
+  `liveninja/user/<userId>/#` for Subscribe/Receive and `liveninja/user/<userId>/presence/<deviceId>`
+  for Publish. Deny everything else.
+  *DoD:* `go test ./internal/auth/... ./cmd/iot-authorizer/...` passes, including a case asserting
+  that a token for user A yields a policy that does **not** match user B's topic.
+- `[ ]` **M1.3 Token lifetime.** The JWT lives 15 minutes; the connection must not. Set
+  `disconnectAfterInSeconds` to 3600 and have the client reconnect when it refreshes its JWT.
+  Do NOT weaken `exp` checking to keep a connection alive.
+  *DoD:* a documented test showing a connection surviving a client token refresh via reconnect,
+  and a revoked user (`tokensValidAfter` bumped) failing to reconnect.
+- `[ ]` **M1.4 Template.** `AWS::IoT::Authorizer` + the function + its log group at
+  `RetentionInDays: 7`. No alarms, no dashboards.
+  *DoD:* `sam validate --lint` passes and the deployed stack reaches `UPDATE_COMPLETE`.
+
+### WS-2 — Publish side `[ ]` (depends on WS-1 only for topic shape, can start in parallel)
+
+- `[ ]` **M2.1 Topic namespace.** `liveninja/user/<userId>/doc`, `/memory`, `/presence/<deviceId>`.
+  Guard: a Thing may never be named `user`, or it would collide with the existing
+  `liveninja/<thingName>/telemetry` namespace.
+  *DoD:* `go test ./internal/sync/ -run TestTopicNamespace` covers the collision guard.
+- `[ ]` **M2.2 `Publisher.PublishEvent`.** Extend `internal/sync`'s existing publisher. Payload
+  carries `{type, id, version, actorDeviceId, actorPersona, summary}` — `actorDeviceId` is what lets
+  a client ignore its own edit.
+  *DoD:* `go test ./internal/sync/` passes.
+- `[ ]` **M2.3 Hook the writes.** Publish after `deliverable_create` / `file_create`,
+  `memory_write` and `plan_upsert` commit. Publishing must never fail the tool call — log and
+  continue.
+  *DoD:* `go test ./internal/tools/` passes with a case asserting a publisher error does not
+  surface as a tool error.
+
+### WS-3 — Web client `[ ]` (depends on WS-1)
+
+- `[ ]` **M3.1 Minimal MQTT 3.1.1 codec, `web/static/js/mqtt.mjs`.** CONNECT/CONNACK, SUBSCRIBE/
+  SUBACK, PUBLISH (QoS 0 in), PINGREQ/PINGRESP, DISCONNECT. Hand-rolled deliberately: there is no
+  bundler and the CSP forbids CDN scripts, so vendoring mqtt.js would mean checking a UMD bundle
+  into `static/js` and stamping it through the import map.
+  *DoD:* `node --test` unit tests over the packet encoder/decoder pass.
+- `[ ]` **M3.2 CSP.** Add the account's IoT ATS `wss://` origin to `connect-src`
+  (`internal/webapp/pages_routes.go:56`).
+  *DoD:* `go test ./internal/webapp/ -run TestCSP` passes with a case pinning the IoT origin.
+- `[ ]` **M3.3 Connect + LWT presence.** Subscribe on session start; set an MQTT Last Will on
+  `presence/<deviceId>` so a dropped connection self-clears.
+  *DoD:* two browser tabs — killing one removes its presence in the other within 30s.
+- `[ ]` **M3.4 Auto-nudge.** On a `doc`/`memory` event whose `actorDeviceId` is not this device,
+  inject through the existing `sendUserText()` path so the agent announces the change.
+  **Suppress your own edits** and honour the WS-5 speaking lock.
+  *DoD:* device A edits the doc; device B's agent speaks the change unprompted; device A stays
+  silent.
+
+### WS-4 — Android client `[ ]` (depends on WS-1)
+
+- `[ ]` **M4.1 MQTT over OkHttp WebSocket.** Port the same minimal codec to Kotlin rather than
+  adding `aws-crt-android`. Rationale: release builds are arm64-only and this device family has a
+  live 16 KB page-alignment problem with existing native libs, so adding another native dependency
+  compounds a known defect. **Fallback if the codec overruns two days:
+  `aws-iot-device-sdk-java-v2`**, accepting the alignment risk and testing it explicitly.
+  *DoD:* `./gradlew :app:testDebugUnitTest --tests '*MqttCodec*'` passes.
+- `[ ]` **M4.2 Lifecycle.** Connect while the conversation screen is foregrounded or a session is
+  live; disconnect otherwise. Do **not** hold a socket open in the background — Samsung's One UI
+  will kill it and the reconnect churn is not worth the latency.
+  *DoD:* verified on the Tab S9 FE (`R52XC06P9KJ`) via adb: connection present in the foreground,
+  gone within 60s of backgrounding.
+- `[ ]` **M4.3 Auto-nudge parity.** Same suppression and lock rules as M3.4.
+  *DoD:* tablet and browser each nudge on the other's edit, neither on its own.
+
+### WS-5 — Turn-taking rail `[ ]` (depends on WS-3 + WS-4) — the mitigation for locked decision 3
+
+Auto-nudge means several agents can decide to speak at once, in one room, each hearing the others.
+Per-device echo cancellation cannot help: AEC only cancels a device's own playout. This workstream
+is what makes decision 3 survivable and is **not optional**.
+
+- `[ ]` **M5.1 Presence registry.** Each client publishes `{deviceId, persona, state}` retained,
+  with the LWT clearing it.
+  *DoD:* three surfaces show a consistent roster within 5s of any change.
+- `[ ]` **M5.2 Speaking lock.** Before an *unprompted* nudge a device claims
+  `liveninja/user/<uid>/speaking`; others defer and merge the change into their next turn instead.
+  Lock auto-expires after 30s so a crashed holder cannot mute the fleet.
+  *DoD:* a scripted simultaneous edit produces exactly one speaking device.
+- `[ ]` **M5.3 Distinct wake words per device.** Configuration only — `wakeWord` is already a
+  per-device overridable section in `contracts/settings.schema.json`. Prevents one agent's reply
+  waking another.
+  *DoD:* documented in the Help drawer; each device set to a different phrase.
+
+### WS-6 — Help copy `[ ]` (depends on WS-3)
+
+- `[ ]` **M6.1** Per `CLAUDE.md`, any feature/setting/capability change updates the Help drawer in
+  the SAME commit. Cover: shared project state across devices, what a nudge is and why an agent
+  spoke unprompted, and how to run different personas per device.
+  *DoD:* `go test ./internal/webapp/ -run TestHelpDrawer` passes.
+
+---
+
+### Sequencing
+
+WS-1 M1.1 is the long pole and the gate — start it first and alone. WS-2 can proceed in parallel
+once the topic namespace is fixed, because the publish side needs no client. WS-3 and WS-4 are
+independent of each other. WS-5 needs both clients. WS-6 is last.
+
+### Restart policy (per job)
+
+| Job | Failure detected by | Restart | Ceiling |
+|---|---|---|---|
+| `sam deploy` via push to `main` | workflow conclusion != success | fix forward, push again | 5 pushes, then stop and report |
+| Gradle `assembleDebug` / unit tests | non-zero exit | fix, re-run | 3, then `[!]` and move on |
+| Playwright / adb verification | non-zero exit or missing marker | re-run once, then investigate | 2 |
+
+Transient failures retry with backoff; a deterministic failure gets a fix first — re-running an
+identical command that failed deterministically is a loop, not persistence.
+
+### Stop conditions (only these)
+
+1. **WS-1 M1.1 fails** — browser MQTT-over-WSS with custom auth proves impossible. Everything else
+   depends on it, and the fallback (Cognito Identity Pool) is a different plan, not a workaround.
+2. **The deploy pipeline fails 5 times on the same cause.**
+3. **Any action would delete or reprovision an existing M5Stack Thing or certificate** — explicitly
+   outside the standing authorization above.
+4. **Credentials missing** for the deploy path.
+
+Anything else — including an ugly workaround, a milestone that has to be marked `[!]`, or the
+Android codec overrunning into its stated fallback — is worked around and reported at the end,
+not paused on.
+
 ## Standing rules (carried forward — these do not expire)
 
 - **Deploy = push to `main`.** Never deploy from a local machine. Watch the run to a terminal result.
