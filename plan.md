@@ -333,6 +333,121 @@ Unchanged in substance; these were open when [completed/plan.md](completed/plan.
 
 ---
 
+## §4 — Mobile conversation shell + the module-graph cache hazard (2026-08-01)
+
+### 4.1 The shell `[x]` — shipped, four green pipelines
+
+Seven owner-requested UI items on the **web** `/conversation` page. The Android app was deliberately
+NOT touched: it is native Compose (`android/.../ui/screens/ConversationScreen.kt`) with its own
+bottom `NavigationBar`, and the request was written in CSS/DOM terms ("44×44 **CSS** pixels",
+"~80**vh**", "a `<select>`", "**html2canvas**", "**local storage**") naming controls that exist only
+on the web page — the edge tabs and the `＋` glyph. Recorded so nobody re-litigates the surface.
+
+| Commit | What | Run | Result |
+|---|---|---|---|
+| `bb488e3` | Mobile shell (all seven items) | 30699017769 | success |
+| `5ee4cc2` | 390px bottom-bar fit | 30699237771 | success |
+| `e5baa39` | Playwright edge-bar spec | 30699422933 | success, `web-quality` green |
+| `48f7aa2` | `update-report.md` | 30699711731 | success |
+
+What landed: two snap panels at ≤900px (swipe up for the transcript, chain back for the voice
+panel); a persistent bottom bar (Show Conversation / History / Memory / Downloads / Audio); a modal
+`<dialog>` conversation overlay mirroring `#transcript` live; Copy, a dependency-free canvas→PNG
+Screenshot, and a localStorage-backed Tag for review, all bound by `data-conv-action`; edge tabs
+moved to the left at 16px glyphs with the 44px target intact; `NEW` in place of `＋`.
+
+**Definition of done (all passed):** `go build ./... && go vet ./... && go test ./...`;
+`cd tests/web && npx playwright test` → 71 passed / 21 skipped / 0 failed;
+`gh run view 30699711731 --json conclusion` → `success`.
+
+Two decisions worth not re-opening:
+- **There is no audio-quality setting in this product.** The bottom bar's picker drives the real
+  `turnDetection.micEagerness` (the same value the rail's Low/Med/High chips write, synced through
+  `syncMicChips()`), and is labelled **Audio**, not "Audio quality". `auto` is offered as a fifth
+  option because it is the schema default.
+- **Tag for review is local** (`localStorage['ln.reviewTags']`). There is no server-side review
+  queue to post to; the Help panel says so rather than implying the note was filed.
+
+Full evidence — measurements, screenshots, the drafted audio-verification email — in
+[update-report.md](update-report.md).
+
+### 4.2 A regression this run caused and fixed `[x]`
+
+`tests/web/specs/settings-accordion.spec.mjs` pinned the settings opener flush **right**
+unconditionally; moving the tabs to the left edge on phones broke it under the `mobile-chrome`
+project (expected 412, got 44). `web-quality` is `continue-on-error`, so the deploy still went
+green — it was caught only because that job had been **green on the two runs before**. The spec now
+asserts the real contract (same size, opposite edges, viewport-aware). Shipped in `e5baa39`.
+
+**Gotcha:** `web-quality` failing does NOT fail the run. Compare against the previous runs' result
+before dismissing it as noise.
+
+### 4.3 The module-graph cache hazard `[~]` — ACTIVE, owner asked for the fix 2026-08-01
+
+**The defect (verified live, not theorised).** On the Tab S9 FE, after the `bb488e3` deploy,
+**nothing driven by JavaScript worked** — not the new overlay, and not the Settings or Help drawers
+that have shipped since July. Read off the device's real console over the Samsung Internet DevTools
+socket:
+
+```
+Uncaught SyntaxError: The requested module './wakeword.mjs' does not provide
+an export named 'applyWakeWordSettings'
+  @ https://live.jeremy.ninja/static/js/conversation.fe215b7cbdb9.mjs:40
+```
+
+A module-linking failure kills the **whole** of `conversation.mjs`, which is why every button was
+inert while plain `<a>` links and CSS scrolling still worked. There is nothing on screen to say why.
+
+**Verified facts** (each confirmed by command, not inferred):
+- The origin is correct — `curl https://live.jeremy.ninja/static/js/wakeword.mjs` contains
+  `export async function applyWakeWordSettings`, and `fetch(url,{cache:'reload'})` on the device
+  agreed. The stale copy was client-side.
+- `web/sw.js` serves `/static/*` **stale-while-revalidate**, and its own header comment states the
+  premise: *"they are fingerprinted/immutable at build, so serving cached is always safe"*.
+- That premise is **false for JS modules**: `web/templates/**` loads entry modules by their
+  fingerprinted URL via `asset()`, but every module imports its siblings by **logical** path
+  (`from './wakeword.mjs'` — 14 distinct specifiers across `web/static/js/*.mjs`).
+- So a deploy that changes `conversation.mjs` mints a fresh, guaranteed-correct URL for it while its
+  siblings keep URLs the SW may satisfy from a pre-deploy cache entry. **Every future
+  `conversation.mjs` change is a coin-flip for any client holding an old sibling.**
+
+**The chosen fix — fingerprinted import specifiers via an import map** (owner asked 2026-08-01):
+
+- `[ ]` `internal/webapp/assets.go` — build a deterministic import map at `NewAssets` mapping every
+  logical `/static/**/*.mjs` to its hashed path, plus the `sha256-…` of the exact rendered bytes.
+- `[ ]` `internal/webapp/pages_routes.go` — `pageCSP` gains that hash in `script-src`;
+  `SecurityHeaders()` takes the `*Assets` so it can emit it. **`'unsafe-inline'` must never be
+  added** — `TestPageCSPMatchesSpec` pins its absence, and that test is right.
+- `[ ]` `web/templates/layouts/base.html` — emit the map **before the first module load**.
+- `[ ]` `cmd/web/main.go` — pass `assets` to `SecurityHeaders`.
+- `[ ]` Tests: the map covers every `.mjs`, precedes the first module script, and the CSP hash
+  matches the rendered bytes byte-for-byte.
+
+**Constraints that shape it** (do not rediscover these):
+- **CSP forbids inline scripts** (`script-src 'self' 'wasm-unsafe-eval'`), so the import map needs a
+  **hash source**, not `'unsafe-inline'`. External import maps (`<script type="importmap" src=…>`)
+  were removed from the spec and are not implemented anywhere — that door is closed.
+- **Import maps do not apply to worklets.** `wakeword.mjs` loads
+  `/static/js/wakeword-worklet.js` via `audioWorklet.addModule()`; that URL stays logical and is out
+  of scope for this fix. It is a classic worklet with no imports, so it cannot fail to *link* — the
+  worst case is behavioural drift, not a dead page.
+- `import(ORT_MODULE_URL)` **is** covered (a `/static/…` URL specifier is remapped), and
+  `ort.env.wasm.wasmPaths = ORT_WASM_DIR` is set explicitly, so fingerprinting the ORT module's URL
+  does not move its `.wasm` lookup.
+- A browser without import-map support ignores the map and resolves logical specifiers — i.e. it
+  degrades to today's behaviour rather than breaking.
+- **Do not "fix" this by weakening the service worker.** SWR on genuinely content-addressed URLs is
+  correct; the bug is that the URLs were not content-addressed.
+
+**Definition of done:** `go test ./internal/webapp/` green; `cd tests/web && npx playwright test`
+green (it has explicit module/caching regressions); the deployed `/conversation` HTML contains an
+`importmap` whose entries all resolve 200; the pipeline reaches `success`.
+
+**Rejected alternative, recorded so it is not retried:** rewriting the import specifiers inside the
+`.mjs` bodies at fingerprint time. It needs transitive hashing (`hash(A) = f(content(A), hash(deps))`)
+with cycle detection, or it silently pins clients to a consistent-but-stale graph — strictly more
+machinery than an import map for the same result.
+
 ## Standing rules (carried forward — these do not expire)
 
 - **Deploy = push to `main`.** Never deploy from a local machine. Watch the run to a terminal result.
@@ -356,3 +471,17 @@ Unchanged in substance; these were open when [completed/plan.md](completed/plan.
   third cross-repo contract; the reasoning for each raise is recorded in `internal/rca/prompt.go`).
 - **A read-only instruction conflicts with the mandatory output directive.** "Change nothing" plus
   "write `update-report.md`" means the report is never written and the summary email arrives empty.
+- **"Every button on the page is dead" is a module-linking failure, not a UI bug.** One bad import
+  kills the entire module, so plain `<a>` links and CSS scrolling keep working while nothing
+  scripted does. Read the console before suspecting whatever changed most recently — see §4.3.
+- **`adb shell input tap` does NOT activate page elements in Samsung Internet** (measured
+  2026-08-01: four attempts, no effect, on both a new button and the year-old settings tab). Use a
+  1px short press — `input swipe X Y X+1 Y 130`. `input swipe` for scrolling works either way. Four
+  screenshot rounds were spent on this before the real console was read.
+- **Read the tablet's real console instead of inferring from screenshots.**
+  `adb forward tcp:9333 localabstract:Terrace_devtools_remote` (Samsung Internet; Chrome uses
+  `@chrome_devtools_remote`), `curl http://127.0.0.1:9333/json/list` for the page's
+  `webSocketDebuggerUrl`, then CDP `Runtime.enable` + `Log.enable` + `Runtime.evaluate` over it with
+  the `ws` package already in `tests/web/node_modules`. This gave §4.3's cause in one line.
+- **`web-quality` failing does not fail the deploy run** (`continue-on-error: true`). Check whether
+  it was green on the previous runs before writing it off as flake — that is how §4.2 was caught.
