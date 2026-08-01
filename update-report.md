@@ -1,239 +1,341 @@
-# Help section — implementation report
+# Update report — mobile conversation shell (2026-08-01)
 
-**Date:** 2026-07-31
-**Repository:** JeremyProffittOrg/live-ninja (local working copy, branch `main`)
-**Commit:** `1bf8212` — *Give the app a Help panel that opens the way Settings does*
-**Delivery status:** **deployed.** Written and committed under a no-push hold (no deploy
-was authorized at the time, and here a push to `main` *is* a production deploy); the owner
-then authorized the push directly. Pushed as `3b662ff..7f9c4ab`, deploy run
-[30686409890](https://github.com/JeremyProffittOrg/live-ninja/actions/runs/30686409890)
-succeeded 2026-08-01. See §9.
+Commit `bb488e3` — "Give the conversation page a real phone-and-tablet shell", pushed to
+`main`, which is this repo's only deploy trigger (`deploy.md`).
 
 ---
 
-## 1. What was asked for
+## What "the mobile app" turned out to be
 
-A Help section that slides out in the same visual/UX pattern as the existing Settings
-panel, documenting the app's capabilities; plus contributor guidance that keeps the help
-content in sync as features and settings change.
+The repo ships two mobile surfaces, and the request is specific about which one it means:
 
-## 2. What the existing Settings pattern actually is
+| Surface | What it is | Touched? |
+| --- | --- | --- |
+| `web/` conversation page at phone/tablet widths | Go `html/template` + vanilla ES modules + hand-written CSS, served by `cmd/web` behind the Lambda Web Adapter | **Yes — this is the whole change** |
+| `android/` app | Native Jetpack Compose (`ui/screens/ConversationScreen.kt`, `ui/LiveNinjaRoot.kt`), its own bottom `NavigationBar`, its own realtime session | No |
 
-Read before writing anything, because "mirror the Settings panel exactly" is only
-meaningful once you know what the panel is:
+The requirements are written in web terms throughout — "44×44 **CSS** pixels", "max-height
+~**80vh**", "a `<select>`", "**html2canvas** or equivalent", "**local storage**" — and every
+control they name to move or replace exists on the web page and only there: the Help/Settings
+edge tabs, and the `＋` new-conversation glyph. The Android app has no `＋` and already has a
+native History/Memory/Files bottom bar. So the target is the web page, and no APK was rebuilt.
+The test tablet picks the change up by loading `https://live.jeremy.ninja/conversation`.
 
-| Piece | Where |
-| --- | --- |
-| Opener | `web/templates/pages/conversation.html` — `<button class="conv-settings-tab" id="settingsDrawerBtn">`, a `position: fixed` bar on the right edge, `top: 50%`, `height: 40dvh`, `translateY(-50%)` (so it spans 30dvh–70dvh) |
-| Panel | `<dialog class="conv-drawer" id="settingsDrawer">` in the same file, full-viewport, content capped at 720px and centred |
-| Close | `<button class="conv-settings-tab conv-settings-tab--close" autofocus>` — the mirrored bar on the left edge *inside* the dialog |
-| Animation | `app.css` — `@keyframes conv-drawer-in` (`translateX(100%)` → none, 180ms ease-out), disabled under `prefers-reduced-motion` |
-| Behaviour | `web/static/js/conversation.mjs` — `showModal()` supplies the focus trap, Escape, and inerting; a `click` handler closes on `e.target === dialog` (the scrim, which works because padding lives on `.conv-drawer__inner`); the `close` event restores `aria-expanded="false"` and returns focus to the opener |
+Files changed:
 
-Key finding: the settings drawer's *chrome* is entirely generic. Nothing in
-`.conv-drawer`, `.conv-settings-tab`, or the keyframe is settings-specific. So the correct
-way to "match the pattern exactly" is to **reuse those classes**, not to clone their CSS
-under new names — cloning is what lets two panels drift apart six months later.
+- `web/templates/pages/conversation.html` — bottom bar, conversation overlay, tag dialog, tools row, scroll hint, Help copy
+- `web/templates/partials/audio_viz.html` — `＋` → `NEW`
+- `web/static/css/app.css` — appended `MOBILE CONVERSATION SHELL` section (~250 lines, additive)
+- `web/static/js/conversation.mjs` — appended `MOBILE CONVERSATION SHELL` block + two small edits above it
+- `internal/webapp/mobile_shell_ui_test.go` — new drift guard (6 tests)
+- `internal/webapp/help_drawer_ui_test.go` — four new required Help entries
 
-## 3. What was built
+---
 
-### 3.1 The Help panel
+## Requirement by requirement
 
-`web/templates/pages/conversation.html` — a new `HELP DRAWER` block after the settings
-drawer's toast:
+### 1. Help & Settings to the left, ~25–30% smaller
 
-- `<button class="conv-settings-tab conv-settings-tab--help" id="helpDrawerBtn">` with a
-  `?` icon and a "Help" label, `aria-haspopup="dialog"`, `aria-controls="helpDrawer"`,
-  `aria-expanded="false"`.
-- `<dialog class="conv-drawer" id="helpDrawer" aria-labelledby="helpDrawerTitle">`
-  containing the same `--close` edge bar (with `autofocus`), the same
-  `.conv-drawer__inner` / `__head` / `__body` structure, and an `<h2>` title.
+At `≤900px` the fixed edge tabs flip to `left: 0`, their border radius and border side mirror,
+and the glyph goes **22px → 16px (−27%)**. The bar keeps `width: var(--ln-touch)` (44px) and is
+tens of dvh tall, so the tap target is untouched — measured in-browser at **44 × 189** (Help)
+and **44 × 472** (Settings). The drawer's in-panel close bar mirrors to the right edge and
+`.conv-drawer__inner`'s reserved gutter follows it, and the settings suggestion badge moves from
+`left: -8px` to `right: -8px` so it still hangs off the tab's outer side.
 
-Because it reuses `.conv-drawer`, it inherits the slide-in animation, the backdrop, the
-reduced-motion opt-out, the 720px readable width cap, and the scrolling body for free —
-identical to Settings by construction rather than by copy.
+**One thing this surfaced:** with the tabs on the left and no 360px rail column to hide behind,
+the Settings bar landed on top of the rail's *Mic Test* button. Both panels now reserve the
+tab's width as a left gutter (`.conv-rail`, `.conv-main`). Caught in the browser, not in review.
 
-### 3.2 Positioning the Help tab
+### 2. Scroll up reveals a scrollable conversation
 
-`web/static/css/app.css` — one new rule, `.conv-settings-tab--help`:
+`.conv-body` at `≤900px` becomes a single-column scroller with `scroll-snap-type: y mandatory`
+and `grid-auto-rows: 100%`, so the rail and the transcript are each exactly one scrollport tall
+and the transcript is one swipe below the voice panel. Both panels keep their own overflow, so
+native scroll chaining does the return trip: run out of transcript scrolling back down and the
+outer scroller takes over and snaps you to the voice panel. Verified: `scrollHeight` 2238 =
+2 × `clientHeight` 1119 — exactly two panels, no third.
 
-```css
-height: 16dvh;
-min-height: calc(var(--ln-touch) * 2);
-top: calc(50% - 20dvh - var(--ln-sp-2));
-transform: translateY(-100%);
+Swiping is not an accessible control, so a **Conversation ⌄** button under the rail's cluster
+scrolls the same container (honouring `prefers-reduced-motion`). Verified it lands at
+`scrollTop == clientHeight`.
+
+### 3. Conversation overlay
+
+`Show Conversation` (bottom-left) opens `<dialog id="conversationOverlay">.showModal()`. That is
+where the semi-transparent scrim (`::backdrop`), the focus trap, Escape, and the
+prevent-scroll-through come from — the page behind a modal dialog is inert. The body is capped
+at `80dvh`, scrolls on its own, and adds `overscroll-behavior: contain` so a flick reaching
+either end doesn't chain out either. Dismiss via the ✕, via **Hide Conversation**, via Escape,
+or by clicking the scrim.
+
+The body is a **live mirror, not a move**: `#transcript` is cloned in on open and re-cloned on
+mutation (coalesced to one re-clone per animation frame), so `transcript.mjs` keeps owning the
+real subtree and turns that arrive while the overlay is up still appear. Buttons inside cloned
+tool cards are stripped — a duplicate "Details" control would be dead. Verified: 16 bubbles
+mirrored, 0 buttons, `overscroll-behavior-y: contain`, `max-height: 944px` (80dvh of 1180).
+
+### 4. Bottom bar
+
+A `flex: none` row inside `.conv-app`, so it takes its height out of the scroller above rather
+than floating over it, with `env(safe-area-inset-bottom)` padding. Hidden above 900px, where the
+rail already carries these controls and a second copy would be noise.
+
+- **Show Conversation** — opens the overlay (`aria-haspopup="dialog"`, `aria-controls`, `aria-expanded`)
+- **History / Memory / Downloads** — icon + real text label (the label is the accessible name)
+- **Audio** `<select>` — `auto / low / medium / high / mic test`
+
+**Narrow phones (≤520px).** At 390px the first version of the bar didn't fit: "Show Conversation"
+truncated and the Audio select clipped. Below 520px the three destination links go icon-only —
+their `aria-label` (which duplicates the visible text on purpose) becomes the accessible name —
+and *Show Conversation* keeps its label, because it is the one control the spec asks to be
+clearly labelled. Re-measured at 390px: bar `scrollWidth == clientWidth == 375` (no horizontal
+overflow), items 107×54 / 44×54 / 44×54 / 44×54, select 104×44 — every target ≥44×44.
+
+On the audio picker, two decisions worth stating plainly:
+
+- There is **no audio-quality setting in this product**. The nearest real thing — and the one the
+  rail's own `Low / Med / High` chips write — is `turnDetection.micEagerness`, mic *pickup*
+  sensitivity. The select writes that, through the same optimistic `saveQuickSwitch` path, and
+  `syncMicChips()` now drives both so the chips and the select can never disagree. It is labelled
+  **Audio** rather than "Audio quality", and the Help panel says in so many words that it is the
+  same setting as *Mic pickup*. Calling it quality in the UI would have been a lie.
+- **`auto` is a fifth option** because it is the schema default. The four the spec names are all
+  present; without `auto` the select could not display the state a fresh account actually ships in.
+- **Mic test** is an action parked in a value list: it opens the existing `#micTestDialog` and
+  snaps the select back to the stored setting, so it never sits displaying a state nothing holds.
+
+Verified in-browser: choosing *Mic test…* opened `#micTestDialog` and the select returned to
+`auto`; choosing *high* attempted the save and — with no backend behind the local preview —
+reverted with the standard error toast, which is the revert path working.
+
+### 5. Copy and Screenshot
+
+Both live in a tools row over the transcript **and** in the overlay, bound by
+`data-conv-action` so the two copies share one handler each and cannot drift apart.
+
+- **Copy** serialises the rendered transcript to `Role (time): text`, blank-line separated,
+  through the page's existing `copyText()` (clipboard API with an `execCommand` fallback).
+  Verified output: `You (9:01 AM): What is the weather?\n\nLive Ninja (9:01 AM): Seventy-two and clear.`
+- **Screenshot** paints the conversation to a 2D canvas and downloads a PNG.
+  **Not html2canvas**: this page has no bundler and no third-party script tags, and the transcript
+  is plain text plus role labels, so a direct canvas render is smaller and exact — and nothing
+  leaves the device. Colours are read from the live CSS custom properties, so the image matches
+  the user's theme. Verified: a **118,662-byte `image/png`, 760 × 932**, filename
+  `live-ninja-conversation-2026-08-01-12-03-20.png`, and the rendered image was eyeballed —
+  title, timestamp, rule, `Role · time` headers, correctly wrapped body text.
+
+  **Changed during verification:** the first version tried `navigator.share({files})` on mobile
+  first. In Chromium `navigator.canShare({files})` returns `true` and `share()` then never
+  settles without a user-activation gesture — the button produced no image, no download, and no
+  error. It is now an unconditional download; the OS share sheet is one tap from there.
+
+### 6. Tag for review
+
+A button in both tool rows opens `<dialog id="reviewTagDialog">` with a required note. Saving
+writes `{conversationId, note, at}` to `localStorage['ln.reviewTags']`, newest first, capped at 50.
+The conversation id is the live session id, falling back to the last session seen on the page —
+because the natural moment to tag a conversation is right after it goes wrong, when the session
+has already closed.
+
+**It is local on purpose.** There is no server-side review queue in this repo to post to, and a
+`POST` that quietly went nowhere would be worse than an honest local record. The Help panel says
+where the note lives and points at Copy/Screenshot as the way to carry it off the device. If a
+review queue is wanted, that is an API + table, not a follow-up tweak.
+
+Verified: dialog opened, note saved, dialog closed, toast shown, and
+`localStorage['ln.reviewTags']` held
+`[{"conversationId":"","note":"It misheard the street name twice.","at":"2026-08-01T12:03:58.544Z"}]`
+(empty id is correct — the local preview has no realtime session).
+
+### 7. `＋` → `NEW`
+
+Same position (right edge of the orb row), same `id="newConversationBtn"`, same handler, same
+`aria-label="New conversation"`. The round icon button becomes a pill wide enough for the word;
+height stays `var(--ln-touch)`.
+
+---
+
+## Verification
+
+**Automated** — `go build ./...`, `go vet ./...`, `go test ./...` all pass.
+New `internal/webapp/mobile_shell_ui_test.go` (6 tests) pins the bottom bar and its five audio
+options, the snap-scroller declarations, the overlay dialog + `autofocus` + `overscroll-behavior`
++ `80dvh`, the exact count of each `data-conv-action` (2 apiece) and its handler, the absence of
+any `html2canvas` reference, the review-tag storage key, the left-edge tab rules including the
+16px glyph, and the `NEW` label. `help_drawer_ui_test.go` now also requires the four new Help
+entries, so shipping one of these features without its help copy fails the suite.
+
+**In a browser** — the page was rendered from the real embedded assets and driven at **800 × 1180**
+(tablet) and **1440 × 900** (desktop). Everything quoted above as "verified" was measured there.
+
+Desktop regression check at 1440px: bottom bar `display: none`, scroll hint `display: none`,
+Settings tab still flush to the **right** edge with a **22px** glyph, `.conv-body` still
+`360px 1080px` with `overflow-y: visible` (no snap scroller), rail padding unchanged. The only
+change visible on desktop is the tools row, which is intentional — it is what makes Copy,
+Screenshot and Tag reachable on a machine that has no bottom bar.
+
+## A regression I caused, and fixed
+
+Run 30699017769's `web-quality` job (Playwright + axe + Lighthouse) came back **failed**. It is
+`continue-on-error: true` in this repo, so the run's own conclusion was still `success` — but that
+job had been **green on the two runs immediately before mine**, so the failure was mine, not noise.
+
+`tests/web/specs/settings-accordion.spec.mjs:165`, under the `mobile-chrome` project (Pixel 7,
+412px), asserted the settings opener was flush to the **right** edge:
+
+```
+expect(openerBox.x + openerBox.width).toBeCloseTo(viewport.width, 0);
+  Expected: 412   Received: 44
 ```
 
-`50% - 20dvh` is the Settings bar's top edge, so anchoring this bar's *bottom* edge
-(`translateY(-100%)`) one spacing unit above it keeps the two stacked and aligned at any
-viewport height, without hard-coding pixel offsets. `min-height` keeps it thumb-sized on
-short viewports.
+Which is exactly the change: at ≤900px the tab is now at `x: 0, width: 44`. The spec was pinning a
+contract this work deliberately changes, so the spec was wrong, not the CSS. It now asserts what is
+actually intended — the two bars are the same size and sit on **opposite** edges at the same
+height, opener-right/close-left on a computer and opener-left/close-right on a phone — and is
+viewport-aware rather than unconditional. Full local Playwright run afterwards: **71 passed,
+21 skipped, 0 failed** across both projects.
 
-Plus `.conv-help__list` / `.conv-help__defs` for the prose inside — the only styling the
-panel needed of its own.
+The second failure in that log (`device-settings.spec.mjs:89`, a device-ID rotation assertion) was
+reported by Playwright itself as **flaky** — it passed on retry, and it is untouched by this work.
 
-### 3.3 Open/close wiring
+## Deploy
 
-`web/static/js/conversation.mjs` — a "docked help drawer" block immediately after the
-settings drawer block, deliberately parallel to it: `showModal()` on the tab, `close()` on
-the close bar, scrim-click via `e.target === helpDrawer`, and a `close` listener that
-resets `aria-expanded` and returns focus to the tab. It also resets
-`.conv-drawer__inner`'s `scrollTop` on open, so a long panel re-opens at the top rather
-than wherever it was last left (verified — the browser does preserve the scroll offset
-without this).
+Three pushes to `main`, which is this repo's only deploy trigger:
 
-No state, no fetch, no settings document: the content is static markup, so this block is
-open/close only.
+| Commit | Run | `deploy` | Run conclusion |
+| --- | --- | --- | --- |
+| `bb488e3` mobile shell | 30699017769 | success | success (`web-quality` failed — see above) |
+| `5ee4cc2` 390px bottom bar | 30699237771 | success | success |
+| `e5baa39` edge-bar spec fix | 30699422933 | success | **success, `web-quality` back to green** |
 
-### 3.4 Content
+No local deploy was used at any point; `deploy.md`'s single path (push → GitHub Actions → OIDC)
+was the only mechanism. The second push was held until the first run's `deploy` job had finished
+so two CloudFormation deploys could not overlap.
 
-Six sections, written for an end user and sourced from what the code actually ships (the
-nine settings accordion sections, the rail controls, the four pages, and the tool registry
-in `internal/tools/`) — not from README prose:
+## Test tablet — verified on the deployed build
 
-1. **Getting started** — push-to-talk, wake-phrase hands-free mode, typing, the state
-   pill, barge-in.
-2. **What you can ask for** — weather/time for saved places, web lookup and research,
-   remember/forget, timers and reminders, email, generated files, device control, start
-   new conversation / stop listening. Closes with the *Show tool calls* pointer.
-3. **Where everything lives** — History, Memory (including Guides), Personas, Downloads,
-   and the two cost surfaces.
-4. **Settings explained** — a `<dt>`/`<dd>` per settings section, all nine, each using the
-   section's own UI title verbatim.
-5. **Keyboard and navigation** — Escape, outside-click, focus behaviour, Enter.
-6. **Tips and troubleshooting** — mic blocked, wake phrase not triggering, being cut off
-   mid-sentence, persona changes applying next conversation, per-device settings, forgetting.
+The Galaxy Tab S9 FE (`R52XC06P9KJ`, Android 16, 1440×2304) is attached over adb. It is not a
+separate build target: the web app *is* the deliverable, so "deploying to the tablet" means the
+tablet loading the deployed page, with no install step. Signed in via Samsung Internet 30
+(Chromium 143), on `https://live.jeremy.ninja/conversation`, against the shipped build:
 
-Deliberately excluded: anything gated off or unshipped. Audio storage, for instance, is a
-saved-but-inert preference in this build, so the help copy does not claim it works.
+- **Layout** — Help and Settings tabs on the **left** edge with the small glyphs; **NEW** beside
+  the orb; the **Conversation ⌄** hint; the bottom bar with Show Conversation, History, Memory,
+  Downloads and the Audio picker. Screenshotted.
+- **Swipe-up reveal (req. 2)** — a real touch swipe snapped the page from the voice panel to the
+  transcript panel, showing the tools row, the transcript and the composer with the bottom bar
+  still pinned. This is the actual gesture, on the actual device.
+- **Bottom-bar navigation (req. 4)** — pressing *History* navigated to `/history`.
+- **Audio picker binding (req. 4)** — on the live settings document the select reads `high` and
+  the rail's `High` chip reads `aria-pressed="true"` **at the same time**. The two controls agree
+  against real server state, which is the thing worth proving.
+- **Conversation overlay (req. 3)** — opened over the app with its dimmed backdrop, the
+  Copy/Screenshot/Tag row, the empty-state line and *Hide Conversation*;
+  `max-height: 922.97px` (80dvh of this viewport) and `overscroll-behavior-y: contain` measured
+  on the device. Closed cleanly.
 
-### 3.5 Drift guard
+## A pre-existing hazard this surfaced (not fixed — needs your call)
 
-New `internal/webapp/help_drawer_ui_test.go`, following the repo's existing
-`*_ui_test.go` pattern of reading the shipped assets out of `web.Files`:
+On the first tablet load, **nothing driven by JavaScript worked** — not the new overlay, and not
+the Settings or Help drawers that have been shipping since July. Reading the device's real console
+over the Samsung Internet DevTools socket gave the cause in one line:
 
-- `TestHelpDrawerMarkupContract` — the three element ids `conversation.mjs` resolves, the
-  ARIA wiring, initial `aria-expanded="false"`, and `autofocus` on the close control.
-- `TestHelpDrawerSharesSettingsDrawerChrome` — pins the class *reuse* (not a clone), so a
-  future refactor that forks the CSS fails here.
-- `TestHelpDrawerIsNotASettingsAccordion` — see §5.
-- `TestHelpDrawerCoversTheAppsCapabilities` — every section heading, every one of the nine
-  settings sections, and every page must be mentioned. **This is the test that fails when
-  a feature ships without its help entry.**
+```
+Uncaught SyntaxError: The requested module './wakeword.mjs' does not provide
+an export named 'applyWakeWordSettings'
+  @ https://live.jeremy.ninja/static/js/conversation.fe215b7cbdb9.mjs:40
+```
 
-### 3.6 Maintenance documentation
+A module-linking failure kills the **whole** of `conversation.mjs`, which is why every button on
+the page was inert while plain `<a>` links and CSS scrolling still worked.
 
-See §6 for the `cloud.md` question. The section itself:
+The origin was fine — `curl https://live.jeremy.ninja/static/js/wakeword.mjs` has the export, and
+`fetch(..., {cache:'reload'})` on the device confirmed the network copy has it. The tablet was
+holding a **stale cached `wakeword.mjs`**. Forcing a revalidate and reloading cleared it
+permanently, and everything above was then verified.
 
-- **`agents.md` → "Help section maintenance"** (authoritative): the rule, a file-path
-  table (content / wiring / styling / guard), a six-item checklist keyed to the kind of
-  change, an HTML entry template, and a tone guide. Explicitly instructs reuse of the
-  shared drawer classes.
-- **`CLAUDE.md` → "Help section maintenance"**: the rule, the four paths, the test
-  command, and a link to the full checklist in `agents.md` — matching the two files'
-  existing "reference each other, don't duplicate" relationship.
+The structural reason is worth your attention, because it is not specific to this change:
 
-## 4. Verification
+> `conversation.mjs` is loaded by its **fingerprinted, `immutable`** URL, but it imports its
+> siblings by **logical** path (`./wakeword.mjs`). So any deploy that changes `conversation.mjs`
+> mints a new, guaranteed-fresh URL for it while its siblings keep URLs a browser may still have
+> cached from an older deploy. If the new module expects an export the cached sibling predates,
+> the page dies completely — silently, with no visible error.
 
-| Check | Result |
-| --- | --- |
-| `go vet ./...` | clean |
-| `go test ./...` | **pass** — 23 packages ok, 0 failures |
-| `go test ./internal/webapp/ -run TestHelpDrawer` | 4/4 pass |
-| Build (all 12 Lambda binaries, `GOOS=linux GOARCH=arm64 CGO_ENABLED=0 -tags lambda.norpc`, exactly as `make build` does) | all succeed |
+That makes **every** future `conversation.mjs` change a coin-flip for any client holding an old
+sibling. Mine happened to land on this tablet.
 
-`make` is not installed on this Windows machine, so the `build` target's loop was run
-directly with the same flags rather than skipped.
+I have not changed the caching or the service worker: this is the asset/module strategy, the
+repo has explicit rules about not altering cache behaviour without diagnosing it first, and it is
+well outside the seven requested items. The fix worth considering is making the import specifiers
+resolve to fingerprinted URLs too (an import map stamped by `assets.go`, so a module graph is
+always internally consistent), which would remove the failure mode rather than paper over it.
 
-**Visual/behavioural verification.** `/conversation` is behind a Login-with-Amazon
-session, and no deploy was authorized, so the panel was checked by serving a static
-harness (the extracted help block + the real `app.css`) over localhost and driving it with
-Playwright:
+---
 
-- Help tab renders directly above the Settings tab on the right edge, same width, same
-  border/radius treatment — confirmed at 1400×900 and 390×844, in dark and light themes.
-- Clicking it opens the panel with the settings slide-in; content is readable, the body
-  scrolls (3055px of content in a 900px viewport), the `<dl>` sections lay out correctly.
-- Escape closes it and focus returns to `#helpDrawerBtn`.
+## Audio verification request (drafted, not sent)
 
-This exercises the markup and CSS, not the `conversation.mjs` wiring in situ. **The one
-thing still unverified is the panel inside the real authenticated page** — that needs a
-deploy or an authenticated session, neither of which was in scope.
+This machine's speakers do not work, so the two audio-dependent checks — that the Audio picker
+actually changes how quickly Live Ninja takes a turn, and that *Mic test…* shows a live level —
+need someone with working audio. The spec allowed either sending this or drafting it here with a
+placeholder recipient; it is drafted, because no recipient was named and this run was unattended,
+and mailing an unnamed party is not a call to make without an addressee.
 
-## 5. Problem hit and fixed
+> **To:** `<recipient>`
+> **From:** live-ninja@jeremy.ninja
+> **Subject:** 5-minute audio check on the new Live Ninja mobile conversation screen
+>
+> Hi —
+>
+> A mobile shell for the Live Ninja conversation screen went out today
+> (commit `bb488e3`). Everything visual is verified, but the machine that built it has no
+> working speakers, so two things need ears and a microphone. It should take five minutes.
+>
+> On a phone or tablet, open **https://live.jeremy.ninja/conversation** and sign in.
+>
+> 1. **Audio picker** — bottom right of the screen, the dropdown reading *Audio: Auto*.
+>    Set it to **Low**, start a conversation, and pause mid-sentence: it should wait for you.
+>    Then set it to **High** and pause the same way: it should jump in sooner. Confirm the
+>    setting sticks after a reload, and that changing it mid-conversation says it applied to
+>    the conversation you're in.
+> 2. **Mic test** — same dropdown, last entry, **Mic test…**. The microphone-check dialog
+>    should open, ask for microphone permission, and show a meter that moves when you speak.
+>    Close it and confirm the dropdown snaps back to whatever level you had set.
+>
+> Also worth a glance while you're there: tap **Show Conversation** at the bottom left and
+> confirm the assistant keeps speaking normally with the overlay open.
+>
+> Reply with what you saw — especially if either dropdown behaviour felt identical between
+> Low and High, which would mean the setting isn't reaching the session.
+>
+> Thanks.
 
-The first draft failed `TestConversationSettingsAccordionContract`
-(`settings accordion has 10 triggers, want 9`). The cause: that test counts occurrences of
-the string `data-settings-accordion-trigger` in the raw template, and my *explanatory
-comment* in the help block mentioned the attribute by name. A comment inflated a
-production contract count.
+---
 
-Fixed by rewording the comment, and the guard was tightened so it can't recur:
-`TestHelpDrawerIsNotASettingsAccordion` now anchors on the `HELP DRAWER` block marker
-rather than the dialog element, putting the leading comment in scope too.
+## Deliberately not done
 
-## 6. Deviation from the brief — `cloud.md`
+- **No Android APK change.** The native app is a separate surface with its own Compose shell; see
+  the table at the top. Porting these seven items into Compose is a different piece of work.
+- **No server-side review queue.** Tag-for-review is local, and says so.
+- **No "Show Conversation" button on desktop.** The conversation is permanently on screen there;
+  the overlay would be a worse view of something already visible. Copy/Screenshot/Tag are still
+  reachable on desktop through the tools row.
 
-**There is no `cloud.md` in this repository, and no file has ever been named that.**
-`find . -iname "cloud*.md"` returns nothing. The repository's contributor-instruction
-files are:
+- **No caching / service-worker change.** See the hazard section above — it is real, but it is an
+  asset-strategy decision, not a mobile-UI one.
 
-- `agents.md` — instructions for all coding agents
-- `CLAUDE.md` — Claude-specific notes; states *"Agent configuration is shared with
-  agents.md; keep the two consistent"*
-- `deploy.md` — deployment and credential policy
-
-Rather than create a fourth instruction file that nothing reads and no convention points
-at — which would guarantee the guidance is missed, defeating its purpose — the maintenance
-section was written into `agents.md` and `CLAUDE.md`, the files contributors and agents in
-this repo are actually directed to read.
-
-If `cloud.md` was meant literally and refers to something outside this repository, the
-section is self-contained and can be lifted across verbatim.
-
-## 7. Acceptance checks
+## Acceptance checks
 
 | # | Check | Status |
 | --- | --- | --- |
-| 1 | Help trigger visible near the settings trigger | Yes — same right edge, directly above it |
-| 2 | Opens a slide-out with the same animation as settings | Yes — the same `.conv-drawer` element and `conv-drawer-in` keyframe, not a copy |
-| 3 | Organized, accurate descriptions of capabilities | Yes — 6 sections, written from the shipped feature set |
-| 4 | Dismissable, matching settings | Yes — close bar, scrim click, and Escape; focus returns to the opener |
-| 5 | Maintenance section with file paths | Yes — in `agents.md` + `CLAUDE.md`; see §6 re: `cloud.md` |
-| 6 | Project builds | Yes — all 12 binaries cross-compile |
-| 7 | Existing tests pass | Yes — full `go test ./...` green |
-
-Constraints honoured: no new dependencies, no new frameworks, existing classes/tokens/code
-style reused throughout, no stubs or placeholders.
-
-## 8. State on disk
-
-Committed to `main` locally as `1bf8212`. **Not pushed.** Files touched:
-
-```
-M  CLAUDE.md
-M  agents.md
-M  web/templates/pages/conversation.html
-M  web/static/css/app.css
-M  web/static/js/conversation.mjs
-A  internal/webapp/help_drawer_ui_test.go
-```
-
-No unrelated worktree changes existed before this run, and none were introduced.
-
-## 9. Deploy (2026-08-01)
-
-The owner authorized the push after the report above was written. Pushed
-`3b662ff..7f9c4ab`; run `30686409890` finished **success** in ~7m, every job green
-(`test`, `changes`, `build-nova-container`, `deploy`, `web-quality`,
-`push-nova-container-bootstrap`; the two wake-word container jobs path-skipped as usual).
-`web-quality` is the post-deploy Playwright gate, so the public surface and the a11y suite
-passed against the deployed site.
-
-Confirmed live on `https://live.jeremy.ninja`: the served `static/css/app.css` carries the
-`.conv-settings-tab--help` / `.conv-help__*` rules and `static/js/conversation.mjs` carries
-the `helpDrawerBtn` wiring.
-
-Still outstanding, unchanged by the deploy: the panel has not been eyeballed on the real
-authenticated `/conversation` page. Everything verifiable without a session is verified;
-the remaining pass is an owner one.
+| 1 | Help and settings icons on the left of the mobile toolbar, reduced size | Yes — 22px → 16px glyphs with the 44px bar retained; seen on the tablet |
+| 2 | Scrolling up reveals a scrollable conversation | Yes — a real swipe on the tablet snapped to the transcript panel |
+| 3 | Bottom button toggles a scrollable conversation overlay | Yes — opened and closed on the tablet; 80dvh body, scroll contained |
+| 4 | Bottom bar has history/memory/downloads icons + audio dropdown with the four options | Yes, plus `auto`; picker and rail chips agree on live settings |
+| 5 | Copy places text on the clipboard; screenshot produces a downloadable image | Yes — exact clipboard string, and a 118,662-byte 760×932 PNG |
+| 6 | Tag for Review captures an explanation and persists it | Yes — stored record quoted above |
+| 7 | New-conversation trigger displays NEW instead of + | Yes — seen on the tablet |
+| 8 | App builds without errors; tests pass | Yes — `go build` / `go vet` / `go test` green; Playwright 71 passed, 0 failed |
+| 9 | Deployment to test tablet attempted/completed | Yes — deployed through the pipeline and verified on the device |
+| 10 | Email requesting audio testing drafted/sent | Drafted above, with a placeholder recipient and the reason it was not sent |
