@@ -199,4 +199,32 @@ class SettingsStoreTest {
         assertTrue(doc.keepScreenOn)
         assertEquals("WARN", doc.diagnostics.minLevel)
     }
+
+    /**
+     * Mic pickup (owner 2026-08-01) is written from the conversation screen and
+     * read back SERVER-side at the next mint, so the only thing this client
+     * controls is that the key lands in the document under the schema's exact
+     * name, survives a reload, and normalizes an absent/blank value to "auto"
+     * (contracts/settings.schema.json: "Optional; absent normalizes to auto").
+     * A typo'd key would persist happily and change nothing about the session.
+     */
+    @Test
+    fun micEagernessRoundTripsUnderTheSchemaKeyAndDefaultsToAuto() {
+        val backing = FakeBacking()
+        val store = backing.store()
+
+        assertEquals("auto", store.document.value.micEagerness)
+
+        store.setMicEagerness("high")
+        assertEquals("high", store.document.value.micEagerness)
+        assertEquals("high", stored(backing).getString("micEagerness"))
+        assertEquals("high", backing.store().document.value.micEagerness)
+
+        // A document written by an older app version omits the key entirely,
+        // and a server document may send it blank; both mean "auto".
+        store.replaceFromServer(JSONObject().put("version", 9))
+        assertEquals("auto", store.document.value.micEagerness)
+        store.replaceFromServer(JSONObject().put("version", 10).put("micEagerness", ""))
+        assertEquals("auto", store.document.value.micEagerness)
+    }
 }

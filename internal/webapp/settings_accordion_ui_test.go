@@ -82,8 +82,10 @@ func TestSettingsEdgeBarsAndAccordionBehaviorAreShipped(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"height: 40vh;",
-		"height: 40dvh;",
+		// The bar became a ~40px upper-left corner tab on 2026-08-01; its
+		// geometry is pinned in mobile_shell_ui_test.go
+		// (TestEdgeTabsSitInTheUpperLeft). Only its existence matters here.
+		"height: var(--ln-edge-tab);",
 		".conv-settings-tab--close",
 		".set-accordion__trigger",
 		".set-accordion__panel",

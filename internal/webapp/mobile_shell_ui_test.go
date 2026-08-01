@@ -67,11 +67,56 @@ func TestMobileBottomBarContract(t *testing.T) {
 	assert.Contains(t, html, `for="audioQualitySelect"`,
 		"the audio select needs a label element, not a bare aria-label")
 
-	// The bar is mobile-only, and it is the stylesheet that says so.
-	assert.Contains(t, css, ".conv-bottombar { display: none; }",
-		"the bottom bar must be hidden by default (desktop keeps the rail)")
+	// The bar is shown at EVERY width (owner 2026-08-01: "make the icons on
+	// the bottom the default, regardless of window size"). The old
+	// `display: none` default, and the mobile-only copy of these rules inside
+	// the <=900px block, are both gone.
+	assert.NotContains(t, css, ".conv-bottombar { display: none; }",
+		"the bottom bar is no longer hidden at desktop widths")
 	assert.Contains(t, css, "@media (max-width: 900px)",
 		"app.css must carry the <=900px mobile block")
+
+	mobileAt := strings.LastIndex(css, "@media (max-width: 900px)")
+	if assert.GreaterOrEqual(t, mobileAt, 0) {
+		assert.NotContains(t, css[mobileAt:], ".conv-bottombar {",
+			"the bar's layout must live at the top level, not inside the mobile block")
+	}
+	// It is a flex:none row inside .conv-app, which is what pins it to the
+	// bottom of the viewport without position:fixed at any width.
+	barCSSAt := strings.Index(css, ".conv-bottombar {")
+	if assert.GreaterOrEqual(t, barCSSAt, 0, "the bottom bar has no layout rule") {
+		barCSS := css[barCSSAt:min(len(css), barCSSAt+320)]
+		assert.Contains(t, barCSS, "flex: none;",
+			"the bar must take its height out of the scroller above it")
+		assert.Contains(t, barCSS, "display: flex;", "the bar must be shown by default")
+	}
+}
+
+// TestConversationPageDoesNotScrollTheRoot: .conv-app is a 100dvh flex column
+// that owns its own scrollers, but its own `overflow: hidden` was NOT enough —
+// below 900px .conv-body's second snap panel extends a full viewport past
+// .conv-app's box, and the ROOT scroller still counted it. That gave the page a
+// phantom ~viewport-tall scroll range which carried the bottom bar off screen
+// (owner 2026-08-01). Measured on a 390x844 viewport before the fix:
+// documentElement.scrollHeight 1526 against clientHeight 844.
+//
+// The fix is a body class stamped by pages_routes.go for /conversation only, so
+// every other page keeps normal page scrolling. Both halves are asserted here
+// because either one alone is a silent no-op.
+func TestConversationPageDoesNotScrollTheRoot(t *testing.T) {
+	css := readAsset(t, "static/css/app.css")
+
+	assert.Equal(t, "ln-body--fixed", pageMetas["pages/conversation"].BodyClass,
+		"the conversation page must stamp the fixed-shell body class")
+
+	at := strings.Index(css, "body.ln-body--fixed {")
+	if assert.GreaterOrEqual(t, at, 0, "app.css must define body.ln-body--fixed") {
+		rule := css[at:min(len(css), at+220)]
+		assert.Contains(t, rule, "overflow: hidden;",
+			"the root scroller must be switched off on the conversation page")
+		assert.Contains(t, rule, "overscroll-behavior-y: none;",
+			"a flick past the end of the transcript must not rubber-band the page")
+	}
 }
 
 // TestMobileSnapPanels: scrolling up on a phone reveals the transcript because
@@ -106,26 +151,27 @@ func TestMobileSnapPanels(t *testing.T) {
 }
 
 // TestBottomBarControlsAreNotDuplicatedAbove: whatever the bottom bar carries
-// must not also appear on the panel above it at those widths (owner
-// 2026-08-01). The rail keeps its copies at desktop widths, where no bar
-// exists — so this is a media-query assertion, not a deletion.
+// must not also appear on the panel above it. Now that the bar is shown at
+// every width (owner 2026-08-01), that is a top-level rule rather than a
+// media-query one — but it is still a hide, not a deletion: settings.mjs and
+// conversation.mjs bind the rail's copies by id.
 func TestBottomBarControlsAreNotDuplicatedAbove(t *testing.T) {
 	html := readAsset(t, "templates/pages/conversation.html")
 	css := readAsset(t, "static/css/app.css")
 
-	// Still present in the markup: desktop is the surface that needs them.
 	assert.Contains(t, html, `class="conv-rail__nav"`,
-		"the rail nav must survive for desktop widths")
+		"the rail nav must survive in the markup (JS binds it)")
 	assert.Contains(t, html, `id="micSensGroup"`,
-		"the rail mic line-up must survive for desktop widths")
+		"the rail mic line-up must survive in the markup (JS binds it)")
+
+	assert.Contains(t, css, ".conv-rail__nav,\n.conv-miclineup { display: none; }",
+		"History/Memory/Downloads and the mic line-up live on the bottom bar at every width")
 
 	mobileAt := strings.LastIndex(css, "@media (max-width: 900px)")
-	if !assert.GreaterOrEqual(t, mobileAt, 0, "the mobile media block is missing") {
-		return
+	if assert.GreaterOrEqual(t, mobileAt, 0, "the mobile media block is missing") {
+		assert.NotContains(t, css[mobileAt:], ".conv-rail__nav,",
+			"the hide is top-level now; a mobile-only copy would imply desktop still shows them")
 	}
-	mobile := css[mobileAt:]
-	assert.Contains(t, mobile, ".conv-rail__nav,\n  .conv-miclineup { display: none; }",
-		"History/Memory/Downloads and the mic line-up are on the bottom bar at these widths")
 }
 
 // TestConversationOverlayContract: the overlay takes the whole screen above
@@ -218,37 +264,63 @@ func TestConversationToolsContract(t *testing.T) {
 		"review tags must be persisted under the documented key")
 }
 
-// TestMobileEdgeTabsMoveLeft: on a phone the Help and Settings tabs sit on the
-// LEFT edge with smaller glyphs, and the in-drawer close bar mirrors to the
-// right so the two never overlap. The tab keeps its var(--ln-touch) width, so
-// shrinking the glyph does not shrink the tap target.
-func TestMobileEdgeTabsMoveLeft(t *testing.T) {
+// TestEdgeTabsSitInTheUpperLeft: Settings and Help are two ~40px tabs stacked
+// in the upper-left corner at EVERY width (owner 2026-08-01), replacing the old
+// vertically-centred 40dvh bars on the right edge — which were tall enough to
+// paint over the transcript's right-hand bubbles. At 40px there is no room for
+// the rotated word, so each tab is icon-only with a native `title` tooltip.
+func TestEdgeTabsSitInTheUpperLeft(t *testing.T) {
 	css := readAsset(t, "static/css/app.css")
+	html := readAsset(t, "templates/pages/conversation.html")
 
-	mobileAt := strings.LastIndex(css, "@media (max-width: 900px)")
-	if !assert.GreaterOrEqual(t, mobileAt, 0, "the mobile media block is missing") {
-		return
+	assert.Contains(t, css, "--ln-edge-tab: 40px;",
+		"the owner-specified 40px tab height must stay a named token")
+
+	at := strings.Index(css, ".conv-settings-tab {")
+	if assert.GreaterOrEqual(t, at, 0, "the edge tab has no layout rule") {
+		tab := css[at:min(len(css), at+900)]
+		assert.Contains(t, tab, "left: 0;", "the tabs live on the left edge")
+		assert.Contains(t, tab, "top: var(--ln-sp-4);", "the tabs live at the TOP of that edge")
+		assert.Contains(t, tab, "height: var(--ln-edge-tab);", "the tab is 40px tall")
+		assert.Contains(t, tab, "width: var(--ln-touch);",
+			"the tab must keep its 44px-wide touch target")
+		assert.NotContains(t, tab, "40dvh", "the full-height bar is gone")
 	}
-	mobile := css[mobileAt:]
 
-	assert.Contains(t, mobile, "left: 0; right: auto;",
-		"the edge tabs must move to the left edge on mobile")
-	assert.Contains(t, mobile, ".conv-settings-tab__icon { font-size: 16px; }",
-		"the edge-tab glyph shrinks from 22px to 16px (~27%) on mobile")
-	assert.Contains(t, mobile, "left: auto; right: 0;",
-		"the in-drawer close bar must mirror to the right edge on mobile")
-	assert.Contains(t, mobile, ".conv-settings-tab__badge { left: auto; right: -8px; }",
-		"the suggestion badge must hang off the tab's outer (now right) side")
+	// Help is stacked one gap directly BELOW Settings, so the two read as one
+	// cluster at any viewport height.
+	assert.Contains(t, css,
+		"top: calc(var(--ln-sp-4) + var(--ln-edge-tab) + var(--ln-sp-2));",
+		"the Help tab must sit one gap below the Settings tab")
 
-	// The desktop rule still owns the tap target; assert it is untouched.
-	assert.Contains(t, css, "width: var(--ln-touch);\n  height: 40vh;",
-		"the edge tab must keep its 44px-wide touch target")
+	// Icon-only: the label is hidden and the tooltip carries the word.
+	assert.Contains(t, css, ".conv-settings-tab__label { display: none; }",
+		"a 40px tab has no room for the rotated label")
+	assert.Contains(t, html, `title="Settings"`, "the gear tab needs a hover tooltip")
+	assert.Contains(t, html, `title="Help"`, "the ? tab's tooltip must read Help")
+
+	// The in-drawer close bar mirrors to the upper right, so it can never sit
+	// under the opener it replaces; the badge hangs off the tab's outer side.
+	assert.Contains(t, css, ".conv-settings-tab--close {\n  left: auto;\n  right: 0;",
+		"the in-drawer close bar must mirror to the right edge")
+	assert.Contains(t, css, "position: absolute; top: -8px; right: -8px; left: auto;",
+		"the suggestion badge must hang off the tab's outer (right) side")
 }
 
-// TestNewConversationSaysNEW: the + glyph was replaced by the word, in the same
-// position with the same id and the same accessible name.
+// TestNewConversationSaysNEW: the + glyph was replaced by the word, with the
+// same id and the same accessible name — and, since 2026-08-01, on the LEFT of
+// the orb row and 15px below the orb's bottom edge.
 func TestNewConversationSaysNEW(t *testing.T) {
 	html := readAsset(t, "templates/partials/audio_viz.html")
+	css := readAsset(t, "static/css/app.css")
+
+	at := strings.Index(css, ".ln-orb-newconv {")
+	if assert.GreaterOrEqual(t, at, 0, "the new-conversation button has no layout rule") {
+		rule := css[at:min(len(css), at+260)]
+		assert.Contains(t, rule, "left: 0;", "NEW moved to the left of the orb row")
+		assert.Contains(t, rule, "right: auto;", "the old right anchor must be cleared")
+		assert.Contains(t, rule, "bottom: -15px;", "NEW sits 15px below the orb's bottom edge")
+	}
 
 	assert.Contains(t, html, `id="newConversationBtn"`,
 		"the new-conversation button keeps its id (conversation.mjs binds it)")

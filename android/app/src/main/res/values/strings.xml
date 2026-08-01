@@ -45,6 +45,14 @@
     <string name="conversation_tool_call">Used %1$s</string>
     <string name="conversation_barge_in">Go ahead — I\'m listening</string>
     <string name="conversation_interrupt_hint">Just start speaking to interrupt</string>
+    <!-- Conversation top-row controls (owner 2026-08-01): new conversation and
+         mic pickup, matching the web client's rail cluster. -->
+    <string name="conversation_new">New</string>
+    <string name="conversation_mic_pickup_label">Mic pickup sensitivity</string>
+    <string name="conversation_mic_pickup_low">Low</string>
+    <string name="conversation_mic_pickup_medium">Med</string>
+    <string name="conversation_mic_pickup_high">High</string>
+    <string name="conversation_mic_pickup_next_session">Mic pickup applies to your next conversation</string>
     <string name="conversation_error_dismiss">Dismiss</string>
     <string name="conversation_error_not_wired_title">Voice engine not connected</string>
     <string name="conversation_error_not_wired_body">The realtime voice engine isn\'t available in this build yet.</string>
@@ -241,9 +249,7 @@
     <string name="dialog_cancel">Cancel</string>
 
     <!-- ===== M30 settings drawer / accordion ===== -->
-    <string name="settings_edge_visible">Settings</string>
     <string name="settings_edge_open">Open settings</string>
-    <string name="settings_edge_close_visible">Close</string>
     <string name="settings_edge_close">Close settings</string>
     <string name="settings_accordion_expanded">Expanded</string>
     <string name="settings_accordion_collapsed">Collapsed</string>

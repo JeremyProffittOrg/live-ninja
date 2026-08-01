@@ -120,8 +120,16 @@ class SettingsRevampComposeTest {
         composeTestRule.onNodeWithText("Wake word").assert(collapsed)
     }
 
+    // The settings tab became a 48dp square in the UPPER-LEFT corner on
+    // 2026-08-01 (owner request), replacing a bar that was vertically centred
+    // on the RIGHT edge and 40% of the screen tall. That bar sat on top of the
+    // transcript's right-hand column on a tablet and clipped every user bubble
+    // behind it. What this pins: the two tabs are square, the same size, in
+    // OPPOSITE top corners, and still carry their accessible names now that the
+    // visible label is gone (there is no room to draw a rotated word in a
+    // square this size).
     @Test
-    fun matchingEdgeBarsAreFortyPercentOfTheViewport() {
+    fun matchingEdgeTabsAreSquaresInOppositeTopCorners() {
         composeTestRule.setContent {
             LiveNinjaTheme {
                 Box(
@@ -143,8 +151,8 @@ class SettingsRevampComposeTest {
             }
         }
 
-        composeTestRule.onNodeWithText("Settings", useUnmergedTree = true).assertExists()
-        composeTestRule.onNodeWithText("Close", useUnmergedTree = true).assertExists()
+        // The rotated visible label is gone; contentDescription is now the only
+        // name either tab has, so it is the only thing keeping them reachable.
         composeTestRule.onNodeWithContentDescription("Open settings").assertExists()
         composeTestRule.onNodeWithContentDescription("Close settings").assertExists()
 
@@ -158,16 +166,24 @@ class SettingsRevampComposeTest {
             .onNodeWithTag(SETTINGS_CLOSE_BAR_TAG)
             .getUnclippedBoundsInRoot()
 
-        val viewportHeight = (viewportBounds.bottom - viewportBounds.top).value
         val openHeight = (openBounds.bottom - openBounds.top).value
         val closeHeight = (closeBounds.bottom - closeBounds.top).value
         val openWidth = (openBounds.right - openBounds.left).value
         val closeWidth = (closeBounds.right - closeBounds.left).value
 
-        assertEquals(viewportHeight * 0.4f, openHeight, 0.6f)
-        assertEquals(openHeight, closeHeight, 0.1f)
+        // 48dp square: the Material minimum tap target, kept even though the
+        // tab no longer spans a fraction of the screen.
+        assertEquals(48f, openHeight, 0.1f)
         assertEquals(48f, openWidth, 0.1f)
+        assertEquals(openHeight, closeHeight, 0.1f)
         assertEquals(openWidth, closeWidth, 0.1f)
+
+        // Opener top-LEFT, closer top-RIGHT — mirrored so the close tab can
+        // never land on top of the opener it stands in for.
+        assertEquals(viewportBounds.top.value, openBounds.top.value, 0.1f)
+        assertEquals(viewportBounds.top.value, closeBounds.top.value, 0.1f)
+        assertEquals(viewportBounds.left.value, openBounds.left.value, 0.1f)
+        assertEquals(viewportBounds.right.value, closeBounds.right.value, 0.1f)
     }
 
     @Test

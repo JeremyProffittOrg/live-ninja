@@ -60,10 +60,36 @@ func TestBuiltinPersonaSeedSet(t *testing.T) {
 		t.Errorf("first builtin = %q, want default", all[0].ID)
 	}
 
-	// The task-mandated trio plus a sample of the range set.
+	// EVERY built-in, not a sample. docs/qa-report.md flagged the old
+	// eleven-id sample as a coverage gap: a wrong voice on any unsampled
+	// persona went unnoticed, and the registry has kept growing since.
+	// Iterating the registry closes it for good — a persona added without a
+	// blurb, without a valid voice, or with a style that fails to compose can
+	// no longer slip in by simply not being listed here.
+	ids := make([]string, 0, len(all))
+	for _, p := range all {
+		if p.ID != "default" { // default's style IS the core; asserted below
+			ids = append(ids, p.ID)
+		}
+	}
+	// The originals are named explicitly as well, so deleting one shows up as
+	// a failure here rather than silently shrinking the loop above.
 	for _, id := range []string{"valley-girl", "logic-officer", "deputy-chief",
 		"noir-detective", "bard", "zen-monk", "drill-sergeant", "play-by-play",
-		"butler", "surfer", "worried-grandma"} {
+		"butler", "surfer", "worried-grandma", "sommelier", "heh-heh-duo",
+		"pirate-captain", "cool-intensity",
+		"product-owner", "staff-developer", "staff-sre"} {
+		if !IsBuiltinPersona(id) {
+			t.Errorf("built-in %q went missing from the registry", id)
+		}
+	}
+	// Yoda was removed on owner request 2026-08-01; it must not come back
+	// under its old id.
+	if IsBuiltinPersona("swamp-master") {
+		t.Error("the swamp-master (Yoda) persona was removed and must stay removed")
+	}
+
+	for _, id := range ids {
 		if !IsBuiltinPersona(id) {
 			t.Errorf("IsBuiltinPersona(%q) = false, want true", id)
 		}
@@ -85,6 +111,11 @@ func TestBuiltinPersonaSeedSet(t *testing.T) {
 		if p.Description == "" {
 			t.Errorf("persona %q has no description", id)
 		}
+		// The Gemini suggestion is hand-curated per persona (M13 D4b) and is
+		// just as easy to typo as the OpenAI one.
+		if p.GeminiVoice == "" || !allowedGeminiVoices[p.GeminiVoice] {
+			t.Errorf("persona %q gemini voice %q is not a Gemini Live voice", id, p.GeminiVoice)
+		}
 	}
 
 	// The catalog surface (settings/conversation pickers) lists every
@@ -96,6 +127,57 @@ func TestBuiltinPersonaSeedSet(t *testing.T) {
 	for _, info := range infos {
 		if info.Description == "" {
 			t.Errorf("catalog entry %q has no description", info.ID)
+		}
+	}
+}
+
+// TestWorkingPersonasPushBackWithoutTakingPower guards the three professional
+// personas added on 2026-08-01 (owner request). They are a different class from
+// the entertainment built-ins: their entire value is that they disagree with
+// the owner out loud, and their entire risk is that a "senior engineer" voice
+// is exactly the register in which a style block would try to legislate. This
+// pins both halves.
+func TestWorkingPersonasPushBackWithoutTakingPower(t *testing.T) {
+	for _, id := range []string{"product-owner", "staff-developer", "staff-sre"} {
+		p := ResolvePersona(id)
+		if p.ID != id {
+			t.Fatalf("ResolvePersona(%q).ID = %q", id, p.ID)
+		}
+		lower := strings.ToLower(p.Style)
+
+		// 1. It actually pushes back. A persona that only ever agrees is
+		//    worth nothing on a design call, which is why it exists.
+		if !strings.Contains(lower, "disagree") && !strings.Contains(lower, "contradict") &&
+			!strings.Contains(lower, "wrong") {
+			t.Errorf("persona %q has no explicit pushback behaviour", id)
+		}
+
+		// 2. It does not legislate. Style shapes delivery only: naming a tool
+		//    or claiming a capability in this register would read to the model
+		//    as policy rather than personality. composeStyle's framing sentence
+		//    is the real guard; this catches the drafting mistake earlier.
+		for _, forbidden := range []string{
+			"send_email", "web_lookup", "memory_search", "code_update",
+			"deliverable_", "file_read", "you may not", "you must not",
+			"never call", "refuse to",
+		} {
+			if strings.Contains(lower, forbidden) {
+				t.Errorf("persona %q style contains policy/tool language %q", id, forbidden)
+			}
+		}
+
+		// 3. It survives a spoken reply. The core caps answers at one to three
+		//    sentences and forbids reading out markdown, so a style that asks
+		//    for structured output fights the core it is layered on.
+		for _, forbidden := range []string{"bullet", "markdown", "table", "checklist", "numbered list"} {
+			if strings.Contains(lower, forbidden) {
+				t.Errorf("persona %q style asks for %q, which cannot be spoken", id, forbidden)
+			}
+		}
+
+		// 4. The operational core is still underneath it.
+		if !strings.Contains(p.Instructions, "Never claim a tool action happened") {
+			t.Errorf("persona %q lost the operational core", id)
 		}
 	}
 }

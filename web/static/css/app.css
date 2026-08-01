@@ -138,6 +138,10 @@
   /* Touch target minimum */
   --ln-touch: 44px;
 
+  /* Height of the Settings / Help edge tabs in the upper-left corner
+     (owner 2026-08-01: "about 40 pixels high"). */
+  --ln-edge-tab: 40px;
+
   /* Select chevron (themed via the base mirror; see the constants above) */
   --ln-select-arrow: var(--ln-base-select-arrow);
 
@@ -949,6 +953,26 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
 /* Viewport-fixed (owner 2026-07-18): the page itself never scrolls — the
    transcript (.conv-main__scroll) and the rail scroll independently. */
 .conv-app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden; }
+/* ...except that .conv-app's own `overflow: hidden` was not enough (owner
+   2026-08-01: "I shouldn't be able to scroll down below the conversation —
+   the scroll bar allows me to scroll almost a page down after the icon
+   bar"). Below 900px .conv-body becomes a snap scroller whose two children
+   are each a full scrollport tall; the second one therefore extends a whole
+   viewport past .conv-app's box. .conv-app clips it visually, but the ROOT
+   scroller still counted it, giving the document a phantom ~viewport-tall
+   scroll range under the bottom bar. Measured on a 390x844 viewport before
+   this rule: documentElement.scrollHeight 1526 against a clientHeight of
+   844.
+   pages_routes.go stamps this class on <body> for /conversation only, so
+   nothing else on the site loses its normal page scrolling. On <body> (not
+   <html>) the value propagates to the viewport, which is what kills the root
+   scroll range; overscroll-behavior stops a flick at the end of the
+   transcript from rubber-banding the page underneath it. */
+body.ln-body--fixed {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior-y: none;
+}
 /* Header removed (owner shell redesign 2026-07-18 v2): the state pill lives
    in .conv-rail__top's status stack, persona moved into the rail, and site
    nav lives in the docked settings drawer (see the CONVERSATION SHELL v2
@@ -1019,13 +1043,16 @@ fieldset.ln-fieldset { border: none; margin: 0 0 var(--ln-sp-4); padding: 0; min
    top-left corner) positions against the orb, not against the full-width
    orbwrap. */
 .ln-orb-stage { position: relative; }
-/* New conversation: icon button, right edge of the rail, bottom edge
-   aligned with the orb's bottom (orbwrap's height == the orb's height,
-   since the badge/button are both position:absolute and don't add to it). */
+/* New conversation: word button on the LEFT edge of the rail, dropped 15px
+   below the orb's bottom edge (owner 2026-08-01 — it previously sat flush
+   right and level with the orb). orbwrap's height == the orb's height (the
+   badge/button are both position:absolute and don't add to it), so the
+   negative offset is what puts it 15px lower than the orb. */
 .ln-orb-newconv {
   position: absolute;
-  right: 0;
-  bottom: 0;
+  left: 0;
+  right: auto;
+  bottom: -15px;
   z-index: 2;
   display: flex; align-items: center; justify-content: center;
   width: var(--ln-touch); height: var(--ln-touch);
@@ -1915,64 +1942,70 @@ html[data-ln-style="hal9000"] .conv-main { background: #23232b; }
    (sp-5/24px -> sp-3/12px). */
 .ln-btn--compact { padding: 0 var(--ln-sp-3); }
 
-/* ---- M30 settings edge bars: matching 40%-viewport-height controls.
-   The opener and drawer sit in the APP style zone (outside #livePanel), so
-   they follow the app theme tokens. ---- */
+/* ---- Settings / Help edge tabs (owner 2026-08-01) ----------------------
+   Two small square tabs stacked in the UPPER LEFT corner, at every width:
+   Settings on top, Help directly beneath it. They replace the old
+   vertically-centred 40dvh bars on the right edge, which were tall enough to
+   paint over the transcript's right-hand bubbles at tablet widths.
+
+   --ln-edge-tab is the owner-specified 40px height; the two `top` offsets
+   below are the only places that need to know it. Width stays
+   var(--ln-touch) (44px), so the tap target is 44x40 — past the WCAG 2.2 AA
+   24x24 minimum, and the two tabs are separated by a gap so neither is a
+   mis-tap for the other.
+
+   Both are icon-only: at 40px tall there is no room for the old rotated
+   word, so the native `title` (set in conversation.html) is the hover
+   tooltip and aria-label is the accessible name. The opener and drawer sit
+   in the APP style zone (outside #livePanel), so they follow the app theme
+   tokens. ---- */
 .conv-settings-tab {
   position: fixed;
-  right: 0;
-  top: 50%;
-  transform: translateY(-50%);
+  left: 0;
+  right: auto;
+  top: var(--ln-sp-4);
+  transform: none;
   z-index: 40;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
   justify-content: center;
-  gap: var(--ln-sp-3);
+  gap: var(--ln-sp-2);
   width: var(--ln-touch);
-  height: 40vh;
-  height: 40dvh;
+  height: var(--ln-edge-tab);
   padding: 0;
   font: inherit;
   color: var(--ln-text);
   background: var(--ln-surface-raised);
   border: 1px solid var(--ln-border-strong);
-  border-right: none;
-  border-radius: var(--ln-r-md) 0 0 var(--ln-r-md);
+  border-left: none;
+  border-radius: 0 var(--ln-r-md) var(--ln-r-md) 0;
   box-shadow: var(--ln-shadow-sm);
   cursor: pointer;
   transition: background .12s ease;
 }
 .conv-settings-tab:hover { background: var(--ln-surface-2); }
 .conv-settings-tab:focus-visible { outline: none; box-shadow: var(--ln-focus); }
-.conv-settings-tab__icon { font-size: 22px; line-height: 1; }
-.conv-settings-tab__label {
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-  font-size: var(--ln-fs-sm);
-  font-weight: 750;
-  letter-spacing: 0.04em;
-}
+.conv-settings-tab__icon { font-size: 20px; line-height: 1; }
+/* The word is kept in the markup for anyone reading the DOM, but a 40px tab
+   has no room to draw it — the tooltip and aria-label carry it instead. */
+.conv-settings-tab__label { display: none; }
+/* The in-drawer close bar mirrors to the upper RIGHT, so it can never sit
+   under the opener it replaces. */
 .conv-settings-tab--close {
-  left: 0;
-  right: auto;
-  border-right: 1px solid var(--ln-border-strong);
-  border-left: none;
-  border-radius: 0 var(--ln-r-md) var(--ln-r-md) 0;
+  left: auto;
+  right: 0;
+  border-left: 1px solid var(--ln-border-strong);
+  border-right: none;
+  border-radius: var(--ln-r-md) 0 0 var(--ln-r-md);
   box-shadow: var(--ln-shadow-sm);
 }
-/* Help opener: a shorter bar stacked directly above the Settings bar on the
-   same edge, so the two read as one cluster. Settings spans 30dvh..70dvh
-   (top:50%, height:40dvh, translateY(-50%)), so anchoring this one's BOTTOM
-   edge (translateY(-100%)) one gap above 30dvh keeps the pair aligned at any
-   viewport height. The drawer it opens reuses .conv-drawer wholesale — the
-   help panel's close bar is the same .conv-settings-tab--close as settings'. */
+/* Help opener: the same tab, one gap directly below Settings, showing only
+   a question mark (title="Help" is the tooltip). The drawer it opens reuses
+   .conv-drawer wholesale — the help panel's close bar is the same
+   .conv-settings-tab--close as settings'. */
 .conv-settings-tab--help {
-  height: 16vh;
-  height: 16dvh;
-  min-height: calc(var(--ln-touch) * 2);
-  top: calc(50% - 20dvh - var(--ln-sp-2));
-  transform: translateY(-100%);
+  top: calc(var(--ln-sp-4) + var(--ln-edge-tab) + var(--ln-sp-2));
 }
 
 /* Native <dialog> drawer: showModal() supplies focus trap + Escape;
@@ -2013,8 +2046,10 @@ dialog.conv-drawer[open] {
   display: flex;
   flex-direction: column;
   gap: var(--ln-sp-3);
-  padding: var(--ln-sp-4) var(--ln-sp-5) var(--ln-sp-5)
-           calc(var(--ln-sp-5) + var(--ln-touch));
+  /* Right gutter reserves the close tab's width (it mirrors to the upper
+     right now that the openers are upper-left). */
+  padding: var(--ln-sp-4) calc(var(--ln-sp-5) + var(--ln-touch))
+           var(--ln-sp-5) var(--ln-sp-5);
   overflow-y: auto;
 }
 .conv-drawer__head {
@@ -2232,8 +2267,10 @@ dialog.conv-drawer[open] {
    colour alone) and settings.mjs mirrors it into the button's aria-label.
    .conv-settings-tab is already position:fixed above, which is what anchors
    this absolute placement. */
+/* The tab lives on the LEFT edge, so the badge hangs off its outer (right)
+   side and rides just above it — a 40px tab has no room to hold it inside. */
 .conv-settings-tab__badge {
-  position: absolute; top: var(--ln-sp-3); left: -8px;
+  position: absolute; top: -8px; right: -8px; left: auto;
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 20px; height: 20px; padding: 0 5px;
   font-size: var(--ln-fs-xs); font-weight: 800; line-height: 1;
@@ -2284,11 +2321,79 @@ dialog.conv-drawer[open] {
   border-radius: var(--ln-r-pill);
 }
 
-/* ---- Mobile bottom bar -------------------------------------------------
-   Hidden by default: at desktop widths the rail already carries History,
-   Memory, Downloads, Mic Test and the sensitivity chips, and a second copy
-   of them would just be noise. */
-.conv-bottombar { display: none; }
+/* ---- Bottom icon bar ---------------------------------------------------
+   Shown at EVERY width (owner 2026-08-01: "make the icons on the bottom the
+   default, regardless of window size"). It was previously phone/tablet-only,
+   with the rail carrying desktop's copy of the same controls; now the bar is
+   the single home for History / Memory / Downloads and the audio picker, and
+   the rail's duplicates are gone at every width (see .conv-rail__nav /
+   .conv-miclineup below).
+
+   flex:none inside .conv-app, so it takes its height out of the scroller
+   above rather than floating over it — which is also what pins it to the
+   bottom of the viewport without position:fixed. */
+.conv-bottombar {
+  flex: none;
+  display: flex; align-items: stretch; gap: var(--ln-sp-1);
+  padding: var(--ln-sp-2) var(--ln-sp-2)
+           calc(var(--ln-sp-2) + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--ln-border);
+  background: var(--ln-surface);
+  overflow-x: auto;
+}
+.conv-bottombar__item {
+  flex: 1 1 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 2px;
+  min-width: var(--ln-touch); min-height: var(--ln-touch);
+  padding: var(--ln-sp-1);
+  font: inherit;
+  color: var(--ln-text-muted);
+  text-decoration: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ln-r-sm);
+  cursor: pointer;
+}
+.conv-bottombar__item:hover { background: var(--ln-surface-2); text-decoration: none; }
+.conv-bottombar__item:focus-visible { outline: none; box-shadow: var(--ln-focus); }
+.conv-bottombar__item--primary {
+  flex: 1.6 1 0;
+  color: var(--ln-text);
+  border-color: var(--ln-border-strong);
+  background: var(--ln-surface-2);
+}
+.conv-bottombar__icon { font-size: 16px; line-height: 1; }
+.conv-bottombar__label {
+  font-size: var(--ln-fs-xs); font-weight: 700; line-height: 1.1;
+  text-align: center;
+}
+.conv-bottombar__audio { flex: 1.2 1 0; display: flex; align-items: center; }
+.conv-bottombar__select {
+  width: 100%;
+  min-height: var(--ln-touch);
+  font-size: var(--ln-fs-xs);
+  padding-left: var(--ln-sp-2); padding-right: var(--ln-sp-2);
+}
+/* The bar is the ONLY copy of what it carries, at every width (owner
+   2026-08-01). .conv-rail__nav is the same three destinations and
+   .conv-miclineup is Mic Test plus the Low/Med/High chips, which the bar's
+   Audio select drives (its "Mic test…" entry opens the same dialog). Both
+   stay in the markup: settings.mjs and conversation.mjs bind them by id, and
+   the chips remain the accessible control the select's options mirror. */
+.conv-rail__nav,
+.conv-miclineup { display: none; }
+/* The rules that separated those two blocks would otherwise be left
+   stranded against each other. */
+.conv-rail__rule:first-of-type { display: none; }
+/* On a desktop-width bar there is room for the labels beside the primary
+   button, so the icon can grow into the same size the phone layout gives it. */
+@media (min-width: 901px) {
+  .conv-bottombar { padding-left: var(--ln-sp-4); padding-right: var(--ln-sp-4); }
+  .conv-bottombar__item { flex: 0 1 160px; }
+  .conv-bottombar__item--primary { flex: 0 1 220px; }
+  .conv-bottombar__audio { flex: 0 1 180px; margin-left: auto; }
+}
 
 /* The scroll-to-conversation affordance was removed on 2026-08-01 — the
    bottom bar's "Show Conversation" is the one labelled control for it. */
@@ -2421,32 +2526,24 @@ dialog.conv-overlay[open] { display: flex; }
     scroll-snap-align: start;
     scroll-snap-stop: always;
   }
-  /* The edge tabs are fixed over the LEFT edge at these widths, and both
-     panels are now full-bleed (no 360px rail column to hide behind), so
-     every panel reserves the tab's width as a gutter. Without this the
-     Settings bar sits on top of the rail's Mic Test button. */
+  /* The edge tabs are fixed over the upper-left corner of the viewport, and
+     both panels are full-bleed at these widths (no 360px rail column for
+     them to hide behind). They are only var(--ln-edge-tab) tall now, so
+     instead of costing every panel 44px of width for its whole height, just
+     the TOP ROW of each panel — the only thing that reaches into that
+     corner — reserves the gutter. On a 390px phone that hands ~44px back to
+     the transcript. */
   .conv-rail {
     border-right: none;
     border-bottom: 1px solid var(--ln-border);
-    padding-left: calc(var(--ln-sp-4) + var(--ln-touch));
+    padding-left: var(--ln-sp-4);
     padding-right: var(--ln-sp-4);
   }
-  .conv-main { padding-left: var(--ln-touch); }
-  .conv-utilbar { padding-left: var(--ln-sp-4); padding-right: var(--ln-sp-4); }
+  .conv-rail__top,
+  .conv-banner,
+  .conv-utilbar { padding-left: calc(var(--ln-touch) + var(--ln-sp-2)); }
+  .conv-utilbar { padding-right: var(--ln-sp-4); }
   .conv-composer { padding-left: var(--ln-sp-4); padding-right: var(--ln-sp-4); }
-
-  /* Nothing the bottom bar carries is repeated on the panel above it
-     (owner 2026-08-01). The bar owns History / Memory / Downloads and the
-     Audio picker, so the rail's own copies of those go: .conv-rail__nav is
-     the same three destinations, and .conv-miclineup is Mic Test plus the
-     Low/Med/High chips, which the Audio select drives (its "Mic test…" entry
-     opens the same dialog as the button). Both remain the only copy at
-     desktop widths, where there is no bar. */
-  .conv-rail__nav,
-  .conv-miclineup { display: none; }
-  /* The rules that separated those two blocks would otherwise be left
-     stranded against each other. */
-  .conv-rail__rule:first-of-type { display: none; }
 
   /* Swipe-up affordance, pinned under the rail's control cluster. */
   .conv-scrollhint {
@@ -2464,77 +2561,9 @@ dialog.conv-overlay[open] { display: flex; }
   .conv-scrollhint:focus-visible { outline: none; box-shadow: var(--ln-focus); }
   .conv-scrollhint__chev { font-size: 14px; line-height: 1; }
 
-  /* 2. Bottom bar. flex:none inside .conv-app, so it takes its height out
-     of the scroller above rather than floating over it. */
-  .conv-bottombar {
-    flex: none;
-    display: flex; align-items: stretch; gap: var(--ln-sp-1);
-    padding: var(--ln-sp-2) var(--ln-sp-2)
-             calc(var(--ln-sp-2) + env(safe-area-inset-bottom, 0px));
-    border-top: 1px solid var(--ln-border);
-    background: var(--ln-surface);
-    overflow-x: auto;
-  }
-  .conv-bottombar__item {
-    flex: 1 1 0;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: 2px;
-    min-width: var(--ln-touch); min-height: var(--ln-touch);
-    padding: var(--ln-sp-1);
-    font: inherit;
-    color: var(--ln-text-muted);
-    text-decoration: none;
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: var(--ln-r-sm);
-    cursor: pointer;
-  }
-  .conv-bottombar__item:hover { background: var(--ln-surface-2); text-decoration: none; }
-  .conv-bottombar__item:focus-visible { outline: none; box-shadow: var(--ln-focus); }
-  .conv-bottombar__item--primary {
-    flex: 1.6 1 0;
-    color: var(--ln-text);
-    border-color: var(--ln-border-strong);
-    background: var(--ln-surface-2);
-  }
-  .conv-bottombar__icon { font-size: 16px; line-height: 1; }
-  .conv-bottombar__label {
-    font-size: var(--ln-fs-xs); font-weight: 700; line-height: 1.1;
-    text-align: center;
-  }
-  .conv-bottombar__audio { flex: 1.2 1 0; display: flex; align-items: center; }
-  .conv-bottombar__select {
-    width: 100%;
-    min-height: var(--ln-touch);
-    font-size: var(--ln-fs-xs);
-    padding-left: var(--ln-sp-2); padding-right: var(--ln-sp-2);
-  }
-
-  /* 3. Edge tabs move to the LEFT edge and shrink their glyphs ~27%
-     (22px -> 16px). The bar stays var(--ln-touch) wide and tens of dvh
-     tall, so the tap target is still well past 44x44 either way. */
-  .conv-settings-tab {
-    left: 0; right: auto;
-    border-left: none;
-    border-right: 1px solid var(--ln-border-strong);
-    border-radius: 0 var(--ln-r-md) var(--ln-r-md) 0;
-  }
-  .conv-settings-tab__icon { font-size: 16px; }
-  .conv-settings-tab__label { font-size: var(--ln-fs-xs); letter-spacing: 0.02em; }
-  /* The badge hangs off the tab's OUTER side, which is now the right. */
-  .conv-settings-tab__badge { left: auto; right: -8px; }
-  /* The in-drawer close bar mirrors to the opposite (right) edge, and the
-     drawer's reserved gutter follows it. */
-  .conv-settings-tab--close {
-    left: auto; right: 0;
-    border-right: none;
-    border-left: 1px solid var(--ln-border-strong);
-    border-radius: var(--ln-r-md) 0 0 var(--ln-r-md);
-  }
-  .conv-drawer__inner {
-    padding-left: var(--ln-sp-5);
-    padding-right: calc(var(--ln-sp-5) + var(--ln-touch));
-  }
+  /* 2. The bottom bar is no longer mobile-only — see the .conv-bottombar
+     block above, which now applies at every width. Below 520px its items go
+     icon-only; that is the next media block. */
 }
 
 /* ---- <=520px: phone widths ---------------------------------------------

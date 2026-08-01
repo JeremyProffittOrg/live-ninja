@@ -305,7 +305,13 @@
        aria-label to "Open settings — N suggestions to review" so a screen reader
        hears the same thing the number shows. Hidden when the queue is
        empty. */}}
+{{- /* Upper-left corner tab, ~40px high (owner 2026-08-01). At that height
+       there is no room for the rotated word, so app.css hides
+       .conv-settings-tab__label and the native `title` becomes the hover
+       tooltip; aria-label stays the accessible name (settings.mjs rewrites
+       it when the suggestion badge is showing). */}}
 <button class="conv-settings-tab" type="button" id="settingsDrawerBtn"
+        title="Settings"
         aria-label="Open settings" aria-haspopup="dialog"
         aria-controls="settingsDrawer" aria-expanded="false">
   <span class="conv-settings-tab__icon" aria-hidden="true">⚙</span>
@@ -1154,7 +1160,10 @@
        do. Any new feature, setting, or capability updates it in the SAME
        commit — see the "Help section maintenance" section of CLAUDE.md /
        agents.md. */}}
+{{- /* Directly under the Settings tab in the upper-left corner: a bare "?"
+       whose hover tooltip is the word Help (owner 2026-08-01). */}}
 <button class="conv-settings-tab conv-settings-tab--help" type="button" id="helpDrawerBtn"
+        title="Help"
         aria-label="Open help" aria-haspopup="dialog"
         aria-controls="helpDrawer" aria-expanded="false">
   <span class="conv-settings-tab__icon" aria-hidden="true">?</span>
@@ -1182,8 +1191,9 @@
           <li><strong>Prefer to type?</strong> Use the box at the bottom of the transcript. Typed and spoken turns land in the same conversation.</li>
           <li>The pill at the top right of the rail tells you where you are: <em>Idle</em>, <em>Listening</em>, <em>Thinking</em>, or <em>Speaking</em>.</li>
           <li>Just start talking again to interrupt a reply — you don't have to wait for it to finish.</li>
-          <li><strong>Start over</strong> with <em>NEW</em>, beside the orb. It ends the current conversation and begins a fresh one.</li>
-          <li><strong>On a phone or tablet</strong> the voice panel fills the screen. Tap <em>Show Conversation</em> at the bottom to open the conversation full screen — the same button then reads <em>Hide Conversation</em>. You can also swipe up from the voice panel and scroll back down to return to it.</li>
+          <li><strong>Start over</strong> with <em>NEW</em>, at the left of the orb row. It ends the current conversation and begins a fresh one.</li>
+          <li><strong>The bar along the bottom</strong> is always there, on any screen size: <em>Show Conversation</em>, then History, Memory and Downloads, and an <em>Audio</em> picker.</li>
+          <li><strong>On a phone or tablet</strong> the voice panel fills the screen. Tap <em>Show Conversation</em> to open the conversation full screen — the same button then reads <em>Hide Conversation</em>. You can also swipe up from the voice panel and scroll back down to return to it.</li>
         </ul>
       </section>
 
@@ -1200,7 +1210,7 @@
           <li><strong>Control the device it's running on</strong> where that's supported, including volume, camera and photos.</li>
           <li><strong>Start a fresh conversation</strong> or stop listening, just by saying so.</li>
         </ul>
-        <p class="ln-hint">Turn on <em>Show tool calls</em> at the bottom of the rail to watch these actions happen in the transcript.</p>
+        <p class="ln-hint">Turn on <em>Show tool calls</em> under the persona picker in the rail to watch these actions happen in the transcript.</p>
       </section>
 
       <section class="ln-card set-section conv-help__section" aria-labelledby="helpWhere">
@@ -1211,25 +1221,25 @@
           <dt>Memory</dt>
           <dd>Everything Live Ninja remembers about your world. Edit any of it, or make it forget. <em>Guides</em> are standing instructions applied in every conversation, on every device.</dd>
           <dt>Personas</dt>
-          <dd>How Live Ninja talks. Pick a built-in personality, write your own, or share yours. Each persona carries its own voice — switch personas from the picker in the rail.</dd>
+          <dd>How Live Ninja talks. Pick a built-in personality, write your own, or share yours. Each persona carries its own voice — switch personas from the picker in the rail. Alongside the character personas there are three working ones — <em>Product Owner</em>, <em>Staff Engineer</em> and <em>Staff SRE</em> — for thinking through software with you. They will tell you when they think you're wrong, say why, and offer the alternative.</dd>
           <dt>Downloads</dt>
           <dd>Files Live Ninja has created for you. Files are kept for 180 days; share links expire after about 15 minutes.</dd>
           <dt>This month</dt>
           <dd>Your running usage estimate, at the bottom of the Settings panel. The badge beside the state pill shows what the current conversation has cost so far.</dd>
           <dt>Show Conversation</dt>
-          <dd>On a phone or tablet, the button at the bottom left opens the conversation full screen. The same button then reads <em>Hide Conversation</em>; the ✕ and Esc close it too.</dd>
+          <dd>The button at the bottom left opens the conversation full screen. The same button then reads <em>Hide Conversation</em>; the ✕ and Esc close it too.</dd>
           <dt>The bar along the bottom</dt>
-          <dd>On a phone or tablet only: Show Conversation, then History, Memory and Downloads, and an <em>Audio</em> picker. It stays put while the conversation is open, so you can close it from the same place you opened it. Audio sets how quickly Live Ninja treats a pause as the end of your turn — the same setting as <em>Mic pickup</em> under Turn detection — and <em>Mic test…</em> in that list opens the microphone check. On a phone or tablet this bar is the only place these live; on a computer they sit in the left rail instead.</dd>
+          <dd>Always on screen, at every window size: Show Conversation, then History, Memory and Downloads, and an <em>Audio</em> picker. It stays put while the conversation is open, so you can close it from the same place you opened it, and it is the only place these live — the rail no longer carries a second copy. Audio sets how quickly Live Ninja treats a pause as the end of your turn (the same setting as <em>Mic pickup</em> under Turn detection), and <em>Mic test…</em> in that list opens the microphone check.</dd>
           <dt>Copy, Screenshot and Tag for review</dt>
           <dd>Above the conversation, and inside the overlay. <em>Copy</em> puts the whole conversation on your clipboard as plain text; <em>Screenshot</em> saves it as a PNG image; <em>Tag for review</em> asks why it's worth another look and keeps that note on this device.</dd>
           <dt>Help and Settings</dt>
-          <dd>The <em>?</em> and <em>⚙</em> tabs on the edge of the screen — on the right on a computer, on the left on a phone or tablet so they stay clear of your thumb.</dd>
+          <dd>Two small tabs stacked in the top-left corner: <em>⚙</em> for Settings, and <em>?</em> for this panel directly beneath it. Hover either one to see what it is.</dd>
         </dl>
       </section>
 
       <section class="ln-card set-section conv-help__section" aria-labelledby="helpSettings">
         <h3 class="ln-card__title" id="helpSettings">Settings explained</h3>
-        <p class="ln-muted">Open the <em>Settings</em> tab on the right edge. Changes save automatically for the device you're on — open <em>Device settings</em> in any section to compare devices or copy that section elsewhere.</p>
+        <p class="ln-muted">Open the <em>⚙</em> tab in the top-left corner. Changes save automatically for the device you're on — open <em>Device settings</em> in any section to compare devices or copy that section elsewhere.</p>
         <dl class="conv-help__defs">
           <dt>About you</dt>
           <dd>What Live Ninja knows before you say anything — your name, your home and work places, and facts worth keeping. Picking a place from the list is what makes weather and local time reliable. Suggestions it makes while you talk wait here for your approval.</dd>
@@ -1240,7 +1250,7 @@
           <dt>Voice engine</dt>
           <dd>Which speech-to-speech model powers your conversations. All engines share the same tools, memory, and transcripts — only cost, latency, and voice quality differ.</dd>
           <dt>Turn detection</dt>
-          <dd>How it decides you've finished speaking. <em>Semantic VAD</em> judges from meaning and is the recommended setting; <em>Server VAD</em> simply waits for a fixed silence gap. Mic pickup sensitivity and how long it keeps listening after a reply live here too. On a phone or tablet, the <em>Audio</em> picker in the bottom bar changes mic pickup without opening Settings.</dd>
+          <dd>How it decides you've finished speaking. <em>Semantic VAD</em> judges from meaning and is the recommended setting; <em>Server VAD</em> simply waits for a fixed silence gap. Mic pickup sensitivity and how long it keeps listening after a reply live here too. The <em>Audio</em> picker in the bottom bar changes mic pickup without opening Settings, and the Android app has the same Low/Med/High control above its conversation.</dd>
           <dt>Appearance</dt>
           <dd>Light or dark theme, the visual style of the app and of the live panel, and your accent colour.</dd>
           <dt>Microphone</dt>
@@ -1265,7 +1275,7 @@
       <section class="ln-card set-section conv-help__section" aria-labelledby="helpTips">
         <h3 class="ln-card__title" id="helpTips">Tips and troubleshooting</h3>
         <ul class="conv-help__list">
-          <li><strong>It can't hear you?</strong> Run <em>Mic Test</em> in the rail — it shows your live level and the exact steps to unblock the microphone in your browser.</li>
+          <li><strong>It can't hear you?</strong> Choose <em>Mic test…</em> from the <em>Audio</em> picker in the bottom bar — it shows your live level and the exact steps to unblock the microphone in your browser.</li>
           <li><strong>Wake phrase not triggering?</strong> Raise the wake sensitivity in Settings → Wake word, or pick a longer phrase. Very short phrases false-trigger and very quiet rooms need more sensitivity.</li>
           <li><strong>It cuts you off mid-sentence?</strong> Switch turn detection to Semantic VAD, or lower the mic pickup sensitivity.</li>
           <li><strong>Changed persona or voice mid-conversation?</strong> That applies to the next conversation — start a new one to hear it.</li>

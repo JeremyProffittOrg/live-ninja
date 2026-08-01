@@ -67,13 +67,19 @@ data class ConversationUiState(
     val sessionCost: SessionCost? = null,
     /** Nonfatal quota/budget notice supplied by session bootstrap. */
     val sessionWarning: String? = null,
+    /**
+     * Mic pickup (contracts/settings.schema.json `micEagerness`): how quickly
+     * semantic VAD calls a pause the end of a turn. "auto" leaves the API
+     * default alone and is what an untouched document reads as.
+     */
+    val micEagerness: String = "auto",
 )
 
 @HiltViewModel
 class ConversationViewModel @Inject constructor(
     sessionControllerOpt: Optional<RealtimeSessionController>,
     private val overlay: LiveOverlayController,
-    settingsStore: SettingsStore,
+    private val settingsStore: SettingsStore,
     private val transcriptStore: TranscriptStore,
     private val modelManager: ModelManager,
 ) : ViewModel() {
@@ -106,7 +112,9 @@ class ConversationViewModel @Inject constructor(
                 // head model is loaded. Advertising a phrase with no model behind it
                 // is how the home screen ended up promising "Hey Live Ninja" on a
                 // build that only bundles hey_jarvis (WS-5 M21.3).
-                _state.update { it.copy(selectedWakeWordId = doc.wakeWord) }
+                _state.update {
+                    it.copy(selectedWakeWordId = doc.wakeWord, micEagerness = doc.micEagerness)
+                }
             }
         }
         // The wake caption follows the loaded head model (WS-5 M21.3): ModelManager
@@ -244,6 +252,51 @@ class ConversationViewModel @Inject constructor(
             // (idle state, ticker, overlay). Set ENDING here for the interim.
             runCatching { controller.stop() }
         }
+    }
+
+    /**
+     * New conversation (owner 2026-08-01: the control existed on web but had no
+     * equivalent in the app).
+     *
+     * When a session is live this is a full stop/start, NOT a transcript clear —
+     * the session id is what the backend keys its LOG#/CONV rows against, so
+     * only a genuinely new session gives the new conversation its own History
+     * row. That is exactly what the `start_new_conversation` tool does when the
+     * user asks for this out loud (RealtimeSessionCoordinator.runDeviceAction),
+     * and the two paths must not diverge.
+     *
+     * When nothing is live there is no session to replace, so it just discards
+     * the turns still on screen — the next session will clear the store anyway,
+     * and leaving the last conversation visible under a button labelled "new"
+     * is the confusing half of the two.
+     */
+    fun startNewConversation() {
+        val controller = sessionController
+        if (controller == null || !controller.connected.value) {
+            transcriptStore.clear()
+            _state.update { it.copy(sessionSeconds = 0, sessionCost = null, sessionWarning = null) }
+            return
+        }
+        _state.update { it.copy(micState = MicUiState.ENDING) }
+        viewModelScope.launch {
+            runCatching { controller.stop() }
+            // startSession() resets the seconds/cost/warning triple and drives
+            // the state machine; going through it keeps one definition of what
+            // "a session is starting" means.
+            startSession()
+        }
+    }
+
+    /**
+     * Mic pickup (low|medium|high|auto). Persisted to the settings document and
+     * consumed SERVER-side at the next mint (internal/webapp/api_routes.go reads
+     * `micEagerness` out of the effective document; internal/realtime/mint.go
+     * turns it into turn_detection.eagerness), so it deliberately does not
+     * claim to change the live session — [ConversationUiState.micEagerness]
+     * drives the chips and the screen says so while a session is up.
+     */
+    fun setMicEagerness(value: String) {
+        settingsStore.setMicEagerness(value)
     }
 
     fun toggleMute() {

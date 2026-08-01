@@ -5,7 +5,14 @@ import android.content.pm.PackageManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -30,6 +37,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
@@ -46,8 +54,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -61,6 +71,7 @@ import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import ninja.jeremy.liveninja.R
 import ninja.jeremy.liveninja.realtime.badgeText
+import ninja.jeremy.liveninja.ui.SETTINGS_TAB_SIZE
 import ninja.jeremy.liveninja.wake.WakeWordService
 import ninja.jeremy.liveninja.ui.conversation.ConversationError
 import ninja.jeremy.liveninja.ui.conversation.ConversationUiState
@@ -70,6 +81,14 @@ import ninja.jeremy.liveninja.ui.conversation.TranscriptTurn
 import ninja.jeremy.liveninja.ui.state.TranscriptRole
 import ninja.jeremy.liveninja.ui.theme.HalOrb
 import ninja.jeremy.liveninja.ui.theme.OrbState
+
+/** Test tags for the top-row controls added on 2026-08-01 (owner request). */
+const val CONVERSATION_STATE_PILL_TAG = "conversation-state-pill"
+const val CONVERSATION_COST_BADGE_TAG = "conversation-cost-badge"
+const val CONVERSATION_NEW_BUTTON_TAG = "conversation-new"
+
+/** Test tag for one mic-pickup chip ("low" | "medium" | "high"). */
+fun micPickupChipTag(level: String): String = "conversation-mic-pickup-$level"
 
 /**
  * Conversation tab (mockups/android/05-home-idle + 06-conversation): live
@@ -102,6 +121,12 @@ fun ConversationScreen(modifier: Modifier = Modifier) {
 
     Column(modifier = modifier.fillMaxSize()) {
         MicStateBanner(state)
+        ConversationUtilityBar(
+            micEagerness = state.micEagerness,
+            sessionLive = sessionLive(state.micState),
+            onNewConversation = viewModel::startNewConversation,
+            onSetMicEagerness = viewModel::setMicEagerness,
+        )
         state.sessionWarning?.let { warning ->
             SessionWarningBanner(
                 message = warning,
@@ -203,6 +228,26 @@ private fun micToOrbState(micState: MicUiState): OrbState = when (micState) {
     MicUiState.ERROR -> OrbState.ERROR
 }
 
+/**
+ * Top bar of the conversation screen — deliberately the same three things, in
+ * the same two corners, as the web client's rail top row (owner 2026-08-01:
+ * "I also need conversation cost in the upper right and a listening bubble
+ * like in the website on the app").
+ *
+ *   start gutter — [SETTINGS_TAB_SIZE], reserved for the settings tab that
+ *                  sits in the upper-LEFT corner. Without it the tab paints
+ *                  over this row instead of beside it.
+ *   leading      — the state pill (web's .state-pill): a rounded "bubble"
+ *                  carrying a dot and the current state word.
+ *   trailing     — the running cost estimate above the session timer.
+ *
+ * The cost shows whenever there IS an estimate, not only while the session is
+ * live: the number the user most wants after a conversation is what the
+ * conversation cost, and blanking it the instant the session ends is what made
+ * it look like the app had no cost display at all. It is still absent (rather
+ * than "$0.000") when no estimate exists — showing a zero for an engine that
+ * reports no usage would be a lie, not a zero.
+ */
 @Composable
 private fun MicStateBanner(state: ConversationUiState) {
     val label = when (state.micState) {
@@ -219,56 +264,178 @@ private fun MicStateBanner(state: ConversationUiState) {
         MicUiState.ENDING -> stringResource(R.string.conversation_state_ending)
         MicUiState.ERROR -> stringResource(R.string.conversation_state_error)
     }
-    val color = when (state.micState) {
+    val pillColor = when (state.micState) {
         MicUiState.LISTENING -> MaterialTheme.colorScheme.primaryContainer
         MicUiState.SPEAKING -> MaterialTheme.colorScheme.tertiaryContainer
         MicUiState.ERROR -> MaterialTheme.colorScheme.errorContainer
         else -> MaterialTheme.colorScheme.surfaceVariant
     }
-    Surface(color = color) {
+    val pillInk = when (state.micState) {
+        MicUiState.LISTENING -> MaterialTheme.colorScheme.onPrimaryContainer
+        MicUiState.SPEAKING -> MaterialTheme.colorScheme.onTertiaryContainer
+        MicUiState.ERROR -> MaterialTheme.colorScheme.onErrorContainer
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    // The dot pulses while a session is live, at web's cadence: slow when
+    // listening, fast when speaking. It is decoration, not the signal — the
+    // word beside it is (house a11y rule: never state by colour or motion
+    // alone) — so it is driven by the same infinite transition either way and
+    // simply holds still when nothing is live.
+    val pulse = rememberInfiniteTransition(label = "state-dot")
+    val dotAlpha by pulse.animateFloat(
+        initialValue = 1f,
+        targetValue = when (state.micState) {
+            MicUiState.LISTENING -> 0.25f
+            MicUiState.SPEAKING -> 0.25f
+            else -> 1f
+        },
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = if (state.micState == MicUiState.SPEAKING) 350 else 1000,
+            ),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "state-dot-alpha",
+    )
+
+    Surface(color = MaterialTheme.colorScheme.surface) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
+                // Upper-LEFT corner belongs to the settings tab (SettingsDrawer
+                // draws it over this screen); this is the gutter that keeps the
+                // pill out from under it.
+                .padding(start = SETTINGS_TAB_SIZE + 8.dp, top = 8.dp, end = 16.dp, bottom = 8.dp)
                 // Announce state transitions to TalkBack without stealing focus.
                 .semantics { liveRegion = LiveRegionMode.Polite },
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(label, style = MaterialTheme.typography.labelLarge)
-            if (sessionLive(state.micState)) {
+            Surface(
+                color = pillColor,
+                contentColor = pillInk,
+                shape = CircleShape,
+                modifier = Modifier.testTag(CONVERSATION_STATE_PILL_TAG),
+            ) {
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    // Cost before the timer: it is the number the user is least
-                    // able to reconstruct after the fact, and web puts it in the
-                    // same upper-right corner of the live panel.
-                    state.sessionCost?.takeIf { it.hasData }?.let { cost ->
-                        // Never signal by position alone: spell out what the
-                        // number is for a screen reader, including that it is an
-                        // estimate and not a bill. Resolved outside semantics{},
-                        // which is not a composable scope.
-                        val costA11y = stringResource(
-                            R.string.conversation_cost_badge_a11y,
-                            cost.badgeText(),
-                            cost.textTokens,
-                            cost.audioTokens,
-                        )
-                        Text(
-                            cost.badgeText(),
-                            style = MaterialTheme.typography.labelMedium,
-                            modifier = Modifier.semantics { contentDescription = costA11y },
-                        )
-                    }
+                    Box(
+                        Modifier
+                            .size(9.dp)
+                            .alpha(dotAlpha)
+                            .background(pillInk, CircleShape),
+                    )
+                    Text(label, style = MaterialTheme.typography.labelLarge)
+                }
+            }
+
+            Column(horizontalAlignment = Alignment.End) {
+                state.sessionCost?.takeIf { it.hasData }?.let { cost ->
+                    // Never signal by position alone: spell out what the number
+                    // is for a screen reader, including that it is an estimate
+                    // and not a bill. Resolved outside semantics{}, which is not
+                    // a composable scope.
+                    val costA11y = stringResource(
+                        R.string.conversation_cost_badge_a11y,
+                        cost.badgeText(),
+                        cost.textTokens,
+                        cost.audioTokens,
+                    )
+                    Text(
+                        cost.badgeText(),
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier
+                            .testTag(CONVERSATION_COST_BADGE_TAG)
+                            .semantics { contentDescription = costA11y },
+                    )
+                }
+                if (sessionLive(state.micState)) {
                     val minutes = state.sessionSeconds / 60
                     val seconds = state.sessionSeconds % 60
                     Text(
                         stringResource(R.string.conversation_session_timer, minutes, seconds),
-                        style = MaterialTheme.typography.labelMedium,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * New conversation + mic pickup, on one line under the state row (owner
+ * 2026-08-01: "I also don't see the audio settings (mic sensitivity) or the new
+ * conversation button anywhere"). Both existed on web and had no equivalent
+ * here; this is web's rail cluster condensed to the two controls that were
+ * missing.
+ *
+ * Mic pickup is persisted, not applied live: the server reads `micEagerness`
+ * out of the settings document when it mints the next session, so while one is
+ * up the caption says exactly that rather than implying the change already
+ * landed.
+ */
+@Composable
+private fun ConversationUtilityBar(
+    micEagerness: String,
+    sessionLive: Boolean,
+    onNewConversation: () -> Unit,
+    onSetMicEagerness: (String) -> Unit,
+) {
+    val levels = listOf(
+        "low" to R.string.conversation_mic_pickup_low,
+        "medium" to R.string.conversation_mic_pickup_medium,
+        "high" to R.string.conversation_mic_pickup_high,
+    )
+    val groupLabel = stringResource(R.string.conversation_mic_pickup_label)
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = SETTINGS_TAB_SIZE + 8.dp, end = 16.dp, bottom = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedButton(
+                onClick = onNewConversation,
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag(CONVERSATION_NEW_BUTTON_TAG),
+            ) { Text(stringResource(R.string.conversation_new)) }
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.semantics { contentDescription = groupLabel },
+            ) {
+                levels.forEach { (value, labelRes) ->
+                    // "auto" is the untouched default and has no chip: with none
+                    // selected the server keeps the API's own eagerness. Tapping
+                    // the selected chip again returns to it.
+                    val selected = micEagerness == value
+                    FilterChip(
+                        selected = selected,
+                        onClick = { onSetMicEagerness(if (selected) "auto" else value) },
+                        label = { Text(stringResource(labelRes)) },
+                        modifier = Modifier.testTag(micPickupChipTag(value)),
+                    )
+                }
+            }
+        }
+        if (sessionLive) {
+            Text(
+                stringResource(R.string.conversation_mic_pickup_next_session),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(
+                    start = SETTINGS_TAB_SIZE + 8.dp,
+                    end = 16.dp,
+                    bottom = 4.dp,
+                ),
+            )
         }
     }
 }

@@ -81,7 +81,10 @@ type pageMeta struct {
 
 var pageMetas = map[string]pageMeta{
 	"pages/landing":      {Title: "Live Ninja — your private realtime voice assistant", Path: "/"},
-	"pages/conversation": {Title: "Conversation — Live Ninja", Path: "/conversation"},
+	// ln-body--fixed: the conversation shell is a 100dvh flex column that
+	// owns its own scrollers, and the root scroller must not add a second
+	// one on top of it (app.css, .conv-app / body.ln-body--fixed).
+	"pages/conversation": {Title: "Conversation — Live Ninja", Path: "/conversation", BodyClass: "ln-body--fixed"},
 	"pages/downloads":    {Title: "Downloads — Live Ninja", Path: "/downloads"},
 	"pages/memory":       {Title: "Memory — Live Ninja", Path: "/memory"},
 	"pages/personas":     {Title: "Personas — Live Ninja", Path: "/personas"},

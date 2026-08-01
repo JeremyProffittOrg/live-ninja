@@ -529,6 +529,92 @@ Guarded by `TestBottomBarControlsAreNotDuplicatedAbove` and the rewritten
 `TestConversationOverlayContract` / `TestMobileSnapPanels` in
 `internal/webapp/mobile_shell_ui_test.go`.
 
+## §5 — Corner tabs, an always-on icon bar, working personas (2026-08-01, second pass)
+
+All items owner-requested in one batch and shipped together. `[x]` unless noted.
+
+### 5.1 Web `[x]`
+
+- `[x]` **Settings and Help are now two ~40px tabs in the UPPER-LEFT corner**, at every width, gear
+  above `?`, each icon-only with a native `title` tooltip (`--ln-edge-tab: 40px`). They replace the
+  vertically-centred 40dvh bars on the right edge.
+- `[x]` **`NEW` moved to the left of the orb row and 15px below the orb's bottom edge**
+  (`.ln-orb-newconv { left: 0; bottom: -15px }`).
+- `[x]` **The bottom icon bar is shown at every window size**, not just ≤900px. Its rules moved out
+  of the mobile media block to the top level, and the rail's duplicate `.conv-rail__nav` /
+  `.conv-miclineup` are now hidden at every width — the bar is the single home for History /
+  Memory / Downloads and the Audio picker.
+- `[x]` **The page can no longer scroll past the bottom bar.**
+
+### 5.2 The root-scroll defect, and why `.conv-app { overflow: hidden }` was not enough `[x]`
+
+Worth recording because the fix is not where the symptom is. Below 900px `.conv-body` is a snap
+scroller whose two children are each a **full scrollport tall**, so the second one extends a whole
+viewport past `.conv-app`'s box. `.conv-app`'s `overflow: hidden` clips it *visually*, but the
+**root scroller still counted it**: the document got a phantom ~viewport-tall scroll range, and
+scrolling into it carried the bottom bar off the top of the screen. Measured in Chromium at
+390×844 before the fix: `documentElement.scrollHeight` **1526** against a `clientHeight` of **844**,
+and a real wheel gesture moved `window.scrollY` to **682**.
+
+Two traps in diagnosing it:
+
+1. `scrollHeight` alone does not tell you whether something is *scrollable* — an `overflow: hidden`
+   box is still programmatically scrollable, so `window.scrollTo(0, 99999)` "succeeds" even after
+   the bug is fixed. **Verify with a real wheel gesture** (`page.mouse.wheel`), not `scrollTo`.
+2. `overflow: hidden` on `<html>` does not fix it either. The value that reaches the viewport is
+   propagated from `<body>` when `<html>` is `visible`, so the rule has to land on `body`.
+
+Fix: `pages_routes.go` stamps `BodyClass: "ln-body--fixed"` on `/conversation` only (the mechanism
+existed and had never been used), and app.css gives that class `overflow: hidden` +
+`overscroll-behavior-y: none`. Every other page keeps normal page scrolling.
+
+**How it was reproduced without a server.** `/conversation` needs DynamoDB/KMS/SSM to boot, so
+there is no local harness. A throwaway Node script stripped the Go template actions out of
+`conversation.html`, inlined `audio_viz.html`, and inlined `app.css` into one static file, which
+Playwright then measured at three viewports. That is what turned "the scrollbar goes too far" into
+a number, and it is the cheapest way to re-check a pure-layout change on this page.
+
+### 5.3 Android `[x]`
+
+- `[x]` **Settings is a 48dp square tab in the upper-left corner** (`SETTINGS_TAB_SIZE`), mirrored
+  to the upper-right inside the settings modal. It replaces a bar that was centred on the RIGHT
+  edge and 40% of the screen tall — **that bar was the "conversation is cut off"**: it sat directly
+  on the transcript's right-hand column and clipped every user bubble behind it. A corner tab can
+  only ever overlap one corner, and `ConversationScreen` reserves exactly that corner.
+- `[x]` **The tab needed `windowInsetsPadding(WindowInsets.statusBars)`** — it is drawn outside the
+  `Scaffold`, so nothing had applied the status-bar inset and it landed under the system clock.
+  Caught on the physical tablet, not in review. The modifier must precede `size()`.
+- `[x]` **State pill + cost badge in the two top corners**, matching web's rail top row. The cost
+  now shows whenever an estimate exists, not only while the session is live — blanking it the
+  instant the session ended is what made it look like the app had no cost display at all.
+- `[x]` **New conversation** (`startNewConversation()`): a full stop/start when live, because the
+  session id is what the backend keys `LOG#/CONV` rows against — the same thing the spoken
+  `start_new_conversation` tool does, deliberately not a transcript clear.
+- `[x]` **Mic pickup Low/Med/High** on the conversation screen, writing `micEagerness` to the
+  settings document. It is consumed **server-side** (`api_routes.go` reads it at mint,
+  `mint.go` turns it into `turn_detection.eagerness`), so it applies to the **next** session and
+  the screen says so while one is up rather than implying it already landed. Verified end to end:
+  the tablet's synced document already held `"high"` from the web client and the chip reflected it.
+
+### 5.4 Personas `[x]`
+
+- `[x]` **Yoda (`swamp-master`) removed.**
+- `[x]` **Three working personas added** — `product-owner` (Product Owner, marin/Kore),
+  `staff-developer` (Staff Engineer, cedar/Iapetus), `staff-sre` (Staff SRE, echo/Schedar). These
+  are a different class from the entertainment built-ins: senior colleagues who **disagree out
+  loud, say why, and name the alternative**.
+- Researched by a 10-agent workflow against **26 dated sources published 2026-05-02 → 2026-07-31**,
+  then adversarially critiqued for capability leaks, spoken-form survivability (they arrive as one
+  to three sentences of audio, so the rigour has to show up as *which question is asked first*) and
+  cross-persona collision. The load-bearing ideas: the eval is what an AI feature actually promises
+  and cost-per-finished-task is its unit economics; review capacity is the delivery ceiling once
+  agents write the diff, so the plan is the artifact worth arguing; and reliability for an agentic
+  system is *containment* — what stops it, and where in the call path that stop executes.
+- `[x]` **Closed the `docs/qa-report.md` persona coverage gap in passing**: the seed-set test
+  sampled 11 of 17 built-ins, so a wrong voice on an unsampled one went unnoticed. It now iterates
+  the whole registry and checks the Gemini voice too. New `TestWorkingPersonasPushBackWithoutTaking
+  Power` pins both halves of the three working personas.
+
 ## Standing rules (carried forward — these do not expire)
 
 - **Deploy = push to `main`.** Never deploy from a local machine. Watch the run to a terminal result.

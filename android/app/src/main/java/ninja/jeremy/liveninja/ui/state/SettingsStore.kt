@@ -56,6 +56,16 @@ data class SettingsDocument(
      */
     val geminiVoice: String,
     val turnDetection: String,
+    /**
+     * Mic pickup: how quickly semantic VAD treats a pause as end-of-turn
+     * (contracts/settings.schema.json `micEagerness`; low|medium|high|auto,
+     * absent normalizes to auto). The value is consumed SERVER-side —
+     * internal/webapp/api_routes.go reads it out of the effective settings
+     * document at mint and internal/realtime/mint.go turns it into
+     * turn_detection.eagerness — so persisting it here is the whole job on
+     * this client; it takes effect on the next session, not the live one.
+     */
+    val micEagerness: String,
     val theme: String,
     val micDeviceId: String?,
     val voiceEngineDefault: String,
@@ -146,6 +156,13 @@ class SettingsStore @Inject constructor(
      */
     fun setGeminiVoice(voice: String) = update { it.put("geminiVoice", voice) }
     fun setTurnDetection(value: String) = update { it.put("turnDetection", value) }
+
+    /**
+     * Set mic pickup (low|medium|high|auto). Additive top-level key, written
+     * through [update] so unknown fields survive; the server reads it at the
+     * next mint (see [SettingsDocument.micEagerness]).
+     */
+    fun setMicEagerness(value: String) = update { it.put("micEagerness", value) }
 
     /** Set the default voice engine (M12 FR-VE-04), preserving the per-device pin map. */
     fun setVoiceEngineDefault(engine: String) = update {
@@ -292,6 +309,7 @@ class SettingsStore @Inject constructor(
             voice = raw.optString("voice", SettingsDocument.DEFAULT_VOICE),
             geminiVoice = raw.optString("geminiVoice", ""),
             turnDetection = raw.optString("turnDetection", "semantic_vad"),
+            micEagerness = raw.optString("micEagerness", "auto").ifEmpty { "auto" },
             theme = raw.optString("theme", "system"),
             micDeviceId = if (raw.isNull("micDeviceId")) null else raw.optString("micDeviceId"),
             voiceEngineDefault = voiceEngine?.optString("default", "openai-realtime") ?: "openai-realtime",
@@ -343,6 +361,7 @@ class SettingsStore @Inject constructor(
         )
         put("voice", SettingsDocument.DEFAULT_VOICE)
         put("turnDetection", "semantic_vad")
+        put("micEagerness", "auto")
         put("theme", "system")
         put("micDeviceId", JSONObject.NULL)
         put(
