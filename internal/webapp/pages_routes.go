@@ -38,8 +38,13 @@ import (
 // compilation (never JS eval) — required for the vendored onnxruntime
 // wake-word engine (wakeword.mjs), whose .wasm is served same-origin and
 // SHA-256-pinned client-side before instantiation.
+// scriptSrc is spliced with the import map's hash by pageCSPWith below. The
+// two halves are separate so the hash lands INSIDE script-src rather than
+// being appended to the whole policy.
+const pageCSPScriptSrc = "script-src 'self' 'wasm-unsafe-eval'"
+
 const pageCSP = "default-src 'self'; " +
-	"script-src 'self' 'wasm-unsafe-eval'; " +
+	pageCSPScriptSrc + "; " +
 	"style-src 'self' 'unsafe-inline'; " +
 	"img-src 'self' data:; " +
 	// wss://generativelanguage.googleapis.com is the gemini-flash-live
@@ -54,6 +59,18 @@ const pageCSP = "default-src 'self'; " +
 	"base-uri 'self'; " +
 	"form-action 'self'; " +
 	"frame-ancestors 'none'"
+
+// pageCSPWith returns the page policy with an extra script-src source folded
+// INTO the script-src directive (appending it to the whole policy string would
+// land it in frame-ancestors instead). An empty hash returns pageCSP unchanged.
+//
+// The only caller passes the import map's sha256 — see SecurityHeaders.
+func pageCSPWith(scriptSrcHash string) string {
+	if scriptSrcHash == "" {
+		return pageCSP
+	}
+	return strings.Replace(pageCSP, pageCSPScriptSrc, pageCSPScriptSrc+" "+scriptSrcHash, 1)
+}
 
 // pageMeta carries the per-page constants injected as template funcs.
 type pageMeta struct {
@@ -83,7 +100,10 @@ type Renderer struct {
 // fiber.Config.Views.
 func NewRenderer(fsys fs.FS, assets *Assets) (*Renderer, error) {
 	root := template.New("root").Funcs(template.FuncMap{
-		"asset":     assets.AssetPath,
+		"asset": assets.AssetPath,
+		// Emits the whole <script type="importmap"> element (assets.go
+		// buildImportMap). base.html places it above the first module load.
+		"importMap": assets.ImportMapScript,
 		"themeAttr": themeAttrOf,
 		// Per-page funcs get real values in the per-page clones below;
 		// these defaults exist so the shared files parse.
@@ -335,13 +355,24 @@ func errorCopy(code int) (heading, message string) {
 // pages AND auth_routes.go's htmlMessage responses), without touching
 // JSON/static responses. Cache-Control is defaulted to no-cache for HTML
 // only when a handler didn't set one.
-func SecurityHeaders() fiber.Handler {
+//
+// The policy is built once here rather than being the pageCSP constant,
+// because base.html emits an inline <script type="importmap"> (assets.go
+// buildImportMap) and the strict policy has no 'unsafe-inline' — so script-src
+// carries the sha256 of that element's exact bytes. Passing nil assets yields
+// the bare pageCSP, which is correct for a build with no import map.
+func SecurityHeaders(assets *Assets) fiber.Handler {
+	var hash string
+	if assets != nil {
+		hash = assets.ImportMapCSPHash()
+	}
+	csp := pageCSPWith(hash)
 	return func(c *fiber.Ctx) error {
 		err := c.Next()
 		ct := string(c.Response().Header.ContentType())
 		if strings.HasPrefix(ct, "text/html") {
 			if len(c.Response().Header.Peek(fiber.HeaderContentSecurityPolicy)) == 0 {
-				c.Set(fiber.HeaderContentSecurityPolicy, pageCSP)
+				c.Set(fiber.HeaderContentSecurityPolicy, csp)
 			}
 			if len(c.Response().Header.Peek(fiber.HeaderCacheControl)) == 0 {
 				c.Set(fiber.HeaderCacheControl, "no-cache")

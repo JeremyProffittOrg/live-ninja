@@ -22,8 +22,11 @@ package webapp
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"html/template"
 	"io/fs"
 	"mime"
 	"path"
@@ -46,6 +49,11 @@ type Assets struct {
 	routes map[string]*assetEntry
 	// hashed maps a logical request path to its fingerprinted variant.
 	hashed map[string]string
+	// importMapJSON is the exact <script type="importmap"> body rendered
+	// into every page; importMapCSPHash is the CSP source expression that
+	// authorizes those exact bytes. See buildImportMap.
+	importMapJSON    string
+	importMapCSPHash string
 }
 
 // NewAssets walks the embedded web FS's static/ tree and builds the
@@ -89,8 +97,85 @@ func NewAssets(fsys fs.FS) (*Assets, error) {
 	if err != nil {
 		return nil, fmt.Errorf("webapp: index static assets: %w", err)
 	}
+	a.buildImportMap()
 	return a, nil
 }
+
+// buildImportMap makes every module-to-module edge resolve to a fingerprinted,
+// content-addressed URL.
+//
+// The hazard it closes (found in production on 2026-08-01, plan.md §4.3):
+// templates load an ENTRY module by its fingerprinted URL via asset(), but the
+// modules import their siblings by LOGICAL path (`from './wakeword.mjs'`).
+// web/sw.js serves /static/* stale-while-revalidate on the stated premise that
+// everything there is fingerprinted — which was true of the entry module and
+// false of its siblings. So a deploy that changed conversation.mjs handed the
+// browser a brand-new entry module alongside a pre-deploy sibling out of the
+// service-worker cache, module linking failed, and the ENTIRE page went silently
+// inert (every button dead; plain <a> links and CSS scrolling still working).
+//
+// An import map fixes it at the resolution step: the specifier stays `./x.mjs`
+// in the source, and the browser rewrites it to `/static/js/x.<hash>.mjs` before
+// fetching. A cache hit on a content-addressed URL is by construction the exact
+// bytes the importer was built against, so stale-while-revalidate becomes as
+// safe as sw.js already claims it is.
+//
+// Only .mjs is mapped. Import maps govern ES-module resolution and nothing
+// else: theme.js is a classic script, and wakeword-worklet.js is loaded through
+// audioWorklet.addModule(), which import maps deliberately do not cover (a
+// worklet has its own module map). The worklet is import-free, so it cannot
+// fail to LINK — it is out of scope here, not overlooked.
+//
+// Browsers without import-map support ignore the element and resolve the
+// logical specifier, i.e. they degrade to the pre-2026-08-01 behaviour rather
+// than breaking.
+func (a *Assets) buildImportMap() {
+	imports := make(map[string]string, len(a.hashed))
+	for logical, hashed := range a.hashed {
+		if strings.HasSuffix(logical, ".mjs") {
+			imports[logical] = hashed
+		}
+	}
+	// json.Marshal sorts map keys, so the bytes are stable for a given set of
+	// assets — which is what lets the CSP hash below be computed once here and
+	// still match what the template renders on every request.
+	body, err := json.Marshal(struct {
+		Imports map[string]string `json:"imports"`
+	}{Imports: imports})
+	if err != nil {
+		// Unreachable: the value is map[string]string. Degrade to no import
+		// map rather than failing startup — that is the old behaviour, which
+		// works, instead of a site that will not boot.
+		return
+	}
+	a.importMapJSON = string(body)
+	sum := sha256.Sum256(body)
+	a.importMapCSPHash = "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
+}
+
+// ImportMapScript is the whole <script type="importmap"> element, ready to be
+// emitted verbatim into <head> ABOVE the first module load. It is returned as a
+// complete element rather than as its body so the exact bytes the CSP hash was
+// computed over are the exact bytes that reach the browser.
+func (a *Assets) ImportMapScript() template.HTML {
+	if a.importMapJSON == "" {
+		return ""
+	}
+	// The content is server-generated JSON over our own asset paths — no user
+	// input reaches it — and "</script>" cannot appear in a JSON string of
+	// slash-delimited paths, since json.Marshal escapes nothing here that would
+	// reintroduce it.
+	return template.HTML(`<script type="importmap">` + a.importMapJSON + `</script>`)
+}
+
+// ImportMapCSPHash is the script-src source expression authorizing the import
+// map element, e.g. "'sha256-…'". Empty when there is no map to authorize.
+//
+// A hash, deliberately, not 'unsafe-inline': the page CSP forbids inline
+// scripts and TestPageCSPMatchesSpec pins that it always will. External import
+// maps were removed from the HTML spec and are implemented nowhere, so a hash
+// source is the only way to ship one under a strict policy.
+func (a *Assets) ImportMapCSPHash() string { return a.importMapCSPHash }
 
 // AssetPath resolves a logical asset path ("/static/css/app.css") to its
 // fingerprinted URL. Unknown paths are returned unchanged (see package

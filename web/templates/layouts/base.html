@@ -16,6 +16,18 @@
 {{- /* theme.js runs synchronously before first paint (no-flash theme
        override); CSP forbids inline scripts, hence a file. */}}
 <script src="{{asset "/static/js/theme.js"}}"></script>
+{{- /* Import map — MUST stay above every module load on the page (the
+       per-page {{block "head"}} module below, and sw-register.mjs at the end
+       of <body>). A module fetched before the map is parsed would resolve its
+       imports against the un-mapped logical paths.
+
+       It maps each logical /static/js/*.mjs to its fingerprinted URL so a
+       module and the siblings it imports can never come from different
+       deploys — see internal/webapp/assets.go buildImportMap for the failure
+       this closes. The element is inline and the page CSP has no
+       'unsafe-inline', so SecurityHeaders() authorizes these exact bytes with
+       a sha256 source; the map and the hash are built together. */}}
+{{importMap}}
 {{block "head" .}}{{end}}
 </head>
 <body{{with pageBodyClass}} class="{{.}}"{{end}}>

@@ -24,8 +24,10 @@ pipelines, verified on the physical tablet against production. Running it on rea
 a **latent whole-page failure mode that predates it** (§4.3): the service worker serves `/static/*`
 stale-while-revalidate on the stated assumption that everything there is fingerprinted, but JS
 modules import their siblings by *logical* path, so a deploy that changes one module can hand a
-client a mismatched sibling and kill the entire page silently. **§4.3 is the active workstream** —
-the owner asked for the fingerprinted-import-specifier fix on 2026-08-01.
+client a mismatched sibling and kill the entire page silently. The owner asked for the
+fingerprinted-import-specifier fix the same day and **§4.3 is now shipped**: an import map stamped
+into every page makes all 24 modules resolve to content-addressed URLs, so the service worker's
+"serving cached is always safe" premise is finally true rather than merely stated.
 
 Everything below this line is the 2026-07-31 pass and is unchanged.
 
@@ -382,7 +384,7 @@ asserts the real contract (same size, opposite edges, viewport-aware). Shipped i
 **Gotcha:** `web-quality` failing does NOT fail the run. Compare against the previous runs' result
 before dismissing it as noise.
 
-### 4.3 The module-graph cache hazard `[~]` — ACTIVE, owner asked for the fix 2026-08-01
+### 4.3 The module-graph cache hazard `[x]` — fixed 2026-08-01 (owner asked; import map shipped)
 
 **The defect (verified live, not theorised).** On the Tab S9 FE, after the `bb488e3` deploy,
 **nothing driven by JavaScript worked** — not the new overlay, and not the Settings or Help drawers
@@ -413,15 +415,31 @@ inert while plain `<a>` links and CSS scrolling still worked. There is nothing o
 
 **The chosen fix — fingerprinted import specifiers via an import map** (owner asked 2026-08-01):
 
-- `[ ]` `internal/webapp/assets.go` — build a deterministic import map at `NewAssets` mapping every
-  logical `/static/**/*.mjs` to its hashed path, plus the `sha256-…` of the exact rendered bytes.
-- `[ ]` `internal/webapp/pages_routes.go` — `pageCSP` gains that hash in `script-src`;
-  `SecurityHeaders()` takes the `*Assets` so it can emit it. **`'unsafe-inline'` must never be
-  added** — `TestPageCSPMatchesSpec` pins its absence, and that test is right.
-- `[ ]` `web/templates/layouts/base.html` — emit the map **before the first module load**.
-- `[ ]` `cmd/web/main.go` — pass `assets` to `SecurityHeaders`.
-- `[ ]` Tests: the map covers every `.mjs`, precedes the first module script, and the CSP hash
-  matches the rendered bytes byte-for-byte.
+- `[x]` `internal/webapp/assets.go` — `buildImportMap()` runs at `NewAssets` and maps every logical
+  `/static/**/*.mjs` to its hashed path (24 entries), plus `ImportMapCSPHash()` over the exact
+  rendered bytes. `json.Marshal` sorts map keys, which is what makes the bytes stable enough to hash
+  once at startup.
+- `[x]` `internal/webapp/pages_routes.go` — `pageCSPWith()` splices the hash INSIDE `script-src`
+  (appending to the policy string would have landed it in `frame-ancestors`);
+  `SecurityHeaders(*Assets)` uses it; `importMap` template func added.
+- `[x]` `web/templates/layouts/base.html` — emits `{{importMap}}` above `{{block "head"}}`.
+- `[x]` `cmd/web/main.go` — passes `assets` to `SecurityHeaders`.
+- `[x]` `internal/webapp/import_map_test.go` — five guards: every `.mjs` mapped; every relative
+  specifier *actually written in the sources* resolves to a mapped entry (this is the one that fails
+  when a new module is added and the map silently stops being complete); the map precedes the first
+  module `<script>` on all six pages; the CSP hash matches the rendered bytes; the hash lands in
+  `script-src` and `'unsafe-inline'` never appears there.
+- `[x]` `web/sw.js` — comment only. Its "always safe" premise is now true, but only *because* of the
+  import map, so the dependency is named where someone would otherwise remove it.
+
+**Verified, not assumed** — a throwaway harness ran the real `NewAssets` + `NewRenderer` +
+`SecurityHeaders` and was driven in Chromium: **16/16 `.mjs` fetched from fingerprinted URLs, zero
+logical stragglers**; dynamic `import('./personaeditor.mjs')` and the vendored ORT module both
+resolved fingerprinted; no CSP violation; `go test ./...` green; `npx playwright test` 71 passed /
+21 skipped / **0 failed**, including the service-worker cache regressions.
+
+**No Help-panel change.** The Help maintenance rule covers user-visible features, settings, pages
+and tools; this is invisible to users — nothing they can see or do changed.
 
 **Constraints that shape it** (do not rediscover these):
 - **CSP forbids inline scripts** (`script-src 'self' 'wasm-unsafe-eval'`), so the import map needs a

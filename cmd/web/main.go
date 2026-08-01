@@ -88,7 +88,7 @@ func main() {
 	// verbose request/response log pair (with txId, redacted auth headers).
 	// It supersedes the old single-line request logger.
 	app.Use(webapp.TxnMiddleware(logger))
-	app.Use(webapp.SecurityHeaders())
+	app.Use(webapp.SecurityHeaders(assets))
 	// X-LN-Server on every response + X-LN-Client parsing/EMF/below-min
 	// 426 gate (contracts/headers.md, plan.md M7 "Versioning/compat") —
 	// mounted early like SecurityHeaders so it applies uniformly ahead of

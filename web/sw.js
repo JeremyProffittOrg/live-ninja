@@ -9,6 +9,17 @@
  *   - /static/* assets             : stale-while-revalidate (they are
  *     fingerprinted/immutable at build, so serving cached is always safe and
  *     the background revalidate keeps unfingerprinted entries fresh).
+ *
+ *     That "always safe" holds because URLs here are content-addressed, and
+ *     for JS modules it holds ONLY because of the import map that
+ *     internal/webapp/assets.go stamps into every page. Templates always
+ *     loaded the ENTRY module by its fingerprinted URL, but until 2026-08-01
+ *     the modules imported their siblings by LOGICAL path — so this cache
+ *     could pair a just-deployed module with a pre-deploy sibling, module
+ *     linking failed, and the whole page went silently inert (seen in
+ *     production; plan.md §4.3). Removing that import map re-arms this
+ *     branch as a page-killer. Do not weaken it here instead: SWR over
+ *     genuinely content-addressed URLs is correct.
  *   - /api/*, /auth/*, /healthz, /.well-known/*, any cross-origin request
  *     (api.openai.com WebRTC/SDP calls), and every non-GET: NEVER intercepted —
  *     we return before respondWith so live data, auth cookies, SSE/WebRTC
