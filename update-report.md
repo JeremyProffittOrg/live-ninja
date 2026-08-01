@@ -3,8 +3,11 @@
 **Date:** 2026-07-31
 **Repository:** JeremyProffittOrg/live-ninja (local working copy, branch `main`)
 **Commit:** `1bf8212` — *Give the app a Help panel that opens the way Settings does*
-**Delivery status:** **committed locally, NOT pushed.** No deploy was authorized for this
-change, and in this repository a push to `main` is a production deploy.
+**Delivery status:** **deployed.** Written and committed under a no-push hold (no deploy
+was authorized at the time, and here a push to `main` *is* a production deploy); the owner
+then authorized the push directly. Pushed as `3b662ff..7f9c4ab`, deploy run
+[30686409890](https://github.com/JeremyProffittOrg/live-ninja/actions/runs/30686409890)
+succeeded 2026-08-01. See §9.
 
 ---
 
@@ -218,5 +221,19 @@ A  internal/webapp/help_drawer_ui_test.go
 
 No unrelated worktree changes existed before this run, and none were introduced.
 
-To ship it: `git push` — which triggers the GitHub Actions deploy per `deploy.md`. Worth
-doing the owner-verified pass on the real `/conversation` page afterwards (§4).
+## 9. Deploy (2026-08-01)
+
+The owner authorized the push after the report above was written. Pushed
+`3b662ff..7f9c4ab`; run `30686409890` finished **success** in ~7m, every job green
+(`test`, `changes`, `build-nova-container`, `deploy`, `web-quality`,
+`push-nova-container-bootstrap`; the two wake-word container jobs path-skipped as usual).
+`web-quality` is the post-deploy Playwright gate, so the public surface and the a11y suite
+passed against the deployed site.
+
+Confirmed live on `https://live.jeremy.ninja`: the served `static/css/app.css` carries the
+`.conv-settings-tab--help` / `.conv-help__*` rules and `static/js/conversation.mjs` carries
+the `helpDrawerBtn` wiring.
+
+Still outstanding, unchanged by the deploy: the panel has not been eyeballed on the real
+authenticated `/conversation` page. Everything verifiable without a session is verified;
+the remaining pass is an owner one.
