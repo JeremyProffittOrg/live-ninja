@@ -162,6 +162,13 @@ nothing timed out.
   field rejects the ENTIRE envelope — shipping the cloud half early breaks every un-updated node
   (Lenovo14, rog-18, rog-flow, elite001, acer-gpu, Windows1/2, Left/Right-Board ...).
 
+  **Raised in importance by the 2026-08-01 default flip (§2.4).** While the default was "hold", a
+  prompt-only gate failing open meant a run shipped work the owner had not asked to ship. Now that
+  the default is "push", the only runs that carry the gate at all are ones where the owner
+  *explicitly said don't* — so every failure of this prompt-only mechanism is now a direct
+  violation of a stated instruction, on the exact request most likely to be sensitive. Fewer runs
+  depend on it; the ones that do depend on it more.
+
 
 ### 2.3 Closed this pass — do not redo
 
@@ -187,6 +194,32 @@ nothing timed out.
   ghost-cli deploy overwrote `/ghost-cli/authz-allowlist` with an owner-only document, silently
   killing the feature. The two-entry document now lives in ghost-cli's `AUTHZ_ALLOWLIST_JSON` repo
   variable and survives deploys.
+
+### 2.4 Locked decision — the deploy gate is open by default (owner, 2026-08-01)
+
+**Decided:** `deploy` defaults to **TRUE**. A launched run commits *and pushes* and watches the
+pipeline to a terminal result. Holding a change is now the explicit opt-out ("...but don't push").
+
+**Why the original closed default was reversed.** It was costing more than it saved. A run would do
+the work, verify it, and stop with everything committed and unpushed; the owner then had to come
+back and say "push" by hand — a second decision point on a change they had already asked for and
+already confirmed once. Finished work sat on a machine nobody was watching. The trigger was the
+2026-08-01 Help-panel run, which did exactly that.
+
+**What the closed default was protecting, and why that cover is not lost.** It existed so a
+*misheard* voice command could not ship to production. That protection does not actually live in
+this flag: `code_update_start` already requires an explicit `confirm`, which the model may only set
+after stating the repository and the change and getting agreement. Nothing reaches the deploy
+decision without the owner having heard it back and said yes. The flag was a second lock on a door
+that already had one — and it locked the side the owner was standing on.
+
+**What is genuinely weaker now:** the hold path is prompt-only until the `no_push` item in §2.2
+ships. See the note there.
+
+**Where it lives:** default at the tool boundary (`internal/tools/codeupdate.go`, the `deploy`
+parse + schema text); wording in `deployRules` (`internal/codeupdate/prompt.go`). The wire/queue
+default is deliberately still the zero value, so a malformed or truncated message holds rather than
+deploys — only real owner intent flips it on.
 
 ---
 

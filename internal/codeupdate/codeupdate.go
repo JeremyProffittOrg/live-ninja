@@ -74,9 +74,16 @@ type Request struct {
 	// Preprocess asks for the Opus rewrite. Default true; false only when the
 	// owner said not to.
 	Preprocess bool `json:"preprocess"`
-	// Deploy lets the session push to main. Default FALSE: pushing to main is
-	// the production deploy trigger in these repos, so a misheard sentence must
-	// not be able to ship. The owner opts in explicitly ("...and deploy it").
+	// Deploy lets the session push to main, which is the production deploy
+	// trigger in these repos. Default TRUE as of the owner's 2026-08-01
+	// decision: work the owner already confirmed is expected to ship, and the
+	// closed default was stranding finished changes unpushed on a machine
+	// nobody was watching. The owner opts OUT explicitly ("...but don't push").
+	//
+	// The wire default is still the zero value, and that is deliberate: a
+	// malformed or truncated queue message decodes to false and holds, rather
+	// than deploying on the strength of a field that never arrived. Only the
+	// tool boundary, where real owner intent is known, flips it on.
 	Deploy bool `json:"deploy"`
 
 	// RequestedAt is when the tool accepted the request, RFC3339. Used for the

@@ -146,9 +146,10 @@ func codeUpdateStartDefinition() *Definition {
 					"session starts. Defaults to TRUE — set false ONLY if the user says not to " +
 					"rewrite or refine their wording."},
 			{Name: "deploy", Type: "boolean",
-				Description: "Allow the session to push its work, which deploys to production in " +
-					"these repositories. Defaults to FALSE (commit locally only). Set true ONLY " +
-					"if the user explicitly asked to deploy, ship, or release it."},
+				Description: "Let the session push its work, which deploys to production in these " +
+					"repositories. Defaults to TRUE — finished work is expected to ship. Set " +
+					"false ONLY if the user says not to push, or asks for the work to be " +
+					"committed locally, staged, held back, or left for them to review."},
 			{Name: "model", Type: "string", MaxLen: 128,
 				Description: "Optional model override for the coding session."},
 			{Name: "effort", Type: "string", MaxLen: 32,
@@ -228,9 +229,28 @@ func handleCodeUpdateStart(ctx context.Context, deps *Deps, inv Invocation, args
 			preprocess = b
 		}
 	}
-	// Deploy is the opposite: absent means NO. A push to main is a production
-	// deploy in these repositories, so it takes a spoken opt-in.
-	deploy, _ := args["deploy"].(bool)
+	// Deploy defaults ON, same shape as preprocess above: an absent argument
+	// must read as true, not as the zero value.
+	//
+	// Owner decision 2026-08-01, reversing the original closed-by-default gate.
+	// That gate cost more than it saved: a run would do the work, verify it, and
+	// stop with everything committed but unpushed, and the owner had to come
+	// back and say "push" by hand — which is a second decision point on a change
+	// they had already asked for and already approved once. Unshipped work sat
+	// on a machine they were not looking at.
+	//
+	// What it protected against was a MISHEARD sentence shipping to production.
+	// That risk is real but it is not carried here: code_update_start already
+	// requires an explicit `confirm` (the model must state the repo and the
+	// change and get agreement first), so nothing reaches this line without the
+	// owner having heard it back and said yes. The deploy flag was a second lock
+	// on a door that already has one, and it locked the wrong side.
+	deploy := true
+	if v, present := args["deploy"]; present {
+		if b, isBool := v.(bool); isBool {
+			deploy = b
+		}
+	}
 
 	requestID := uuid.Must(uuid.NewV7()).String()
 	model, _ := args["model"].(string)
@@ -310,10 +330,13 @@ func startedNote(preprocess, deploy bool) string {
 	} else {
 		parts = append(parts, "starting with the exact wording given")
 	}
+	// Deploying is now the default, so the line that has to be said out loud is
+	// the HOLD — that is the one the owner would otherwise be surprised by,
+	// having asked for a change and not gotten it shipped.
 	if deploy {
-		parts = append(parts, "and it IS authorized to deploy")
+		parts = append(parts, "and it will deploy when it is done")
 	} else {
-		parts = append(parts, "and it will commit locally without deploying")
+		parts = append(parts, "and it will commit locally WITHOUT deploying, as you asked")
 	}
 	return strings.Join(parts, ", ") + "."
 }

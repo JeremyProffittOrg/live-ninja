@@ -51,27 +51,56 @@ func TestDirectiveIsLastAndSingle(t *testing.T) {
 	}
 }
 
-// The default MUST be closed. A push to main is a production deploy in these
-// repositories, so a misheard sentence must not be able to ship.
-func TestDeployGateDefaultsClosed(t *testing.T) {
+// The hold is the opt-OUT now, and it must be unambiguous when it is asked for:
+// a "don't push" that shipped anyway is the worst outcome this file can produce.
+func TestDeployGateClosesOnExplicitOptOut(t *testing.T) {
 	got := BuildPrompt(testInput(false), "tighten the retry logic")
 	lower := strings.ToLower(got)
 	if !strings.Contains(lower, "do not push") {
 		t.Errorf("non-deploy prompt does not forbid pushing:\n%s", got)
 	}
-	if strings.Contains(lower, "commit and push it through") {
+	if strings.Contains(lower, "and pushed through") {
 		t.Errorf("non-deploy prompt still instructs a push:\n%s", got)
 	}
 }
 
-func TestDeployGateOpensOnExplicitOptIn(t *testing.T) {
+func TestDeployGateIsOpenByDefault(t *testing.T) {
 	got := BuildPrompt(testInput(true), "tighten the retry logic")
 	lower := strings.ToLower(got)
-	if !strings.Contains(lower, "explicitly authorized a deploy") {
+	if !strings.Contains(lower, "authorized a deploy for this change") {
 		t.Errorf("deploy prompt does not state the authorization:\n%s", got)
 	}
 	if strings.Contains(lower, "do not push") {
 		t.Errorf("deploy prompt still forbids pushing:\n%s", got)
+	}
+}
+
+// The point of the rewrite: an agent must not be able to read the push as an
+// optional trailing step and still report success. Both branches state their
+// requirement as a condition of completion, and the deploy branch names the
+// three things that have to be true before the run ends.
+func TestDeployRulesStatePushAsACompletionCondition(t *testing.T) {
+	deployed := strings.ToLower(BuildPrompt(testInput(true), "tighten the retry logic"))
+	for _, want := range []string{
+		"you have not finished until", // not a step in a list
+		"and pushed",                  // committing alone is not done
+		"terminal result",             // the pipeline is watched, not fired and forgotten
+		"committed but unpushed",      // the exact failure mode, named
+		"not a finding to report",     // a red pipeline is fixed forward, not handed back
+	} {
+		if !strings.Contains(deployed, want) {
+			t.Errorf("deploy rules do not make the push a completion condition, missing %q:\n%s",
+				want, deployed)
+		}
+	}
+
+	// The hold branch has the same shape: commit before finishing, just no push.
+	held := strings.ToLower(BuildPrompt(testInput(false), "tighten the retry logic"))
+	for _, want := range []string{"you have not finished until", "committed locally"} {
+		if !strings.Contains(held, want) {
+			t.Errorf("hold rules do not require a commit before completion, missing %q:\n%s",
+				want, held)
+		}
 	}
 }
 
@@ -169,14 +198,20 @@ func TestOverlongPromptSacrificesTheBodyNotTheRules(t *testing.T) {
 				// repo's own conventions".
 				lower := strings.ToLower(got)
 				if deploy {
-					if !strings.Contains(lower, "explicitly authorized a deploy") {
+					if !strings.Contains(lower, "authorized a deploy for this change") {
 						t.Error("the deploy authorization was truncated away")
+					}
+					// The completion condition is at the END of the deploy
+					// branch, so it is the first thing a tail-truncation eats —
+					// which would leave "commit and push" reading as optional.
+					if !strings.Contains(lower, "you have not finished until") {
+						t.Error("the push completion condition was truncated away")
 					}
 				} else {
 					if !strings.Contains(got, "DO NOT PUSH") {
 						t.Error("the push prohibition was truncated away")
 					}
-					if !strings.Contains(lower, "did not authorize a deploy") {
+					if !strings.Contains(lower, "asked for this change to be held") {
 						t.Error("the deploy gate was only partially preserved")
 					}
 				}

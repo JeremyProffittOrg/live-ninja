@@ -398,9 +398,12 @@ func (d *Dispatcher) enqueueEmail(ctx context.Context, template, subject, text s
 func (d *Dispatcher) emailStarted(ctx context.Context, req Request, res ghost.LaunchResult,
 	prompt string, rewritten bool, note string, log *slog.Logger) {
 
-	deployLine := "Deploy: NO — the session will commit locally and stop before pushing."
+	deployLine := "Deploy: NO — you asked for this one to be held, so the session will commit " +
+		"locally and stop before pushing."
 	if req.Deploy {
-		deployLine = "Deploy: YES — you authorized this session to push through the normal delivery path."
+		deployLine = "Deploy: YES — the session will push through the normal delivery path and " +
+			"watch the pipeline. Reply-to-hold is not a thing: say \"don't push\" up front if " +
+			"you want a change staged instead."
 	}
 	rewriteLine := "Instructions: rewritten by Opus before launch."
 	if !rewritten {

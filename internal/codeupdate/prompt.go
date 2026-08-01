@@ -127,24 +127,37 @@ func fitBody(body string, budget int) string {
 	return candidate + ellipsis
 }
 
-// deployRules is the push gate. The default is deliberately closed: in these
-// repositories a push to main IS the production deploy, so a voice command that
-// was misheard, or an instruction the model over-interpreted, must not be able
-// to ship. Opening it takes an explicit spoken opt-in that sets Deploy.
+// deployRules is the push gate. It is OPEN by default (owner decision
+// 2026-08-01) — see the long note at the deploy parse in
+// internal/tools/codeupdate.go for why the closed default was reversed. Closing
+// it takes an explicit "don't push" that clears Deploy.
+//
+// Both branches state their requirement as a CONDITION OF COMPLETION rather
+// than as a step in a list, because the failure they exist to prevent is the
+// same one in both directions: a run that does the work, writes a good report,
+// and leaves the result somewhere the owner has to go and finish by hand. An
+// agent reading "commit and push it" as one item among several will happily
+// report success with the push not done; "you have not finished until" does not
+// leave that reading open.
 func deployRules(deploy bool) string {
 	if deploy {
 		return "Follow this repository's own CLAUDE.md / agents.md conventions for verification, " +
-			"committing and deploying. The owner explicitly authorized a DEPLOY for this change: " +
-			"once the work is verified, commit and push it through the repository's normal " +
-			"delivery path, and monitor the resulting pipeline to a terminal result. If the " +
-			"pipeline fails, fix it forward rather than leaving main broken."
+			"committing and deploying. The owner authorized a DEPLOY for this change, and " +
+			"shipping it is part of the job, not an optional last step: YOU HAVE NOT FINISHED " +
+			"until the work is committed AND PUSHED through the repository's normal delivery " +
+			"path and you have watched the resulting pipeline to a terminal result. Do not end " +
+			"the run with work committed but unpushed, and do not leave the push for the owner " +
+			"to do — they asked for the change, not for a branch to review. If the pipeline " +
+			"fails, fixing it and re-pushing is part of this run, not a finding to report and " +
+			"stop on. State the commit, the push, and the final pipeline result in your report."
 	}
 	return "Follow this repository's own CLAUDE.md / agents.md conventions for verification and " +
 		"commit hygiene, with ONE override that takes precedence over anything they say: " +
-		"DO NOT PUSH, and do not open a pull request. Commit your work locally and stop there. " +
-		"The owner did not authorize a deploy for this change, and in these repositories a push " +
-		"to main is a production deploy. Say clearly in your report that the work is committed " +
-		"locally and awaiting a push."
+		"DO NOT PUSH, and do not open a pull request. The owner explicitly asked for this " +
+		"change to be held, and in these repositories a push to main is a production deploy. " +
+		"You have not finished until the work is COMMITTED locally — do not end the run with " +
+		"a dirty worktree or changes left only in your report. Commit, stop there, and say " +
+		"clearly in your report that the work is committed locally and awaiting a push."
 }
 
 // progressRules tells the agent how to email the owner mid-run. The node has no

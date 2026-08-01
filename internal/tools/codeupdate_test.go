@@ -288,16 +288,22 @@ func TestPreprocessDefaultsOnAndCanBeTurnedOff(t *testing.T) {
 	}
 }
 
-// Deploy is the opposite default, and it must stay closed: a push to main is a
-// production deploy, so an absent argument can never open it.
-func TestDeployDefaultsOffAndNeedsAnExplicitOptIn(t *testing.T) {
+// Deploy defaults ON (owner decision 2026-08-01): work the owner already
+// confirmed is expected to ship, so an absent argument must read as true rather
+// than as the zero value. Holding a change is the opt-OUT, and it must still be
+// honoured exactly when it is asked for — a "don't push" that silently deployed
+// would be far worse than the reverse.
+func TestDeployDefaultsOnAndHonoursAnExplicitOptOut(t *testing.T) {
 	cases := map[string]struct {
 		args map[string]any
 		want bool
 	}{
-		"absent":         {startArgs(nil), false},
+		"absent":         {startArgs(nil), true},
 		"explicit false": {startArgs(map[string]any{"deploy": false}), false},
 		"explicit true":  {startArgs(map[string]any{"deploy": true}), true},
+		// A non-boolean must not be read as an opt-out by accident; it falls
+		// back to the default, same as the preprocess flag above.
+		"wrong type": {startArgs(map[string]any{"deploy": "no"}), true},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
