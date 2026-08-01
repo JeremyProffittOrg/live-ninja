@@ -162,13 +162,30 @@ test('settings open and close bars match at 40 percent of the viewport height', 
   const openerBox = await page.locator('#openSettings').boundingBox();
   expect(openerBox).not.toBeNull();
   expect(openerBox.height).toBeCloseTo(viewport.height * 0.4, 0);
-  expect(openerBox.x + openerBox.width).toBeCloseTo(viewport.width, 0);
+
+  // Which edge the pair lives on is width-dependent (mobile shell,
+  // 2026-08-01): on a computer the opener is flush RIGHT and the in-drawer
+  // close bar mirrors to the left, but at <=900px the whole page is one
+  // column and the tabs move to the LEFT edge so they stay clear of the
+  // right-hand thumb, with the close bar mirroring to the right. What the
+  // test actually pins either way is that the two bars are the same size and
+  // sit on OPPOSITE edges at the same height.
+  const mobile = viewport.width <= 900;
+  if (mobile) {
+    expect(openerBox.x).toBeCloseTo(0, 0);
+  } else {
+    expect(openerBox.x + openerBox.width).toBeCloseTo(viewport.width, 0);
+  }
 
   await page.locator('#drawer').evaluate((dialog) => dialog.showModal());
   const closeBox = await page.locator('#closeSettings').boundingBox();
   expect(closeBox).not.toBeNull();
   expect(closeBox.height).toBeCloseTo(openerBox.height, 0);
   expect(closeBox.width).toBeCloseTo(openerBox.width, 0);
-  expect(closeBox.x).toBeCloseTo(0, 0);
   expect(closeBox.y).toBeCloseTo(openerBox.y, 0);
+  if (mobile) {
+    expect(closeBox.x + closeBox.width).toBeCloseTo(viewport.width, 0);
+  } else {
+    expect(closeBox.x).toBeCloseTo(0, 0);
+  }
 });
