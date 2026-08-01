@@ -20,13 +20,10 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -105,120 +102,9 @@ var (
 	}
 )
 
-var errUserNotFound = errors.New("authorizer: token subject has no user record")
-
-// jwksCache holds the most recently fetched JWKS document (raw JSON) so a
-// warm Lambda container verifies tokens without hitting KMS/the JWKS
-// endpoint on every invocation. 24h matches internal/auth/session.go's
-// own JWKS cache lifetime (the signing key doesn't rotate more often than
-// that in normal operation).
-type jwksCache struct {
-	mu        sync.RWMutex
-	data      []byte
-	expiresAt time.Time
-}
-
-func (c *jwksCache) get(ctx context.Context, url string) ([]byte, error) {
-	c.mu.RLock()
-	if c.data != nil && time.Now().Before(c.expiresAt) {
-		data := c.data
-		c.mu.RUnlock()
-		return data, nil
-	}
-	c.mu.RUnlock()
-
-	data, err := fetchJWKS(ctx, url)
-	if err != nil {
-		return nil, err
-	}
-
-	c.mu.Lock()
-	c.data = data
-	c.expiresAt = time.Now().Add(jwksCacheTTL)
-	c.mu.Unlock()
-	return data, nil
-}
-
-var httpClient = &http.Client{Timeout: httpTimeout}
-
-func fetchJWKS(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("authorizer: build jwks request: %w", err)
-	}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("authorizer: fetch jwks: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("authorizer: jwks endpoint returned status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("authorizer: read jwks body: %w", err)
-	}
-	return body, nil
-}
-
-// userSnapshot is the subset of a store.User the authorizer needs per
-// request, cached for userCacheTTL so the tokensValidAfter kill-switch
-// check ("log out everywhere") lands within that window without a
-// DynamoDB read on every single request.
-type userSnapshot struct {
-	role             string
-	status           string
-	tokensValidAfter int64
-	expiresAt        time.Time
-}
-
-type userCache struct {
-	mu    sync.Mutex
-	items map[string]userSnapshot
-}
-
-func newUserCache() *userCache {
-	return &userCache{items: make(map[string]userSnapshot)}
-}
-
-func (c *userCache) get(ctx context.Context, st *store.Store, userID string) (userSnapshot, error) {
-	c.mu.Lock()
-	entry, ok := c.items[userID]
-	c.mu.Unlock()
-	if ok && time.Now().Before(entry.expiresAt) {
-		return entry, nil
-	}
-
-	u, err := st.GetUser(ctx, userID)
-	if err != nil {
-		return userSnapshot{}, fmt.Errorf("authorizer: get user %s: %w", userID, err)
-	}
-	if u == nil {
-		return userSnapshot{}, errUserNotFound
-	}
-
-	fresh := userSnapshot{
-		role:             u.Role,
-		status:           u.Status,
-		tokensValidAfter: u.TokensValidAfter,
-		expiresAt:        time.Now().Add(userCacheTTL),
-	}
-
-	c.mu.Lock()
-	c.items[userID] = fresh
-	c.mu.Unlock()
-	return fresh, nil
-}
-
 var (
-	logger  = observ.NewLogger(os.Stdout, config.FromEnv().LogLevel)
-	jwks    = &jwksCache{}
-	users   = newUserCache()
-	st      *store.Store
-	jwksURL string
+	logger   = observ.NewLogger(os.Stdout, config.FromEnv().LogLevel)
+	verifier *auth.TokenVerifier
 )
 
 func handler(ctx context.Context, req events.APIGatewayV2CustomAuthorizerV2Request) (events.APIGatewayV2CustomAuthorizerSimpleResponse, error) {
@@ -246,46 +132,27 @@ func handler(ctx context.Context, req events.APIGatewayV2CustomAuthorizerV2Reque
 		return denyResponse(), nil
 	}
 
-	jwksJSON, err := jwks.get(ctx, jwksURL)
-	if err != nil {
-		l.Error("authorizer: jwks fetch/cache failed, denying", slog.String("error", err.Error()))
+	// One shared decision (internal/auth.TokenVerifier): JWKS fetch/cache,
+	// ES256 + iss/aud/exp, the user lookup, the active-account check and the
+	// tokensValidAfter kill-switch. cmd/iot-authorizer runs the identical call,
+	// which is the point — "revoked" cannot come to mean two different things.
+	claims, snap, err := verifier.Verify(ctx, token)
+	switch {
+	case errors.Is(err, auth.ErrUserNotFound):
+		l.Warn("authorizer: token subject has no user record, denying", slog.String("userId", claims.Sub))
 		return denyResponse(), nil
-	}
-
-	// auth.VerifyJWT already validates structure, ES256 signature, and the
-	// iss/aud/exp claims (with clock-skew leeway) — no need to re-check
-	// those here, and doing so with a stricter/non-skewed comparison would
-	// only risk rejecting a token VerifyJWT itself considers valid.
-	claims, err := auth.VerifyJWT(token, jwksJSON)
-	if err != nil {
-		l.Info("authorizer: jwt verification failed, denying", slog.String("error", err.Error()))
-		return denyResponse(), nil
-	}
-
-	snap, err := users.get(ctx, st, claims.Sub)
-	if err != nil {
-		if errors.Is(err, errUserNotFound) {
-			l.Warn("authorizer: token subject has no user record, denying", slog.String("userId", claims.Sub))
-		} else {
-			l.Error("authorizer: user lookup failed, denying", slog.String("userId", claims.Sub), slog.String("error", err.Error()))
-		}
-		return denyResponse(), nil
-	}
-
-	if snap.status != store.UserStatusActive {
+	case errors.Is(err, auth.ErrUserNotActive):
 		l.Info("authorizer: user not active, denying",
-			slog.String("userId", claims.Sub), slog.String("status", snap.status))
+			slog.String("userId", claims.Sub), slog.String("status", snap.Status))
 		return denyResponse(), nil
-	}
-
-	// The tokensValidAfter kill-switch: any JWT issued before the user's
-	// last "log out everywhere" (or admin disable) is rejected, even
-	// though its signature and exp are otherwise perfectly valid.
-	if claims.Iat < snap.tokensValidAfter {
+	case errors.Is(err, auth.ErrTokenRevoked):
 		l.Info("authorizer: token predates tokensValidAfter, denying",
 			slog.String("userId", claims.Sub),
 			slog.Int64("iat", claims.Iat),
-			slog.Int64("tokensValidAfter", snap.tokensValidAfter))
+			slog.Int64("tokensValidAfter", snap.TokensValidAfter))
+		return denyResponse(), nil
+	case err != nil:
+		l.Info("authorizer: verification failed, denying", slog.String("error", err.Error()))
 		return denyResponse(), nil
 	}
 
@@ -301,7 +168,7 @@ func handler(ctx context.Context, req events.APIGatewayV2CustomAuthorizerV2Reque
 			"sessionId": claims.Sid,
 			"surface":   claims.Surface,
 			"deviceId":  claims.Did,
-			"role":      snap.role,
+			"role":      snap.Role,
 		},
 	}, nil
 }
@@ -365,7 +232,7 @@ func main() {
 	ctx := context.Background()
 	cfg := config.FromEnv()
 
-	jwksURL = os.Getenv("JWKS_URL")
+	jwksURL := os.Getenv("JWKS_URL")
 	if jwksURL == "" {
 		jwksURL = defaultJWKSURL
 	}
@@ -375,7 +242,7 @@ func main() {
 		logger.Error("authorizer: store init failed", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
-	st = s
+	verifier = auth.NewTokenVerifier(jwksURL, s)
 
 	lambda.Start(handler)
 }

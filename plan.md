@@ -813,27 +813,61 @@ explicitly in the template with `RetentionInDays: 7`.
   interval — not the refresh interval alone.
   *DoD (still open):* a browser tab subscribes to `liveninja/user/<uid>/#` against the deployed
   authorizer and receives a message published by `aws iot-data publish`, captured in the run log.
-- `[ ]` **M1.5 Token signing** — RSA keypair, public half on the authorizer, private half used by
-  the token mint; client receives `{token, tokenSignature}`.
-  *DoD:* a connect attempt carrying a bad signature is rejected **without** the Lambda being
-  invoked (no log line for it).
+- `[!]` **M1.5 Token signing — WIRED BUT OFF, and it needs the owner.** The template carries the
+  `IotAuthorizerSigningPublicKey` parameter and the `IotAuthorizerSigningEnabled` condition, so
+  turning it on is a parameter change and nothing else. It ships **disabled** because enabling it
+  needs an RSA keypair, and the private half is a secret this agent must never generate, see or
+  commit (`scripts/set-secret.sh` is the only sanctioned path). **Unblocked by:** the owner
+  generating a keypair, storing the private half via `set-secret.sh`, and passing the public half
+  as the stack parameter; the token mint then returns `{token, tokenSignature}`.
+  **Risk while off:** anyone who knows the endpoint can trigger the authorizer Lambda. AWS: *"if
+  you leave signing enabled, you can prevent excessive triggering of your Lambda by unrecognized
+  clients."* Bounded by the 5s timeout and the function's tiny cost; not a data-exposure risk,
+  since an unsigned request still has to present a valid ES256 JWT to get any policy at all.
+  *DoD (unchanged):* a connect attempt carrying a bad signature is rejected **without** the Lambda
+  being invoked (no log line for it).
 - `[ ]` **M1.6 Cold-start budget** — measure the authorizer cold, with an empty JWKS cache.
   *DoD:* p100 under 5 s across 10 cold invocations, recorded in the run log; if it is not, the
   JWKS fetch moves out of the request path before anything else is built on this.
-- `[ ]` **M1.2 `cmd/iot-authorizer`.** Extract the JWT/JWKS/`tokensValidAfter` verification shared
+- `[x]` **M1.2 `cmd/iot-authorizer`.** Extract the JWT/JWKS/`tokensValidAfter` verification shared
   with `cmd/authorizer` into `internal/auth`, and return an IoT policy scoped to
   `liveninja/user/<userId>/#` for Subscribe/Receive and `liveninja/user/<userId>/presence/<deviceId>`
   for Publish. Deny everything else.
   *DoD:* `go test ./internal/auth/... ./cmd/iot-authorizer/...` passes, including a case asserting
   that a token for user A yields a policy that does **not** match user B's topic.
-- `[ ]` **M1.3 Token lifetime.** The JWT lives 15 minutes; the connection must not. Set
+- `[x]` **M1.3 Token lifetime.** `disconnectAfterInSeconds=3600`, `refreshAfterInSeconds=300`;
+  `exp` checking untouched. Pinned by `TestConnectionBoundsAreSet`. ORIGINAL TEXT: The JWT lives 15 minutes; the connection must not. Set
   `disconnectAfterInSeconds` to 3600 and have the client reconnect when it refreshes its JWT.
   Do NOT weaken `exp` checking to keep a connection alive.
   *DoD:* a documented test showing a connection surviving a client token refresh via reconnect,
   and a revoked user (`tokensValidAfter` bumped) failing to reconnect.
-- `[ ]` **M1.4 Template.** `AWS::IoT::Authorizer` + the function + its log group at
+- `[x]` **M1.4 Template.** `AWS::IoT::Authorizer` + the function + its log group at
   `RetentionInDays: 7`. No alarms, no dashboards.
   *DoD:* `sam validate --lint` passes and the deployed stack reaches `UPDATE_COMPLETE`.
+
+**Landed 2026-08-01 (WS-1 build).** `internal/auth/tokenverify.go` now holds the whole "is this
+token good right now" decision — JWKS fetch/cache, ES256 + iss/aud/exp, user lookup, active-account
+check, `tokensValidAfter` kill-switch — and BOTH authorizers call it. `cmd/authorizer` was rewired
+onto it and its 12 existing tests still pass unchanged, which is the evidence the extraction was
+behaviour-preserving. The sharing is not tidiness: an MQTT connection is authorized once and then
+held for up to an hour, so a kill-switch tightened on the HTTP side and missed on the IoT side
+would leave a revoked user with a live subscription.
+
+`cmd/iot-authorizer` returns a policy scoped to `liveninja/user/<uid>/`, built from the VERIFIED
+token subject and never from anything the client asserted. Publish is granted on `presence/*`
+**only** — doc/memory events are server-authored, and a client that could forge one could make
+every other device of that user announce a change that never happened. The client id is
+interpolated into a resource ARN, so it is character-allowlisted first; `TestDenials` covers a
+wildcard and a quote-injection attempt.
+
+One bug found and fixed during the extraction: `Verify` originally dropped `claims` on the
+user-lookup path, which nil-dereferenced in the "no user record" log line. The fix was to the
+contract, not the log — claims are now non-nil for every outcome where the JWT itself verified.
+
+**Note for whoever reconciles retention:** the new log group is `RetentionInDays: 7` per the
+standing rule, while every pre-existing group in this template is `5`. Both satisfy the rule's
+purpose (never "Never expire"); the inconsistency is deliberate and flagged rather than silently
+matched either way.
 
 ### WS-2 — Publish side `[ ]` (depends on WS-1 only for topic shape, can start in parallel)
 

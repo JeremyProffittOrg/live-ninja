@@ -39,6 +39,22 @@ Parameters:
     ConstraintDescription: >-
       Must be a full Lambda function ARN. It is used as an IAM policy Resource,
       where an empty or partial value would produce a malformed policy.
+  IotAuthorizerSigningPublicKey:
+    Type: String
+    Default: ""
+    Description: >-
+      PEM RSA PUBLIC key used by AWS IoT to validate the token signature BEFORE
+      it invokes the IoT custom authorizer (plan.md §6 M1.5). Empty (the
+      default) deploys the authorizer with SigningDisabled=true, which works
+      but lets anyone who knows the endpoint trigger the Lambda - AWS's own
+      guidance is "if you leave signing enabled, you can prevent excessive
+      triggering of your Lambda by unrecognized clients".
+
+      To enable signing: generate an RSA keypair, put the PRIVATE half in the
+      repo secrets via scripts/set-secret.sh (never in this template, never in
+      a log), and pass the PUBLIC half here. The token mint then returns
+      {token, tokenSignature} and clients send both. Only the public half ever
+      belongs in CloudFormation.
   OpenAIRealtimeModel:
     Type: String
     Default: gpt-realtime
@@ -187,6 +203,11 @@ Globals:
         LOG_LEVEL: debug
 
 Conditions:
+  # M1.5: signing is on only once a public key is supplied. Empty -> the
+  # authorizer deploys with SigningDisabled=true so the feature is usable
+  # before the keypair exists, and flipping it on is a parameter change.
+  IotAuthorizerSigningEnabled: !Not [!Equals [!Ref IotAuthorizerSigningPublicKey, ""]]
+
   # M12: the whole nova-bridge subsystem is gated OFF by default
   # (NovaBridgeEnable=false) so the core stack deploys without the Fargate
   # voice bridge. On re-enable it comes up in TWO phases, because the ECS
@@ -587,6 +608,64 @@ Resources:
           - dynamodb:GetItem
           Resource:
           - !GetAtt Table.Arn
+
+  IotAuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: live-ninja-iot-authorizer
+      # Full rationale in cmd/iot-authorizer/main.go; CFN caps Description at 256.
+      Description: >-
+        IoT Core custom authorizer for MQTT over WebSockets (plan.md §6 WS-1).
+        Verifies the same ES256 access JWT as the HTTP API authorizer (shared
+        internal/auth.TokenVerifier) and returns a policy scoped to one user.
+      CodeUri: .build/iot-authorizer/
+      # AWS caps a custom authorizer at 5s and does NOT retry: a timeout is a
+      # failed connection. The JWKS document and user records are cached across
+      # warm invocations; this budget covers a cold start that must fetch both.
+      Timeout: 5
+      LoggingConfig:
+        LogGroup: !Ref IotAuthorizerLogGroup
+      Environment:
+        Variables:
+          JWKS_URL: !Sub "https://${DomainName}/.well-known/jwks.json"
+          # Lambda supplies AWS_REGION but not the account id, and the policy
+          # this function returns is built from full ARNs.
+          AWS_ACCOUNT_ID: !Ref AWS::AccountId
+      Policies:
+      - Version: "2012-10-17"
+        Statement:
+        - Sid: UserReadForTokensValidAfter
+          Effect: Allow
+          Action:
+          - dynamodb:GetItem
+          Resource:
+          - !GetAtt Table.Arn
+
+  # IoT invokes the authorizer directly (not through API Gateway), so it needs
+  # its own invoke permission with the authorizer as SourceArn.
+  IotAuthorizerInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt IotAuthorizerFunction.Arn
+      Principal: iot.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:authorizer/live-ninja-iot"
+
+  IotAuthorizer:
+    Type: AWS::IoT::Authorizer
+    Properties:
+      AuthorizerName: live-ninja-iot
+      AuthorizerFunctionArn: !GetAtt IotAuthorizerFunction.Arn
+      Status: ACTIVE
+      # NOT a default authorizer for the account: clients name it explicitly
+      # (x-amz-customauthorizer-name), so the existing certificate-authenticated
+      # M5Stack devices keep authenticating exactly as they do today.
+      SigningDisabled: !If [IotAuthorizerSigningEnabled, false, true]
+      TokenKeyName: !If [IotAuthorizerSigningEnabled, "token", !Ref "AWS::NoValue"]
+      TokenSigningPublicKeys: !If
+      - IotAuthorizerSigningEnabled
+      - LiveNinjaIotKey1: !Ref IotAuthorizerSigningPublicKey
+      - !Ref "AWS::NoValue"
 
   RealtimeBrokerFunction:
     Type: AWS::Serverless::Function
@@ -1317,6 +1396,12 @@ Resources:
     Properties:
       LogGroupName: /live-ninja/lambda/authorizer
       RetentionInDays: 5
+
+  IotAuthorizerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /live-ninja/lambda/iot-authorizer
+      RetentionInDays: 7
 
   RealtimeBrokerLogGroup:
     Type: AWS::Logs::LogGroup

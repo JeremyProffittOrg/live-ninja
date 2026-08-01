@@ -97,10 +97,10 @@ func setupAuthorizer(t *testing.T) (*auth.Signer, *store.Store) {
 	t.Cleanup(srv.Close)
 
 	fakeDDB := testutil.NewFakeDynamo()
-	st = store.NewWithClient(fakeDDB, "live-ninja-test")
-	jwksURL = srv.URL
-	jwks = &jwksCache{}    // reset the 24h JWKS cache between tests
-	users = newUserCache() // reset the 60s user cache between tests
+	st := store.NewWithClient(fakeDDB, "live-ninja-test")
+	// A fresh verifier per test resets both caches (24h JWKS, 60s user) that
+	// would otherwise leak state across cases.
+	verifier = auth.NewTokenVerifier(srv.URL, st)
 	return signer, st
 }
 
