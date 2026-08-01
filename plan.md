@@ -461,10 +461,73 @@ and tools; this is invisible to users — nothing they can see or do changed.
 green (it has explicit module/caching regressions); the deployed `/conversation` HTML contains an
 `importmap` whose entries all resolve 200; the pipeline reaches `success`.
 
+**A regression the fix itself caused, and the test gap behind it** (`1d4e0fa`, same day):
+
+The first cut mapped **every** `.mjs`, including the vendored onnxruntime module. But
+`template.yaml` routes `/static/vendor/*` and `/static/models/*` to the **`assets-s3` origin**, not
+to this app — they are the oversized ORT WASM bundle and the wake-word models, which cannot go
+through Lambda. That bucket holds the real filenames only, so a fingerprinted key does not exist and
+S3 answers **403** (not 404):
+
+```
+403  /static/vendor/ort/ort.wasm.min.f53ed4792e75.mjs
+200  /static/vendor/ort/ort.wasm.min.mjs
+```
+
+`import(ORT_MODULE_URL)` therefore rejected and **the wake-word engine could not start in
+production for ~25 minutes.** Caught on the tablet, not by any test.
+
+**Why nothing caught it:** all five original guards asked *"is every module mapped?"* — none asked
+*"is every mapped URL actually servable?"* The local harness served everything from the Go handler,
+so it could not reproduce the CDN's origin split. `TestImportMapSkipsEveryS3BackedPath` now parses
+`template.yaml` for behaviours whose `TargetOriginId` is the S3 origin and requires `assets.go`
+(`s3BackedStaticPrefixes`) to exclude each one, so a new S3-backed behaviour fails the build instead
+of 403-ing in production.
+
+Excluding them is right on the merits: they are leaves reached by absolute URL, not part of the
+cross-module export graph the map exists to keep consistent, and `wakeword.mjs` already pins those
+payloads by SHA-256 client-side. Final map: **22 entries, all under `/static/js/`.**
+
 **Rejected alternative, recorded so it is not retried:** rewriting the import specifiers inside the
 `.mjs` bodies at fingerprint time. It needs transitive hashing (`hash(A) = f(content(A), hash(deps))`)
 with cycle detection, or it silently pins clients to a consistent-but-stale graph — strictly more
 machinery than an import map for the same result.
+
+### 4.4 Locked decisions — mobile shell corrections (owner, 2026-08-01) `[x]`
+
+Shipped in `5b23986`. **Do not revisit these three; they are the owner's, not inferences.**
+
+1. **The bottom bar owns what it carries.** Anything on the bar is not repeated on the panel above
+   it: the rail's `.conv-rail__nav` (History/Memory/Downloads) and `.conv-miclineup` (Mic Test +
+   Low/Med/High) are `display:none` at ≤900px, and the scroll-hint button is deleted. Both rail
+   blocks stay for desktop, where no bar exists. The Audio picker's "Mic test…" is what replaces the
+   hidden Mic Test button.
+2. **Show Conversation is the entire screen, and the same button says Hide.**
+3. **Never more than one scrollbar on screen.**
+
+**The non-obvious consequence, recorded because it is easy to "fix" backwards:** (2) makes a modal
+dialog impossible. `showModal()` inerts everything outside the dialog, so the bottom-bar button that
+is supposed to hide it again cannot be pressed. The overlay is therefore a **non-modal** `<dialog>`
+(`.show()`) laid out **in flow** as a flex sibling of `.conv-body` inside `.conv-app` — which is
+also what makes it stop exactly where the bar starts with nobody measuring the bar's height.
+Reverting it to `showModal()` silently breaks the toggle. What the modal used to supply is now
+explicit: Escape and focus handling in `conversation.mjs`, and
+`.conv-app.is-overlay-open .conv-body { display: none }` in place of the modal's inertness — which
+is also half of (3).
+
+**How (3) is achieved:** the snap scroller's own scrollbar is hidden (`scrollbar-width: none`)
+because it is a **panel switcher**, not content — each child is exactly one scrollport tall, so its
+scrollbar only ever said "there is another panel" while the panel being read showed its own. Hiding
+a scrollbar does not disable wheel, touch or keyboard scrolling.
+
+**Found by looking at the rendered page, not in review:** the `position: fixed` Help/Settings edge
+tabs painted OVER the in-flow overlay and clipped its left edge (timestamps rendered as "01 AM").
+They are hidden while the overlay is open; the bottom bar is deliberately the only chrome that
+outlives it.
+
+Guarded by `TestBottomBarControlsAreNotDuplicatedAbove` and the rewritten
+`TestConversationOverlayContract` / `TestMobileSnapPanels` in
+`internal/webapp/mobile_shell_ui_test.go`.
 
 ## Standing rules (carried forward — these do not expire)
 

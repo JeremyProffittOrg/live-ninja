@@ -322,8 +322,86 @@ and mailing an unnamed party is not a call to make without an addressee.
   the overlay would be a worse view of something already visible. Copy/Screenshot/Tag are still
   reachable on desktop through the tools row.
 
-- **No caching / service-worker change.** See the hazard section above — it is real, but it is an
-  asset-strategy decision, not a mobile-UI one.
+- ~~**No caching / service-worker change.**~~ **Superseded** — the owner asked for the fix the same
+  day. See "The hazard, fixed" below.
+
+---
+
+## The hazard, fixed — fingerprinted import specifiers (`63d8e2c`)
+
+The owner asked for the fix, so it shipped. `internal/webapp/assets.go` now stamps an import map
+into every page mapping all 24 `/static/**/*.mjs` to their fingerprinted twins. The specifier stays
+`./wakeword.mjs` in the source; the browser resolves it to `/static/js/wakeword.<hash>.mjs` before
+fetching. A cache hit on a content-addressed URL is by construction the bytes the importer was built
+against — which is what finally makes `sw.js`'s "serving cached is always safe" true rather than
+merely asserted.
+
+Three constraints shaped it:
+
+- **CSP forbids inline scripts** (`script-src 'self' 'wasm-unsafe-eval'`, with a test pinning the
+  absence of `'unsafe-inline'`), so `script-src` carries the **sha256 of the map's exact bytes**;
+  map and hash are built from the same buffer. External import maps were removed from the spec and
+  are implemented nowhere, so a hash was the only route. `pageCSPWith()` splices it *inside*
+  `script-src` — appending to the policy string would have landed it in `frame-ancestors`.
+- **Import maps do not cover worklets**, so `wakeword-worklet.js` stays logical. It imports nothing,
+  so it cannot fail to *link* — out of scope, not overlooked.
+- **Browsers without import-map support** ignore the element and use the logical specifier, i.e.
+  degrade to the old behaviour rather than break.
+
+Rejected: rewriting specifiers inside the module bodies. It needs transitive hashing with cycle
+detection, or it silently pins clients to a consistent-but-*stale* graph.
+
+**A regression this caused, and the test gap behind it** (`1d4e0fa`). The first cut mapped *every*
+`.mjs`, including the vendored onnxruntime module — but `template.yaml` routes `/static/vendor/*`
+and `/static/models/*` to an **S3 origin**, not to this app. That bucket holds the real filenames
+only, so the hashed key does not exist and S3 answers **403**:
+
+```
+403  /static/vendor/ort/ort.wasm.min.f53ed4792e75.mjs
+200  /static/vendor/ort/ort.wasm.min.mjs
+```
+
+`import(ORT_MODULE_URL)` rejected, so **the wake-word engine could not start in production for
+about 25 minutes.** It was caught on the tablet, not by a test.
+
+The gap is the part worth stating: all five original guards asked *"is every module mapped?"* and
+none asked *"is every mapped URL actually servable?"* — and the local harness served everything from
+the Go handler, so it could not reproduce the CDN's origin split.
+`TestImportMapSkipsEveryS3BackedPath` now parses `template.yaml` for behaviours whose
+`TargetOriginId` is the S3 origin and requires `assets.go` to exclude each one, so a new S3-backed
+behaviour fails the build rather than 403-ing in production. Final map: 22 entries, all under
+`/static/js/`.
+
+Verified against the real `NewAssets` + `NewRenderer` + `SecurityHeaders` path in Chromium:
+**16/16 modules fetched from fingerprinted URLs, zero logical stragglers**; dynamic
+`import('./personaeditor.mjs')` and the vendored ORT module both resolved fingerprinted; no CSP
+violation. Deploy run 30700830177 — success, `web-quality` green.
+
+## Owner corrections to the shell (`5b23986`)
+
+1. **The bottom bar owns what it carries.** The rail's History/Memory/Downloads and its Mic Test +
+   Low/Med/High line-up are hidden at ≤900px; the scroll-hint button is gone. Both rail blocks stay
+   for desktop, where there is no bar.
+2. **Show Conversation is the entire screen, and the same button says Hide.**
+3. **Never more than one scrollbar.**
+
+(2) has a consequence worth stating plainly: **it makes a modal dialog impossible.** `showModal()`
+inerts everything outside the dialog, so the button meant to hide it again could not be pressed. The
+overlay is now a non-modal `<dialog>` laid out in flow inside `.conv-app` — which also makes it stop
+exactly where the bar starts without measuring the bar. Escape and focus handling are supplied by
+hand, and `.conv-app.is-overlay-open .conv-body { display: none }` replaces the modal's inertness.
+
+(3) is achieved by hiding the snap scroller's scrollbar: it is a *panel switcher*, not content —
+each child is one scrollport tall, so its scrollbar only ever said "there is another panel" while
+the panel being read showed its own. Hiding a scrollbar does not disable scrolling.
+
+**Found by looking at the rendered page:** the fixed Help/Settings tabs painted over the in-flow
+overlay and clipped its left edge — timestamps read "01 AM" instead of "9:01 AM". They now stand
+down while it is open.
+
+Measured at 800×1180: overlay spans 0–1119 with the bar starting at 1119; toggle, Escape and the
+in-overlay controls all close it; exactly one visible scrollbar open or closed. Desktop re-checked
+at 1440×900: rail controls back, bar hidden, tabs flush right at 22px, grid still `360px 1080px`.
 
 ## Acceptance checks
 
