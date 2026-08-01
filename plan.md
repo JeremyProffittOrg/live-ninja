@@ -887,6 +887,19 @@ not paused on.
 
 ## Gotchas that cost real time (don't re-learn these)
 
+- **`TapToTalkConnectingStateTest` is flaky on the CI emulator (seen 2026-08-01).** It failed on
+  `assertExists` for the "Connecting…" label, in a commit that touched only Settings/net files.
+  Evidence it is environmental, not a regression: the same test passed on the previous CI run with
+  identical `ConversationScreen` code, it passes on the physical Tab S9 FE, the failing run's log
+  carries three `adb ... exit code 1` lines plus `Failed to start Emulator console for 5554`, and a
+  re-run with **zero code changes** went green.
+  **Unproven hypothesis, worth checking before trusting it again:** the eight instrumented tests
+  share one process and one singleton `RealtimeSessionController`, and `startSession()` returns
+  early *without* setting `CONNECTING` when `controller.connected.value` is already true — so a
+  test that leaves a session connected would make this one fail, order-dependently. If it recurs,
+  look there first rather than at whatever commit happened to trigger it.
+
+
 - **The node's IoT Thing name is `OFFICEPC`, uppercase.** ghost-cli's node ACL compares exactly with
   no case folding, and the name is interpolated into `cockpit/nodes/<name>/cmd`. A lowercase value
   either reads as a permissions failure or publishes to a topic nobody subscribes to.
