@@ -8,6 +8,7 @@ package realtime
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -78,7 +79,10 @@ func TestBuiltinPersonaSeedSet(t *testing.T) {
 		"noir-detective", "bard", "zen-monk", "drill-sergeant", "play-by-play",
 		"butler", "surfer", "worried-grandma", "sommelier", "heh-heh-duo",
 		"pirate-captain", "cool-intensity",
-		"product-owner", "staff-developer", "staff-sre"} {
+		"product-owner", "staff-developer", "staff-sre",
+		"esp32-engineer", "esp32-s2-engineer", "esp32-s3-engineer",
+		"esp32-c2-engineer", "esp32-c3-engineer", "esp32-c5-engineer",
+		"esp32-c6-engineer", "esp32-h2-engineer", "esp32-p4-engineer"} {
 		if !IsBuiltinPersona(id) {
 			t.Errorf("built-in %q went missing from the registry", id)
 		}
@@ -138,7 +142,10 @@ func TestBuiltinPersonaSeedSet(t *testing.T) {
 // is exactly the register in which a style block would try to legislate. This
 // pins both halves.
 func TestWorkingPersonasPushBackWithoutTakingPower(t *testing.T) {
-	for _, id := range []string{"product-owner", "staff-developer", "staff-sre"} {
+	for _, id := range []string{"product-owner", "staff-developer", "staff-sre",
+		"esp32-engineer", "esp32-s2-engineer", "esp32-s3-engineer",
+		"esp32-c2-engineer", "esp32-c3-engineer", "esp32-c5-engineer",
+		"esp32-c6-engineer", "esp32-h2-engineer", "esp32-p4-engineer"} {
 		p := ResolvePersona(id)
 		if p.ID != id {
 			t.Fatalf("ResolvePersona(%q).ID = %q", id, p.ID)
@@ -169,8 +176,10 @@ func TestWorkingPersonasPushBackWithoutTakingPower(t *testing.T) {
 		// 3. It survives a spoken reply. The core caps answers at one to three
 		//    sentences and forbids reading out markdown, so a style that asks
 		//    for structured output fights the core it is layered on.
+		// Word-boundary, not substring: "comfortable" contains "table", and a
+		// plain Contains flagged the C2 persona for it.
 		for _, forbidden := range []string{"bullet", "markdown", "table", "checklist", "numbered list"} {
-			if strings.Contains(lower, forbidden) {
+			if regexp.MustCompile(`` + regexp.QuoteMeta(forbidden) + ``).MatchString(lower) {
 				t.Errorf("persona %q style asks for %q, which cannot be spoken", id, forbidden)
 			}
 		}
@@ -280,5 +289,61 @@ func TestResolveWithoutStoreConfigured(t *testing.T) {
 	t.Cleanup(func() { SetPersonaStore(nil, "") })
 	if p := ResolvePersona("shared:whatever"); p.ID != "default" {
 		t.Errorf("resolved to %q with no store, want default", p.ID)
+	}
+}
+
+// TestBuiltinPersonaGroups: every built-in lands in a known picker section
+// (owner 2026-08-01), the three families hold exactly who they should, and
+// GroupOrder covers every group actually in use. The last check is the one
+// that matters: the web picker renders sections from a fixed order, so a
+// persona tagged with a group nobody renders would exist on the server and be
+// unreachable in the UI.
+func TestBuiltinPersonaGroups(t *testing.T) {
+	inOrder := map[string]bool{}
+	for _, g := range GroupOrder {
+		inOrder[g] = true
+	}
+
+	counts := map[string]int{}
+	for _, p := range BuiltinPersonas() {
+		if !inOrder[p.Group] {
+			t.Errorf("persona %q has group %q, which GroupOrder does not render", p.ID, p.Group)
+		}
+		counts[p.Group]++
+	}
+
+	// The default persona is the whole General section; the two working
+	// families are pinned by size so adding one without tagging it shows up
+	// here rather than as a persona quietly filed under Fun.
+	if got := counts[GroupPDLC]; got != 3 {
+		t.Errorf("PDLC group has %d personas, want 3", got)
+	}
+	if got := counts[GroupESP32]; got != 9 {
+		t.Errorf("ESP32 group has %d personas, want 9 (one per chip)", got)
+	}
+	if ResolvePersona("default").Group != GroupGeneral {
+		t.Errorf("the default persona must sit in %s", GroupGeneral)
+	}
+	for _, id := range []string{"product-owner", "staff-developer", "staff-sre"} {
+		if g := ResolvePersona(id).Group; g != GroupPDLC {
+			t.Errorf("persona %q group = %q, want %s", id, g, GroupPDLC)
+		}
+	}
+	for _, id := range []string{"esp32-engineer", "esp32-p4-engineer", "esp32-h2-engineer"} {
+		if g := ResolvePersona(id).Group; g != GroupESP32 {
+			t.Errorf("persona %q group = %q, want %s", id, g, GroupESP32)
+		}
+	}
+	// An untagged persona must not vanish from a grouped picker.
+	if groupOrDefault("") != GroupGeneral || groupOrDefault("Nonsense") != GroupGeneral {
+		t.Error("an unknown group must fall back to General, not disappear")
+	}
+
+	// The catalog surface carries the group too — that is what the picker
+	// actually reads.
+	for _, info := range ListPersonas() {
+		if !inOrder[info.Group] {
+			t.Errorf("catalog entry %q has unrenderable group %q", info.ID, info.Group)
+		}
 	}
 }

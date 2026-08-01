@@ -599,10 +599,32 @@ a number, and it is the cheapest way to re-check a pure-layout change on this pa
 ### 5.4 Personas `[x]`
 
 - `[x]` **Yoda (`swamp-master`) removed.**
-- `[x]` **Three working personas added** — `product-owner` (Product Owner, marin/Kore),
-  `staff-developer` (Staff Engineer, cedar/Iapetus), `staff-sre` (Staff SRE, echo/Schedar). These
-  are a different class from the entertainment built-ins: senior colleagues who **disagree out
-  loud, say why, and name the alternative**.
+- `[x]` **Twelve working personas added**, in two families. **PDLC** — `product-owner`
+  (marin/Kore), `staff-developer` (cedar/Iapetus), `staff-sre` (echo/Schedar). **ESP32** — one per
+  chip in the family: `esp32-engineer` (the original dual-core part), `-s2`, `-s3`, `-c2`, `-c3`,
+  `-c5`, `-c6`, `-h2`, `-p4`. These are a different class from the entertainment built-ins: senior
+  colleagues who **disagree out loud, say why, and name the alternative**.
+- The per-chip split (owner request, same day) is justified by the silicon: which parts have a
+  radio at all, how many cores, how much RAM, what the sleep current is. A single "embedded
+  engineer" would have to hedge on every one of those. Each names the trap specific to its part
+  and would be a non-issue on its neighbours — no Bluetooth on the S2, no Wi-Fi on the H2, no radio
+  whatsoever on the P4, a bill of materials in cents on the C2, coexistence on the C6. ESP8266 is
+  deliberately absent; it predates the family and shares almost none of the tooling. The P4 one is
+  the most concretely grounded because it is the board this project ships
+  (`firmware/sdkconfig.defaults`: M5Stack Tab5, 32MB hex PSRAM, ESP32-C6 radio slave, explicit
+  internal-RAM discipline, OTA partitions).
+- `[x]` **Picker groups** (owner request, same day). `Persona.Group` +
+  `GroupGeneral/PDLC/ESP32/Fun` + `GroupOrder`, surfaced through `PersonaInfo`, the personas API,
+  and one `<optgroup>` per group in the web picker. Counts verified against the real registry
+  through the actual picker code: General 1, PDLC 3, ESP32 9, Fun 15. `groupOrDefault` files an
+  untagged persona under General so it can never exist on the server and be unreachable in the UI,
+  and `TestBuiltinPersonaGroups` fails if a persona is tagged with a group `GroupOrder` does not
+  render. A `Group · Persona` caption sits under the picker, because a collapsed `<select>` shows
+  only the option text and the `<optgroup>` heading disappears with the list.
+- `[!]` **Android's persona list is stale and unrelated to any of this** — `SettingsViewModel.kt`
+  `PERSONA_PRESETS` is a hardcoded `default` / `focused` / `friendly` trio that predates the
+  personas platform and never reads `GET /api/v1/personas`. Out of scope for this pass; it needs
+  the Android picker rewritten against the API before groups mean anything there.
 - Researched by a 10-agent workflow against **26 dated sources published 2026-05-02 → 2026-07-31**,
   then adversarially critiqued for capability leaks, spoken-form survivability (they arrive as one
   to three sentences of audio, so the rigour has to show up as *which question is asked first*) and

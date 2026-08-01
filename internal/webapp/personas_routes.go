@@ -65,6 +65,11 @@ func builtinPersonaJSON(p realtime.Persona) fiber.Map {
 		"description": p.Description,
 		"voice":       p.Voice,
 		"builtin":     true,
+		// Picker section (owner 2026-08-01). Only built-ins carry one — a
+		// user's own and shared personas already have their own groups in
+		// the response ("mine"/"shared"), so the client renders those two
+		// as single sections and splits "builtin" by this field.
+		"group": p.Group,
 	}
 }
 

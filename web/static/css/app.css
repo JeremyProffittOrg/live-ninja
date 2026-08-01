@@ -1867,6 +1867,21 @@ html[data-ln-style="hal9000"] .conv-main { background: #23232b; }
   align-items: center;
   gap: var(--ln-sp-2);
 }
+/* "Group · Persona" under the picker. The <optgroup> heading is only on
+   screen while the list is open, so this is where the group survives the
+   list closing. Hidden (via the `hidden` attribute) for personas that have
+   no group. */
+.conv-persona-group {
+  width: 100%;
+  margin: calc(var(--ln-sp-1) * -1) 0 0;
+  font-size: var(--ln-fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--ln-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .conv-persona-row .ln-select {
   flex: 1 1 auto;
   min-width: 0;               /* long persona names ellipsize, never overflow */

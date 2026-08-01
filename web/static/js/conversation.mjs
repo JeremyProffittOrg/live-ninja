@@ -329,8 +329,14 @@ async function putSettings(section, mutate) {
 // voice name — never a raw id.
 
 const personaSelect = $('personaSelect');
+const personaGroupLabel = $('personaGroupLabel');
 
 let voiceCatalog = []; // [{id, name, ...}] from GET /api/v1/realtime/voices
+
+// Built-in persona picker sections, in render order. Mirrors
+// realtime.GroupOrder (internal/realtime/personas.go) — the server tags each
+// built-in with its group and this list decides where the sections sit.
+const PERSONA_GROUP_ORDER = ['General', 'PDLC', 'ESP32', 'Fun'];
 
 // fillPersonaSelect renders the grouped persona library into the quick-
 // switch select: Built-in / Mine / Shared <optgroup>s plus the trailing
@@ -358,7 +364,26 @@ function fillPersonaSelect(selectEl, groups, selectedId) {
     for (const row of rows) addOption(og, row.id, row.name);
     selectEl.appendChild(og);
   };
-  addGroup('Built-in', groups && groups.builtin);
+  // Built-ins are split into their picker sections (owner 2026-08-01):
+  // General / PDLC / ESP32 / Fun, in that order, each rendered as its own
+  // <optgroup> so the group name is visible while the list is open. The
+  // order is fixed here rather than taken from the response so a new group
+  // cannot reorder the picker on its own; anything carrying an unrecognised
+  // group still renders, in a trailing section named after it, because a
+  // persona that exists on the server and is invisible in the picker is the
+  // one failure mode worth ruling out.
+  const builtins = (groups && groups.builtin) || [];
+  const seen = new Set();
+  for (const label of PERSONA_GROUP_ORDER) {
+    addGroup(label, builtins.filter((r) => (r.group || 'General') === label));
+    seen.add(label);
+  }
+  for (const row of builtins) {
+    const label = row.group || 'General';
+    if (seen.has(label)) continue;
+    seen.add(label);
+    addGroup(label, builtins.filter((r) => (r.group || 'General') === label));
+  }
   addGroup('Mine', groups && groups.mine);
   addGroup('Shared', groups && groups.shared);
   addOption(selectEl, 'custom', 'Custom instructions');
@@ -389,9 +414,24 @@ function voiceLabelFor(voiceId) {
   return (row && row.name) || voiceId;
 }
 
+/* Group · Persona caption under the picker (owner 2026-08-01: "show the
+ * group and persona"). A collapsed <select> shows only the option text, so
+ * the <optgroup> heading the user picked from disappears the moment the list
+ * closes; this line is where it survives. Blank for anything without a group
+ * (own/shared personas and "custom"), rather than inventing one. */
+function updatePersonaGroupLabel() {
+  if (!personaGroupLabel) return;
+  const id = currentPersonaId();
+  const row = personaCatalog.find((p) => p.id === id);
+  const group = row && row.group;
+  personaGroupLabel.textContent = group ? `${group} · ${personaLabelFor(id)}` : '';
+  personaGroupLabel.hidden = !group;
+}
+
 function syncQuickSwitchesFromDoc() {
   if (personaSelect) personaSelect.value = currentPersonaId();
   syncMicChips();
+  updatePersonaGroupLabel();
   transcript.setPersonaLabel(personaLabelFor(currentPersonaId()));
 }
 
@@ -2257,6 +2297,7 @@ async function bootstrap() {
     personaCatalog = personaGroups.builtin.concat(personaGroups.mine, personaGroups.shared);
   }
   fillPersonaSelect(personaSelect, personaGroups, currentPersonaId());
+  updatePersonaGroupLabel();
 
   // Voices catalog kept for human-readable labels in banner copy only —
   // the voice quick-switch select no longer exists (voice is
@@ -2311,6 +2352,7 @@ async function refreshPersonaLibrary() {
     };
     personaCatalog = groups.builtin.concat(groups.mine, groups.shared);
     fillPersonaSelect(personaSelect, groups, currentPersonaId());
+    updatePersonaGroupLabel();
     transcript.setPersonaLabel(personaLabelFor(currentPersonaId()));
   } catch {
     /* cosmetic refresh — the stale labels correct on the next bootstrap */

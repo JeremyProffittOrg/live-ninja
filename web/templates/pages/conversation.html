@@ -113,6 +113,12 @@
           </select>
           <button class="ln-btn ln-btn--ghost" type="button" id="personaEditBtn" aria-label="Edit persona">Edit</button>
         </div>
+        {{- /* Group · Persona (owner 2026-08-01). The picker's <optgroup>
+               headings are only visible while the list is open, so the group
+               the user chose from is lost the moment it closes; this line
+               keeps it on screen. conversation.mjs hides it for personas that
+               have no group (your own, shared, and "custom"). */}}
+        <p class="conv-persona-group" id="personaGroupLabel" aria-live="polite" hidden></p>
 
         <hr class="conv-rail__rule">
 
@@ -1221,7 +1227,11 @@
           <dt>Memory</dt>
           <dd>Everything Live Ninja remembers about your world. Edit any of it, or make it forget. <em>Guides</em> are standing instructions applied in every conversation, on every device.</dd>
           <dt>Personas</dt>
-          <dd>How Live Ninja talks. Pick a built-in personality, write your own, or share yours. Each persona carries its own voice — switch personas from the picker in the rail. Alongside the character personas there are three working ones — <em>Product Owner</em>, <em>Staff Engineer</em> and <em>Staff SRE</em> — for thinking through software with you. They will tell you when they think you're wrong, say why, and offer the alternative.</dd>
+          <dd>How Live Ninja talks. Pick a built-in personality, write your own, or share yours. Each persona carries its own voice — switch personas from the picker in the rail, and the line under it shows which group the current one came from.
+
+            The built-ins come in groups. <em>General</em> is the standard Live Ninja. <em>PDLC</em> holds three working personas for thinking a project through — <em>Product Owner</em>, <em>Staff Engineer</em> and <em>Staff SRE</em>. <em>ESP32</em> holds one engineer per chip in the family — the plain ESP32, S2, S3, C2, C3, C5, C6, H2 and P4 — each of which knows the traps specific to its own silicon. <em>Fun</em> is everything else.
+
+            The PDLC and ESP32 personas are not characters: they are there to disagree with you. Each will say when it thinks you are wrong, give the reason, and offer the alternative.</dd>
           <dt>Downloads</dt>
           <dd>Files Live Ninja has created for you. Files are kept for 180 days; share links expire after about 15 minutes.</dd>
           <dt>This month</dt>

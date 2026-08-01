@@ -136,6 +136,10 @@ type PersonaInfo struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	// Group is the picker section (GroupGeneral/GroupPDLC/GroupESP32/
+	// GroupFun). Presentation only; the picker renders one section per
+	// group, in GroupOrder.
+	Group string `json:"group"`
 }
 
 // personaDescriptions supplies the picker blurb per registry entry.
@@ -163,11 +167,11 @@ func ListPersonas() []PersonaInfo {
 
 	ordered := make([]PersonaInfo, 0, len(personas))
 	if p, ok := personas["default"]; ok {
-		ordered = append(ordered, PersonaInfo{ID: p.ID, Name: p.Name, Description: personaDescriptions[p.ID]})
+		ordered = append(ordered, PersonaInfo{ID: p.ID, Name: p.Name, Description: personaDescriptions[p.ID], Group: p.Group})
 	}
 	for _, id := range rest {
 		p := personas[id]
-		ordered = append(ordered, PersonaInfo{ID: p.ID, Name: p.Name, Description: personaDescriptions[p.ID]})
+		ordered = append(ordered, PersonaInfo{ID: p.ID, Name: p.Name, Description: personaDescriptions[p.ID], Group: p.Group})
 	}
 	return ordered
 }
