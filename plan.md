@@ -754,13 +754,16 @@ live conversation. This section closes the first gap with IoT Core, and the seco
   `conversation.item.create` + `response.create`. The client-side injection primitive for the
   auto-nudge exists and does not need inventing.
 - `internal/auth/device.go:201` — `ProvisionIoT` is the M5 Thing/cert seam. Untouched by this work.
+- **Account IoT ATS endpoint** (resolved 2026-08-01): `a17oe0gnthrosw-ats.iot.us-east-1.amazonaws.com`.
+  This is the origin M3.2 must add to the page CSP's `connect-src`, as `wss://`.
+- `aws iot list-authorizers` returns `[]` — there is no custom authorizer in the account yet, so
+  WS-1 is genuinely greenfield and nothing existing can break.
 
 ### Assumptions (NOT verified — treat as risk, prove in WS-1 M1.1)
 
-- That an IoT custom authorizer can authenticate MQTT-over-WebSocket by carrying the token in the
-  MQTT CONNECT username/password rather than an HTTP header. Browsers cannot set custom headers on
-  a WebSocket handshake, so **the whole design depends on this**. M1.1 is a spike that proves it
-  before anything else is built.
+- ~~That an IoT custom authorizer can authenticate MQTT-over-WebSocket by carrying the token in
+  the MQTT CONNECT username/password rather than an HTTP header.~~ **RESOLVED 2026-08-01 — true,
+  per the AWS IoT developer guide. See M1.1.** This was the assumption the whole design rested on.
 - That `refreshAfterInSeconds` re-invokes the authorizer with the ORIGINAL connect token. If it
   does, a 15-minute JWT cannot survive refresh and WS-1 M1.3's reconnect strategy is mandatory
   rather than optional.
@@ -777,11 +780,46 @@ explicitly in the template with `RetentionInDays: 7`.
 
 ### WS-1 — IoT custom authorizer `[ ]` (blocks WS-2, WS-3, WS-4)
 
-- `[ ]` **M1.1 Spike: prove browser MQTT-over-WSS with custom auth.** Throwaway HTML against the
-  account's ATS endpoint, token in the MQTT CONNECT packet. **This gates the entire section** — if
-  it fails, stop and re-plan against Cognito (the operator's second choice).
-  *DoD:* a browser tab subscribes to `liveninja/user/<uid>/#` and receives a message published by
-  `aws iot-data publish`, with the exchange captured in the run log.
+- `[~]` **M1.1 Feasibility: ANSWERED — the design holds. Stop condition 1 does not fire.**
+  Settled 2026-08-01 from the AWS IoT Core developer guide rather than by live test, because the
+  account has **zero** authorizers (`aws iot list-authorizers` → `[]`) and hand-creating one with
+  `aws iot create-authorizer` would be exactly the local infra deploy `deploy.md` forbids. The
+  live proof therefore moves AFTER M1.4, when the pipeline has deployed a real one.
+
+  **The load-bearing quote** ("Understanding the custom authentication workflow"): *"The device
+  passes credentials in either the request's header fields or query parameters (for the HTTP
+  Publish or MQTT over WebSockets protocols), **or in the user name and password field of the MQTT
+  CONNECT message (for the MQTT and MQTT over WebSockets protocols)**."* A browser cannot set
+  WebSocket handshake headers — and does not need to. The JWT rides in the MQTT CONNECT username.
+
+  Two constraints this turned up that the plan did not account for. Both change WS-1, neither
+  breaks it:
+
+  - **M1.5 (NEW) — token signing.** Signing is optional, but AWS is explicit: *"If you leave
+    signing enabled, you can prevent excessive triggering of your Lambda by unrecognized
+    clients."* With it on, AWS validates an RSA signature over the token **before** invoking the
+    Lambda; with it off, anyone who knows the endpoint can spin our Lambda at will. A browser
+    cannot hold a private key, so the signature must be minted SERVER-side and handed to the
+    client alongside the JWT — the token mint returns `{token, tokenSignature}`. The signature
+    must be URL-encoded when sent from browser JavaScript.
+  - **M1.6 (NEW) — the authorizer Lambda has a hard 5-second timeout.** *"The Lambda function
+    timeout limit for custom authorizer is 5 seconds."* Ours does a JWKS fetch plus a
+    `tokensValidAfter` read. Warm that is nothing (`cmd/authorizer` already caches JWKS 24 h and
+    users 60 s), but a COLD start that must also fetch JWKS is the case to measure — and there is
+    no retry, a timeout is a failed connection.
+
+  Also noted for M1.3: *"the next invocation can be delayed for up to 5 minutes on idle
+  connections"*, so revocation latency on a backgrounded tab is up to 5 min **plus** the refresh
+  interval — not the refresh interval alone.
+  *DoD (still open):* a browser tab subscribes to `liveninja/user/<uid>/#` against the deployed
+  authorizer and receives a message published by `aws iot-data publish`, captured in the run log.
+- `[ ]` **M1.5 Token signing** — RSA keypair, public half on the authorizer, private half used by
+  the token mint; client receives `{token, tokenSignature}`.
+  *DoD:* a connect attempt carrying a bad signature is rejected **without** the Lambda being
+  invoked (no log line for it).
+- `[ ]` **M1.6 Cold-start budget** — measure the authorizer cold, with an empty JWKS cache.
+  *DoD:* p100 under 5 s across 10 cold invocations, recorded in the run log; if it is not, the
+  JWKS fetch moves out of the request path before anything else is built on this.
 - `[ ]` **M1.2 `cmd/iot-authorizer`.** Extract the JWT/JWKS/`tokensValidAfter` verification shared
   with `cmd/authorizer` into `internal/auth`, and return an IoT policy scoped to
   `liveninja/user/<userId>/#` for Subscribe/Receive and `liveninja/user/<userId>/presence/<deviceId>`
