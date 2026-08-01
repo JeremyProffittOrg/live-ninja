@@ -1824,12 +1824,30 @@ function scheduleConvMirror() {
   });
 }
 
+// Owner 2026-08-01: the overlay is the whole screen above the bottom bar, and
+// the bar's own button is the toggle — so it opens NON-MODALLY (.show()).
+// showModal() would inert the bar and make "Hide Conversation" unpressable.
+// The two things showModal() gave us for free are re-supplied here: Escape
+// (below) and focus handling; app.css hides .conv-body while it is open, which
+// is what replaces the modal's inertness and keeps the page to one scrollbar.
+const convAppEl = document.querySelector('.conv-app');
+const convOverlayToggleLabel = $('convOverlayToggleLabel');
+
+function setConvOverlayToggle(open) {
+  if (convOverlayOpenBtn) convOverlayOpenBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (convOverlayToggleLabel) {
+    convOverlayToggleLabel.textContent = open ? 'Hide Conversation' : 'Show Conversation';
+  }
+  if (convAppEl) convAppEl.classList.toggle('is-overlay-open', open);
+}
+
 function openConvOverlay() {
-  if (!convOverlay || typeof convOverlay.showModal !== 'function') return;
+  if (!convOverlay || typeof convOverlay.show !== 'function') return;
   renderConvMirror();
-  if (!convOverlay.open) convOverlay.showModal();
-  if (convOverlayOpenBtn) convOverlayOpenBtn.setAttribute('aria-expanded', 'true');
+  if (!convOverlay.open) convOverlay.show();
+  setConvOverlayToggle(true);
   if (convOverlayBody) convOverlayBody.scrollTop = convOverlayBody.scrollHeight;
+  if (convOverlayCloseBtn) convOverlayCloseBtn.focus({ preventScroll: true });
   if (transcriptRoot && typeof MutationObserver === 'function') {
     if (!convMirrorObserver) convMirrorObserver = new MutationObserver(scheduleConvMirror);
     convMirrorObserver.observe(transcriptRoot, {
@@ -1841,7 +1859,17 @@ function openConvOverlay() {
 }
 
 if (convOverlay && convOverlayOpenBtn) {
-  convOverlayOpenBtn.addEventListener('click', openConvOverlay);
+  convOverlayOpenBtn.addEventListener('click', () => {
+    if (convOverlay.open) convOverlay.close();
+    else openConvOverlay();
+  });
+  // A non-modal dialog does not close itself on Escape.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && convOverlay.open) {
+      e.preventDefault();
+      convOverlay.close();
+    }
+  });
 }
 if (convOverlayCloseBtn && convOverlay) {
   convOverlayCloseBtn.addEventListener('click', () => convOverlay.close());
@@ -1850,21 +1878,14 @@ if (convOverlayHideBtn && convOverlay) {
   convOverlayHideBtn.addEventListener('click', () => convOverlay.close());
 }
 if (convOverlay) {
-  // The panel fills the dialog box, so a click that lands on the dialog
-  // element itself came from the ::backdrop scrim.
-  convOverlay.addEventListener('click', (e) => {
-    if (e.target === convOverlay) convOverlay.close();
-  });
   convOverlay.addEventListener('close', () => {
     if (convMirrorObserver) convMirrorObserver.disconnect();
     if (convMirrorFrame) {
       cancelAnimationFrame(convMirrorFrame);
       convMirrorFrame = 0;
     }
-    if (convOverlayOpenBtn) {
-      convOverlayOpenBtn.setAttribute('aria-expanded', 'false');
-      convOverlayOpenBtn.focus({ preventScroll: true });
-    }
+    setConvOverlayToggle(false);
+    if (convOverlayOpenBtn) convOverlayOpenBtn.focus({ preventScroll: true });
   });
 }
 
@@ -1885,20 +1906,6 @@ for (const btn of document.querySelectorAll('[data-conv-action]')) {
       default:
         break;
     }
-  });
-}
-
-// ---- Scroll-to-conversation (mobile snap container) ----------------------
-
-const convScrollHint = $('convScrollHint');
-if (convScrollHint) {
-  convScrollHint.addEventListener('click', () => {
-    const main = document.querySelector('.conv-main');
-    if (!main) return;
-    const reduce =
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    main.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
   });
 }
 

@@ -2290,28 +2290,45 @@ dialog.conv-drawer[open] {
    of them would just be noise. */
 .conv-bottombar { display: none; }
 
-/* ---- Scroll-to-conversation affordance (mobile only) ------------------- */
-.conv-scrollhint { display: none; }
+/* The scroll-to-conversation affordance was removed on 2026-08-01 — the
+   bottom bar's "Show Conversation" is the one labelled control for it. */
 
 /* ---- Conversation overlay (any width) ---------------------------------
-   Native modal <dialog>: ::backdrop is the semi-transparent scrim and the
-   page behind is inert, which is what stops scroll-through. The panel is
-   capped so the scrim stays visible around it — the overlay reads as ON
-   TOP of the app, not as a new page. */
+   Owner 2026-08-01: the entire screen above the bottom bar, not a centred
+   card. It is a NON-MODAL <dialog> laid out as a flex child of .conv-app, so
+   it fills the space .conv-body would occupy and stops exactly where the bar
+   begins — no fixed positioning and no measuring the bar's height. Non-modal
+   is what keeps the bar's Show/Hide button pressable; see the template. */
 dialog.conv-overlay {
-  width: min(720px, calc(100vw - 24px));
-  max-width: 100vw;
-  max-height: 92dvh;
+  display: none;
+  position: static;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
   padding: 0;
-  border: 1px solid var(--ln-border-strong);
-  border-radius: var(--ln-r-md);
-  background: var(--ln-surface-raised);
+  border: none;
+  background: var(--ln-surface);
   color: var(--ln-text);
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
-  overflow: hidden;
 }
-dialog.conv-overlay::backdrop { background: rgba(4, 8, 14, 0.62); }
-.conv-overlay__panel { display: flex; flex-direction: column; max-height: 92dvh; }
+dialog.conv-overlay[open] { display: flex; }
+/* The panel behind it is hidden rather than merely covered: nothing is left
+   to scroll, so the page keeps exactly one scrollbar (the overlay's). */
+.conv-app.is-overlay-open .conv-body { display: none; }
+/* The edge tabs are position:fixed, so being in flow does not put the overlay
+   above them — they painted over the conversation and clipped its left edge.
+   "The entire screen" means they stand down until it is closed; the bottom
+   bar is deliberately the only chrome that outlives it. */
+.conv-app.is-overlay-open ~ .conv-settings-tab { display: none; }
+.conv-overlay__panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
 .conv-overlay__head {
   flex: none;
   display: flex; align-items: center; justify-content: space-between;
@@ -2332,13 +2349,11 @@ dialog.conv-overlay::backdrop { background: rgba(4, 8, 14, 0.62); }
 .conv-overlay__close:hover { background: var(--ln-surface-2); }
 .conv-overlay__close:focus-visible { outline: none; box-shadow: var(--ln-focus); }
 .conv-overlay__tools { justify-content: flex-start; padding: var(--ln-sp-3) var(--ln-sp-4) 0; }
-/* The spec's ~80vh scrollable body. overscroll-behavior:contain keeps a
-   flick that reaches either end from chaining into anything else. */
+/* The only scroller while the overlay is open. overscroll-behavior:contain
+   stops a flick at either end from chaining anywhere else. */
 .conv-overlay__scroll {
   flex: 1 1 auto;
   min-height: 0;
-  max-height: 80vh;
-  max-height: 80dvh;
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
@@ -2391,6 +2406,14 @@ dialog.conv-overlay::backdrop { background: rgba(4, 8, 14, 0.62); }
     scroll-snap-type: y mandatory;
     -webkit-overflow-scrolling: touch;
   }
+  /* One scrollbar on screen, ever (owner 2026-08-01). This scroller is a
+     PANEL SWITCHER, not content: its two children are each exactly one
+     scrollport tall, so its scrollbar only ever says "there is another
+     panel" — while the panel you are actually reading shows its own. Hiding
+     this one leaves the real one, and costs nothing: hiding a scrollbar does
+     not disable wheel, touch or keyboard scrolling. */
+  .conv-body { scrollbar-width: none; }
+  .conv-body::-webkit-scrollbar { width: 0; height: 0; }
   .conv-rail,
   .conv-main {
     height: 100%;
@@ -2411,6 +2434,19 @@ dialog.conv-overlay::backdrop { background: rgba(4, 8, 14, 0.62); }
   .conv-main { padding-left: var(--ln-touch); }
   .conv-utilbar { padding-left: var(--ln-sp-4); padding-right: var(--ln-sp-4); }
   .conv-composer { padding-left: var(--ln-sp-4); padding-right: var(--ln-sp-4); }
+
+  /* Nothing the bottom bar carries is repeated on the panel above it
+     (owner 2026-08-01). The bar owns History / Memory / Downloads and the
+     Audio picker, so the rail's own copies of those go: .conv-rail__nav is
+     the same three destinations, and .conv-miclineup is Mic Test plus the
+     Low/Med/High chips, which the Audio select drives (its "Mic test…" entry
+     opens the same dialog as the button). Both remain the only copy at
+     desktop widths, where there is no bar. */
+  .conv-rail__nav,
+  .conv-miclineup { display: none; }
+  /* The rules that separated those two blocks would otherwise be left
+     stranded against each other. */
+  .conv-rail__rule:first-of-type { display: none; }
 
   /* Swipe-up affordance, pinned under the rail's control cluster. */
   .conv-scrollhint {

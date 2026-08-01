@@ -90,47 +90,93 @@ func TestMobileSnapPanels(t *testing.T) {
 		assert.Containsf(t, css, want, "the mobile snap scroller needs %s", want)
 	}
 
-	// The tap/keyboard route to the same reveal (swipe is not an accessible
-	// control on its own).
-	assert.Contains(t, html, `id="convScrollHint"`,
-		"the conversation reveal must also be reachable as a button")
-	assert.Contains(t, css, ".conv-scrollhint { display: none; }",
-		"the scroll hint belongs to the mobile layout only")
+	// Exactly one scrollbar on screen (owner 2026-08-01). This scroller only
+	// switches panels — each child is one scrollport tall — so its scrollbar
+	// is hidden and the panel you are reading shows the only visible one.
+	// Hiding it does not disable scrolling.
+	assert.Contains(t, css, ".conv-body { scrollbar-width: none; }",
+		"the panel-switching scroller must not show a second scrollbar")
+	assert.Contains(t, css, ".conv-body::-webkit-scrollbar",
+		"the WebKit half of hiding the panel-switcher's scrollbar is missing")
+
+	// The old scroll-hint button was a second control for what the bottom
+	// bar's "Show Conversation" does, and was removed for that reason.
+	assert.NotContains(t, html, `id="convScrollHint"`,
+		"the scroll hint duplicated Show Conversation and must stay gone")
 }
 
-// TestConversationOverlayContract: the overlay is a modal <dialog>, which is
-// what supplies the scrim, the focus trap, Escape, and the inert page behind
-// (the spec's "prevent scroll-through"). Pin the dialog, both dismiss controls,
-// the ~80vh scrollable body, and the overscroll containment.
-func TestConversationOverlayContract(t *testing.T) {
+// TestBottomBarControlsAreNotDuplicatedAbove: whatever the bottom bar carries
+// must not also appear on the panel above it at those widths (owner
+// 2026-08-01). The rail keeps its copies at desktop widths, where no bar
+// exists — so this is a media-query assertion, not a deletion.
+func TestBottomBarControlsAreNotDuplicatedAbove(t *testing.T) {
 	html := readAsset(t, "templates/pages/conversation.html")
 	css := readAsset(t, "static/css/app.css")
 
+	// Still present in the markup: desktop is the surface that needs them.
+	assert.Contains(t, html, `class="conv-rail__nav"`,
+		"the rail nav must survive for desktop widths")
+	assert.Contains(t, html, `id="micSensGroup"`,
+		"the rail mic line-up must survive for desktop widths")
+
+	mobileAt := strings.LastIndex(css, "@media (max-width: 900px)")
+	if !assert.GreaterOrEqual(t, mobileAt, 0, "the mobile media block is missing") {
+		return
+	}
+	mobile := css[mobileAt:]
+	assert.Contains(t, mobile, ".conv-rail__nav,\n  .conv-miclineup { display: none; }",
+		"History/Memory/Downloads and the mic line-up are on the bottom bar at these widths")
+}
+
+// TestConversationOverlayContract: the overlay takes the whole screen above
+// the bottom bar and is toggled by that bar's own button (owner 2026-08-01).
+// Both facts force it to be a NON-MODAL dialog laid out in flow — a modal
+// would inert the bar and strand the Hide half of the toggle — so what
+// showModal() used to supply is pinned here in its new form.
+func TestConversationOverlayContract(t *testing.T) {
+	html := readAsset(t, "templates/pages/conversation.html")
+	css := readAsset(t, "static/css/app.css")
+	js := readAsset(t, "static/js/conversation.mjs")
+
 	assert.Contains(t, html, `<dialog class="conv-overlay" id="conversationOverlay"`,
-		"the conversation overlay must be a <dialog> so showModal() supplies the scrim + focus trap")
+		"the conversation overlay must stay a <dialog>")
 	for _, want := range []string{
 		`id="conversationOverlayClose"`,
 		`id="conversationOverlayHide"`,
 		`id="conversationOverlayBody"`,
+		`id="convOverlayToggleLabel"`,
 		`aria-labelledby="conversationOverlayTitle"`,
 		`id="conversationOverlayTitle"`,
 	} {
 		assert.Containsf(t, html, want, "the conversation overlay must keep %s", want)
 	}
 
-	closeAt := strings.Index(html, `id="conversationOverlayClose"`)
-	if assert.GreaterOrEqual(t, closeAt, 0, "overlay close control is missing") {
-		closeBtn := html[closeAt:min(len(html), closeAt+220)]
-		assert.Contains(t, closeBtn, "autofocus",
-			"the overlay's close control must take initial focus")
+	// In flow inside .conv-app and ahead of the bar: that is what makes it
+	// stop exactly where the bar starts without measuring the bar.
+	overlayAt := strings.Index(html, `id="conversationOverlay"`)
+	barAt := strings.Index(html, `id="convBottomBar"`)
+	if assert.GreaterOrEqual(t, overlayAt, 0) && assert.GreaterOrEqual(t, barAt, 0) {
+		assert.Less(t, overlayAt, barAt,
+			"the overlay must precede the bottom bar inside .conv-app")
 	}
 
-	assert.Contains(t, css, "dialog.conv-overlay::backdrop",
-		"the overlay needs its semi-transparent backdrop")
+	// Non-modal, plus the two things that costs us, supplied by hand.
+	assert.Contains(t, js, "convOverlay.show()",
+		"the overlay must open non-modally so the bottom-bar toggle stays live")
+	assert.NotContains(t, js, "convOverlay.showModal()",
+		"showModal() would inert the bar and strand the Hide toggle")
+	assert.Contains(t, js, "'Hide Conversation' : 'Show Conversation'",
+		"the bottom-bar button must flip between Show and Hide")
+	assert.Contains(t, js, "e.key === 'Escape' && convOverlay.open",
+		"a non-modal dialog does not close on Escape by itself")
+
+	// Full screen, with nothing left behind it to scroll.
+	assert.Contains(t, css, "dialog.conv-overlay[open] { display: flex; }",
+		"the overlay must fill its flex slot when open")
+	assert.Contains(t, css, ".conv-app.is-overlay-open .conv-body { display: none; }",
+		"hiding the panel behind is what prevents scroll-through and a second scrollbar")
 	assert.Contains(t, css, "overscroll-behavior: contain;",
-		"the overlay body must not chain its scroll into the page behind it")
-	assert.Contains(t, css, "max-height: 80dvh;",
-		"the overlay body keeps the spec's ~80vh cap")
+		"the overlay body must not chain its scroll anywhere else")
 }
 
 // TestConversationToolsContract: Copy / Screenshot / Tag for review exist in

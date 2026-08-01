@@ -129,18 +129,11 @@
         </label>
       </div>
 
-      {{- /* Mobile only (<=900px): the rail and the transcript become two
-             snap panels of one vertical scroller, so the conversation is
-             literally below this panel. Nothing on screen says so, hence
-             this affordance — it is also a real button (conversation.mjs
-             scrolls .conv-body to the transcript panel) so the reveal is
-             reachable by tap and by keyboard, not by swipe alone. Hidden
-             at desktop widths where both panels are already side by side. */}}
-      <button class="conv-scrollhint" type="button" id="convScrollHint"
-              aria-label="Show the conversation below">
-        <span class="conv-scrollhint__label">Conversation</span>
-        <span class="conv-scrollhint__chev" aria-hidden="true">⌄</span>
-      </button>
+      {{- /* No scroll-hint button here (owner 2026-08-01): the bottom bar's
+             "Show Conversation" is the labelled control for reaching the
+             conversation, and a second one on this panel was a duplicate of
+             it. The swipe-up reveal still works; this panel just no longer
+             advertises it twice. */}}
     </section>
 
     <!-- Right column: transcript + composer -->
@@ -195,6 +188,56 @@
 
   </div>
 
+  {{- /* ======================= CONVERSATION OVERLAY =======================
+         Toggled by "Show Conversation" in the bottom bar (owner 2026-08-01:
+         it takes the entire screen, and that one button flips between Show
+         and Hide).
+
+         It is a NON-MODAL <dialog> (.show(), not .showModal()) and it lives
+         INSIDE .conv-app as a flex sibling of .conv-body. Both facts follow
+         from the toggle: showModal() would inert the bottom bar, so the
+         button that is supposed to hide it again could not be pressed. In
+         flow it fills exactly the space above the bar without anyone having
+         to measure the bar's height.
+
+         Nothing can scroll behind it because app.css hides .conv-body while
+         it is open, which is also what keeps the page to a single scrollbar.
+         conversation.mjs supplies the Escape key and focus handling that
+         showModal() would otherwise have given for free.
+
+         The body is a LIVE MIRROR, not a move: conversation.mjs clones
+         #transcript into it on open and re-clones on mutation, so
+         transcript.mjs keeps owning the real subtree and turns that arrive
+         while the overlay is up still show. */}}
+  <dialog class="conv-overlay" id="conversationOverlay" aria-labelledby="conversationOverlayTitle">
+    <div class="conv-overlay__panel">
+      <div class="conv-overlay__head">
+        <h2 class="conv-overlay__title" id="conversationOverlayTitle">Conversation</h2>
+        <button class="conv-overlay__close" type="button" id="conversationOverlayClose"
+                aria-label="Hide conversation" autofocus>
+          <span aria-hidden="true">✕</span>
+        </button>
+      </div>
+      <div class="conv-utilbar conv-overlay__tools" role="toolbar" aria-label="Conversation tools">
+        <button class="ln-btn ln-btn--ghost ln-btn--compact" type="button"
+                data-conv-action="copy">Copy</button>
+        <button class="ln-btn ln-btn--ghost ln-btn--compact" type="button"
+                data-conv-action="screenshot">Screenshot</button>
+        <button class="ln-btn ln-btn--ghost ln-btn--compact" type="button"
+                data-conv-action="tag" aria-haspopup="dialog"
+                aria-controls="reviewTagDialog">Tag for review</button>
+      </div>
+      <div class="conv-overlay__scroll" id="conversationOverlayBody" tabindex="0"
+           role="region" aria-label="Conversation transcript"></div>
+      <p class="conv-overlay__empty" id="conversationOverlayEmpty" hidden>
+        Nothing here yet — start talking or type a message and it will appear here.
+      </p>
+      <div class="conv-overlay__foot">
+        <button class="ln-btn ln-btn--ghost" type="button" id="conversationOverlayHide">Hide Conversation</button>
+      </div>
+    </div>
+  </dialog>
+
   {{- /* ---------------------- MOBILE BOTTOM BAR ----------------------
          Persistent toolbar, phone/tablet widths only (app.css hides it
          above 900px, where the rail already carries these controls). It is
@@ -214,7 +257,11 @@
             id="convOverlayOpen" aria-haspopup="dialog"
             aria-controls="conversationOverlay" aria-expanded="false">
       <span class="conv-bottombar__icon" aria-hidden="true">💬</span>
-      <span class="conv-bottombar__label">Show Conversation</span>
+      {{- /* conversation.mjs swaps this between "Show Conversation" and
+             "Hide Conversation" — the overlay leaves this bar reachable on
+             purpose (it is not a modal), so this one button is the whole
+             toggle. */}}
+      <span class="conv-bottombar__label" id="convOverlayToggleLabel">Show Conversation</span>
     </button>
     {{- /* The aria-label duplicates the visible label on purpose: below
            520px there is no room for four labels plus the select, so app.css
@@ -1136,7 +1183,7 @@
           <li>The pill at the top right of the rail tells you where you are: <em>Idle</em>, <em>Listening</em>, <em>Thinking</em>, or <em>Speaking</em>.</li>
           <li>Just start talking again to interrupt a reply — you don't have to wait for it to finish.</li>
           <li><strong>Start over</strong> with <em>NEW</em>, beside the orb. It ends the current conversation and begins a fresh one.</li>
-          <li><strong>On a phone or tablet</strong> the voice panel fills the screen and the conversation sits just below it: swipe up (or tap <em>Conversation</em> at the bottom of the panel) to bring it in, and scroll back down to return to the voice panel.</li>
+          <li><strong>On a phone or tablet</strong> the voice panel fills the screen. Tap <em>Show Conversation</em> at the bottom to open the conversation full screen — the same button then reads <em>Hide Conversation</em>. You can also swipe up from the voice panel and scroll back down to return to it.</li>
         </ul>
       </section>
 
@@ -1170,9 +1217,9 @@
           <dt>This month</dt>
           <dd>Your running usage estimate, at the bottom of the Settings panel. The badge beside the state pill shows what the current conversation has cost so far.</dd>
           <dt>Show Conversation</dt>
-          <dd>On a phone or tablet, the button at the bottom left lays the conversation over whatever you're looking at, scrolling on its own. <em>Hide Conversation</em>, the ✕, or Esc puts it away.</dd>
+          <dd>On a phone or tablet, the button at the bottom left opens the conversation full screen. The same button then reads <em>Hide Conversation</em>; the ✕ and Esc close it too.</dd>
           <dt>The bar along the bottom</dt>
-          <dd>On a phone or tablet only: Show Conversation, then History, Memory and Downloads, and an <em>Audio</em> picker. Audio sets how quickly it treats a pause as the end of your turn — the same setting as <em>Mic pickup</em> under Turn detection — and <em>Mic test…</em> in that list opens the microphone check.</dd>
+          <dd>On a phone or tablet only: Show Conversation, then History, Memory and Downloads, and an <em>Audio</em> picker. It stays put while the conversation is open, so you can close it from the same place you opened it. Audio sets how quickly Live Ninja treats a pause as the end of your turn — the same setting as <em>Mic pickup</em> under Turn detection — and <em>Mic test…</em> in that list opens the microphone check. On a phone or tablet this bar is the only place these live; on a computer they sit in the left rail instead.</dd>
           <dt>Copy, Screenshot and Tag for review</dt>
           <dd>Above the conversation, and inside the overlay. <em>Copy</em> puts the whole conversation on your clipboard as plain text; <em>Screenshot</em> saves it as a PNG image; <em>Tag for review</em> asks why it's worth another look and keeps that note on this device.</dd>
           <dt>Help and Settings</dt>
@@ -1228,47 +1275,6 @@
           <li><strong>Copy did nothing?</strong> Some browsers only allow the clipboard on a secure page you've interacted with — tap the button again, and if it still refuses, use <em>Screenshot</em> instead.</li>
         </ul>
       </section>
-    </div>
-  </div>
-</dialog>
-
-{{- /* ======================= CONVERSATION OVERLAY =======================
-       Opened by "Show Conversation" in the bottom bar. Native <dialog>
-       .showModal() gives the dimmed ::backdrop, the focus trap, Escape, and
-       — because the page behind a modal dialog is inert — the
-       prevent-scroll-through the spec asks for; .conv-overlay__scroll adds
-       overscroll-behavior:contain so a flick that hits the end of the
-       transcript does not chain out to the app underneath either.
-
-       The body is a LIVE MIRROR, not a move: conversation.mjs clones
-       #transcript into it on open and re-clones on mutation, so
-       transcript.mjs keeps owning the real subtree and turns that arrive
-       while the overlay is up still show. */}}
-<dialog class="conv-overlay" id="conversationOverlay" aria-labelledby="conversationOverlayTitle">
-  <div class="conv-overlay__panel">
-    <div class="conv-overlay__head">
-      <h2 class="conv-overlay__title" id="conversationOverlayTitle">Conversation</h2>
-      <button class="conv-overlay__close" type="button" id="conversationOverlayClose"
-              aria-label="Hide conversation" autofocus>
-        <span aria-hidden="true">✕</span>
-      </button>
-    </div>
-    <div class="conv-utilbar conv-overlay__tools" role="toolbar" aria-label="Conversation tools">
-      <button class="ln-btn ln-btn--ghost ln-btn--compact" type="button"
-              data-conv-action="copy">Copy</button>
-      <button class="ln-btn ln-btn--ghost ln-btn--compact" type="button"
-              data-conv-action="screenshot">Screenshot</button>
-      <button class="ln-btn ln-btn--ghost ln-btn--compact" type="button"
-              data-conv-action="tag" aria-haspopup="dialog"
-              aria-controls="reviewTagDialog">Tag for review</button>
-    </div>
-    <div class="conv-overlay__scroll" id="conversationOverlayBody" tabindex="0"
-         role="region" aria-label="Conversation transcript"></div>
-    <p class="conv-overlay__empty" id="conversationOverlayEmpty" hidden>
-      Nothing here yet — start talking or type a message and it will appear here.
-    </p>
-    <div class="conv-overlay__foot">
-      <button class="ln-btn ln-btn--ghost" type="button" id="conversationOverlayHide">Hide Conversation</button>
     </div>
   </div>
 </dialog>
