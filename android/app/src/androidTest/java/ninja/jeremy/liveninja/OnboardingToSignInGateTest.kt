@@ -10,6 +10,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import ninja.jeremy.liveninja.ui.state.OnboardingStore
 import org.junit.Assert.assertTrue
+import org.junit.AfterClass
 import org.junit.BeforeClass
 import org.junit.Rule
 import org.junit.Test
@@ -55,6 +56,28 @@ class OnboardingToSignInGateTest {
             context.getSharedPreferences(OnboardingStore.PREFS_NAME, Context.MODE_PRIVATE)
                 .edit()
                 .putBoolean(OnboardingStore.KEY_COMPLETED, true)
+                .commit()
+        }
+
+        /**
+         * Put the flag back. Every instrumented test in this module shares one
+         * app process AND one SharedPreferences file, so a class that flips a
+         * global and walks away changes what the tests after it see — which is
+         * exactly what happened: this leak made
+         * [TapToTalkConnectingStateTest] fail intermittently depending on the
+         * order the runner picked, and the failure surfaced as an unrelated
+         * "assertExists" on the conversation screen.
+         *
+         * Restoring it here is the fix for the leak, not for the symptom: a
+         * test that mutates global state owns putting it back.
+         */
+        @AfterClass
+        @JvmStatic
+        fun restoreOnboardingFlag() {
+            val context: Context = InstrumentationRegistry.getInstrumentation().targetContext
+            context.getSharedPreferences(OnboardingStore.PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .remove(OnboardingStore.KEY_COMPLETED)
                 .commit()
         }
     }

@@ -1109,17 +1109,42 @@ not paused on.
 
 ## Gotchas that cost real time (don't re-learn these)
 
-- **`TapToTalkConnectingStateTest` is flaky on the CI emulator (seen 2026-08-01).** It failed on
-  `assertExists` for the "Connecting…" label, in a commit that touched only Settings/net files.
-  Evidence it is environmental, not a regression: the same test passed on the previous CI run with
-  identical `ConversationScreen` code, it passes on the physical Tab S9 FE, the failing run's log
-  carries three `adb ... exit code 1` lines plus `Failed to start Emulator console for 5554`, and a
-  re-run with **zero code changes** went green.
-  **Unproven hypothesis, worth checking before trusting it again:** the eight instrumented tests
-  share one process and one singleton `RealtimeSessionController`, and `startSession()` returns
-  early *without* setting `CONNECTING` when `controller.connected.value` is already true — so a
-  test that leaves a session connected would make this one fail, order-dependently. If it recurs,
-  look there first rather than at whatever commit happened to trigger it.
+- **`TapToTalkConnectingStateTest` is order-dependent and fails ~2 runs in 3 (2026-08-01/02).**
+  `[!]` **Android Release is RED because of this, and it is NOT caused by whatever commit the run
+  happens to be testing.** Diagnosed properly on the second occurrence; do not re-derive it.
+
+  **Reproduction (~20 s per loop), on the local AVD:**
+  ```
+  emulator -avd liveninja-test -no-window -no-audio -no-snapshot -gpu swiftshader_indirect
+  cd android && ANDROID_SERIAL=emulator-5554 ./gradlew :app:connectedDebugAndroidTest
+  ```
+  Run alone it ALWAYS passes:
+  `-Pandroid.testInstrumentationRunnerArguments.class=ninja.jeremy.liveninja.TapToTalkConnectingStateTest`
+
+  **Bisected cause: `OnboardingToSignInGateTest`.** Excluding that ONE class makes it pass;
+  excluding any of the other three does not:
+  ```
+  ./gradlew :app:connectedDebugAndroidTest \
+    -Pandroid.testInstrumentationRunnerArguments.notClass=ninja.jeremy.liveninja.OnboardingToSignInGateTest
+  ```
+
+  **What is ruled out.** It is not the change under test — the same failure predates the WS-4
+  commit, and the contamination is between two classes that commit never touched. It is not a pure
+  environment flake either: it reproduces locally on the same API level, and passes on the physical
+  Tab S9 FE. It is not the leaked onboarding pref: that class wrote `KEY_COMPLETED` in
+  `@BeforeClass` and never restored it, `@AfterClass` restoration was added (correct hygiene
+  regardless), and the failure rate did not change.
+
+  **Best remaining hypothesis, UNPROVEN.** `OnboardingToSignInGateTest` launches the real
+  `MainActivity`; `TapToTalkConnectingStateTest` hosts `ConversationScreen()` inside
+  `TestHarnessActivity` and resolves its view model with `hiltViewModel(activity)`. The singleton
+  `RealtimeSessionController` — or a still-live activity-scoped `ConversationViewModel` from the
+  earlier activity — plausibly leaves `startSession()` taking its early-return branch, which sets
+  no state and therefore renders no "Connecting…". Worth instrumenting the state machine before
+  changing either test.
+
+  **Explicitly NOT done:** the test has not been quarantined or weakened to make CI green. It is
+  catching a real isolation problem, and hiding it would cost more than the red run does.
 
 
 - **The node's IoT Thing name is `OFFICEPC`, uppercase.** ghost-cli's node ACL compares exactly with
