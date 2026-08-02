@@ -165,6 +165,13 @@ interface LiveNinjaApi {
     @GET("api/v1/realtime/personas")
     suspend fun listPersonas(): PersonaCatalogResponse
 
+    /**
+     * Credentials for the cross-device change stream (§6 WS-3 M3.5). The token
+     * it returns is audience-scoped to IoT and is NOT an API credential.
+     */
+    @GET("api/v1/iot/credentials")
+    suspend fun iotCredentials(): IotCredentials
+
     // ---- Conversation history + topics (M11, FR-TOP-04/05) ----
 
     /**

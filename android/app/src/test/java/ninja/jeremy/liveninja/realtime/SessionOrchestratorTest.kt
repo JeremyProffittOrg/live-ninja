@@ -65,6 +65,10 @@ class SessionOrchestratorTest {
         override fun setMicMuted(muted: Boolean) = Unit
         override fun interruptAssistant() = Unit
 
+        /** §6 WS-4: the cross-device nudge seam; unused by these tests. */
+        var sentText: String? = null
+        override fun sendUserText(text: String) { sentText = text }
+
         /** Simulate the transport dropping / closing out-of-band. */
         fun dropConnection() {
             _connected.value = false

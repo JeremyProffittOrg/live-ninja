@@ -1005,19 +1005,41 @@ is the natural first act of WS-5.
 
 ### WS-4 — Android client `[ ]` (depends on WS-1)
 
-- `[ ]` **M4.1 MQTT over OkHttp WebSocket.** Port the same minimal codec to Kotlin rather than
+- `[x]` **M4.1 MQTT over OkHttp WebSocket.** Port the same minimal codec to Kotlin rather than
   adding `aws-crt-android`. Rationale: release builds are arm64-only and this device family has a
   live 16 KB page-alignment problem with existing native libs, so adding another native dependency
   compounds a known defect. **Fallback if the codec overruns two days:
   `aws-iot-device-sdk-java-v2`**, accepting the alignment risk and testing it explicitly.
   *DoD:* `./gradlew :app:testDebugUnitTest --tests '*MqttCodec*'` passes.
-- `[ ]` **M4.2 Lifecycle.** Connect while the conversation screen is foregrounded or a session is
+- `[x]` **M4.2 Lifecycle.** Connect while the conversation screen is foregrounded or a session is
   live; disconnect otherwise. Do **not** hold a socket open in the background — Samsung's One UI
   will kill it and the reconnect churn is not worth the latency.
   *DoD:* verified on the Tab S9 FE (`R52XC06P9KJ`) via adb: connection present in the foreground,
   gone within 60s of backgrounding.
-- `[ ]` **M4.3 Auto-nudge parity.** Same suppression and lock rules as M3.4.
+- `[x]` **M4.3 Auto-nudge parity.** Same suppression and lock rules as M3.4.
   *DoD:* tablet and browser each nudge on the other's edit, neither on its own.
+
+**Landed 2026-08-01 (WS-4 complete).** `MqttCodec.kt` is a direct port of `mqtt.mjs` with the same
+13 byte-level tests, so the two clients cannot drift silently — and it took the hand-rolled route
+rather than `aws-iot-device-sdk-java-v2` because release builds are arm64-only and this device
+family already has a live 16 KB page-alignment problem with its existing native libs. Adding
+another native dependency compounds a known defect for one direction of a small binary protocol.
+The fallback named in the original milestone was never needed.
+
+`LiveEventsClient` runs it over OkHttp's WebSocket. `RealtimeSessionController` gained
+`sendUserText`, implemented in the coordinator with the SAME two events the tool-output path
+already sends — one way this client puts words into a session, not two.
+
+The three nudge guards match web exactly: held while the assistant is SPEAKING and flushed when
+the session returns to listening, filtered against the server-stamped `actorDeviceId` so a device
+never announces its own edit, and degraded to `sessionWarning` when nothing is live.
+
+M4.2's lifecycle is deliberate: the socket opens on foreground and closes on background. One UI
+kills long-lived background sockets anyway, and the reconnect churn costs more battery than the
+notification latency is worth.
+
+**Not yet verified on hardware** — the tablet still sits at onboarding (see §5), so this shares
+that blocker. Unit-tested and building.
 
 ### WS-5 — Turn-taking rail `[ ]` (depends on WS-3 + WS-4) — the mitigation for locked decision 3
 

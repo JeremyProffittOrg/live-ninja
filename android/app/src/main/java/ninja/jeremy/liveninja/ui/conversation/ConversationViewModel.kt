@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import ninja.jeremy.liveninja.realtime.LiveEventsClient
 import ninja.jeremy.liveninja.realtime.SessionCost
 import ninja.jeremy.liveninja.realtime.TranscriptStore
 import ninja.jeremy.liveninja.wake.ModelManager
@@ -82,6 +83,7 @@ class ConversationViewModel @Inject constructor(
     private val settingsStore: SettingsStore,
     private val transcriptStore: TranscriptStore,
     private val modelManager: ModelManager,
+    private val liveEvents: LiveEventsClient,
 ) : ViewModel() {
 
     private val sessionController: RealtimeSessionController? = sessionControllerOpt.orElse(null)
@@ -129,6 +131,13 @@ class ConversationViewModel @Inject constructor(
                     )
                 }
             }
+        }
+
+        // §6 WS-4 M4.3 — another device changed shared state. Same three
+        // guards as web: never mid-turn, never our own edit (LiveEventsClient
+        // filters that), never without a session to speak through.
+        viewModelScope.launch {
+            liveEvents.changes.collect { change -> change?.let(::onRemoteChange) }
         }
 
         // Mic state is derived from the singleton session's `connected` — so a
@@ -198,6 +207,7 @@ class ConversationViewModel @Inject constructor(
 
     /** A session became live (in-app tap OR wake/assist-started while screen off). */
     private fun onSessionBecameLive() {
+        flushPendingChange()
         _state.update {
             if (it.micState in setOf(MicUiState.LISTENING, MicUiState.SPEAKING)) {
                 it
@@ -330,8 +340,60 @@ class ConversationViewModel @Inject constructor(
     }
 
     /** MainActivity lifecycle hooks — drive the floating overlay bubble. */
+    /** A held nudge, waiting for the assistant to stop speaking. */
+    private var pendingChange: LiveEventsClient.Change? = null
+
+    /** States in which there is actually a session to speak a nudge through. */
+    private val LIVE_FOR_NUDGE = setOf(MicUiState.LISTENING, MicUiState.SPEAKING)
+
+    /**
+     * Deliver a cross-device change. Speaking over the assistant mid-sentence
+     * is worse than being a moment late, so a change that lands while it is
+     * talking is held and flushed when the session returns to listening.
+     */
+    private fun onRemoteChange(change: LiveEventsClient.Change) {
+        val state = _state.value.micState
+        if (state == MicUiState.SPEAKING) {
+            pendingChange = change
+            return
+        }
+        if (state !in LIVE_FOR_NUDGE) {
+            // Nothing to speak through: surface it quietly instead of dropping
+            // it, so the user still learns another device moved.
+            _state.update { it.copy(sessionWarning = remoteChangeNotice(change)) }
+            return
+        }
+        speak(change)
+    }
+
+    private fun speak(change: LiveEventsClient.Change) {
+        val who = change.actorPersona.ifEmpty { "Another device" }
+        val what = change.summary.ifEmpty { "changed something shared" }
+        sessionController?.sendUserText(
+            "[Automatic update] $who just $what. Mention this to the user in one short " +
+                "sentence, then carry on with what you were doing. Re-read the shared file or " +
+                "memory before saying anything about its contents.",
+        )
+    }
+
+    private fun remoteChangeNotice(change: LiveEventsClient.Change): String {
+        val who = change.actorPersona.ifEmpty { "Another device" }
+        return "$who ${change.summary.ifEmpty { "changed something shared" }}."
+    }
+
+    /** Flush a held nudge once the assistant has stopped talking. */
+    private fun flushPendingChange() {
+        val change = pendingChange ?: return
+        pendingChange = null
+        onRemoteChange(change)
+    }
+
     fun onAppBackgrounded() {
         appInBackground = true
+        // Do NOT hold the socket in the background: One UI kills long-lived
+        // background sockets anyway, and the reconnect churn costs more battery
+        // than the notification latency is worth (§6 WS-4 M4.2).
+        liveEvents.stop()
         if (sessionActive()) {
             overlay.show()
             syncOverlay()
@@ -340,6 +402,7 @@ class ConversationViewModel @Inject constructor(
 
     fun onAppForegrounded() {
         appInBackground = false
+        liveEvents.start()
         overlay.hide()
     }
 

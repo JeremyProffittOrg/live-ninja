@@ -429,6 +429,39 @@ class RealtimeSessionCoordinator @Inject constructor(
     }
 
     /**
+     * Inject a text turn and ask for a reply. Mirrors what realtime.mjs's
+     * sendUserText does on web, and uses the same two events the tool-output
+     * path above already sends — so there is one way this client puts words
+     * into a session, not two.
+     */
+    override fun sendUserText(text: String) {
+        if (text.isBlank() || !connected.value) return
+        runCatching {
+            transport.sendEvent(
+                JSONObject()
+                    .put("type", "conversation.item.create")
+                    .put(
+                        "item",
+                        JSONObject()
+                            .put("type", "message")
+                            .put("role", "user")
+                            .put(
+                                "content",
+                                org.json.JSONArray().put(
+                                    JSONObject().put("type", "input_text").put("text", text),
+                                ),
+                            ),
+                    ),
+            )
+            transport.sendEvent(JSONObject().put("type", "response.create"))
+        }.onFailure {
+            // The transport raced closed. A missed notification is not worth
+            // surfacing to the user.
+            LNLog.w(LogCategory.REALTIME, TAG, "sendUserText failed", it)
+        }
+    }
+
+    /**
      * Perform a deferred device-local tool action, after the assistant's spoken
      * confirmation has completed.
      */

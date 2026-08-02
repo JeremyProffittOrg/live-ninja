@@ -104,6 +104,13 @@ interface RealtimeSessionController {
 
     /** Barge-in: cancel assistant response + stop local playback immediately. */
     fun interruptAssistant()
+
+    /**
+     * Inject a text turn into the live session and ask for a reply (§6 WS-4
+     * M4.3). Used for the cross-device nudge: another device changed shared
+     * state and the assistant should mention it. A no-op when nothing is live.
+     */
+    fun sendUserText(text: String)
 }
 
 @Module
