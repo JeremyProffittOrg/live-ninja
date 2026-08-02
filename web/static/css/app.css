@@ -2644,3 +2644,53 @@ dialog.conv-overlay[open] { display: flex; }
   .conv-bottombar__item--primary .conv-bottombar__icon { font-size: 16px; }
   .conv-bottombar__audio { flex: 0 1 104px; }
 }
+
+/* ==========================================================================
+   Peer roster — "which of your other devices are live" (§6 WS-5 M5.1).
+   Appended-only section. conversation.mjs builds these nodes itself and
+   appends them into .conv-rail__status under the state pill and cost badge;
+   there is no markup for them in conversation.html because every row comes
+   from a retained MQTT presence message.
+
+   Same token set as .state-pill above, and the same per-state tints, so a
+   peer's row reads the way this device's own pill reads — all AA-checked at
+   the token definitions, so the hal9000 dark rail and the ninja-light app
+   zone both stay compliant with no hardcoded colors. Sized down from the pill
+   because this is the secondary information: the pill is what the user is
+   acting on, this is context.
+   ========================================================================== */
+.conv-peers {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+.conv-peer {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ln-sp-1);
+  max-width: 100%;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: var(--ln-fs-xs);
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--ln-surface-2);
+  color: var(--ln-text-muted);
+  border: 1px solid var(--ln-border);
+  cursor: default;
+  user-select: none;
+}
+.conv-peer__dot {
+  flex: none;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.conv-peer[data-state="connecting"] { background: var(--ln-accent-tint); color: var(--ln-accent-ink); border-color: currentColor; }
+.conv-peer[data-state="listening"] { background: var(--ln-accent-tint); color: var(--ln-accent-ink); border-color: currentColor; }
+.conv-peer[data-state="thinking"] { background: var(--ln-warn-tint); color: var(--ln-warn-ink); border-color: currentColor; }
+/* The one state that matters at a glance: that device is the one talking. */
+.conv-peer[data-state="speaking"] { background: var(--ln-success-tint); color: var(--ln-success-ink); border-color: currentColor; }

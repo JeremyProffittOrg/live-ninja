@@ -384,3 +384,150 @@ func TestAutoNudgeGuards(t *testing.T) {
 	// than replay the expired token.
 	assert.Contains(t, events, "reconnecting with a fresh credential")
 }
+
+// TestSpeakingLockGuards (§6 WS-5 M5.1/M5.2). Same bar as TestAutoNudgeGuards
+// above, and for the same reason: with three signed-in surfaces, one edit
+// answered out loud by all of them is the failure the turn-taking lock exists
+// to prevent, and every line that prevents it is a single line a refactor
+// could drop with nothing else failing.
+//
+// Two of these guard bugs that SHIPPED. The empty-payload presence clear sat
+// below a JSON.parse that throws on an empty payload, so no device was ever removed from the
+// roster; and the speaking topic had no branch of its own, so a claim fell
+// through to the change handler and would have made every peer announce a
+// change that never happened. Both were invisible — no error, no log.
+func TestSpeakingLockGuards(t *testing.T) {
+	js := readAsset(t, "static/js/conversation.mjs")
+	events := readAsset(t, "static/js/liveevents.mjs")
+
+	// 1. The empty-payload check must come BEFORE the parse. Asserting the
+	//    order, not merely the presence, is the whole test: the check existed
+	//    all along, three lines too late.
+	//    Measured from the start of the router, because the parse itself is
+	//    behind a helper that returns null rather than throwing.
+	routerAt := strings.Index(events, "function handleMessage(")
+	require.GreaterOrEqual(t, routerAt, 0, "liveevents.mjs must still route by topic")
+	body := events[routerAt:]
+	emptyAt := strings.Index(body, "const empty = !raw || raw.length === 0;")
+	parseAt := strings.Index(body, "parseOrNull(raw)")
+	if assert.GreaterOrEqual(t, emptyAt, 0, "the router must test for an empty payload") &&
+		assert.GreaterOrEqual(t, parseAt, 0) {
+		assert.Less(t, emptyAt, parseAt,
+			"JSON.parse('') throws, so the clear and the release must be handled above it")
+	}
+	assert.Equal(t, 1, strings.Count(events, "JSON.parse(raw)"),
+		"the only raw parse is the one that returns null instead of throwing past a branch")
+
+	// 2. The lock gets its own branch, and it is the FIRST branch in the
+	//    router. The lock topic sits under the presence prefix
+	//    (`.../presence/speaking`) so that a tab still running the pre-WS-5
+	//    module graph across a deploy ignores it — both old clients drop
+	//    anything containing '/presence/' unread, whereas the bare
+	//    `.../speaking` it replaced fell through their change handler and made
+	//    them announce an edit that never happened on every claim. The price
+	//    of that prefix is this ordering, and it is not optional:
+	//      - behind the presence branch, a claim is filed as a roster row for
+	//        a peer literally named "speaking" and a release as it leaving;
+	//      - behind the change branch, a claim carries no actorDeviceId, so
+	//        the self-edit filter waves it through and every claim becomes a
+	//        nudge on every other device.
+	lockAt := strings.Index(body, "topic === creds.speakingTopic")
+	presenceAt := strings.Index(body, "topic.includes('/presence/')")
+	changeAt := strings.Index(body, "ev.actorDeviceId === creds.actorDeviceId")
+	if assert.GreaterOrEqual(t, lockAt, 0, "the speaking topic needs a branch of its own") &&
+		assert.GreaterOrEqual(t, presenceAt, 0, "the router must still branch on the presence prefix") &&
+		assert.GreaterOrEqual(t, changeAt, 0) {
+		assert.Less(t, lockAt, presenceAt,
+			"the lock topic contains '/presence/', so presence first files the lock as a peer named \"speaking\"")
+		assert.Less(t, lockAt, changeAt, "a lock claim must never reach the change handler")
+	}
+
+	// 3. The settle window and the expiry are the two constants the whole
+	//    arbitration rests on, and they are shared verbatim with the Android
+	//    client — a change on one side only is a split-brain winner.
+	assert.Contains(t, events, "export const LOCK_TTL_MS = 30_000;",
+		"a claim binds for 30s and every reader expires it locally")
+	assert.Contains(t, events, "export const LOCK_SETTLE_MS = 400;",
+		"the claim/settle/arbitrate window must stay a named constant")
+
+	// 4. The roster key is the clientId — the same string the server built the
+	//    presence topic's last segment from. actorDeviceId is a DIFFERENT
+	//    value and may be empty, so a roster keyed on it would not line up
+	//    with the topic its message arrived on.
+	assert.Contains(t, events, "deviceId: creds.clientId,",
+		"presence must publish the id the presence topic itself is built from")
+
+	// 5. One subscription. A narrower topicfilter for the lock is refused by
+	//    the authorizer, and AWS signals a refused SUBSCRIBE by CLOSING the
+	//    socket — which the reconnect path reads as a normal token expiry.
+	assert.Equal(t, 1, strings.Count(events, "client.subscribe("),
+		"a second subscribe would be denied and present as an invisible reconnect loop")
+
+	// 6. The unprompted voice is gated on winning the lock, and the winner
+	//    frees it when its turn ends rather than sitting on the full expiry.
+	assert.Contains(t, js, "await liveEvents.claimSpeakingTurn()",
+		"nothing may speak unprompted without winning the turn")
+	assert.Contains(t, js, "liveEvents.releaseSpeakingTurn()",
+		"the holder must free the lock when its turn is over")
+	claimAt := strings.Index(js, "await liveEvents.claimSpeakingTurn()")
+	sendAt := strings.Index(js, "mic.session.sendUserText(nudgeText(evs))")
+	if assert.GreaterOrEqual(t, claimAt, 0) &&
+		assert.GreaterOrEqual(t, sendAt, 0, "the unprompted send must go through nudgeText") {
+		assert.Less(t, claimAt, sendAt,
+			"the claim must be settled before this device commits to speaking")
+	}
+
+	// 7. A deferred change is queued, not overwritten, and it is never lost:
+	//    if the user simply stops talking to this device it surfaces quietly.
+	assert.Contains(t, js, "const NUDGE_QUEUE_MAX = 5;",
+		"a single held slot silently dropped the first of two changes")
+	assert.Contains(t, js, "const NUDGE_QUIET_MS = 60_000;",
+		"a held change that is never spoken must still reach the user")
+
+	// 8. The roster itself: built in JS, and deliberately not announced —
+	//    it changes on every state transition of every other device, and
+	//    #statePill already announces THIS device politely.
+	assert.Contains(t, js, `el.id = 'devicePresence';`,
+		"the peer roster is created by conversation.mjs, not by the template")
+	assert.Contains(t, js, `el.setAttribute('aria-live', 'off');`,
+		"a roster that announced every peer state change would flood a screen reader")
+	css := readAsset(t, "static/css/app.css")
+	assert.Contains(t, css, ".conv-peers {", "the roster needs its layout rule")
+	assert.Contains(t, css, `.conv-peer[data-state="speaking"]`,
+		"which peer is talking is the one state that must read at a glance")
+
+	// 9. "Has a claim on the wire" and "holds the lock" are separate states,
+	//    and the two exits from them must not be collapsed back together.
+	//
+	//    release() is called on every completed response — including the
+	//    tool-only ones — so it lands inside another change's settle window as
+	//    a matter of routine, and it is documented as a no-op when this device
+	//    is not holding. The `holding` test therefore has to come before every
+	//    mutation in it: dropping our own in-flight claim there loses the
+	//    arbitration for a claim already filed in every peer for the full ttl,
+	//    and nothing would ever publish the release that frees them.
+	releaseAt := strings.Index(events, "function release(self) {")
+	if assert.GreaterOrEqual(t, releaseAt, 0, "the lock must still expose release()") {
+		releaseBody := events[releaseAt:]
+		guardAt := strings.Index(releaseBody, "if (!holding) return;")
+		deleteAt := strings.Index(releaseBody, "claims.delete(self);")
+		if assert.GreaterOrEqual(t, guardAt, 0, "release() must still be a no-op for a non-holder") &&
+			assert.GreaterOrEqual(t, deleteAt, 0) {
+			assert.Less(t, guardAt, deleteAt,
+				"a documented no-op release must not mutate this device's own claim registry")
+		}
+	}
+
+	//    A clean stop is the opposite case: the claim IS on the wire, so the
+	//    empty payload has to go out or every peer defers to a closed tab for
+	//    the full 30 seconds. That is abandon(), and it is deliberately not an
+	//    unconditional publish — a release carries no holder and frees the
+	//    lock fleet-wide, so any device could otherwise free another's.
+	assert.Contains(t, events, "function abandon(self) {",
+		"giving up an in-flight claim is a different operation from releasing a held turn")
+	assert.Contains(t, events, "lock.abandon(creds.clientId);",
+		"stop() must free a claim that never got as far as holding")
+	assert.Equal(t, 1, strings.Count(events, "lock.release(creds.clientId)"),
+		"releaseSpeakingTurn() is the only caller of release(); stop() reverting to it "+
+			"would restore the 30-second wait its own comment says it removes")
+}

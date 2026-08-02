@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -13,6 +16,7 @@ import (
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
+	lnsync "github.com/JeremyProffittOrg/live-ninja/internal/sync"
 	"github.com/JeremyProffittOrg/live-ninja/internal/testutil"
 )
 
@@ -86,12 +90,50 @@ func TestAuthorizesAndScopesPolicyToOneUser(t *testing.T) {
 	assert.NotContains(t, policy, "user-bob")
 	assert.NotContains(t, policy, "liveninja/user/*")
 	assert.NotContains(t, policy, `"Resource":"*"`)
+	// The turn-taking lock is user-scoped like everything else here, and since
+	// it moved under presence/ it is covered by the presence grant rather than
+	// named by a statement of its own. Pinned through the helper both clients
+	// actually publish to, so a change to either side shows up here instead of
+	// as claims silently refused in production.
+	assert.True(t, grantCovers(arnBase()+":topic/liveninja/user/user-alice/presence/*",
+		lnsync.SpeakingTopic("user-alice")),
+		"the presence grant must cover the lock topic %q", lnsync.SpeakingTopic("user-alice"))
 }
 
-// TestPublishIsPresenceOnly: doc/memory events are SERVER-authored. A client
-// able to publish them could make every other device of that user announce a
-// change that never happened.
-func TestPublishIsPresenceOnly(t *testing.T) {
+// grantCovers reports whether an IoT policy Resource pattern authorizes a
+// publish to topic.
+//
+// Modelled rather than eyeballed because the rule is easy to get backwards:
+// IoT POLICY wildcards are not MQTT wildcards. '*' matches any run of
+// characters INCLUDING '/', and '?' matches exactly one — which is why
+// presence/* reaches presence/speaking, and equally why a `topic/<uid>/*`
+// resource would reach the server-authored doc and memory topics.
+func grantCovers(resource, topic string) bool {
+	arnPrefix := arnBase() + ":topic/"
+	if !strings.HasPrefix(resource, arnPrefix) {
+		return false
+	}
+	pattern := regexp.QuoteMeta(strings.TrimPrefix(resource, arnPrefix))
+	pattern = strings.ReplaceAll(pattern, `\*`, ".*")
+	pattern = strings.ReplaceAll(pattern, `\?`, ".")
+	return regexp.MustCompile("^" + pattern + "$").MatchString(topic)
+}
+
+// arnBase rebuilds the ARN prefix policyFor builds, from whatever
+// setupIoTAuthorizer put in the environment, so a change to either follows
+// through instead of silently making the assertions below vacuous.
+func arnBase() string {
+	return fmt.Sprintf("arn:aws:iot:%s:%s", os.Getenv("AWS_REGION"), os.Getenv("AWS_ACCOUNT_ID"))
+}
+
+// TestPublishIsScopedToThePresencePrefix: doc/memory events are
+// SERVER-authored. A client able to publish them could make every other device
+// of that user announce a change that never happened. Clients own exactly one
+// prefix — presence/*, which carries both their own presence slot and the
+// shared turn-taking lock at presence/speaking — and this test's job is to keep
+// that set CLOSED, so it is an exact allowlist rather than a substring check
+// that a widened resource would still satisfy.
+func TestPublishIsScopedToThePresencePrefix(t *testing.T) {
 	signer, st := setupIoTAuthorizer(t)
 	activeUser(t, st, "user-alice")
 	token, err := signer.SignAccessToken(context.Background(), auth.Claims{Sub: "user-alice", Sid: "s", Surface: "web", Aud: auth.AudienceIoT})
@@ -100,6 +142,9 @@ func TestPublishIsPresenceOnly(t *testing.T) {
 	resp, err := handler(context.Background(), mqttRequest(token, "web-1"))
 	require.NoError(t, err)
 
+	// Action is decoded as a string on purpose: it also pins that no statement
+	// collapses into an ["iot:Publish","iot:RetainPublish"] array, which would
+	// hide a resource from the allowlist below.
 	var doc struct {
 		Statement []struct {
 			Action   string `json:"Action"`
@@ -108,15 +153,58 @@ func TestPublishIsPresenceOnly(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal([]byte(resp.PolicyDocuments[0]), &doc))
 
-	var publish []string
+	base := arnBase()
+	var publish, retain []string
 	for _, st := range doc.Statement {
-		if st.Action == "iot:Publish" {
+		switch st.Action {
+		case "iot:Publish":
 			publish = append(publish, st.Resource)
+		case "iot:RetainPublish":
+			retain = append(retain, st.Resource)
 		}
 	}
-	require.Len(t, publish, 1, "exactly one publish grant")
-	assert.True(t, strings.HasSuffix(publish[0], "/presence/*"),
-		"publish must be presence-only, got %s", publish[0])
+
+	// One grant, not two. The lock used to have a literal statement of its own;
+	// since it moved under presence/ that statement was a strict subset of this
+	// one, and a redundant grant reads as a boundary that is no longer there.
+	require.Equal(t, []string{base + ":topic/liveninja/user/user-alice/presence/*"}, publish)
+
+	// ...and this is the assertion that keeps the single grant honest: the lock
+	// topic both clients publish to must actually fall inside it. Without this,
+	// merging the statements could quietly stop covering the lock and every
+	// claim would be refused in production — which AWS signals by closing the
+	// socket, not by erroring.
+	assert.True(t, grantCovers(publish[0], lnsync.SpeakingTopic("user-alice")))
+	assert.True(t, grantCovers(publish[0], lnsync.PresenceTopic("user-alice", "web-1")))
+
+	// Retained publish is scoped to the same prefix. AWS IoT refuses a RETAIN=1
+	// publish without this action and refuses it SILENTLY — an empty roster, not
+	// an error — which is why it is asserted rather than left to be noticed.
+	//
+	// This does mean a client can technically retain a lock claim, which clients
+	// deliberately never do (a retained claim would outlive the crashed holder
+	// its 30s expiry exists to survive). Accepted: expiry is armed locally by
+	// each reader, so a retained claim costs a connecting device one quiet 30s
+	// window and nothing more — see the package doc.
+	assert.Equal(t, []string{base + ":topic/liveninja/user/user-alice/presence/*"}, retain)
+
+	// The forgery boundary. The exact list above already fixes the set; these
+	// state the invariant it is exact FOR, so a future edit that changes the
+	// expected list has to argue with them. Note a suffix test for "/*" cannot
+	// express this — the legitimate presence resource ends in "/*" too; what
+	// must never appear is the bare user subtree, whose wildcard would swallow
+	// the server-authored topics because IoT policy '*' spans '/'.
+	for _, r := range append(append([]string{}, publish...), retain...) {
+		assert.NotEqual(t, base+":topic/liveninja/user/user-alice/*", r,
+			"publish must never be a bare subtree wildcard")
+		for _, forged := range []string{
+			lnsync.UserEventTopic("user-alice", lnsync.EventDoc),
+			lnsync.UserEventTopic("user-alice", lnsync.EventMemory),
+		} {
+			assert.False(t, grantCovers(r, forged),
+				"grant %q must not reach the server-authored topic %q", r, forged)
+		}
+	}
 }
 
 // TestDenials: every refusal path returns the same empty-policy shape, so a

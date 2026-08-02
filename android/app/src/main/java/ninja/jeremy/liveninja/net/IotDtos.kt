@@ -31,4 +31,14 @@ data class IotCredentials(
     val topicFilter: String = "",
     /** This device's presence slot; also the Last Will topic. */
     val presenceTopic: String = "",
+    /**
+     * The account-wide turn-taking lock topic (one per USER, not per device).
+     * Supplied by the server for the same reason [topicFilter] is: the string
+     * has to exist in exactly one place, or the authorizer's grant and the
+     * client's publish drift and the publish is refused silently.
+     *
+     * Empty against a server that predates the lock — a client that finds it
+     * empty coordinates with nobody rather than going mute.
+     */
+    val speakingTopic: String = "",
 )

@@ -9,9 +9,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import ninja.jeremy.liveninja.realtime.LiveEventsClient
+import ninja.jeremy.liveninja.realtime.NudgeMerge
 import ninja.jeremy.liveninja.realtime.SessionCost
 import ninja.jeremy.liveninja.realtime.TranscriptStore
 import ninja.jeremy.liveninja.wake.ModelManager
@@ -74,7 +77,106 @@ data class ConversationUiState(
      * default alone and is what an untouched document reads as.
      */
     val micEagerness: String = "auto",
+    /**
+     * The account's OTHER signed-in devices, as they last described themselves
+     * (§6 WS-5 M5.1). This device is deliberately absent: the state pill a few
+     * pixels away already says what this one is doing, and presence is
+     * throttled, so a self row would disagree with the pill for up to a second
+     * and read as a bug.
+     *
+     * Empty renders nothing at all rather than "no other devices" — a user with
+     * one device should not be told about a fleet they do not have.
+     */
+    val peers: List<PeerPresence> = emptyList(),
 )
+
+/**
+ * One other device on the roster, already reduced to what the screen draws.
+ *
+ * [state] is the five-value cross-client vocabulary from the wire contract
+ * (idle/connecting/listening/thinking/speaking), NOT [MicUiState]: the web
+ * client has states Android does not and vice versa, and the roster has to be
+ * able to render a peer running the other implementation.
+ */
+data class PeerPresence(
+    val deviceId: String,
+    val persona: String,
+    val state: String,
+)
+
+/**
+ * Reduces the raw roster to the rows this screen draws.
+ *
+ * Pure, and separate from the collector, because both rules it applies are one
+ * line each and both fail silently when dropped: showing our own row makes the
+ * app look like it is talking to itself, and a blank device id is a peer whose
+ * presence payload disagreed with its own topic — it has no stable identity, so
+ * it cannot be de-duplicated against anything and would flicker in and out.
+ */
+internal fun rosterFor(peers: List<LiveEventsClient.Peer>, self: String?): List<PeerPresence> =
+    peers
+        .filter { it.deviceId.isNotBlank() && it.deviceId != self }
+        .map { PeerPresence(it.deviceId, it.persona, it.state) }
+
+/** What can be done with a change another device made, right now. */
+internal enum class NudgeDelivery {
+    /** A session is live and nobody is mid-sentence: say it. */
+    SPEAK,
+
+    /** Live but mid-turn — keep it queued and try again when the turn ends. */
+    HOLD,
+
+    /** No session to speak it through: surface it on screen instead of dropping it. */
+    QUIET,
+}
+
+/**
+ * Whether a held change can be spoken right now.
+ *
+ * Pure, and deliberately consulted TWICE per delivery — once before claiming
+ * the turn-taking lock and again after it resolves. [LiveEventsClient.claimSpeakingTurn]
+ * suspends for 400ms of real time, and both of this function's inputs can
+ * change inside that window:
+ *
+ *  - The assistant can START a turn during the settle. Deciding only up front
+ *    lands the injected "[Automatic update]" mid-sentence, which is the exact
+ *    interruption the guard exists to prevent. The pre-diff code could not
+ *    produce this because it checked and spoke in one synchronous block; the
+ *    moment a suspend appeared between the two, the check stopped meaning
+ *    anything without this second reading.
+ *  - The session can DROP during the settle. `RealtimeSessionCoordinator.sendUserText`
+ *    opens with `if (text.isBlank() || !connected.value) return`, so speaking
+ *    into a dead transport discards the text silently — and the caller has by
+ *    then emptied the queue and cancelled the 60s quiet fallback, so the change
+ *    is never spoken, never shown, and never retried. Hence [sessionConnected]
+ *    rather than the mic state alone: the mic state is this ViewModel's view of
+ *    the session and it lags the transport.
+ */
+internal fun nudgeDelivery(micState: MicUiState, sessionConnected: Boolean): NudgeDelivery = when {
+    !sessionConnected -> NudgeDelivery.QUIET
+    micState == MicUiState.SPEAKING -> NudgeDelivery.HOLD
+    micState == MicUiState.LISTENING -> NudgeDelivery.SPEAK
+    else -> NudgeDelivery.QUIET
+}
+
+/**
+ * Whether the MQTT event stream is still earning the battery it costs.
+ *
+ * Two callers, one rule, because the two halves are useless apart: the socket
+ * is held into the background only for a live session, so it must also be
+ * dropped when THAT session ends while still backgrounded. Without the second
+ * caller nothing in this ViewModel ever runs again for an app that is already
+ * backgrounded, and the WebSocket plus its 30-second ping loop live on
+ * indefinitely — precisely the always-on background socket §6 WS-4 M4.2 chose
+ * against for One UI battery reasons.
+ *
+ * The session half is not negotiable in the other direction either: a
+ * screen-off wake-word session must stay on the stream, because a device that
+ * cannot see the turn-taking lock cannot claim it and speaks over every other
+ * surface (§6 WS-5 M5.2).
+ */
+internal fun shouldHoldEventStream(appInBackground: Boolean, sessionActive: Boolean): Boolean =
+    !appInBackground || sessionActive
 
 @HiltViewModel
 class ConversationViewModel @Inject constructor(
@@ -138,6 +240,27 @@ class ConversationViewModel @Inject constructor(
         // filters that), never without a session to speak through.
         viewModelScope.launch {
             liveEvents.changes.collect { change -> change?.let(::onRemoteChange) }
+        }
+
+        // §6 WS-5 M5.1 — tell the other devices what this one is doing, on
+        // every transition. Driven off _state in one place rather than sprinkled
+        // through the transitions, so a transition added later cannot forget to
+        // do it; LiveEventsClient throttles what actually reaches the wire.
+        viewModelScope.launch {
+            _state.map { it.micState }.distinctUntilChanged().collect { publishPresenceState() }
+        }
+
+        // ...and show what they said back. The roster is the visible half of
+        // M5.1: without it the presence traffic is real but invisible, and the
+        // user has no way to tell "the other device answered" from "nothing
+        // happened". LiveEventsClient.peers includes THIS device, because the
+        // `#` subscription echoes our own retained presence, so the self row is
+        // filtered here against the client id the server issued us.
+        viewModelScope.launch {
+            liveEvents.peers.collect { peers ->
+                val roster = rosterFor(peers, liveEvents.clientId)
+                _state.update { it.copy(peers = roster) }
+            }
         }
 
         // Mic state is derived from the singleton session's `connected` — so a
@@ -207,7 +330,11 @@ class ConversationViewModel @Inject constructor(
 
     /** A session became live (in-app tap OR wake/assist-started while screen off). */
     private fun onSessionBecameLive() {
-        flushPendingChange()
+        // A live session must be on the event stream even when the app is
+        // backgrounded and the screen is off: a device that cannot see the
+        // turn-taking lock cannot claim it, and speaks over every other
+        // surface (§6 WS-5 M5.2). start() is idempotent.
+        liveEvents.start()
         _state.update {
             if (it.micState in setOf(MicUiState.LISTENING, MicUiState.SPEAKING)) {
                 it
@@ -217,10 +344,31 @@ class ConversationViewModel @Inject constructor(
         }
         startTicker()
         syncOverlay()
+        // After the state update, not before: held changes are only deliverable
+        // once this ViewModel considers the session live, and delivering them
+        // first sent them out as a silent on-screen notice instead.
+        deliverHeldChanges()
     }
 
     /** The session dropped/ended (transport closed, remote stop, or our stop()). */
     private fun onSessionEnded() {
+        // Both fleet-facing steps run AHEAD of the ERROR guard below. That
+        // guard is about what the screen keeps showing; a session that ended in
+        // an error has stopped being able to speak just as completely as one
+        // that ended cleanly, and no peer can tell the two apart.
+        //
+        // Whatever this device was holding, it can no longer say — free the lock
+        // now rather than leaving the rest of the fleet quiet for the full
+        // expiry over a session that already ended.
+        liveEvents.releaseSpeakingTurn()
+        // A live session is the ONLY thing that keeps the event stream open
+        // across a background transition (see onAppBackgrounded), and that
+        // justification has just disappeared. onAppBackgrounded does not fire
+        // again for an app that is already backgrounded, so if the socket is
+        // not dropped here nothing ever drops it. `sessionActive = false` is a
+        // statement of fact rather than a shortcut: the session ended, and
+        // _state still says LISTENING for another two lines.
+        if (!shouldHoldEventStream(appInBackground, sessionActive = false)) liveEvents.stop()
         if (_state.value.micState == MicUiState.ERROR) return
         stopTicker()
         _state.update { it.copy(micState = MicUiState.IDLE, micMuted = false) }
@@ -322,6 +470,9 @@ class ConversationViewModel @Inject constructor(
     fun interruptAndListen() {
         val controller = sessionController ?: return
         if (_state.value.micState !in setOf(MicUiState.SPEAKING, MicUiState.LISTENING)) return
+        // Same reasoning as the server-VAD barge-in above: the response this
+        // device holds the lock for is being cancelled, so the lock goes back.
+        liveEvents.releaseSpeakingTurn()
         controller.interruptAssistant()
         if (_state.value.micMuted) {
             controller.setMicMuted(false)
@@ -340,60 +491,153 @@ class ConversationViewModel @Inject constructor(
     }
 
     /** MainActivity lifecycle hooks — drive the floating overlay bubble. */
-    /** A held nudge, waiting for the assistant to stop speaking. */
-    private var pendingChange: LiveEventsClient.Change? = null
+    /**
+     * Changes held back, oldest first — waiting for the assistant to stop
+     * talking, or for another device to give the turn-taking lock up.
+     *
+     * A queue rather than the single slot this started as (§6 WS-5): with three
+     * surfaces live a second change overwrote the first and the user was told
+     * about neither, which is invisible in a two-device test and exactly what
+     * three produce. Bounded and drop-oldest, because an unbounded backlog of
+     * edits nobody has heard about is its own bug.
+     */
+    private val pendingChanges = ArrayDeque<LiveEventsClient.Change>()
 
-    /** States in which there is actually a session to speak a nudge through. */
-    private val LIVE_FOR_NUDGE = setOf(MicUiState.LISTENING, MicUiState.SPEAKING)
+    /** The in-flight claim/settle/arbitrate round, so two cannot overlap. */
+    private var lockJob: Job? = null
+
+    /** The quiet-fallback deadline for whatever is currently held. */
+    private var quietDeadlineJob: Job? = null
 
     /**
      * Deliver a cross-device change. Speaking over the assistant mid-sentence
      * is worse than being a moment late, so a change that lands while it is
      * talking is held and flushed when the session returns to listening.
+     *
+     * Everything unprompted also goes through the fleet-wide speaking lock:
+     * every signed-in device learns about an edit in the same millisecond, and
+     * without the lock every one of them answers (§6 WS-5 M5.2).
      */
     private fun onRemoteChange(change: LiveEventsClient.Change) {
-        val state = _state.value.micState
-        if (state == MicUiState.SPEAKING) {
-            pendingChange = change
-            return
-        }
-        if (state !in LIVE_FOR_NUDGE) {
+        pendingChanges.addLast(change)
+        while (pendingChanges.size > NudgeMerge.CAP) pendingChanges.removeFirst()
+        armQuietDeadline()
+        deliverHeldChanges()
+    }
+
+    /**
+     * Try to say what is held. Called on arrival, at the end of this device's
+     * own turn, and when a session becomes live — the three moments at which
+     * either the mid-turn guard or the lock might have stopped being in the way.
+     */
+    private fun deliverHeldChanges() {
+        if (pendingChanges.isEmpty()) return
+        when (deliveryNow()) {
+            // Mid-turn. Stay queued; the end-of-turn handler calls back here.
+            NudgeDelivery.HOLD -> return
             // Nothing to speak through: surface it quietly instead of dropping
             // it, so the user still learns another device moved.
-            _state.update { it.copy(sessionWarning = remoteChangeNotice(change)) }
-            return
+            NudgeDelivery.QUIET -> {
+                drainQuietly()
+                return
+            }
+            NudgeDelivery.SPEAK -> Unit
         }
-        speak(change)
+        if (lockJob?.isActive == true) return
+        lockJob = viewModelScope.launch {
+            // Suspends for the settle window. Losing is not an error: another
+            // device is answering, and what is held here folds into this
+            // device's next turn instead of becoming a second interruption.
+            if (!liveEvents.claimSpeakingTurn()) return@launch
+            // 400ms of real time passed inside that call. Ask again before
+            // committing to anything: the assistant may have started talking,
+            // or the transport may have gone. Nothing is drained on this path —
+            // the queue and its quiet deadline are left exactly as they were,
+            // so the change is re-offered at the end of the next turn or
+            // surfaced on screen by the fallback, rather than consumed by a
+            // sendUserText that silently discards it.
+            if (deliveryNow() != NudgeDelivery.SPEAK) {
+                liveEvents.releaseSpeakingTurn()
+                return@launch
+            }
+            val held = drainHeld()
+            if (held.isEmpty()) {
+                liveEvents.releaseSpeakingTurn()
+                return@launch
+            }
+            speak(held)
+        }
     }
 
-    private fun speak(change: LiveEventsClient.Change) {
-        val who = change.actorPersona.ifEmpty { "Another device" }
-        val what = change.summary.ifEmpty { "changed something shared" }
-        sessionController?.sendUserText(
-            "[Automatic update] $who just $what. Mention this to the user in one short " +
-                "sentence, then carry on with what you were doing. Re-read the shared file or " +
-                "memory before saying anything about its contents.",
+    /** [nudgeDelivery] against this ViewModel's live inputs. */
+    private fun deliveryNow(): NudgeDelivery =
+        nudgeDelivery(_state.value.micState, sessionController?.connected?.value == true)
+
+    /**
+     * The commit point: past here this device is speaking unprompted, so
+     * nothing may reach it without having won [LiveEventsClient.claimSpeakingTurn].
+     */
+    private fun speak(changes: List<LiveEventsClient.Change>) {
+        sessionController?.sendUserText(NudgeMerge.prompt(changes))
+    }
+
+    private fun drainQuietly() {
+        val held = drainHeld()
+        if (held.isEmpty()) return
+        _state.update { it.copy(sessionWarning = NudgeMerge.notice(held)) }
+    }
+
+    private fun drainHeld(): List<LiveEventsClient.Change> {
+        quietDeadlineJob?.cancel()
+        quietDeadlineJob = null
+        val held = pendingChanges.toList()
+        pendingChanges.clear()
+        return held
+    }
+
+    /**
+     * A held change must never simply evaporate because the user stopped
+     * talking to this device. If nothing has flushed the queue within
+     * [QUIET_FALLBACK_MS] it lands on the same on-screen surface an offline
+     * change uses — silently, with no voice.
+     */
+    private fun armQuietDeadline() {
+        if (quietDeadlineJob?.isActive == true) return
+        quietDeadlineJob = viewModelScope.launch {
+            delay(QUIET_FALLBACK_MS)
+            drainQuietly()
+        }
+    }
+
+    /**
+     * What this device tells its peers it is doing (§6 WS-5 M5.1). Led by the
+     * singleton session's own `connected` rather than by [MicUiState] alone:
+     * this ViewModel dies with the Activity, and a session started by the wake
+     * word with the screen off must not be advertised to the fleet as idle.
+     */
+    private fun publishPresenceState() {
+        val connected = sessionController?.connected?.value == true
+        val micState = _state.value.micState
+        liveEvents.setState(
+            when {
+                connected && micState == MicUiState.SPEAKING -> "speaking"
+                connected -> "listening"
+                micState == MicUiState.REQUESTING_MIC || micState == MicUiState.CONNECTING ->
+                    "connecting"
+                else -> "idle"
+            },
         )
-    }
-
-    private fun remoteChangeNotice(change: LiveEventsClient.Change): String {
-        val who = change.actorPersona.ifEmpty { "Another device" }
-        return "$who ${change.summary.ifEmpty { "changed something shared" }}."
-    }
-
-    /** Flush a held nudge once the assistant has stopped talking. */
-    private fun flushPendingChange() {
-        val change = pendingChange ?: return
-        pendingChange = null
-        onRemoteChange(change)
     }
 
     fun onAppBackgrounded() {
         appInBackground = true
-        // Do NOT hold the socket in the background: One UI kills long-lived
-        // background sockets anyway, and the reconnect churn costs more battery
-        // than the notification latency is worth (§6 WS-4 M4.2).
-        liveEvents.stop()
+        // Hold the socket ONLY while a session is live — see
+        // [shouldHoldEventStream] for both halves of that rule. onSessionEnded
+        // applies the same rule when the session, and with it the reason to
+        // hold the socket, ends after this point.
+        if (!shouldHoldEventStream(appInBackground = true, sessionActive = sessionActive())) {
+            liveEvents.stop()
+        }
         if (sessionActive()) {
             overlay.show()
             syncOverlay()
@@ -429,6 +673,7 @@ class ConversationViewModel @Inject constructor(
                 _state.update { it.copy(sessionWarning = event.message) }
 
             is SessionUiEvent.AssistantSpeaking -> {
+                val turnEnded = !event.speaking && _state.value.micState == MicUiState.SPEAKING
                 _state.update { current ->
                     when {
                         current.micState == MicUiState.LISTENING && event.speaking ->
@@ -438,10 +683,24 @@ class ConversationViewModel @Inject constructor(
                         else -> current
                     }
                 }
+                if (turnEnded) {
+                    // This device's turn is over: hand the lock back before
+                    // anything else wants it, then say what arrived while it was
+                    // talking. Until this landed, the held change only flushed
+                    // when a session STARTED, so "flushed when the session
+                    // returns to listening" meant "at the next session".
+                    liveEvents.releaseSpeakingTurn()
+                    deliverHeldChanges()
+                }
                 syncOverlay()
             }
 
             SessionUiEvent.UserSpeechStarted -> {
+                // Barge-in cancels the response this device claimed the turn
+                // for, so the lock goes back now. Nothing is delivered here —
+                // the user is mid-sentence, and injecting a turn on top of them
+                // is the interruption the lock exists to avoid.
+                liveEvents.releaseSpeakingTurn()
                 _state.update { current ->
                     if (current.micState == MicUiState.SPEAKING) {
                         current.copy(micState = MicUiState.LISTENING)
@@ -513,5 +772,15 @@ class ConversationViewModel @Inject constructor(
     override fun onCleared() {
         overlay.hide()
         super.onCleared()
+    }
+
+    private companion object {
+        /**
+         * How long a change waits for a turn to fold it into before it gives up
+         * and becomes an on-screen notice instead. Long enough that a normal
+         * pause in a conversation does not trip it; short enough that a user who
+         * walked away still finds out what happened.
+         */
+        const val QUIET_FALLBACK_MS = 60_000L
     }
 }

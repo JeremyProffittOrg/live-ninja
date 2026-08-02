@@ -9,9 +9,17 @@
  * That is this file.
  *
  * Scope, deliberately: QoS 0 only, no session resumption, no outbound QoS>0
- * bookkeeping, no topic aliasing. Inbound PUBLISH is parsed; outbound PUBLISH
- * exists solely for presence. Anything beyond that belongs to a real library,
- * and if this ever needs it, that is the moment to take the dependency.
+ * bookkeeping, no topic aliasing, no retained-message housekeeping. Inbound
+ * PUBLISH is parsed; outbound PUBLISH carries the two things a client is
+ * allowed to say — its retained presence, and its claim on the turn-taking
+ * lock (liveevents.mjs). Both are QoS 0 with an empty payload as the "gone" /
+ * "released" signal, which is why neither needed a byte of this file.
+ * Anything beyond that belongs to a real library, and if this ever needs it,
+ * that is the moment to take the dependency.
+ *
+ * This file is a byte-for-byte counterpart of
+ * android/app/src/main/java/ninja/jeremy/liveninja/realtime/MqttCodec.kt.
+ * Leaving its signatures alone is what keeps the two ports from drifting.
  *
  * AWS specifics that shape the code:
  *  - IoT accepts credentials for MQTT-over-WebSocket in the CONNECT packet's

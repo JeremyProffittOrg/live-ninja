@@ -39,6 +39,11 @@ const (
 	// "user" would make `liveninja/user/...` ambiguous between the two
 	// namespaces, which is why ReservedThingSegment exists.
 	userSegment = "user"
+	// speakingSegment is the turn-taking lock's own leaf. It hangs off the
+	// presence prefix rather than sitting beside the event kinds, for a reason
+	// that is entirely about rollout and not about taxonomy — see SpeakingTopic
+	// before moving it.
+	speakingSegment = "speaking"
 )
 
 // Event kinds. These name what changed, not how.
@@ -74,6 +79,55 @@ func UserEventTopic(userID, kind string) string {
 // having to notice.
 func PresenceTopic(userID, deviceID string) string {
 	return fmt.Sprintf("%s/%s/%s/%s/%s", topicRoot, userSegment, userID, EventPresence, deviceID)
+}
+
+// SpeakingTopic is the per-USER turn-taking lock (plan.md §6 WS-5 M5.2).
+//
+// One topic for the whole account, not one per device: the lock is a single
+// shared resource, and every device already receives it through the
+// `liveninja/user/<uid>/#` subscription the authorizer grants. Every client
+// takes the string from here (the web and Android clients are handed it by
+// GET /api/v1/iot/credentials) — nobody concatenates their own copy, because a
+// claim published one segment away from the grant is refused, and AWS signals
+// a refused publish by closing the socket rather than by erroring.
+//
+// WHY THE LOCK LIVES UNDER presence/ — do NOT "tidy" this back to
+// `liveninja/user/<uid>/speaking`. That shorter topic is what the first cut
+// used, and moving it under presence/ is the whole reason this change can be
+// deployed without every already-open browser tab misbehaving:
+//
+//   - A tab open ACROSS the deploy keeps running the OLD module graph, and the
+//     old clients have no branch for a lock topic at all. On old web, a claim
+//     payload parses as JSON, contains no actorDeviceId so the self-filter
+//     misses it, and falls through to the nudge path — so the assistant says
+//     "[Automatic update] Another device just changed something shared" for an
+//     edit that never happened, on EVERY claim, until that tab is reloaded.
+//   - Both old clients ignore any topic containing "/presence/": old web routes
+//     it to a presence branch whose onPresence callback was never supplied (so
+//     it is swallowed), and old Android returns early on
+//     `pub.topic.contains("/presence/")`. Under this prefix an old tab drops
+//     the claim instead of narrating it, which is what makes the rollout
+//     silent.
+//
+// The price is that this topic is now byte-identical to
+// PresenceTopic(userID, "speaking") — a peer whose device id is literally
+// "speaking". NEW clients MUST therefore test for the lock topic BEFORE their
+// presence branch, or a claim is filed into the roster as a phantom peer. That
+// ordering is asserted on each client rather than left to reading order.
+//
+// Publish authority: the lock is covered by the authorizer's existing
+// `topic/<user>/presence/*` publish grant and no longer has a statement of its
+// own — see cmd/iot-authorizer, which also records why the lock being inside
+// the RetainPublish grant is acceptable.
+//
+// "speaking" is still deliberately absent from the event-kind block above. A
+// kind there is server-publishable through PublishEvent; the lock is
+// client-only. Since the move, PublishEvent's existing refusal of
+// EventPresence covers the lock too — the server cannot reach anything under
+// presence/ — so the closed kind set and that one refusal make a server-side
+// claim (which no client would ever release) structurally unreachable.
+func SpeakingTopic(userID string) string {
+	return fmt.Sprintf("%s/%s/%s/%s/%s", topicRoot, userSegment, userID, EventPresence, speakingSegment)
 }
 
 // Event is one fan-out notification.

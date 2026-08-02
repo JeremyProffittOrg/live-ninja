@@ -141,7 +141,7 @@ test('settings accordion supports header navigation and native keyboard activati
   await expect(page.locator('#voicePanel')).toBeVisible();
 });
 
-test('settings open and close bars match at 40 percent of the viewport height', async ({ page }) => {
+test('settings open and close tabs are matching corner squares', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.addStyleTag({ content: appStyles });
   await page.evaluate(() => {
@@ -158,34 +158,45 @@ test('settings open and close bars match at 40 percent of the viewport height', 
     `);
   });
 
+  // The size is read from the CSS custom properties rather than hardcoded, so
+  // this stays true if the owner retunes the tab. --ln-edge-tab is the 40px
+  // height; --ln-touch is the 44px width, which is what keeps the tap target
+  // past the WCAG 2.2 AA minimum even though the tab reads as a small square.
+  const tokens = await page.evaluate(() => {
+    const s = getComputedStyle(document.documentElement);
+    return {
+      edge: parseFloat(s.getPropertyValue('--ln-edge-tab')),
+      touch: parseFloat(s.getPropertyValue('--ln-touch')),
+    };
+  });
+  expect(tokens.edge).toBeGreaterThan(0);
+  expect(tokens.touch).toBeGreaterThan(0);
+
   const viewport = page.viewportSize();
   const openerBox = await page.locator('#openSettings').boundingBox();
   expect(openerBox).not.toBeNull();
-  expect(openerBox.height).toBeCloseTo(viewport.height * 0.4, 0);
+  expect(openerBox.height).toBeCloseTo(tokens.edge, 0);
+  expect(openerBox.width).toBeCloseTo(tokens.touch, 0);
 
-  // Which edge the pair lives on is width-dependent (mobile shell,
-  // 2026-08-01): on a computer the opener is flush RIGHT and the in-drawer
-  // close bar mirrors to the left, but at <=900px the whole page is one
-  // column and the tabs move to the LEFT edge so they stay clear of the
-  // right-hand thumb, with the close bar mirroring to the right. What the
-  // test actually pins either way is that the two bars are the same size and
-  // sit on OPPOSITE edges at the same height.
-  const mobile = viewport.width <= 900;
-  if (mobile) {
-    expect(openerBox.x).toBeCloseTo(0, 0);
-  } else {
-    expect(openerBox.x + openerBox.width).toBeCloseTo(viewport.width, 0);
-  }
+  // Corner tabs, at EVERY width (owner, 2026-08-01). The previous contract —
+  // 40dvh bars, flush right on a computer and flush left on a phone — was
+  // replaced wholesale: a bar tall enough to be found by feel was also tall
+  // enough to paint over the transcript's right-hand bubbles at tablet
+  // widths, which is what "the conversation is cut off" turned out to be.
+  // A corner tab can only ever overlap one corner. There is deliberately no
+  // width-dependent branch here any more; if one comes back, the tabs have
+  // moved and this test should be the thing that says so.
+  expect(openerBox.x).toBeCloseTo(0, 0);
+  expect(openerBox.y).toBeGreaterThan(0);
+  expect(openerBox.y).toBeLessThan(viewport.height / 2);
 
   await page.locator('#drawer').evaluate((dialog) => dialog.showModal());
   const closeBox = await page.locator('#closeSettings').boundingBox();
   expect(closeBox).not.toBeNull();
+  // Same size, same height up the page, mirrored to the opposite corner so the
+  // close tab can never be drawn on top of the opener it replaces.
   expect(closeBox.height).toBeCloseTo(openerBox.height, 0);
   expect(closeBox.width).toBeCloseTo(openerBox.width, 0);
   expect(closeBox.y).toBeCloseTo(openerBox.y, 0);
-  if (mobile) {
-    expect(closeBox.x + closeBox.width).toBeCloseTo(viewport.width, 0);
-  } else {
-    expect(closeBox.x).toBeCloseTo(0, 0);
-  }
+  expect(closeBox.x + closeBox.width).toBeCloseTo(viewport.width, 0);
 });

@@ -19,6 +19,26 @@
     <string name="conversation_state_speaking">Speaking</string>
     <string name="conversation_state_ending">Ending…</string>
     <string name="conversation_state_error">Something went wrong</string>
+    <!-- Cross-device roster (§6 WS-5 M5.1). These five words are the shared
+         wire vocabulary every client publishes, so a peer running the web
+         client renders with the same labels as one running this app. A peer
+         that reports anything else falls back to conversation_peer_state_idle
+         rather than showing a raw protocol token to the user. -->
+    <string name="conversation_peer_state_idle">ready</string>
+    <string name="conversation_peer_state_connecting">connecting</string>
+    <string name="conversation_peer_state_listening">listening</string>
+    <string name="conversation_peer_state_thinking">thinking</string>
+    <string name="conversation_peer_state_speaking">speaking</string>
+    <!-- A peer that published no persona is running the standard one. -->
+    <string name="conversation_peer_default_persona">Live Ninja</string>
+    <!-- One roster line. Args: persona label, state word. -->
+    <string name="conversation_peer_line">%1$s · %2$s</string>
+    <!-- Spoken for the whole roster, so TalkBack does not read a column of
+         unexplained fragments. Arg: the count of other devices. -->
+    <plurals name="conversation_peer_roster_a11y">
+        <item quantity="one">%1$d other device is live</item>
+        <item quantity="other">%1$d other devices are live</item>
+    </plurals>
     <!-- Accessibility labels for the two distinct tap-to-talk controls. They MUST differ:
          the hero orb and the bottom mic button previously shared one hardcoded description,
          so TalkBack announced two identically-labelled buttons and a Compose selector could

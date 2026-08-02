@@ -51,7 +51,7 @@ import {
   withSettingsOperation,
 } from './device-settings.mjs';
 import { createDeferredDeviceActionGate } from './deviceactions.mjs';
-import { startLiveEvents } from './liveevents.mjs';
+import { startLiveEvents, presenceStateFor } from './liveevents.mjs';
 import { openToolDetails } from './tooldetails.mjs';
 
 const SETTINGS_PATH = '/api/v1/settings?effective=true';
@@ -451,6 +451,10 @@ function syncQuickSwitchesFromDoc() {
   syncMicChips();
   updatePersonaGroupLabel();
   transcript.setPersonaLabel(personaLabelFor(currentPersonaId()));
+  // The persona is half of what the other devices show for this one, so any
+  // path that changes it — including a settings adoption from another device —
+  // has to put the new label on the wire.
+  liveEvents.publishPresence();
 }
 
 function isLive() {
@@ -631,6 +635,10 @@ function attachTranscriptRendering(session) {
   session.addEventListener('thinking', () => transcript.showTypingIndicator());
   session.addEventListener('responsedone', () => {
     transcript.hideTypingIndicator();
+    // If this device won the turn-taking lock to announce a change, its turn
+    // is over — free the lock before anything else, so a device that deferred
+    // can win the next one instead of waiting out the 30-second expiry.
+    liveEvents.releaseSpeakingTurn();
     // A cross-device change that arrived mid-turn was held rather than spoken
     // over the assistant; this is the moment it is safe to deliver.
     flushPendingNudge();
@@ -1223,6 +1231,10 @@ mic.addEventListener('sessioncreated', (e) => {
   session.addEventListener('connectionlost', hidePendingBanner);
 });
 mic.addEventListener('statechange', (e) => syncVisualToState(e.detail.state));
+// Second listener rather than a second job for the one above: the other
+// devices' roster is only as fresh as this republish, and a visual sync that
+// starts throwing must not take presence down with it.
+mic.addEventListener('statechange', () => liveEvents.publishPresence());
 mic.addEventListener('error', (e) =>
   toast(e.detail.message, { error: true, txId: e.detail.txId, detail: e.detail.detail }),
 );
@@ -1409,16 +1421,115 @@ if (composerForm && composerInput) {
 //     change surfaces as a quiet toast instead;
 //   - never for this device's own edits, which liveevents.mjs already filters
 //     using the actor id the server told it to expect.
-let pendingNudge = null;
+//
+// Since §6 WS-5 there is a fourth: when several devices are live, only ONE of
+// them says it out loud. The others hold what they heard and fold it into the
+// end of a turn the user starts (§5 defer-and-merge), so three signed-in
+// surfaces do not answer one edit three times.
+//
+// What is held is a QUEUE, not a slot. A single slot silently dropped the
+// first change when a second arrived — invisible with two devices, routine
+// with three.
+const NUDGE_QUEUE_MAX = 5;
+/** A held change that is never spoken must still arrive. This is the deadline. */
+const NUDGE_QUIET_MS = 60_000;
+let pendingNudges = [];
+let nudgeQuietTimer = null;
 
-function nudgeText(ev) {
+function describeChange(ev) {
   const who = ev.actorPersona ? `The ${ev.actorPersona}` : 'Another device';
-  const what = ev.summary || 'changed something shared';
+  return `${who} just ${ev.summary || 'changed something shared'}`;
+}
+
+/**
+ * Collapses what has been held into the changes actually worth naming: one
+ * entry per thing, latest wins (a file edited three times is one mention, not
+ * three), and no more than three named.
+ */
+function mergeNudges(evs) {
+  const byKey = new Map();
+  for (const ev of evs) byKey.set(`${ev.type || 'change'}:${ev.id || ev.summary || ''}`, ev);
+  return Array.from(byKey.values());
+}
+
+function nudgeText(evs) {
+  const subjects = mergeNudges(evs);
+  const named = subjects.slice(0, 3);
+  const extra = subjects.length - named.length;
+  const one = subjects.length === 1;
+  const sentences = named.map((ev) => `${describeChange(ev)}.`).join(' ') +
+    (extra > 0 ? ` There are ${extra} other change${extra === 1 ? '' : 's'} as well.` : '');
   // Phrased as a system aside rather than as the user talking, and it asks for
   // one sentence: this arrives mid-conversation and should not derail it.
-  return `[Automatic update] ${who} just ${what}. Mention this to the user in one short ` +
-    `sentence, then carry on with what you were doing. Re-read the shared file or memory ` +
-    `before saying anything about its contents.`;
+  return `[Automatic update] ${sentences} Mention ${one ? 'this' : 'these'} to the user in one short ` +
+    `sentence${one ? '' : ' covering all of them'}, then carry on with what you were doing. Re-read the ` +
+    `shared file or memory before saying anything about its contents.`;
+}
+
+function quietNudgeText(evs) {
+  const subjects = mergeNudges(evs);
+  const first = `${subjects[0].actorPersona || 'Another device'} ${subjects[0].summary || 'changed something shared'}`;
+  const extra = subjects.length - 1;
+  return extra > 0
+    ? `${first}, and ${extra} other change${extra === 1 ? '' : 's'}.`
+    : `${first}.`;
+}
+
+function holdNudge(ev) {
+  pendingNudges.push(ev);
+  // Drop-oldest: if the user has been away long enough to stack six changes,
+  // the newest five are the ones still worth saying.
+  while (pendingNudges.length > NUDGE_QUEUE_MAX) pendingNudges.shift();
+  if (!nudgeQuietTimer) {
+    nudgeQuietTimer = setTimeout(() => {
+      nudgeQuietTimer = null;
+      const held = takePendingNudges();
+      // No voice on this path: the user stopped talking to this device, so the
+      // change surfaces the quiet way rather than being lost.
+      if (held.length) toast(quietNudgeText(held));
+    }, NUDGE_QUIET_MS);
+  }
+}
+
+function takePendingNudges() {
+  const held = pendingNudges;
+  pendingNudges = [];
+  clearTimeout(nudgeQuietTimer);
+  nudgeQuietTimer = null;
+  return held;
+}
+
+/**
+ * The one path on which this device speaks without being asked.
+ *
+ * Everything above it is a guard; this is where the turn-taking lock is
+ * claimed. Nothing may reach sendUserText unprompted without winning it, or
+ * every live device answers the same edit.
+ */
+async function speakUnprompted(evs) {
+  if (!evs.length) return;
+  const won = await liveEvents.claimSpeakingTurn();
+  if (!won) {
+    // Another device is saying it. Hold ours and merge it into the next turn
+    // the user starts here — no release to publish, this device never held it.
+    for (const ev of evs) holdNudge(ev);
+    return;
+  }
+  // The settle window is 400ms of real time, and the assistant may have
+  // started a turn inside it.
+  if (!isLive() || mic.state === MicState.THINKING || mic.state === MicState.SPEAKING) {
+    liveEvents.releaseSpeakingTurn();
+    for (const ev of evs) holdNudge(ev);
+    return;
+  }
+  try {
+    mic.session.sendUserText(nudgeText(evs));
+  } catch {
+    // Datachannel raced closed — a missed notification is not worth surfacing,
+    // but the lock must not be left held over a turn that never happened.
+    liveEvents.releaseSpeakingTurn();
+    for (const ev of evs) holdNudge(ev);
+  }
 }
 
 function deliverNudge(ev) {
@@ -1429,26 +1540,86 @@ function deliverNudge(ev) {
   // Mid-turn: hold it until the assistant finishes rather than talking over it.
   const state = mic.state;
   if (state === MicState.THINKING || state === MicState.SPEAKING) {
-    pendingNudge = ev;
+    holdNudge(ev);
     return;
   }
-  try {
-    mic.session.sendUserText(nudgeText(ev));
-  } catch {
-    // Datachannel raced closed — a missed notification is not worth surfacing.
-  }
+  void speakUnprompted([ev]);
 }
 
 function flushPendingNudge() {
-  if (!pendingNudge) return;
-  const ev = pendingNudge;
-  pendingNudge = null;
-  deliverNudge(ev);
+  const held = takePendingNudges();
+  if (!held.length) return;
+  void speakUnprompted(held);
+}
+
+// ---- who else is live (§6 WS-5 M5.1) --------------------------------------
+//
+// Built here rather than in the template because it has no meaningful
+// server-rendered form: every row of it comes from a retained MQTT message.
+// It rides in the rail's status stack, under the state pill and cost badge —
+// the bottom bar is an overflow-x:auto row of flex:1 items, and a fifth one
+// pushes the existing labels into horizontal scroll.
+//
+// aria-live is OFF on purpose: this changes on every state transition of every
+// other device, which would flood a screen reader. #statePill already
+// announces THIS device politely, which is the part the user is acting on.
+const PRESENCE_STATE_LABELS = {
+  idle: 'Idle',
+  connecting: 'Connecting…',
+  listening: 'Listening',
+  thinking: 'Thinking',
+  speaking: 'Speaking',
+};
+
+const peersEl = (() => {
+  const host = document.querySelector('.conv-rail__status');
+  if (!host) return null;
+  const el = document.createElement('div');
+  el.className = 'conv-peers';
+  el.id = 'devicePresence';
+  el.setAttribute('role', 'status');
+  el.setAttribute('aria-live', 'off');
+  el.hidden = true;
+  host.appendChild(el);
+  return el;
+})();
+
+function renderPeers(peers) {
+  if (!peersEl) return;
+  const self = liveEvents.deviceId();
+  const rows = [];
+  for (const [deviceId, info] of peers) {
+    if (deviceId === self) continue; // this device is the state pill above
+    rows.push({
+      // An empty persona is the plain "Live Ninja" label by design
+      // (personaLabelFor returns '' for the default preset) — substituted here
+      // rather than on the wire, so the payload stays a faithful echo.
+      persona: (info && info.persona) || 'Live Ninja',
+      state: (info && info.state) || 'idle',
+    });
+  }
+  peersEl.textContent = '';
+  peersEl.hidden = rows.length === 0;
+  for (const row of rows) {
+    const el = document.createElement('span');
+    el.className = 'conv-peer';
+    el.dataset.state = row.state;
+    const dot = document.createElement('span');
+    dot.className = 'conv-peer__dot';
+    dot.setAttribute('aria-hidden', 'true');
+    el.appendChild(dot);
+    el.appendChild(
+      document.createTextNode(`${row.persona} · ${PRESENCE_STATE_LABELS[row.state] || 'Idle'}`),
+    );
+    peersEl.appendChild(el);
+  }
 }
 
 const liveEvents = startLiveEvents({
   onChange: deliverNudge,
+  onPresence: renderPeers,
   persona: () => personaLabelFor(currentPersonaId()),
+  state: () => presenceStateFor(mic.state),
 });
 // A clean exit clears this device's presence deliberately, so the other
 // devices see it leave rather than time it out as a crash.
@@ -2406,6 +2577,13 @@ async function bootstrap() {
   // Hands-free restored ON from a previous visit (mic.mjs reads
   // localStorage in its constructor): bring the engine up now.
   if (mic.handsFree) void setWakeListening(true);
+
+  // Presence again, now that settings have landed. The first publish happens
+  // the moment the socket opens — module top level, long before this — so it
+  // carries the hardcoded 'default' persona fallback. Without this the other
+  // devices would show every peer as plain "Live Ninja" until its mic state
+  // happened to change.
+  liveEvents.publishPresence();
 }
 
 void bootstrap();

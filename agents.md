@@ -22,8 +22,10 @@ reference each other and must stay consistent.
 
 ## Help section maintenance
 
-The app ships an in-product **Help** slide-out: the right-edge `?` tab on `/conversation`,
-directly above the Settings tab. It is the only place a user is told what Live Ninja can
+The app ships an in-product **Help** slide-out: the `?` tab in the upper-LEFT corner of
+`/conversation`, directly below the Settings tab (both are 40px corner tabs at every width
+as of 2026-08-01 — this used to say "right-edge, above Settings" and was left stale by that
+move). It is the only place a user is told what Live Ninja can
 do, and it is static hand-written copy — nothing generates it, so nothing catches it going
 stale except this rule.
 

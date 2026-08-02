@@ -870,11 +870,22 @@ held for up to an hour, so a kill-switch tightened on the HTTP side and missed o
 would leave a revoked user with a live subscription.
 
 `cmd/iot-authorizer` returns a policy scoped to `liveninja/user/<uid>/`, built from the VERIFIED
-token subject and never from anything the client asserted. Publish is granted on `presence/*`
-**only** — doc/memory events are server-authored, and a client that could forge one could make
+token subject and never from anything the client asserted. Publish is granted on two ENUMERATED
+resources and nothing else — `presence/*` and the single literal `speaking` topic (widened in
+WS-5, 2026-08-02). Neither is a wildcard over the user subtree, so widening one can never widen
+the other: doc/memory events are server-authored, and a client that could forge one could make
 every other device of that user announce a change that never happened. The client id is
 interpolated into a resource ARN, so it is character-allowlisted first; `TestDenials` covers a
 wildcard and a quote-injection attempt.
+
+**A shipped defect found by WS-5 and fixed there (2026-08-02): `iot:RetainPublish` was granted
+NOWHERE.** AWS IoT requires that action *in addition to* `iot:Publish` for any `RETAIN=1`
+publish, including a retained Last Will — and both clients have published presence retained
+since WS-3. So the retained presence path was being refused for the whole life of WS-3/WS-4, and
+it fails SILENTLY: a refused publish presents as an empty roster, which is indistinguishable
+from "no other devices are online". It is now granted on the presence prefix only (the speaking
+lock is deliberately unretained, see WS-5). This is why `plan.md`'s M3.3 DoD was never observed
+to pass — and why it must be re-run against a real deploy before M5.1 is called done.
 
 One bug found and fixed during the extraction: `Verify` originally dropped `claims` on the
 user-lookup path, which nil-dereferenced in the "no user record" log line. The fix was to the
@@ -937,7 +948,8 @@ boundary, and treating it as one works in testing then drops messages under load
   *DoD:* `go test ./internal/webapp/ -run TestCSP` passes with a case pinning the IoT origin.
 - `[x]` **M3.5 (NEW, landed 2026-08-01) — the narrow MQTT credential.**
   `GET /api/v1/iot/credentials` (cookie-authenticated, behind `RequireAuth`) returns
-  `{endpoint, authorizerName, clientId, token, expiresInSeconds, topicFilter, presenceTopic}`.
+  `{endpoint, authorizerName, clientId, token, expiresInSeconds, topicFilter, presenceTopic,
+  speakingTopic}` (`speakingTopic` added by WS-5, 2026-08-02).
   The token carries `aud: "live-ninja-iot"` (`auth.AudienceIoT`), which `cmd/iot-authorizer`
   **requires** and `cmd/authorizer` **refuses** — each has a test asserting it rejects the other's
   audience, because that split is the entire security argument for handing a token to JavaScript
@@ -1047,24 +1059,107 @@ Auto-nudge means several agents can decide to speak at once, in one room, each h
 Per-device echo cancellation cannot help: AEC only cancels a device's own playout. This workstream
 is what makes decision 3 survivable and is **not optional**.
 
-- `[ ]` **M5.1 Presence registry.** Each client publishes `{deviceId, persona, state}` retained,
-  with the LWT clearing it.
-  *DoD:* three surfaces show a consistent roster within 5s of any change.
-- `[ ]` **M5.2 Speaking lock.** Before an *unprompted* nudge a device claims
+- `[x]` **M5.1 Presence registry.** Each client publishes `{deviceId, actorDeviceId, persona,
+  state}` retained, with the LWT clearing it. `state` is a normalised FIVE-value vocabulary —
+  `idle｜connecting｜listening｜thinking｜speaking` — deliberately not either client's own enum
+  (web's `MicState` has nine values, Android's `MicUiState` has seven and has no `thinking` at
+  all); publishing a raw enum would put one client's state machine on the wire and make the
+  roster untranslatable. The roster key is `creds.clientId`, NOT `actorDeviceId`: the presence
+  topic's last segment is built from the same server call as `clientId`, so the two are
+  byte-identical, while `actorDeviceId` is a different and possibly empty string.
+  Rendered on web in `.conv-rail__status` under the cost badge, and on Android in the mirroring
+  corner of `MicStateBanner` (`PeerRoster`). Both filter THIS device out — the `#` subscription
+  echoes our own retained presence back, and a self row would duplicate the state pill a few
+  pixels above it and disagree with it for up to a second, because presence is throttled to 1/s.
+  *DoD:* three surfaces show a consistent roster within 5s of any change. **Still owner-gated —
+  see the verification note below; this needs three real signed-in devices.**
+- `[x]` **M5.2 Speaking lock.** Before an *unprompted* nudge a device claims
   `liveninja/user/<uid>/speaking`; others defer and merge the change into their next turn instead.
   Lock auto-expires after 30s so a crashed holder cannot mute the fleet.
-  *DoD:* a scripted simultaneous edit produces exactly one speaking device.
-- `[ ]` **M5.3 Distinct wake words per device.** Configuration only — `wakeWord` is already a
-  per-device overridable section in `contracts/settings.schema.json`. Prevents one agent's reply
-  waking another.
+  *DoD:* a scripted simultaneous edit produces exactly one speaking device. **Owner-gated for the
+  same reason as M5.1.**
+- `[x]` **M5.3 Distinct wake words per device.** Configuration only, and that was VERIFIED rather
+  than assumed before it was accepted as documentation-only: `wakeWord` is genuinely per-device
+  overridable at every layer — schema (`contracts/settings.schema.json:26-31` and the
+  `deviceOverrides.<deviceId>.sections.wakeWord` `$ref` at `:389-391`), store
+  (`internal/store/settings.go` `SettingsSectionWakeWord`, the `EffectiveSettings` overlay,
+  `ApplySettingsSection`), route (no `wakeWord` special case — only `microphone` has one), web UI
+  (`conversation.html` `data-device-settings-root="wakeWord"`, and `settings.mjs` already PATCHes
+  with `target: {mode:'current'}`, so editing the phrase ALREADY writes a per-device override),
+  and Android runtime (`SettingsViewModel` writes the effective phrase into `wakePrefs`).
+  Shipped as Help copy.
   *DoD:* documented in the Help drawer; each device set to a different phrase.
 
-### WS-6 — Help copy `[ ]` (depends on WS-3)
+### WS-6 — Help copy `[x]` (depends on WS-3)
 
-- `[ ]` **M6.1** Per `CLAUDE.md`, any feature/setting/capability change updates the Help drawer in
-  the SAME commit. Cover: shared project state across devices, what a nudge is and why an agent
-  spoke unprompted, and how to run different personas per device.
+- `[x]` **M6.1** Per `CLAUDE.md`, any feature/setting/capability change updates the Help drawer in
+  the SAME commit — and all of WS-5 shipped in one commit with this for exactly that reason.
+  Landed: `Your other devices` extended with shared project state and the one-speaker rule; a new
+  `Which device speaks` entry covering the roster, the lock and defer-and-merge; `Wake word` and
+  `Persona` each gained their per-device sentence; two new Tips bullets ("Only one device
+  answered?", "Two devices wake each other?").
+  `TestHelpDrawerCoversTheAppsCapabilities` now also pins the literal sentences
+  `each device can have a different wake phrase` and `each device can run a different persona` —
+  without that, M5.3's entire deliverable (one sentence inside an existing `<dd>`) was guarded by
+  nothing, because `>Wake word<` and `>Persona<` were already asserted and already passing.
   *DoD:* `go test ./internal/webapp/ -run TestHelpDrawer` passes.
+
+**Landed 2026-08-02 (WS-5 + WS-6, one commit).** The lock is the mitigation for locked decision 3
+and it was NOT optional: auto-nudge had been deployed since WS-3/WS-4 with nothing stopping every
+device speaking at once.
+
+**The arbitration, and what it honestly does not do.** MQTT QoS 0 offers no atomic claim and none
+was invented. A device publishes `{holder, claimId, ttlMs}`, waits `LOCK_SETTLE_MS = 400`,
+collects every claim seen in that window *including its own echo*, and the **lexicographically
+smallest `holder`** wins (tie-break: smallest `claimId`). It is a deterministic pure function of
+the observed payloads, which is the property that actually matters — "first message wins" would
+pick a DIFFERENT winner on each receiver, because QoS 0 gives no cross-publisher ordering and
+arrival order genuinely differs per device. Three windows remain and are not fixable at this
+transport: a claim stalled >400ms in flight, a claim dropped silently (QoS 0 has no ack, and
+`publish` no-ops when the socket is not OPEN), and a device not connected at all. So: *simultaneous
+claims converge deterministically on one speaker under normal conditions* — not *two devices can
+never both speak*.
+
+**Expiry is a local timer, not a wall-clock timestamp, and the lock is NOT retained.** A payload
+`expiresAt` would only be meaningful if every device agreed on "now"; a tablet with a wrong date —
+the exact device class this repo already carries workarounds for — would publish claims that are
+either already expired (the lock never binds, the whole rail is a no-op) or effectively permanent
+(one device mutes the fleet), and neither is detectable from the payload. The semantics are
+genuinely a *duration*, and any receiver can measure a duration on its own monotonic clock without
+trusting anybody. Retention would break that same timer: MQTT 3.1.1 has no message expiry, so a
+retained claim from a crashed holder would sit in the broker forever and arm a 30s timer on every
+device that connected later. Non-retained + local timer is coherent; retained + local timer is
+broken.
+
+**The Android lifecycle change worth watching.** `onAppBackgrounded()` no longer calls
+`liveEvents.stop()` unconditionally — it holds the socket while a session is live. This was the
+dominant real-world hole in M5.2: a screen-off wake-word session is the device MOST likely to
+speak unprompted, and a device that is not on the event stream cannot see or claim the lock, so it
+would have spoken over every other surface regardless. WS-4 M4.2's battery reasoning is preserved
+verbatim for the no-session case. It does mean a screen-off session now holds an MQTT WebSocket it
+previously dropped — the one behavioural change here to watch on the owner's Samsung.
+
+**Two shipped defects found and fixed in passing, each with a regression test:**
+- **The web presence-clear path had never worked.** `handleMessage` called `JSON.parse(raw)` and
+  returned from the `catch` *before* reaching the empty-payload check — and `''` is exactly what
+  both the Last Will and the clean exit publish. So no web client ever removed a departed device.
+  Combined with the missing `iot:RetainPublish` above, presence may never have worked in either
+  direction.
+- **A lock claim would have made every device speak.** `liveninja/user/<uid>/speaking` does not
+  contain `/presence/`, so under the old router it fell through to the self-edit filter — and a
+  claim carries no `actorDeviceId`, so the filter did not stop it — and reached the nudge path.
+  The lock branch now precedes the fall-through, and `TestSpeakingLockGuards` pins the ordering.
+
+**Do NOT add a second SUBSCRIBE for the lock topic.** The Subscribe grant is a `topicfilter`
+resource matched LITERALLY, so only `liveninja/user/<uid>/#` is authorised; IoT signals a refused
+SUBSCRIBE by CLOSING the connection, which both clients treat as ordinary token expiry and
+reconnect into — an invisible reconnect loop. Lock messages ride the existing `topicFilter`
+subscription. `TestSpeakingLockGuards` asserts `client.subscribe(` appears exactly once.
+
+**Verification still owed, and it needs three real devices.** `iotClientID` prefers `DeviceID(c)`
+over `SessionID(c)`, so two tabs of one browser share an MQTT client id and EVICT each other — a
+two-tab test of M5.1 or M5.2 is meaningless. Use three distinct registered devices. Do not "fix"
+the preference order to enable a cheaper test: it would change every existing presence topic.
 
 ---
 
@@ -1147,6 +1242,20 @@ not paused on.
   catching a real isolation problem, and hiding it would cost more than the red run does.
 
 
+- **A new message kind on the user event topic is a ROLLOUT hazard, not just a feature.** Every
+  client subscribes to `liveninja/user/<uid>/#`, so a topic added today is delivered to tabs
+  running the module graph they loaded *before* the deploy — and `/conversation` tabs stay open
+  for hours. The old router had no branch for the WS-5 speaking lock: a claim payload parses as
+  JSON, carries no `actorDeviceId` so the self-filter misses it, and falls through to the nudge
+  path, making the assistant announce *"Another device just changed something shared"* for an
+  edit that never happened, on every claim, until that tab is reloaded. Caught by review, not by
+  any test — no test runs the previous release against the current wire.
+  **The fix that generalises:** put anything new under a prefix old clients already ignore. Both
+  old clients discard `/presence/` traffic (old web routes it to a callback that was never
+  supplied; old Android `return`s), which is why the lock lives at
+  `liveninja/user/<uid>/presence/speaking` rather than `.../speaking`. The consequence is a
+  *required ordering*: on current clients the speaking branch must be evaluated BEFORE the
+  presence branch, or the claim is filed as a peer literally named "speaking".
 - **The node's IoT Thing name is `OFFICEPC`, uppercase.** ghost-cli's node ACL compares exactly with
   no case folding, and the name is interpolated into `cockpit/nodes/<name>/cmd`. A lowercase value
   either reads as a permissions failure or publishes to a topic nobody subscribes to.

@@ -16,7 +16,7 @@ package webapp
 // requires and cmd/authorizer refuses. A leaked one opens a subscription to
 // its own owner's event stream and can do nothing else — the IoT policy that
 // authorizer returns is itself scoped to a single user, and grants publish
-// only on that user's presence prefix.
+// only on that user's presence prefix and the single turn-taking lock topic.
 
 import (
 	"log/slog"
@@ -98,6 +98,12 @@ func handleIoTCredentials(deps *Deps) fiber.Handler {
 			// place rather than being rebuilt (and drifting) in each client.
 			"topicFilter":   "liveninja/user/" + userID + "/#",
 			"presenceTopic": lnsync.PresenceTopic(userID, iotClientID(c, userID)),
+			// The turn-taking lock (plan.md §6 WS-5 M5.2). Server-supplied for
+			// the same reason topicFilter is: the authorizer grants publish on
+			// this exact literal, so if a client concatenated its own copy the
+			// two would drift and every claim would be refused — silently, as a
+			// closed connection the client reconnects into.
+			"speakingTopic": lnsync.SpeakingTopic(userID),
 		})
 	}
 }

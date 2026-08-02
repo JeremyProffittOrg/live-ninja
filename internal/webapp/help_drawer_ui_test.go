@@ -152,4 +152,30 @@ func TestHelpDrawerCoversTheAppsCapabilities(t *testing.T) {
 		assert.Containsf(t, help, ">"+want+"<",
 			"help panel must explain the %q control", want)
 	}
+
+	// Cross-device behaviour (2026-08-02). Without these, the topic can be
+	// deleted silently: the panel is the only place a user is told why an
+	// agent spoke without being asked, and why the device next to it stayed
+	// quiet instead of repeating the same news.
+	for _, want := range []string{
+		"Your other devices",
+		"Which device speaks",
+	} {
+		assert.Containsf(t, help, ">"+want+"<",
+			"help panel must explain %q", want)
+	}
+
+	// The per-device halves of Wake word and Persona. Both sections already
+	// have a <dt>, so the loop above them passes whether or not the copy says
+	// anything about devices — these pin the sentences themselves. The wake
+	// phrase one is load-bearing: distinct phrases per device are the only
+	// thing stopping one device's spoken reply from waking the one beside it,
+	// and a user who is never told that will never do it.
+	for _, want := range []string{
+		"each device can have a different wake phrase",
+		"each device can run a different persona",
+	} {
+		assert.Containsf(t, help, want,
+			"help panel must say that %q", want)
+	}
 }

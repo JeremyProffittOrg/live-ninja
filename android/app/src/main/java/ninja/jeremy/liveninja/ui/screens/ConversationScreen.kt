@@ -58,6 +58,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -77,6 +78,7 @@ import ninja.jeremy.liveninja.ui.conversation.ConversationError
 import ninja.jeremy.liveninja.ui.conversation.ConversationUiState
 import ninja.jeremy.liveninja.ui.conversation.ConversationViewModel
 import ninja.jeremy.liveninja.ui.conversation.MicUiState
+import ninja.jeremy.liveninja.ui.conversation.PeerPresence
 import ninja.jeremy.liveninja.ui.conversation.TranscriptTurn
 import ninja.jeremy.liveninja.ui.state.TranscriptRole
 import ninja.jeremy.liveninja.ui.theme.HalOrb
@@ -86,6 +88,9 @@ import ninja.jeremy.liveninja.ui.theme.OrbState
 const val CONVERSATION_STATE_PILL_TAG = "conversation-state-pill"
 const val CONVERSATION_COST_BADGE_TAG = "conversation-cost-badge"
 const val CONVERSATION_NEW_BUTTON_TAG = "conversation-new"
+
+/** Test tag for the cross-device roster added on 2026-08-02 (§6 WS-5 M5.1). */
+const val CONVERSATION_PEER_ROSTER_TAG = "conversation-peer-roster"
 
 /** Test tag for one mic-pickup chip ("low" | "medium" | "high"). */
 fun micPickupChipTag(level: String): String = "conversation-mic-pickup-$level"
@@ -229,6 +234,59 @@ private fun micToOrbState(micState: MicUiState): OrbState = when (micState) {
 }
 
 /**
+ * The account's other live devices, under the cost badge — the same corner the
+ * web client puts its roster in (§6 WS-5 M5.1).
+ *
+ * This is the visible half of the presence registry. Without it the presence
+ * traffic is real but invisible, and a user who hears one device answer has no
+ * way to tell that the other one deliberately stayed quiet from "the other one
+ * is broken". That distinction is the entire point of the turn-taking rail.
+ *
+ * An empty roster draws NOTHING — not "no other devices". A user with a single
+ * device should never be shown an empty fleet panel.
+ *
+ * The list is a live region only in the aggregate: the per-line text changes on
+ * every peer transition, and announcing each one would talk over the assistant.
+ * TalkBack gets one sentence for the whole block instead.
+ */
+@Composable
+private fun PeerRoster(peers: List<PeerPresence>) {
+    if (peers.isEmpty()) return
+
+    val rosterA11y = pluralStringResource(
+        R.plurals.conversation_peer_roster_a11y,
+        peers.size,
+        peers.size,
+    )
+    Column(
+        horizontalAlignment = Alignment.End,
+        modifier = Modifier
+            .testTag(CONVERSATION_PEER_ROSTER_TAG)
+            .semantics { contentDescription = rosterA11y },
+    ) {
+        peers.forEach { peer ->
+            val stateWord = when (peer.state) {
+                "connecting" -> stringResource(R.string.conversation_peer_state_connecting)
+                "listening" -> stringResource(R.string.conversation_peer_state_listening)
+                "thinking" -> stringResource(R.string.conversation_peer_state_thinking)
+                "speaking" -> stringResource(R.string.conversation_peer_state_speaking)
+                // Anything else — including a state a future web build invents —
+                // reads as ready rather than leaking a protocol token to the user.
+                else -> stringResource(R.string.conversation_peer_state_idle)
+            }
+            val persona = peer.persona.ifBlank {
+                stringResource(R.string.conversation_peer_default_persona)
+            }
+            Text(
+                stringResource(R.string.conversation_peer_line, persona, stateWord),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
  * Top bar of the conversation screen — deliberately the same three things, in
  * the same two corners, as the web client's rail top row (owner 2026-08-01:
  * "I also need conversation cost in the upper right and a listening bubble
@@ -361,6 +419,7 @@ private fun MicStateBanner(state: ConversationUiState) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                PeerRoster(state.peers)
             }
         }
     }

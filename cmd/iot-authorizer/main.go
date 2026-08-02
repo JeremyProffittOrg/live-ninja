@@ -18,14 +18,56 @@
 // ONE user's topic subtree, derived from the verified token's subject and never
 // from anything the client said about itself:
 //
-//	Connect   client/<clientId>            — the clientId IoT reports
-//	Subscribe topicfilter/liveninja/user/<uid>/#
-//	Receive   topic/liveninja/user/<uid>/*
-//	Publish   topic/liveninja/user/<uid>/presence/*   (presence only)
+//	Connect       client/<clientId>            — the clientId IoT reports
+//	Subscribe     topicfilter/liveninja/user/<uid>/#
+//	Receive       topic/liveninja/user/<uid>/*
+//	Publish       topic/liveninja/user/<uid>/presence/*
+//	RetainPublish topic/liveninja/user/<uid>/presence/*
 //
 // Publish is deliberately NOT granted on the doc/memory topics: those are
 // server-authored events, and a client that could forge one could make every
-// other device of that user announce a change that never happened.
+// other device of that user announce a change that never happened. Clients get
+// ONE publish prefix, and it is not a wildcard over the user subtree — that is
+// the forgery boundary this whole function exists to draw.
+//
+// That one prefix now carries BOTH things a client publishes:
+//
+//   - Each device's own presence slot, presence/<clientId>, retained
+//     self-description. That is why this prefix — and nothing else — also gets
+//     iot:RetainPublish. AWS IoT refuses a RETAIN=1 publish (including a
+//     retained Last Will) without that action, and a refused publish is silent:
+//     it presents as an empty roster, not as an error.
+//   - The shared turn-taking lock, presence/speaking (plan.md §6 WS-5 M5.2,
+//     built by sync.SpeakingTopic). The lock lives under this prefix for a
+//     rollout reason documented in full on that helper: old clients already
+//     ignore every topic containing "/presence/", so a tab left open across the
+//     deploy drops a claim instead of narrating it as a phantom change.
+//
+// Because IoT policy wildcards are not MQTT wildcards — '*' matches any run of
+// characters, '/' included — presence/* already covers presence/speaking. The
+// earlier literal `topic/<uid>/speaking` statement was dropped rather than kept
+// as documentation: a second statement granting a strict subset of the first
+// would read as an independent boundary that no longer exists, and the exact
+// publish allowlist in main_test.go is what actually holds this set closed.
+//
+// Granting the lock at all is safe where doc/memory are not: it is a
+// coordination flag with no announcement side effect, so the worst a forged
+// claim can do is make the fleet quieter for the 30s claim expiry.
+//
+// Retention over the lock is the one property this merge changed, and it is
+// accepted deliberately — written down here because it is otherwise a thing
+// someone has to rederive from two files. Clients publish claims UNRETAINED (a
+// retained claim would outlive the crashed holder that the 30s expiry exists to
+// survive), but a client inside this grant can now technically set RETAIN=1 on
+// one, and a release is itself unretained so it would not clear it. The bound
+// is still 30 seconds: expiry is a LOCAL duration each reader arms from the
+// moment it receives a claim, so the worst a retained claim does is cost each
+// newly-connecting device one quiet 30s window. And it grants no new power —
+// anything holding this token could already mute the fleet indefinitely by
+// simply re-claiming every 30s, retained or not (the claim payload names its
+// own holder, so it can always win arbitration). Quiet is the only thing a lock
+// claim buys — a claim carries no announcement, which is precisely the
+// difference between this prefix and the doc/memory topics.
 package main
 
 import (
@@ -123,12 +165,26 @@ func policyFor(userID, clientID string) string {
 	// smuggle a wildcard or a second statement in. IoT client ids are opaque;
 	// anything outside a conservative set is refused by the caller before this
 	// is reached (see handler).
+	//
+	// Every Action here is a single string, never a ["iot:Publish",...] array:
+	// the guard test in main_test.go decodes Action as a string, so an array
+	// would fail it as an unmarshal error rather than as the assertion that
+	// says which topics a client may publish to.
+	//
+	// There is exactly ONE publish prefix, and the wildcard is on the segment
+	// BELOW presence — never `topic/<user>/*`, which would re-grant publish on
+	// the doc and memory topics and hand a client the forgery this policy
+	// exists to prevent. The turn-taking lock is sync.SpeakingTopic, which is
+	// `<user>/presence/speaking` and therefore already inside this prefix; the
+	// package doc says why it lives there and why it gets no statement of its
+	// own.
 	return fmt.Sprintf(`{"Version":"2012-10-17","Statement":[`+
 		`{"Effect":"Allow","Action":"iot:Connect","Resource":"%s:client/%s"},`+
 		`{"Effect":"Allow","Action":"iot:Subscribe","Resource":"%s:topicfilter/%s/#"},`+
 		`{"Effect":"Allow","Action":"iot:Receive","Resource":"%s:topic/%s/*"},`+
-		`{"Effect":"Allow","Action":"iot:Publish","Resource":"%s:topic/%s/presence/*"}`+
-		`]}`, base, clientID, base, user, base, user, base, user)
+		`{"Effect":"Allow","Action":"iot:Publish","Resource":"%s:topic/%s/presence/*"},`+
+		`{"Effect":"Allow","Action":"iot:RetainPublish","Resource":"%s:topic/%s/presence/*"}`+
+		`]}`, base, clientID, base, user, base, user, base, user, base, user)
 }
 
 // safeClientID rejects anything that could break out of the ARN it is
