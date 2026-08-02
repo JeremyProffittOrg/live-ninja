@@ -948,7 +948,7 @@ boundary, and treating it as one works in testing then drops messages under load
   the web function already held) because it is account-specific and not derivable from a
   CloudFormation pseudo-parameter. `sanitizeClientID` mirrors the authorizer's allowlist, so the
   route can never hand out an id that authorizer would refuse.
-- `[~]` **M3.3 Connect + LWT presence — UNBLOCKED, client wiring still to do.**
+- `[x]` **M3.3 Connect + LWT presence.**
   The blocker below is RESOLVED by M3.5 above; it is kept because the reasoning is the
   justification for that route existing.
 
@@ -970,11 +970,38 @@ boundary, and treating it as one works in testing then drops messages under load
   share `internal/auth.TokenVerifier`, so the audience split is the one thing that must NOT be
   shared — and a test asserting each rejects the other's audience is what keeps it that way.
   *DoD (unchanged):* two browser tabs — killing one removes its presence in the other within 30s.
-- `[ ]` **M3.4 Auto-nudge** (blocked behind M3.3/M3.5). On a `doc`/`memory` event whose `actorDeviceId` is not this device,
+- `[x]` **M3.4 Auto-nudge.** On a `doc`/`memory` event whose `actorDeviceId` is not this device,
   inject through the existing `sendUserText()` path so the agent announces the change.
   **Suppress your own edits** and honour the WS-5 speaking lock.
   *DoD:* device A edits the doc; device B's agent speaks the change unprompted; device A stays
   silent.
+
+**Landed 2026-08-01 (WS-3 complete).** `web/static/js/liveevents.mjs` fetches the narrow
+credential, opens MQTT-over-WSS (authorizer named in the query string, token in the CONNECT
+user-name field), subscribes to the server-supplied `topicFilter`, and sets a Last Will on its
+presence topic so a crashed tab clears itself. A reconnect always fetches a FRESH credential —
+the token lives 15 minutes and the authorizer force-closes at an hour, so replaying the old one
+would just fail.
+
+The auto-nudge has three guards, because an unprompted voice is the most intrusive thing this app
+does and the owner chose it over the two quieter options:
+  1. **Never mid-turn** — a nudge arriving while the assistant is THINKING or SPEAKING is held and
+     flushed on `responsedone`. Cutting into its own sentence is worse than being a moment late.
+  2. **Never your own edit** — compared against the actor id the SERVER said it would stamp for
+     this client (`actorDeviceId` on the credential response), NOT a locally derived device id.
+     Those are not guaranteed to be the same string, and a mismatch means every device announces
+     its own changes back to the user.
+  3. **Never without a session** — with nothing to speak through it degrades to a toast.
+`TestAutoNudgeGuards` pins all three; each is one line a refactor could drop with nothing else
+failing.
+
+The two new modules needed no import-map registration: `buildImportMap` discovers every `.mjs` in
+the embedded assets, so the fingerprinting that closed the module-graph cache hazard covers them
+automatically.
+
+**Not yet proven end to end.** Every part is deployed and unit-tested, but nobody has watched a
+document change on one signed-in device surface on another. That needs two signed-in browsers and
+is the natural first act of WS-5.
 
 ### WS-4 — Android client `[ ]` (depends on WS-1)
 

@@ -51,6 +51,7 @@ import {
   withSettingsOperation,
 } from './device-settings.mjs';
 import { createDeferredDeviceActionGate } from './deviceactions.mjs';
+import { startLiveEvents } from './liveevents.mjs';
 import { openToolDetails } from './tooldetails.mjs';
 
 const SETTINGS_PATH = '/api/v1/settings?effective=true';
@@ -628,7 +629,12 @@ function attachTranscriptRendering(session) {
     userTurnPlaced();
   });
   session.addEventListener('thinking', () => transcript.showTypingIndicator());
-  session.addEventListener('responsedone', () => transcript.hideTypingIndicator());
+  session.addEventListener('responsedone', () => {
+    transcript.hideTypingIndicator();
+    // A cross-device change that arrived mid-turn was held rather than spoken
+    // over the assistant; this is the moment it is safe to deliver.
+    flushPendingNudge();
+  });
   session.addEventListener('bargein', () => transcript.hideTypingIndicator());
   session.addEventListener('connectionlost', () => transcript.hideTypingIndicator());
   session.addEventListener('closed', () => transcript.hideTypingIndicator());
@@ -1391,6 +1397,62 @@ if (composerForm && composerInput) {
     composerInput.focus();
   });
 }
+
+// ---- cross-device change notifications (§6 WS-3 M3.3/M3.4) ----------------
+// Another device changed a shared document, memory entity or plan. The
+// assistant says so unprompted (owner decision: auto-nudge). Three guards,
+// because an unprompted voice is the most intrusive thing this app can do:
+//
+//   - never while the assistant is mid-turn (thinking or speaking) — cutting
+//     into its own sentence is worse than saying it a moment later;
+//   - never when no session is live — with nothing to speak through, the
+//     change surfaces as a quiet toast instead;
+//   - never for this device's own edits, which liveevents.mjs already filters
+//     using the actor id the server told it to expect.
+let pendingNudge = null;
+
+function nudgeText(ev) {
+  const who = ev.actorPersona ? `The ${ev.actorPersona}` : 'Another device';
+  const what = ev.summary || 'changed something shared';
+  // Phrased as a system aside rather than as the user talking, and it asks for
+  // one sentence: this arrives mid-conversation and should not derail it.
+  return `[Automatic update] ${who} just ${what}. Mention this to the user in one short ` +
+    `sentence, then carry on with what you were doing. Re-read the shared file or memory ` +
+    `before saying anything about its contents.`;
+}
+
+function deliverNudge(ev) {
+  if (!isLive()) {
+    toast(`${ev.actorPersona || 'Another device'} ${ev.summary || 'changed something shared'}.`);
+    return;
+  }
+  // Mid-turn: hold it until the assistant finishes rather than talking over it.
+  const state = mic.state;
+  if (state === MicState.THINKING || state === MicState.SPEAKING) {
+    pendingNudge = ev;
+    return;
+  }
+  try {
+    mic.session.sendUserText(nudgeText(ev));
+  } catch {
+    // Datachannel raced closed — a missed notification is not worth surfacing.
+  }
+}
+
+function flushPendingNudge() {
+  if (!pendingNudge) return;
+  const ev = pendingNudge;
+  pendingNudge = null;
+  deliverNudge(ev);
+}
+
+const liveEvents = startLiveEvents({
+  onChange: deliverNudge,
+  persona: () => personaLabelFor(currentPersonaId()),
+});
+// A clean exit clears this device's presence deliberately, so the other
+// devices see it leave rather than time it out as a crash.
+globalThis.addEventListener('pagehide', () => liveEvents.stop(), { once: true });
 
 // ---- quick-switch change handlers (spec §2.6) ----------------------------
 

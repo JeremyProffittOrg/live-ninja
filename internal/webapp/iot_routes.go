@@ -82,7 +82,15 @@ func handleIoTCredentials(deps *Deps) fiber.Handler {
 			// it to the device id (or the session id for a browser with no
 			// device) stays well inside that.
 			"clientId": iotClientID(c, userID),
-			"token":    token,
+			// The value the SERVER will stamp as actorDeviceId on events this
+			// client causes (tools.Invocation.DeviceID — the same
+			// authorizer-derived id). The client echoes it back in the
+			// comparison rather than deriving its own, because a locally
+			// generated device id and the verified one are not guaranteed to
+			// be the same string, and a mismatch means every device announces
+			// its OWN edits back to the user.
+			"actorDeviceId": DeviceID(c),
+			"token":         token,
 			// Seconds, so a client can schedule its reconnect without parsing
 			// the JWT it is not supposed to inspect.
 			"expiresInSeconds": int(auth.AccessTokenTTL.Seconds()),

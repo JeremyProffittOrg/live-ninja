@@ -352,3 +352,35 @@ func TestIoTOriginIsInTheCSP(t *testing.T) {
 	assert.Contains(t, pageCSP[connectAt:connectAt+end], origin,
 		"the origin must be inside the connect-src directive")
 }
+
+// TestAutoNudgeGuards (§6 WS-3 M3.4). An unprompted voice is the most
+// intrusive thing this app does, and the owner chose it over the two quieter
+// options with the cross-device echo risk stated. These are the three guards
+// that make that choice survivable, and each is one line that a refactor could
+// drop with nothing else failing.
+func TestAutoNudgeGuards(t *testing.T) {
+	js := readAsset(t, "static/js/conversation.mjs")
+	events := readAsset(t, "static/js/liveevents.mjs")
+
+	// 1. Never speak over the assistant's own turn.
+	assert.Contains(t, js, "state === MicState.THINKING || state === MicState.SPEAKING",
+		"a nudge must be held while the assistant is mid-turn")
+	assert.Contains(t, js, "flushPendingNudge()",
+		"a held nudge must be delivered once the turn finishes")
+
+	// 2. Never announce this device's OWN edit — the comparison is against the
+	//    actor id the SERVER said it would stamp, not a locally derived one.
+	assert.Contains(t, events, "ev.actorDeviceId === creds.actorDeviceId",
+		"a device must ignore its own changes")
+
+	// 3. No live session means no voice; it degrades to a toast.
+	assert.Contains(t, js, "if (!isLive()) {", "with no session a nudge must not try to speak")
+
+	// The Last Will is what makes presence self-clearing when a tab crashes.
+	assert.Contains(t, events, "will: { topic: creds.presenceTopic",
+		"presence must be cleared by an MQTT Last Will")
+
+	// The credential is short-lived; a reconnect must fetch a FRESH one rather
+	// than replay the expired token.
+	assert.Contains(t, events, "reconnecting with a fresh credential")
+}
