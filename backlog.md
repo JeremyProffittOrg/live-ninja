@@ -75,6 +75,15 @@ reference; nothing in them is committed work until an item is promoted into `pla
 - **[docs/agentic-expansion-suggestions.md](docs/agentic-expansion-suggestions.md)** (2026-07-20) — 43 capabilities across nine themes + six foundational fixes, sequenced as a proposed **M15–M24** roadmap for an in-car assistant.
   ⚠️ **Numbering collision:** that document reuses **M15–M17**, which are already taken by the Base Knowledge / RCA milestones in `plan.md`. Renumber before promoting anything from it. (Its own F1 correctly identifies Base Knowledge as the hard dependency to ship first — that part is already in the plan.)
 
+## ghost-cli hardening (different repo)
+
+- **`GET /launch/branches` has no `Authorize` call.** Identical gap to the one closed on
+  `GET /launch/repos` on 2026-08-02 (`9438054`): it checks only that a principal is non-empty. The
+  fix is the same one line — `authz.AuthorizeAnyNode(ctx, principal, authz.ActionLaunch)` — since
+  the route also names no node. Deliberately left out of that change because, unlike `/launch/repos`,
+  this route is **not internal-invoke reachable** (`internal_invoke.go` lists five pairs and this is
+  not one), so the tautology that made the repos gap urgent does not apply here. ⟵ plan.md §2.2
+
 ## Platform capabilities not being pursued
 
 - **FCM push for settings fan-out.** No Firebase account — web and Android use poll/foreground reconcile instead; the Tab5 uses the IoT shadow. Locked at M6. ⟵ archive/plan.md §8 M6

@@ -159,133 +159,181 @@ nothing timed out.
   **not** returned by `code_update_status` — the reader is a human diagnosing a failed run, not the
   model, and a test pins that. Shipped in `658f112`.
 
-### 2.2 ghost-cli follow-ups (pre-existing gaps our path makes reachable)
+### 2.2 ghost-cli follow-ups — ALL FOUR SHIPPED 2026-08-02
 
-- `[ ]` **S** — `POST /schedule/preprocess` is authorized but **never audited**. It is a write gated
-  on `ActionLaunch` and a billable Opus spend, yet `SchedulePromptHandler` has no audit sink — one of
-  the five internally-reachable routes writes no hash-chain entry.
-- `[ ]` **S** — `GET /launch/repos` performs **no `Authorize` call at all**; it checks only that a
-  principal is non-empty, which on the internal-invoke path is a tautology.
-- `[ ]` **S** — **`GET /schedule` returns each event's full prompt, which contains the live `cu_` run
-  token.** Bounded (the token only emails the owner, 8 posts, 24 h) but it should be redacted.
-- `[~]` **H** — **Emit `no_push` from the cloud.** The agent honours it as of ghost-cli v1.1.53.
-  **live-ninja's half is DONE** (2026-08-01): `ghost.LaunchRequest.Deploy` is sent on every
-  `/schedule` call, non-`omitempty` so the security-relevant `false` is always transmitted. Pinned
-  by `TestLaunchCarriesTheDeployDecisionOnTheWire`.
+**Done and deployed.** All four items below were implemented in `C:/dev/ghost-cli`, verified
+per-module, and pushed to `main`. GitHub Actions run **30748838497** ("Deploy ghost-cli") completed
+**success** on commit `9438054`. Three focused commits:
 
-  Safe to have shipped ahead of ghost-cli reading it, and that was VERIFIED not assumed:
-  `lambda/command/schedule.go:294` decodes the create body with a plain `json.Unmarshal`, so an
-  unknown key is ignored. The strict `DisallowUnknownFields` decoder is on the AGENT's command
-  envelope, one hop further on.
+| Commit | What |
+|---|---|
+| `aad7643` | `no_push` emission + run-token redaction |
+| `be77cc2` | audit sink on `POST /schedule/preprocess` |
+| `9438054` | capability gate on `GET /launch/repos` (+ `authz.AuthorizeAnyNode`) |
 
-  **Remaining: the ghost-cli half** — read `deploy` on schedule create, carry it to
-  `buildLaunchParams` (`lambda/command/params.go:157`), emit `no_push: true` when it is false.
+- `[x]` **`POST /schedule/preprocess` is now audited.** `SchedulePromptHandler` had no audit sink at
+  all — the only one of the five internally-reachable routes writing no hash-chain entry. The sink is
+  now a required dependency in `ready()` (missing → 503, matching the authorizer's own contract);
+  **both** denial branches are audited; and the ALLOW is written *before* the quota charge and any
+  billable work, failing the request closed (500) on a sink error. Records file under
+  `ActionLaunch` because `authz.validateForAppend` rejects non-destructive-class actions. A test
+  pins that the source prompt never leaks into the audit reason.
 
-  **DECIDED (owner, 2026-08-01): option (a)** — converge the fleet first, then emit `no_push`
-  unconditionally. No version gate. The alternative considered and rejected was gating the
-  emission on each node's reported `agent_version`.
+- `[x]` **`GET /launch/repos` now performs a real capability check.** It previously checked only that
+  a principal was non-empty — a tautology on the internal-invoke path, where
+  `BuildInternalInvokeRequest` pins a non-empty principal by construction.
 
-  **Fleet state — measured 2026-08-01 12:5x UTC, not assumed.** Read from the IoT retained status
-  messages on `cockpit/nodes/<id>/status` (the same source `GET /nodes` uses), taking the
-  RETAINED-MESSAGE TIMESTAMP as well as the version. The timestamp is what makes this table mean
-  something: a node that has not published in six weeks is not a node running an old version, it
-  is a node that is off.
+  **This needed an authz extension, not just a call site**, and that was not visible from the plan
+  item. The route names no node (both callers send a parameterless request), and `ActionLaunch` is
+  not a fleet action, so `Authorize` denies any decision whose target is empty or `fleet` with
+  `ReasonNodeTargetRequired`. Gating on a fleet action instead would have made the route
+  fleet-admin-only and **broken live-ninja**, whose grant is operator on OFFICEPC alone.
+  `authz.AuthorizeAnyNode` answers "may this principal act on at least one node it can reach?"; the
+  shared fail-closed prelude is extracted into `resolvePrincipal` and used by both entry points, with
+  a test asserting the two produce identical deny reasons. The gate runs **before** the launcher
+  credential is read. Deliberately not audited: a read that issues no command.
 
-  | Node | agent_version | retained at | state | ≥ 1.1.53 |
-  |---|---|---|---|---|
-  | Windows2 | 1.1.55 | 08-01 12:51 | IDLE_ALIVE | yes |
-  | Right-Board | 1.1.55 | 08-01 12:50 | IDLE_ALIVE | yes |
-  | OFFICEPC | 1.1.54 | 08-01 12:50 | IDLE_ALIVE | yes |
-  | **Windows1** | **1.1.49** | 08-01 12:50 | **CRASHED** | **no** |
-  | Left-Board | 1.1.39 | 07-28 11:44 | stale (4 d) | no |
-  | rog-18 | 1.1.33 | 07-26 00:32 | OFFLINE | no |
-  | Lenovo14 | 1.0.13 | 06-21 10:23 | stale (6 wk) | no |
-  | rog-flow | 1.0.11 | 06-21 05:07 | OFFLINE | no |
-  | elite001, acer-gpu, 4x twix-gpu | — | no retained message | unknown | unknown |
+  **Noted, not fixed:** `GET /launch/branches` has the identical gap but is *not* internal-invoke
+  reachable. It is a backlog item, not a plan item.
 
-  Rollout target is **1.1.56** — `releases/latest.json` AND `releases/canary.json` in
-  `s3://ghost-cli-releases-759775734231` both read 1.1.56. So nothing is being held back by the
-  rollout; the laggards are simply not applying it.
+- `[x]` **`GET /schedule` redacts the `cu_` run token.** Replaced with a `cu_[REDACTED]` placeholder
+  on the **serving path only** — the stored prompt keeps the real token because the launch still has
+  to authenticate with it. The redaction runs before the 60 s cache write, so cached readers get it
+  too. The pattern is narrow (`cu_<id>_<64 lowercase hex>`), and a test pins that a bare `cu_` and a
+  bare 64-hex string in prose survive byte-identical.
 
-  **What this reframes.** "Converge the fleet" is mostly not a software task:
+- `[x]` **`no_push` is emitted from the cloud.** live-ninja's half was already done; ghost-cli read
+  nothing (`grep no_push` under `lambda/` returned zero hits).
 
-  - Only **four** nodes are actually live (published within the hour). Three of them are already
-    ≥ 1.1.53. The others cannot converge while they are powered off — an update cannot be pushed
-    to a machine that is not running, so this is blocked on physical access, not on code.
-  - The ONE live node below the bar is **Windows1, and it is CRASHED** — see the separate item
-    below. It will not self-update in that state.
-  - Offline nodes are not a live brick risk either: a LAUNCH cannot reach a node that is not
-    connected. The exposure is a node that has been off for months coming back and receiving a
-    HELD launch inside its first update poll. Narrow, but real, and it is the residue option (a)
-    accepts by design.
-  - Even OFFICEPC (1.1.54, live, healthy) has not taken 1.1.56 — so the self-update path is
-    lagging on a node with no other problem. Worth understanding before declaring convergence
-    done, because it suggests the updater, not the machines, is the thing that is stuck.
+  **The plan named the wrong target.** `buildLaunchParams` (`params.go:157`) is the `POST /command`
+  path, and live-ninja never calls it — `LaunchRequest` goes to `/schedule` with `run_now:true`. The
+  scheduled LAUNCH params are built in **two** other places and both now carry the gate:
+  `lambda/command/schedule_run.go` (run_now + cockpit Run-now) and `lambda/scheduler/envelope.go`
+  (cron + one-shot, a **separate Go module**). Without the second, an event created with
+  `deploy:false` would have fired ungated on every scheduled tick.
 
-  **Next actions, in order:** (1) get Windows1 out of CRASHED and onto 1.1.56; (2) find out why a
-  healthy OFFICEPC sat two versions behind; (3) decide whether the six no-retained-message things
-  are decommissioned (and should leave the inventory) or dormant; (4) only then ship the ghost-cli
-  half unconditionally.
+  **`deploy` is a `*bool`, defaulting to TRUE when absent.** A plain `bool` would have read every
+  ghost-cli web create — none of which send the key — as `false` and armed the pre-push hook across
+  the entire fleet. It is persisted unconditionally (`PutItem` replaces the whole item) and preserved
+  by an update that omits it, because `POST /schedule/run` re-fires stored events. `no_push` is
+  emitted **only** when deploy is false: the agent's `Params.NoPush` is `omitempty` behind a
+  `DisallowUnknownFields` decoder, so an explicit `false` would reject the whole envelope on a node
+  older than v1.1.53. No version gate, per the 2026-08-01 owner decision.
 
-  **Raised in importance by the 2026-08-01 default flip (§2.4).** While the default was "hold", a
-  prompt-only gate failing open meant a run shipped work the owner had not asked to ship. Now that
-  the default is "push", the only runs that carry the gate at all are ones where the owner
-  *explicitly said don't* — so every failure of this prompt-only mechanism is now a direct
-  violation of a stated instruction, on the exact request most likely to be sensitive. Fewer runs
-  depend on it; the ones that do depend on it more.
+  Verified: reverting either emission site fails the new tests.
 
-- `[~]` **Windows1 reports CRASHED — but the earlier diagnosis of WHY was wrong.** Re-measured
-  2026-08-01 20:20Z direct from the retained topics and the ghost-cli source; the corrections
-  matter because the old reading pointed at the wrong fix.
+---
 
-  **What is true:** `cockpit/nodes/Windows1/status` carries `state=CRASHED` at
-  `agent_version=1.1.49`, `uptime_s=163460` (45.4 h), heartbeating every ~20 s.
+#### Fleet convergence — measured 2026-08-02 ~10:00–13:00 UTC
 
-  **Correction 1 — CRASHED is a SESSION state, not an agent state.**
-  `agent/internal/intelligence/engine.go` `sessionState.inferState` returns `state.Crashed` when a
-  session's process is observed dead and that session had seen activity ("CRASHED overrides
-  everything (process died)"). The AGENT is alive and publishing — a crashed agent would go
-  silent, and this one has not. So "the agent crashed" was never what the topic said.
+**The fleet manifest is now 1.1.61**, not 1.1.57. `releases/latest.json` and `releases/canary.json`
+are byte-identical (same sha256). Note ghost-cli's own `CLAUDE.md` now states **"Canary is gone —
+every agent change ships to the entire fleet"**, so any reasoning built on canary-vs-fleet routing is
+obsolete; `canary-nodes.json` still lists `Right-Board` and `OFFICEPC` but both manifests point at
+the same build.
 
-  **Correction 2 — "a crashed agent will not self-update" is unsupported.** There is no state
-  gate in `agent/internal/updater`. Nothing found so far ties session state to update eligibility,
-  so CRASHED does not explain the stale version and restarting the node would not fix it.
+| Node | Version | State | Notes |
+|---|---|---|---|
+| Windows2 | **1.1.61** | IDLE_ALIVE | converged |
+| OFFICEPC | **1.1.61** | IDLE_ALIVE | converged — see below |
+| Right-Board | **1.1.61** | IDLE_ALIVE | converged |
+| Windows1 | **1.1.49** | CRASHED (session) | `uptime_s` 223200 (62 h, never restarted) |
+| Left-Board | 1.1.39 | last retained 07-28 | 5 d stale |
+| rog-18 | 1.1.33 | OFFLINE | last retained 07-26 |
+| Lenovo14 | 1.0.13 | — | last retained 06-21 |
+| rog-flow | 1.0.11 | OFFLINE | last retained 06-21 |
 
-  **Still open:** why Windows1 sits on 1.1.49 when the fleet manifest is 1.1.57. Needs node-side
-  updater logs — not answerable from the retained topic. The `updater: manifest version was
-  applied within the cooldown` anti-thrash path (`updater.go:264`) is the first place to look;
-  it fires when a published binary's stamped version does not match its manifest, which would
-  look exactly like "stuck" — though 1.1.57 stamps correctly for the two nodes that took it.
-  **Restarting is NOT the indicated action** on the current evidence, and it belongs to whoever
-  owns that machine (its status shows a `C:\Users\joshua` profile).
+- `[x]` **OFFICEPC — ANSWERED, and it was never a canary problem.** Root cause read from that node's
+  own updater logs on local disk (OFFICEPC is this machine). The updater was polling normally, saw
+  each new manifest, downloaded and cryptographically verified each binary, and then **failed at the
+  last step: launching the self-update restart sidecar.**
 
-- `[~]` **The fleet has PARTLY converged since this was written — re-measured 2026-08-01 20:20Z.**
-  The original claim ("no node is on the published fleet version") is no longer true, and the
-  shape of the problem changed with it.
+  OFFICEPC does not run the `GhostAgent` LocalSystem service (Stopped + Disabled); it runs as a Task
+  Scheduler logon task. A process launched by Task Scheduler sits in a job object that denies
+  `CREATE_BREAKAWAY_FROM_JOB`, so the direct sidecar spawn got "Access is denied." and fell back to
+  the Task Scheduler broker — which had **never** worked on that node. Three stacked defects, each
+  hidden by the previous, fixed in `3df9529` (shipped v1.1.59/v1.1.60): a `powershell -Command -`
+  block silently discarded from redirected stdin at EOF (so failures were invisible), a sidecar
+  registered at `RunLevel=0` while the agent runs elevated, and a sidecar validating a task named
+  literally `GhostAgent` at `RunLevel==0` when the node's task is `GhostAgentInteractive` at
+  `RunLevel=Highest`.
 
-  | Node | State | Version | Canary member? |
-  |---|---|---|---|
-  | Windows2 | IDLE_ALIVE | **1.1.57** | no — took the fleet manifest |
-  | Right-Board | IDLE_ALIVE | **1.1.57** | yes |
-  | OFFICEPC | IDLE_ALIVE | **1.1.54** | **yes** |
-  | Windows1 | CRASHED (session) | **1.1.49** | no |
+  **The gap was closed by hand, not by any automatic mechanism** — the broken updater could not
+  deliver its own fix (chicken-and-egg). Three local rebuilds were installed manually before the
+  sidecar handshake first succeeded; the node has since self-updated cleanly to 1.1.61.
 
-  `releases/latest.json` and `releases/canary.json` are BOTH 1.1.57 (identical sha256), and
-  `releases/canary-nodes.json` is `{"nodes":["Right-Board","OFFICEPC"]}`. So the canary/fleet
-  split is not the cause of the spread — both manifests point at the same build.
+  Poll interval: **both numbers in the repo are real at different times.** 4 h before the fix, 30 min
+  after — `defaultCheckInterval = 30 * time.Minute` (`updater.go:46`) landed in `d705b30`, shipped in
+  v1.1.56, which OFFICEPC was too old to have.
 
-  **The sharp remaining anomaly is OFFICEPC**, and it is the opposite of what the old note said:
-  it is a *canary member*, so it should receive a build FIRST, and it is the furthest behind of
-  the three alive nodes. Two nodes taking 1.1.57 cleanly proves the manifest, the signature, the
-  bucket policy and the apply path all work — so this is specific to OFFICEPC, not "the updater".
-  Needs that node's updater log; nothing in the retained status says why.
+  **Do not read OFFICEPC's convergence as proof the fleet updater is healthy.** It proves the fix
+  works on the interactive/logon-task path, on one machine a human was sitting at. The
+  service-managed path was never exercised — that service is Stopped and Disabled there.
 
-- `[ ]` **Six inventory entries have never published a status.** `elite001`, `acer-gpu`,
-  `left-twix-gpu0/1`, `right-twix-gpu0/1` have no retained message at all, so `GET /nodes` renders
-  them as `-` and no version-based logic can reason about them. Decide whether they are
-  decommissioned (remove them from the IoT inventory so the fleet count means something) or
-  dormant-but-real (they are then a live brick risk the moment they wake and take a held launch).
+- `[!]` **Windows1 — strong, specific hypothesis; NOT confirmable remotely.**
 
+  **New hard evidence.** `uptime_s=223200` (62 h) puts its last restart at **~2026-07-30 18:57 EDT**,
+  minutes after **v1.1.49 was tagged at 18:48 EDT**. So the update that put it on 1.1.49 was its last
+  successful apply, and every attempt since has failed — through twelve releases (v1.1.50 … v1.1.61).
+  It is alive and heartbeating every ~20 s throughout.
+
+  **Confirmed by reading the code, not assumed:** `task_broker_windows.go` exists in the v1.1.49 tree
+  and carries all three pre-fix defects — `$definition.Principal.RunLevel=0` hardcoded, and the
+  sidecar check `if ([int]$definition.Principal.LogonType -ne 3 -or [int]$definition.Principal.RunLevel -ne 0) { throw }`.
+  So the OFFICEPC failure mode is **reachable** on 1.1.49. Windows1 runs under a `C:\Users\joshua`
+  profile with npm-installed Claude — the interactive-node signature.
+
+  **What stops this being confirmed:** Windows2 runs under the *same* `C:\Users\joshua` profile and
+  converged fine, so the profile alone does not discriminate. The deciding fact is Windows1's launch
+  mode and its task's `RunLevel`, and **that is not remotely observable** — see the item below.
+
+  **If the hypothesis holds, Windows1 cannot self-heal**, because the fix can only arrive through the
+  mechanism that is broken. A broadcast will not help: it uses the same apply path. Resolution needs
+  the fix hand-carried, exactly as OFFICEPC's was. Per ghost-cli's standing rule that is **not plan
+  content** — Windows1 is not this machine, and it belongs to whoever owns it.
+
+  **Correction to earlier notes, retained:** CRASHED is a SESSION state, not an agent state
+  (`intelligence/engine.go` `sessionState.inferState`), and there is no state gate in the updater —
+  so CRASHED neither explains nor causes the stale version, and restarting is not the indicated
+  action.
+
+- `[ ]` **The real defect behind both nodes: an apply failure is invisible fleet-wide.** Confirmed by
+  grep — `last_update_error` and `consecutive_update_failures` **do not exist anywhere in
+  `agent/internal/`**. Throughout its outage OFFICEPC published `IDLE_ALIVE` with no signal that
+  seven consecutive applies had failed; the only record was an ERROR line in a local file on one
+  machine. That is precisely why Windows1 is not diagnosable from here.
+
+  **Fix: publish the failure in the retained status** (`cockpit/nodes/<id>/status`), populated at the
+  `updater: update failed` site. A node that has seen a newer manifest and failed to apply it N times
+  must be visibly distinct from a converged one. The data is already in hand; it is simply not
+  published. Cheapest possible fix, and it respects the no-CloudWatch-alarms rule.
+
+- `[x]` **The six silent inventory entries — ANSWERED. Both halves of the plan's premise were wrong.**
+
+  `elite001`, `acer-gpu`, `left-twix-gpu0/1`, `right-twix-gpu0/1` are all registered IoT things,
+  version 1, zero attributes, each with exactly one **ACTIVE** certificate carrying
+  `ftwr-agent-policy`. Certs created `2026-07-02` (four) and `2026-07-05` (the two `-gpu1`s), never
+  modified. None has ever published anything. None is referenced anywhere in the ghost-cli repo or
+  its history — no enrollment script, no fixture, no doc.
+
+  1. **They do NOT appear in `GET /nodes`.** The plan said they render as `-`. They do not render at
+     all: `nodes.go` derives presence from the **SystemHealth** node snapshots that `lambda/metrics`
+     writes on each `cockpit/nodes/+/status` message, not from the IoT thing registry. A scan of
+     `ghost-cli-system-health` returns exactly seven `node#` rows — Windows2, rog-18, Right-Board,
+     Windows1, Left-Board, Lenovo-Cracked, OFFICEPC. The six are absent. **So they are not distorting
+     the fleet count, and removing them from IoT would not change it.**
+  2. **They are NOT a live brick risk.** A launch cannot be queued for them: `IoTPublisher.Publish`
+     sends to `cockpit/nodes/{thing}/cmd` at QoS 1 with `Retain: false`, and the topic taxonomy
+     **forbids** retained messages there (a retained `UPDATE_AGENT` would re-fire on every
+     reconnect). MQTT queues nothing for a device that is not connected, so a launch published while
+     they are dark is simply dropped — there is no held command waiting to fire when they wake.
+
+  **Recommendation: deactivate the six certificates; do not delete the things.** Deactivation is
+  reversible and immediately removes the only real exposure (six ACTIVE credentials that could
+  connect and were never used). Thing deletion is not reversible and buys nothing, since the registry
+  is not what `GET /nodes` counts. If one of these machines is ever stood up, re-enrollment is the
+  normal path regardless. **Not executed** — it is a mutation on shared infrastructure and was not
+  pre-authorized.
 
 ### 2.3 Closed this pass — do not redo
 
