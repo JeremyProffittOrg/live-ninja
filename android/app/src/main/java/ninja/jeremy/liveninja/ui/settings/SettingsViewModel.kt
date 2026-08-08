@@ -81,6 +81,8 @@ enum class SettingsNotice {
     SIGNED_OUT_EVERYWHERE,
     SIGN_OUT_FAILED,
     WAKE_MODEL_READY,
+    WAKE_MODEL_BUILTIN,
+    WAKE_MODEL_UNTRAINED,
     WAKE_MODEL_SIGNED_OUT,
     WAKE_MODEL_FAILED,
     WAKE_TRAIN_REQUESTED,
@@ -901,6 +903,11 @@ class SettingsViewModel @Inject constructor(
         modelSyncJob = viewModelScope.launch {
             when (modelManager.sync(id, engine)) {
                 is ModelSyncResult.Active -> _notices.tryEmit(SettingsNotice.WAKE_MODEL_READY)
+                // Builtin bytes ship in the apk: selecting one has fully succeeded, even though
+                // the server answers its manifest route with a by-design 404.
+                is ModelSyncResult.Builtin -> _notices.tryEmit(SettingsNotice.WAKE_MODEL_BUILTIN)
+                // Nothing is broken — the catalog just offers a phrase nobody has trained.
+                is ModelSyncResult.NotTrained -> _notices.tryEmit(SettingsNotice.WAKE_MODEL_UNTRAINED)
                 is ModelSyncResult.NoAuth -> _notices.tryEmit(SettingsNotice.WAKE_MODEL_SIGNED_OUT)
                 // VerifyFailed / UnsupportedFormat / Failed: previous model
                 // stays active per contract; surface one honest notice.

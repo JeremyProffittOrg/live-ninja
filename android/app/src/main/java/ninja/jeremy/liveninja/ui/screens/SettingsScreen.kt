@@ -199,6 +199,8 @@ fun SettingsScreen(
                 SettingsNotice.SIGNED_OUT_EVERYWHERE -> R.string.settings_signed_out_everywhere
                 SettingsNotice.SIGN_OUT_FAILED -> R.string.settings_sign_out_failed
                 SettingsNotice.WAKE_MODEL_READY -> R.string.settings_wake_model_ready
+                SettingsNotice.WAKE_MODEL_BUILTIN -> R.string.settings_wake_model_builtin
+                SettingsNotice.WAKE_MODEL_UNTRAINED -> R.string.settings_wake_model_untrained
                 SettingsNotice.WAKE_MODEL_SIGNED_OUT -> R.string.settings_wake_model_signed_out
                 SettingsNotice.WAKE_MODEL_FAILED -> R.string.settings_wake_model_failed
                 SettingsNotice.WAKE_TRAIN_REQUESTED -> R.string.settings_wake_train_requested

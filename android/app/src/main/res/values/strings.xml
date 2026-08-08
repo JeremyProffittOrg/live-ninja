@@ -321,6 +321,8 @@
     <string name="settings_custom_wake_use">Use this phrase</string>
     <string name="settings_custom_wake_dismiss">Dismiss</string>
     <string name="settings_wake_model_ready">Wake model downloaded — now listening for the new phrase.</string>
+    <string name="settings_wake_model_builtin">Now listening for the built-in phrase — no download needed.</string>
+    <string name="settings_wake_model_untrained">No one has trained a model for this phrase yet, so the previous phrase keeps listening. Train it below, or pick a phrase that already has a model.</string>
     <string name="settings_wake_model_signed_out">Sign in to download wake models. The built-in phrase keeps working.</string>
     <string name="settings_wake_model_failed">Couldn\'t fetch this phrase\'s model — the previous model keeps listening.</string>
     <string name="settings_wake_train_requested">Training requested. You can keep using the app — we\'ll let you know when it\'s ready.</string>

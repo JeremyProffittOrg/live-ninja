@@ -39,6 +39,26 @@ sealed interface WakeModelRef {
 sealed interface ModelSyncResult {
     /** Model already current, or freshly downloaded+verified and now active. */
     data class Active(val ref: WakeModelRef.Downloaded) : ModelSyncResult
+
+    /**
+     * The phrase is a builtin whose model bytes ship inside the app, so there is nothing to
+     * fetch and the selection has fully succeeded.
+     *
+     * The server answers `GET /v1/wakeword/hey-jarvis/model` with **404 `builtin_model`** by
+     * design ("built-in models ship with the client and are not downloadable"). Treating that
+     * like any other 404 is what made picking Hey Jarvis report "Couldn't fetch this phrase's
+     * model" — for the one model that is always present and, measured, the best performing.
+     */
+    data class Builtin(val ref: WakeModelRef.Asset) : ModelSyncResult
+
+    /**
+     * The server has no trained model for this phrase (404), or it is still training (409).
+     *
+     * Distinct from [Failed] because nothing is wrong with the network or the app: the catalog
+     * simply offers a phrase nobody has trained yet, and telling the user to retry is a lie.
+     */
+    data class NotTrained(val wakeWordId: String) : ModelSyncResult
+
     /** No auth available (signed out / auth module not wired) — packaged/cached model serves. */
     data object NoAuth : ModelSyncResult
     /** Manifest said the asset isn't for our runtime (engine/format mismatch); kept previous. */
@@ -124,6 +144,15 @@ class ModelManager @Inject constructor(
         engine: String = WakePreferences.ENGINE_OPENWAKEWORD,
     ): ModelSyncResult = withContext(Dispatchers.IO) {
         syncMutex.withLock {
+            // Builtins ship in the apk. Asking the server for one earns a by-design 404, so
+            // short-circuit before the network rather than mistaking that for a failure.
+            if (wakeWordId == DEFAULT_ASSET_WAKE_WORD_ID) {
+                val ref = WakeModelRef.Asset(wakeWordId, ASSET_DEFAULT_HEAD)
+                if (engine == WakePreferences.ENGINE_OPENWAKEWORD) _headModel.value = ref
+                LNLog.i(LogCategory.WAKE, TAG, "wake model active: $wakeWordId (builtin asset)")
+                return@withLock ModelSyncResult.Builtin(ref)
+            }
+
             val token = tokenProvider.orElse(null)?.accessToken()
                 ?: return@withLock ModelSyncResult.NoAuth
 
@@ -132,7 +161,17 @@ class ModelManager @Inject constructor(
             } catch (e: IOException) {
                 LNLog.w(LogCategory.WAKE, TAG, "manifest fetch failed for $wakeWordId", e)
                 return@withLock ModelSyncResult.Failed(e.message ?: "manifest fetch failed")
-            } ?: return@withLock ModelSyncResult.Failed("manifest unavailable (training/404)")
+            } ?: run {
+                // Previously returned Failed with no log at all, which is why "Couldn't fetch
+                // this phrase's model" was undiagnosable from a logcat: the one branch that
+                // fires for every untrained catalog phrase was the one branch that said nothing.
+                LNLog.w(
+                    LogCategory.WAKE,
+                    TAG,
+                    "no trained model for \"$wakeWordId\" (server 404/409) — keeping previous model",
+                )
+                return@withLock ModelSyncResult.NotTrained(wakeWordId)
+            }
 
             if (manifest.engine != engine ||
                 UNDERSTOOD_FORMATS[engine]?.contains(manifest.format) != true
