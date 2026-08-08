@@ -53,3 +53,19 @@ fun decideWakeStart(action: String?, serviceEnabled: Boolean): WakeStartDecision
     // explicit `startService` without an action has always meant here.
     else -> WakeStartDecision.START
 }
+
+/**
+ * Whether bringing the app to the foreground should (re)start the wake service.
+ *
+ * The persisted `serviceEnabled` intent outlives the process but the service does not, so a
+ * force-stop, an OEM task-kill, or a reboot leaves the flag true with nothing listening. The
+ * foreground transition is the one moment the app can fix that: a foreground activity may always
+ * start a microphone FGS, which is the restriction that blocks the BOOT_COMPLETED path.
+ *
+ * Pure so the three guards are unit-tested rather than needing a device.
+ */
+fun shouldResumeWakeService(
+    serviceEnabled: Boolean,
+    alreadyRunning: Boolean,
+    micGranted: Boolean,
+): Boolean = serviceEnabled && !alreadyRunning && micGranted

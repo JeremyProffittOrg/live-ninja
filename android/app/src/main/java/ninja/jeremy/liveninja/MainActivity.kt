@@ -1,6 +1,8 @@
 package ninja.jeremy.liveninja
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Bundle
 import android.view.WindowManager
@@ -13,6 +15,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.toArgb
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -31,6 +34,7 @@ import ninja.jeremy.liveninja.ui.theme.liveNinjaColorScheme
 import ninja.jeremy.liveninja.wake.WakeBootReceiver
 import ninja.jeremy.liveninja.wake.WakePreferences
 import ninja.jeremy.liveninja.wake.WakeWordService
+import ninja.jeremy.liveninja.wake.shouldResumeWakeService
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -136,6 +140,39 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         conversationViewModel.onAppForegrounded()
+        resumeWakeServiceIfEnabled()
+    }
+
+    /**
+     * Re-assert the user's persisted always-listening intent whenever the app comes to the
+     * foreground.
+     *
+     * `serviceEnabled` survives the process; the service does not. A force-stop, an OEM
+     * task-kill (One UI is aggressive about this), or a reboot where the tap-to-resume
+     * notification is never tapped all leave the flag true with nothing listening.
+     *
+     * Before this, the only two callers of [WakeWordService.start] were [WakeBootReceiver]'s
+     * notification and [handleWakeResume] — and that one returns early unless the intent
+     * carries EXTRA_START_WAKE_SERVICE, which only that notification sets. So a plain app
+     * launch never restarted the service: the Settings switch still read ON, the wake phrase
+     * was still advertised on the conversation screen, and nothing was listening.
+     *
+     * onStart is the right hook. The activity is foreground here, and a foreground activity may
+     * always start a microphone FGS — that is precisely the restriction that blocks the boot path.
+     */
+    private fun resumeWakeServiceIfEnabled() {
+        // Without RECORD_AUDIO the service would start only to fail its engine start and
+        // surface an error notification, so leave it to the Settings switch to re-request.
+        val micGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        val resume = shouldResumeWakeService(
+            serviceEnabled = wakePreferences.serviceEnabled,
+            alreadyRunning = WakeWordService.runningFlow.value,
+            micGranted = micGranted,
+        )
+        if (resume) WakeWordService.start(this)
     }
 
     override fun onStop() {

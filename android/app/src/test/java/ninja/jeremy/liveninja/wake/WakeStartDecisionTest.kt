@@ -1,6 +1,8 @@
 package ninja.jeremy.liveninja.wake
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -81,6 +83,66 @@ class WakeStartDecisionTest {
         assertEquals(
             WakeStartDecision.START,
             decideWakeStart("ninja.jeremy.liveninja.wake.SOMETHING_NEW", serviceEnabled = true),
+        )
+    }
+
+    /**
+     * Guards the fix for "the wake word doesn't work, on screen or not" (owner report,
+     * 2026-08-08, Galaxy S9).
+     *
+     * `serviceEnabled` outlives the process but the service does not. Both callers of
+     * WakeWordService.start were unreachable on an ordinary launch — the boot receiver's
+     * notification, and MainActivity.handleWakeResume which returns early unless that
+     * notification's EXTRA_START_WAKE_SERVICE is present. So after any force-stop or OEM
+     * task-kill the switch still read ON and nothing was listening, with no way to tell.
+     */
+    @Test
+    fun foregroundingWithListeningOnButNothingRunning_restartsTheService() {
+        assertTrue(
+            shouldResumeWakeService(
+                serviceEnabled = true,
+                alreadyRunning = false,
+                micGranted = true,
+            ),
+        )
+    }
+
+    /** The user turned listening off; foregrounding must not resurrect it. */
+    @Test
+    fun foregroundingWithListeningOff_staysOff() {
+        assertFalse(
+            shouldResumeWakeService(
+                serviceEnabled = false,
+                alreadyRunning = false,
+                micGranted = true,
+            ),
+        )
+    }
+
+    /** onStart fires on every return to the app; re-asserting a live service is pointless churn. */
+    @Test
+    fun foregroundingWhileAlreadyListening_doesNotRestart() {
+        assertFalse(
+            shouldResumeWakeService(
+                serviceEnabled = true,
+                alreadyRunning = true,
+                micGranted = true,
+            ),
+        )
+    }
+
+    /**
+     * Revoking the mic permission leaves serviceEnabled true. Starting anyway would fail the
+     * engine start and post an error notification on every app launch.
+     */
+    @Test
+    fun foregroundingWithoutMicPermission_doesNotStart() {
+        assertFalse(
+            shouldResumeWakeService(
+                serviceEnabled = true,
+                alreadyRunning = false,
+                micGranted = false,
+            ),
         )
     }
 }

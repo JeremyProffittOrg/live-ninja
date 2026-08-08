@@ -241,6 +241,19 @@ class SettingsViewModel @Inject constructor(
 
     private var modelSyncJob: Job? = null
     private var pollJob: Job? = null
+
+    /**
+     * Last catalog fetched, so a document change can rebuild without refetching.
+     *
+     * Must stay declared ABOVE the init block that reads it. viewModelScope runs on
+     * Dispatchers.Main.immediate, so the `settingsStore.document.collect` below starts
+     * synchronously during construction and StateFlow replays its current value before
+     * suspending — that first emission reaches buildPersonaPresets() while the class body
+     * is still initializing. Declared after that init block, the backing field is still
+     * JVM-null there and the non-null parameter check throws, taking down the whole
+     * Settings screen on open.
+     */
+    private var personaCatalog: List<PersonaInfoDto> = emptyList()
     private val settingsWrites = SettingsWriteCoordinator()
     private val sectionSaveQueue = LatestSaveQueue<SectionSaveKey, PendingSectionSave>(
         scope = viewModelScope,
@@ -1097,9 +1110,6 @@ class SettingsViewModel @Inject constructor(
      * Failure leaves the current list untouched (offline keeps the fallback,
      * or whatever was fetched last), matching refreshGeminiVoices().
      */
-    /** Last catalog fetched, so a document change can rebuild without refetching. */
-    private var personaCatalog: List<PersonaInfoDto> = emptyList()
-
     private fun refreshPersonas() {
         viewModelScope.launch {
             val catalog = try {
