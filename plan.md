@@ -1252,42 +1252,43 @@ not paused on.
 
 ## Gotchas that cost real time (don't re-learn these)
 
-- **`TapToTalkConnectingStateTest` is order-dependent and fails ~2 runs in 3 (2026-08-01/02).**
-  `[!]` **Android Release is RED because of this, and it is NOT caused by whatever commit the run
-  happens to be testing.** Diagnosed properly on the second occurrence; do not re-derive it.
+- **`TapToTalkConnectingStateTest` raced a network round trip. SOLVED 2026-08-08.** Kept here
+  because the wrong answer was convincing for a week and is easy to re-derive.
 
-  **Reproduction (~20 s per loop), on the local AVD:**
+  **Actual cause: the test asserted a TRANSIENT state and lost a race.** `startSession()` sets
+  `MicUiState.CONNECTING` synchronously in the click handler, then launches a coroutine that
+  fetches a realtime session. In CI that fetch always fails (403), and the failure overwrites the
+  state with `ERROR`. The assertion was `waitForIdle()` then `assertExists`, which races that
+  round trip.
+
+  **Why it looked like cross-class contamination.** `OnboardingToSignInGateTest` is the only other
+  class that launches the real `MainActivity`, so it warms DNS/TLS/the OkHttp connection pool. The
+  403 then returns fast enough to overwrite `CONNECTING` before the assertion. Run alone the round
+  trip is cold and slow, the assertion wins, and the test passes — by luck, not construction.
+  Excluding that one class "fixing" it was a real signal pointing at the wrong mechanism.
+
+  **What found it, after two wrong hypotheses:** dumping the semantics tree at the point of
+  failure (`onRoot().printToLog(...)`) instead of reasoning about it. The tree showed the screen
+  already rendering "Couldn't start the conversation" / "Forbidden" — i.e. the state HAD been set
+  and then moved on, which immediately kills every "early-return sets no state" theory. Do this
+  first next time; it cost one run.
+
+  **The fix** (in the test, and it does not weaken it): `mainClock.autoAdvance = false` before the
+  click, then `advanceTimeByFrame()`, then assert. No recomposition can occur until the test asks,
+  so exactly the frame produced by the tap is asserted and the network cannot reach the screen
+  first. Verified 5/5 green in the full suite locally, having reproduced 3/3 red before.
+
+  **Superseded hypotheses, both wrong:** the leaked `KEY_COMPLETED` onboarding pref (the
+  `@AfterClass` restoration added on 2026-08-01 is correct hygiene and stays, but it fixed
+  nothing), and a leaked singleton `RealtimeSessionController.connected` / stale activity-scoped
+  `ConversationViewModel` (`_connected` only goes true after a successful session fetch, which
+  cannot happen in CI).
+
+  **Reproduction (~30 s per loop), on the local AVD, if it ever returns:**
   ```
   emulator -avd liveninja-test -no-window -no-audio -no-snapshot -gpu swiftshader_indirect
   cd android && ANDROID_SERIAL=emulator-5554 ./gradlew :app:connectedDebugAndroidTest
   ```
-  Run alone it ALWAYS passes:
-  `-Pandroid.testInstrumentationRunnerArguments.class=ninja.jeremy.liveninja.TapToTalkConnectingStateTest`
-
-  **Bisected cause: `OnboardingToSignInGateTest`.** Excluding that ONE class makes it pass;
-  excluding any of the other three does not:
-  ```
-  ./gradlew :app:connectedDebugAndroidTest \
-    -Pandroid.testInstrumentationRunnerArguments.notClass=ninja.jeremy.liveninja.OnboardingToSignInGateTest
-  ```
-
-  **What is ruled out.** It is not the change under test — the same failure predates the WS-4
-  commit, and the contamination is between two classes that commit never touched. It is not a pure
-  environment flake either: it reproduces locally on the same API level, and passes on the physical
-  Tab S9 FE. It is not the leaked onboarding pref: that class wrote `KEY_COMPLETED` in
-  `@BeforeClass` and never restored it, `@AfterClass` restoration was added (correct hygiene
-  regardless), and the failure rate did not change.
-
-  **Best remaining hypothesis, UNPROVEN.** `OnboardingToSignInGateTest` launches the real
-  `MainActivity`; `TapToTalkConnectingStateTest` hosts `ConversationScreen()` inside
-  `TestHarnessActivity` and resolves its view model with `hiltViewModel(activity)`. The singleton
-  `RealtimeSessionController` — or a still-live activity-scoped `ConversationViewModel` from the
-  earlier activity — plausibly leaves `startSession()` taking its early-return branch, which sets
-  no state and therefore renders no "Connecting…". Worth instrumenting the state machine before
-  changing either test.
-
-  **Explicitly NOT done:** the test has not been quarantined or weakened to make CI green. It is
-  catching a real isolation problem, and hiding it would cost more than the red run does.
 
 
 - **A new message kind on the user event topic is a ROLLOUT hazard, not just a feature.** Every

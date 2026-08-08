@@ -52,6 +52,26 @@ class TapToTalkConnectingStateTest {
         composeTestRule.setContent {
             LiveNinjaTheme { ConversationScreen() }
         }
+        composeTestRule.waitForIdle()
+
+        // CONNECTING is a TRANSIENT state, and the frame that shows it must be pinned down
+        // before asserting on it. startSession() sets MicUiState.CONNECTING synchronously in the
+        // click handler, then launches a coroutine that fetches a realtime session. In CI that
+        // fetch always fails, and its failure overwrites the state with ERROR.
+        //
+        // The old assertion was `waitForIdle()` then assertExists, which is a race against that
+        // network round trip — and it lost whenever the HTTP stack was already warm. That is the
+        // order-dependence bisected to OnboardingToSignInGateTest: it is the only other class
+        // that launches the real MainActivity, so it warms DNS/TLS/the OkHttp pool and the
+        // failure comes back fast enough to win. Run alone the round trip is cold and slow, the
+        // assertion wins, and the test passes — by luck, not by construction. Diagnosed by
+        // dumping the semantics tree at the point of failure, which showed the screen already
+        // rendering "Couldn't start the conversation" / "Forbidden" rather than nothing at all.
+        //
+        // Stopping the clock removes the race instead of hiding it: no recomposition can happen
+        // until this test asks for one, so exactly the frame produced by the tap is rendered and
+        // asserted. Whatever the network does afterwards cannot reach the screen first.
+        composeTestRule.mainClock.autoAdvance = false
 
         composeTestRule
             .onNodeWithContentDescription(
@@ -59,7 +79,7 @@ class TapToTalkConnectingStateTest {
             )
             .performClick()
 
-        composeTestRule.waitForIdle()
+        composeTestRule.mainClock.advanceTimeByFrame()
 
         val connectingLabel = composeTestRule.activity.getString(R.string.conversation_state_connecting)
         composeTestRule.onNodeWithText(connectingLabel).assertExists()
