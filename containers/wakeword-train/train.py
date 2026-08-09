@@ -267,6 +267,11 @@ def tts_generate(texts, total, outdir, deadline, reserve_s, tts_batch, chunk, mi
 # Distractors for carrier-swapped negatives. Deliberately a mix of names, nouns and
 # adjectives with varied syllable counts and stress, because the model has to separate the
 # target on its DISTINCTIVE word, not on the carrier or on utterance length.
+# Total one-word-off negatives to spread across the positions of a 3+ word phrase. Kept modest
+# on purpose: these are the hardest negatives in the set, and drowning the positives in them is
+# what cost hey-live-ninja its own phrase.
+PER_POSITION_SWAPS = 18
+
 CARRIER_DISTRACTORS = [
     "sunday", "moonshine", "charlie", "jennifer", "computer", "marvin", "banana",
     "jarvis", "sunshine", "monday", "morning", "google", "michael", "sandra",
@@ -300,22 +305,50 @@ def near_miss_phrases(phrase):
     """
     words = phrase.split()
     out = [w for w in words if len(w) >= 3]
-    if len(words) >= 2:
-        out.append(" ".join(words[:-1]))
-        out.append(" ".join(reversed(words)))
+    if len(words) < 2:
+        return out
 
-        # Carrier swap: keep everything but the final word, vary the final word.
-        prefix = " ".join(words[:-1])
-        target_last = words[-1].lower()
+    out.append(" ".join(reversed(words)))
+    lower = [w.lower() for w in words]
+
+    if len(words) == 2:
+        # Two-word targets: swap the distinctive word against the full distractor list, and
+        # mirror it by varying the carrier. Measured good — hey-automatica went from a 0.979
+        # worst-case false positive to 0.343, hey-sunshine from 1.000 to 0.311. Left exactly as
+        # it was; do not "tidy" this branch without re-measuring both.
+        out.append(words[0])
         for distractor in CARRIER_DISTRACTORS:
-            if distractor != target_last:
-                out.append(f"{prefix} {distractor}")
-
-        # And the mirror case: keep the distinctive word, vary the carrier, so a target whose
-        # carrier is unusual ("okay joshua") is not separable on the carrier alone either.
+            if distractor != lower[-1]:
+                out.append(f"{words[0]} {distractor}")
         for carrier in ("hey", "okay", "hi", "yo", "hello"):
-            if carrier != words[0].lower():
+            if carrier != lower[0]:
                 out.append(f"{carrier} {words[-1]}")
+        return out
+
+    # Three or more words need a different shape, and getting this wrong is what broke
+    # hey-live-ninja on 2026-08-08: applying the two-word recipe to it produced 36 negatives all
+    # of the form "hey live X", every one sharing two of three words with the target, plus
+    # "hey live" alone and the suffix mirrors "okay ninja" / "hi ninja". Squeezed from both ends
+    # the model kept no usable positive signal — it scored its own phrase 0.138 while still
+    # firing on "hey moonshine" at 0.986, strictly worse than the model it replaced.
+    #
+    # Instead vary ONE position at a time across every position, so each negative differs from
+    # the target by exactly one word and no single position can be ignored. Capped per position
+    # so the near-misses stay a minority of the negative pool rather than swamping it, and the
+    # prefix ("hey live") is deliberately NOT included — for a longer phrase a bare prefix is a
+    # much harsher negative than it is for a two-word one.
+    per_position = max(2, PER_POSITION_SWAPS // len(words))
+    for i in range(len(words)):
+        picked = 0
+        for distractor in CARRIER_DISTRACTORS:
+            if picked >= per_position:
+                break
+            if distractor == lower[i]:
+                continue
+            variant = list(words)
+            variant[i] = distractor
+            out.append(" ".join(variant))
+            picked += 1
     return out
 
 
