@@ -264,14 +264,58 @@ def tts_generate(texts, total, outdir, deadline, reserve_s, tts_batch, chunk, mi
     return clips
 
 
+# Distractors for carrier-swapped negatives. Deliberately a mix of names, nouns and
+# adjectives with varied syllable counts and stress, because the model has to separate the
+# target on its DISTINCTIVE word, not on the carrier or on utterance length.
+CARRIER_DISTRACTORS = [
+    "sunday", "moonshine", "charlie", "jennifer", "computer", "marvin", "banana",
+    "jarvis", "sunshine", "monday", "morning", "google", "michael", "sandra",
+    "buddy", "captain", "doctor", "sammy", "lima", "cortana", "alexa", "siri",
+    "robot", "printer", "kitchen", "garage", "thomas", "jessica", "william",
+    "coffee", "window", "monitor", "dolphin", "tornado", "avocado", "umbrella",
+]
+
+
 def near_miss_phrases(phrase):
-    """Hard negatives derived from the target phrase: single words, the phrase
-    minus its last word, and a shuffled word order."""
+    """Hard negatives derived from the target phrase.
+
+    Single words, the phrase minus its last word, and a shuffled word order — plus, and this is
+    the load-bearing part, **carrier-swapped** phrases: the target's leading word followed by a
+    different distinctive word ("hey sunday", "hey moonshine", ... for a target of "hey
+    sunshine").
+
+    Without those the model never sees a single negative of the shape it is actually asked to
+    reject, and it learns the cheapest separating feature available: "an utterance starting with
+    *hey*". Measured on 2026-08-08 against the models this pipeline had already produced, that is
+    exactly what happened — every one of them fired on unrelated speech as hard as on its own
+    phrase:
+
+        hey-sunshine    own phrase 1.000, "hey sunday" 1.000, "hey moonshine" 1.000
+        hey-live-ninja  own phrase 0.996, "hey moonshine" 1.000, "hey jennifer" 0.995
+        hey-automatica  own phrase 1.000, "hey computer" 0.979
+
+    while openWakeWord's own hey-jarvis, trained against large adversarial corpora, scores 0.998
+    on its phrase and 0.221 on the loudest non-target. The bundled negative list is 67 everyday
+    sentences of which two begin with "hey", so nothing else supplied this contrast.
+    """
     words = phrase.split()
     out = [w for w in words if len(w) >= 3]
     if len(words) >= 2:
         out.append(" ".join(words[:-1]))
         out.append(" ".join(reversed(words)))
+
+        # Carrier swap: keep everything but the final word, vary the final word.
+        prefix = " ".join(words[:-1])
+        target_last = words[-1].lower()
+        for distractor in CARRIER_DISTRACTORS:
+            if distractor != target_last:
+                out.append(f"{prefix} {distractor}")
+
+        # And the mirror case: keep the distinctive word, vary the carrier, so a target whose
+        # carrier is unusual ("okay joshua") is not separable on the carrier alone either.
+        for carrier in ("hey", "okay", "hi", "yo", "hello"):
+            if carrier != words[0].lower():
+                out.append(f"{carrier} {words[-1]}")
     return out
 
 
@@ -633,7 +677,15 @@ def run_training(args, deadline):
 
     smoke = args.smoke_test
     n_pos = 12 if smoke else env_int("N_POSITIVE", 240)
-    n_neg_tts = 16 if smoke else env_int("N_NEGATIVE_TTS", 160)
+    # 240 positives x (1 + AUG_PER_POS=2) is 720 positive canvases, so the old 160 negatives
+    # (320 after augmentation, plus 48 noise) left the set roughly 2:1 POSITIVE — the opposite of
+    # what a wake-word detector wants, and the class-imbalance weight below was written assuming
+    # "negatives usually outnumber positives". 400 brings the two sides level and, more to the
+    # point, gives the carrier-swapped near-misses added in near_miss_phrases() enough clips to
+    # matter: they are ~40% of the negative phrase list and were previously sampled ~1 clip each.
+    # TTS is the dominant cost but the job finishes in ~2 min against an 18 min deadline, and the
+    # deadline logic degrades by stopping early rather than failing.
+    n_neg_tts = 16 if smoke else env_int("N_NEGATIVE_TTS", 400)
     n_noise = 8 if smoke else env_int("N_NOISE", 48)
     aug_per_pos = 1 if smoke else env_int("AUG_PER_POS", 2)
     epochs = 8 if smoke else env_int("EPOCHS", 60)
