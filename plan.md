@@ -19,6 +19,11 @@ Archived (history preserved in full, banners at the top of each):
 
 ## Where things actually stand (2026-08-08)
 
+**§7.4 has STOPPED at its own ceiling and needs an owner decision** — three consecutive training
+rounds moved recall (0.001 → 0.194) and did not move the false-positive axis at all
+(0.997 → 0.996 → 0.994). The three options are written out at the end of §7.4. Nothing was
+promoted, so the phone still serves the pre-fix model that fires on 39 of 60 non-target clips.
+
 **§7 is the live workstream** and the only one mid-flight. Two owner bug reports on the Galaxy S9 —
 Settings crashing on open, and the wake word never responding — turned out to be one causal chain
 (the crash made the always-listening switch, the only thing that enables the wake word,
@@ -1491,7 +1496,65 @@ harness, never on the manifest.**
   augmentation adds coverage where it was already fine. The two-word phrase's clips are short
   enough to escape the clamp, which is exactly why it improved and the three-word one did not.
 
-- `[~]` **Round 4 — trim silence before warping, and log the clip lengths.** `trim_silence()` drops
+- `[x]` **Round 4 — RAN, and its instrumentation REFUTED the reason it was run.** Trained to
+  `hey-live-ninja-r4trim` / `hey-automatica-r4trim`. The new log line settles the clamp question in
+  one round, which is exactly what it was added for:
+
+  ```
+  positive clip samples: raw med 15440 max 21200 | trimmed med 13794 max 20801 |
+                         slowest warp allowed after trim 0.78x (canvas 32000)
+  ```
+
+  **21200 / 32000 = 0.66, which is below the 0.78 floor — so the canvas clamp NEVER bound for
+  positives, and round 3 already had the full 0.78–1.28× range.** The "round 3 could only speed
+  clips up" diagnosis was wrong. The clamp bit only on the longest *negatives* (raw max 33200), and
+  that is not where the problem is. Trimming is still correct (it is why the range is now provably
+  safe for any phrase length, and a longer phrase than "hey live ninja" WOULD have hit it) but it
+  was not the blocker, so it bought little:
+
+  | hey-live-ninja | target (min/mean) | loudest non-target | non-targets ≥ 0.5 |
+  |---|---|---|---|
+  | r2 | 0.001 / 0.074 | 0.997 | 7 / 60 |
+  | r3 (warp) | 0.023 / 0.128 | 0.996 | 10 / 60 |
+  | r4 (warp + trim) | 0.194 / 0.374 | 0.994 | 12 / 60 |
+
+  Recall is climbing (0.001 → 0.023 → 0.194) and **the false-positive axis has not moved at all**:
+  0.997 → 0.996 → 0.994, always the same confusion ("hey moonshine"). `hey-automatica` as control:
+  target 0.857, loudest non-target 0.993, hot 4/68 — its best false-positive breadth yet, still
+  failing the max.
+
+- `[!]` **CEILING REACHED — stop training, per this section's own restart policy.** *"3 consecutive
+  rounds with no improvement in loudest non-target — then stop and report rather than keep burning
+  jobs."* Rounds 2, 3, 4 gave 0.997 / 0.996 / 0.994. That is the stop condition, and it fired.
+
+  **What is now known, and what it implies.** The trainer can make a head that rejects broadly
+  (39/60 → 7/60 hot) and it can make a head that detects its phrase (r0 at 0.996), but not both at
+  once for a three-word phrase. Every round retains one catastrophic confusion that survives
+  changes to the negative shape, the augmentation and the rate axis. Meanwhile `hey-jarvis` —
+  upstream openWakeWord, trained on large real corpora with real adversarial negatives — scores
+  0.998 / 0.221 through the identical harness. The remaining gap looks like **dataset scale and
+  diversity** (240 synthetic positives from one TTS checkpoint, ~89 negative phrases) rather than
+  anything left to tune in the recipe, and that is not a knob — it is a different training budget.
+
+  **Unblocked by an owner decision between:**
+  1. **Spend the budget.** `N_POSITIVE`/`N_NEGATIVE_TTS` several times up (the job uses ~4 min of an
+     18-minute deadline), more TTS checkpoints/voices, and real adversarial negative audio rather
+     than only TTS. Largest change, best chance of actually clearing the bar.
+  2. **Restrict custom phrases to two words.** The two-word phrases are close (`hey-automatica`
+     0.857–0.943 target, 4/68 hot) and the three-word one is not. This is a product limit that
+     matches what the pipeline can currently deliver.
+  3. **Ship builtins only** for wake, and drop custom training until (1) is funded.
+
+  **Nothing has been promoted.** All four rounds trained to scratch `wwId`s, so the phone still
+  serves r0 — which is the model that fires on 39/60 non-targets, i.e. the owner's original
+  complaint is still live on the device. **Promoting r2 would trade that for a wake word that
+  rarely fires; that is a product judgement and is deliberately left to the owner.**
+
+  **Evidence retained** in `s3://live-ninja-wakewords-759775734231/wakewords/` under
+  `hey-live-ninja-r3warp`, `hey-live-ninja-r4trim`, `hey-automatica-r3warp`, `hey-automatica-r4trim`
+  — a few MB, and re-scoring them needs no retraining. Delete when the decision above is made.
+
+  *Superseded round-4 rationale, kept because the trim itself stays:* `trim_silence()` drops
   leading/trailing near-silence (threshold relative to the clip's own peak, 50 ms run-up kept)
   before the warp, so silence padding stops consuming the canvas budget and the full
   0.78–1.28× range survives for every clip length — verified: 0 canvas overruns at speech durations
