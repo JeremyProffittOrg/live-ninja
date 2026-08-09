@@ -50,6 +50,13 @@ Three traps this harness exists to close, each of which produced a confidently w
 Clips that *contain* the target phrase ("hey live ninjas" for "hey live ninja") are reported
 separately as `adjacent` and excluded from the bar — firing on those is not a defect.
 
+**Do not glob `android/app/src/androidTest/assets/wakeaudio/` into this harness.** An earlier
+version did, and `negative_hey_live_ninja.wav` there is byte-identical to a recording of "hey live
+ninja" — so scoring the *live-ninja* head against it put the target phrase in the non-target pool
+and made `target >= 0.8 AND loudest non-target <= 0.4` arithmetically unsatisfiable. Those assets
+are named relative to the **bundled hey-jarvis head** that `WakePhraseDiscriminationTest` loads,
+where "hey live ninja" genuinely is a negative. The asset is correct; globbing it here was not.
+
 ## The out-of-distribution caveat, and its control
 
 These clips are Windows SAPI while the models train on piper, so they are out of distribution and
