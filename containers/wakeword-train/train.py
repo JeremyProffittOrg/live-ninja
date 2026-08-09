@@ -193,6 +193,47 @@ def place_on_canvas(clip_f32, rng):
     return canvas
 
 
+def time_warp(clip_f32, rng):
+    """Resample by a random factor, varying speaking rate and pitch together.
+
+    piper is asked for exactly three length_scales ([0.7, 1.0, 1.3]) of one text from one
+    checkpoint, and augment() below varies only gain, reverb and noise. So nothing in the pipeline
+    varies how FAST the phrase is said, and the head's tolerance to that ends up being whatever the
+    negative set happens to leave it — accidental rather than trained.
+
+    Measured on the round-2 heads (2026-08-09, same clips, PC harness), peak score against
+    resampling factor:
+
+        hey-automatica  0.87 0.97 0.99 1.00 0.99 0.98 1.00 1.00 1.00 0.99   flat -> passes recall
+        hey-sunshine    0.57 0.49 0.52 0.54 0.90 0.83 0.92 0.64 0.28 0.34   peaked off-native
+        hey-live-ninja  0.00 0.00 0.00 0.05 0.24 0.74 0.25 0.37 0.78 0.55   narrow spikes
+                        0.85 0.95 1.00 1.05 1.10 1.15 1.20 1.25 1.30 1.40
+
+    hey-live-ninja HAD learned its phrase — it scores 0.775 at 1.30x — but native rate falls in a
+    null, so it reads as 0.001 and looks like a model that learned nothing. The three-word phrase is
+    the one that collapses because its near-misses all differ by a single word, leaving the exact
+    joint pattern of three words as the only separator, and the cheapest such separator is a narrow
+    template around the piper renderings.
+
+    Applied to BOTH classes, so "has been resampled" can never itself become the class cue.
+    """
+    n_in = len(clip_f32)
+    if n_in < 2:
+        return clip_f32
+    # Never stretch a clip past the canvas: place_on_canvas keeps only the last TARGET_SAMPLES,
+    # so a slowed-down clip that overruns would lose its opening word and be trained as a positive
+    # that no longer contains the phrase.
+    lo = max(0.78, n_in / TARGET_SAMPLES)
+    hi = 1.28
+    if lo >= hi:
+        return clip_f32
+    f = float(rng.uniform(lo, hi))
+    n_out = max(1, int(n_in / f))
+    return np.interp(
+        np.linspace(0, n_in - 1, n_out), np.arange(n_in), clip_f32
+    ).astype(np.float32)
+
+
 def augment(canvas_f32, rng):
     from scipy.signal import fftconvolve  # local import keeps --help/arg errors fast
 
@@ -748,18 +789,22 @@ def run_training(args, deadline):
 
         deadline.phase = "augment"
         canvases, labels = [], []
+        # Each augmented copy is warped and re-placed from the SOURCE clip rather than sharing one
+        # `base` canvas. Two reasons: it is the only thing that varies speaking rate (see
+        # time_warp), and sharing `base` made every augmented copy the same waveform at the same
+        # jitter, differing only along the three axes the head is already invariant to — which is
+        # what let a val split over canvases report 98.97% recall for a model scoring 0.001 on a
+        # real recording of its own phrase.
         for clip in pos_clips:
-            base = place_on_canvas(clip, rng)
-            canvases.append(to_int16(base))
+            canvases.append(to_int16(place_on_canvas(clip, rng)))
             labels.append(1.0)
             for _ in range(aug_per_pos):
-                canvases.append(to_int16(augment(base, rng)))
+                canvases.append(to_int16(augment(place_on_canvas(time_warp(clip, rng), rng), rng)))
                 labels.append(1.0)
         for clip in neg_clips:
-            base = place_on_canvas(clip, rng)
-            canvases.append(to_int16(base))
+            canvases.append(to_int16(place_on_canvas(clip, rng)))
             labels.append(0.0)
-            canvases.append(to_int16(augment(base, rng)))
+            canvases.append(to_int16(augment(place_on_canvas(time_warp(clip, rng), rng), rng)))
             labels.append(0.0)
         for i in range(n_noise):
             fn = NOISE_FNS[i % len(NOISE_FNS)]

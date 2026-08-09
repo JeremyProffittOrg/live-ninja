@@ -1398,21 +1398,69 @@ gotcha says SAPI clips are OOD versus piper training audio, so target scores und
 model this pipeline trains *can* score 0.99 on these clips. So round 2's 0.001 is a genuine failure
 to learn the target, not a measurement artifact.
 
-**Refuted along the way** (recorded so it is not re-derived): the obvious theory was that the 3-word
-branch never emits a two-word `hey <distractor>` negative, so the model never saw that shape. It is
-true that it never emits one — and it is not the cause. `hey moonshine ninja` **is** an explicit
-training negative and round 2 scores it **0.996**. The model fires on a phrase it was trained to
-reject, so this is not near-miss coverage.
+#### The actual cause: the pipeline never varies speaking rate `[x]` diagnosed 2026-08-09
 
-- `[ ]` **Round 3 — raise the positive side, not the negatives.** This was already the plan's stated
-  next step and the measurement now supports it: 240 positives (720 canvases after `AUG_PER_POS=2`)
-  against 400 much harder negatives leaves the target under-determined, and the 3-word phrase has
-  the least margin because each near-miss shares 2 of its 3 words. `N_POSITIVE` is an env knob, so
-  this leaves the negative logic alone. **Headroom is available and measured: the job finishes in
-  ~2 min against an 18-minute deadline**, so several times the data costs nothing but wall clock.
+**Round 2 had learned the phrase.** Resample the same recording and it comes back — peak score
+against resampling factor, verified twice on independently generated clips:
+
+| head / clip | 0.85 | 0.95 | **1.00** | 1.10 | 1.15 | 1.25 | 1.30 | 1.40 |
+|---|---|---|---|---|---|---|---|---|
+| hey-automatica, own phrase | 0.869 | 0.972 | **0.991** | 0.994 | 0.979 | 0.997 | 0.998 | 0.990 |
+| hey-sunshine, own phrase | 0.569 | 0.489 | **0.518** | 0.904 | 0.834 | 0.641 | 0.283 | 0.339 |
+| hey-live-ninja r2, own phrase | 0.000 | 0.000 | **0.001** | 0.236 | 0.740 | 0.372 | 0.775 | 0.546 |
+| hey-live-ninja r2, "hey moonshine" | 0.992 | 0.997 | **0.997** | 0.997 | 0.989 | 0.202 | 0.062 | 0.001 |
+
+At 1.30× round 2 scores **0.775 target / 0.062 loudest non-target** — essentially the bar. Native
+rate simply falls in a null. The three models are a clean gradient of *rate tolerance*: automatica
+flat and wide, sunshine peaked off-native, live-ninja a set of narrow spikes.
+
+**Why:** `train.py` asks piper for exactly three `length_scales` (`[0.7, 1.0, 1.3]`) of one text
+from one checkpoint, and `augment()` varies only gain, reverb and noise. **Nothing varies speaking
+rate**, so a head's tolerance to it is accidental — whatever the negative set leaves it. The 3-word
+phrase collapses first because its 18 near-misses each differ by exactly one word and 12 keep
+`ninja` in final position, so no sub-word evidence separates; the only separator left is the exact
+joint pattern of three words, and the cheapest such separator is a narrow template around piper's
+own renderings.
+
+**Controls run, all refuting the alternatives** (do not re-derive these): not alignment — a full
+80 ms sub-chunk phase sweep moves the score not at all; not resampler smoothing — linear-interp
+low-pass at the *same* duration gives 0.001 vs 0.740 for the real warp; not gain — 0.5× and 2.0×
+both stay ~0.001; not window overrun — energy-VAD speech spans are 0.82 s against a ~2.04 s window;
+not a train/runtime feature mismatch — automatica scores 0.991 through the identical harness.
+
+**Refuted earlier the same day** (kept so it is not re-derived): that the 3-word branch never emits a
+two-word `hey <distractor>` negative. True, and not the cause — `hey moonshine ninja` **is** an
+explicit training negative and round 2 scores it 0.996.
+
+**The reported metrics cannot see any of this.** `place_on_canvas` was called ONCE per clip and the
+result shared by the clean canvas and both augmented copies, while the split is a flat permutation
+over canvases — so ~98% of validation positives have a sibling in training that is the identical
+waveform at identical jitter, differing only along the three axes the head is already invariant to.
+The threshold is then fitted on the same `Xv` the FPR is reported against. `0.9897 × 97 = 96` and
+`0.0072 × 138 = 1`: one error on each side of a set containing no new utterance. **Judge on the
+harness, never on the manifest.**
+
+- `[~]` **Round 3 — symmetric time-warp augmentation.** `time_warp()` resamples by
+  `U(0.78, 1.28)`, varying rate and pitch together, applied to **both** classes so "has been
+  resampled" can never become the class cue, and each augmented copy is now warped and re-placed
+  from the source clip rather than sharing one canvas — which repairs the sibling leakage above as a
+  side effect. Lower bound is clamped per clip to `len/TARGET_SAMPLES` so a slowed clip can never
+  overrun the 2.0 s canvas and lose its opening word to `clip_f32[-TARGET_SAMPLES:]`, which would
+  train a "positive" that no longer contains the phrase. Costs **no extra TTS** — same clip counts,
+  same ~4 min job against an 18-minute deadline.
+  **Deliberately NOT changed:** `near_miss_phrases` (both branches), `N_POSITIVE`, `N_NEGATIVE_TTS`,
+  `AUG_PER_POS`. The warp is the only variable, so the result is attributable.
+  **Expect `valRecallAtThreshold` to FALL** (0.99 → ~0.93–0.97). That is the metric becoming honest,
+  not a regression.
+- `[ ]` **If round 3 lands 0.6–0.79** — right direction, short of the bar — the next lever is
+  `AUG_PER_POS=3` (pure env, 4 canvases per positive with three independent warps), then
+  `N_POSITIVE=480`. Raising `N_POSITIVE` alone was the plan's earlier stated next step and the warp
+  measurement **retires it**: more clips of the same three `length_scales` is a denser sample of the
+  same thin band.
 - `[ ]` **`hey-sunshine` and `hey-automatica` both need a round too** — neither clears the bar once
-  a close near-miss exists. Do not retrain them until the 3-word phrase clears, so that one variable
-  moves at a time.
+  a close near-miss exists (automatica fires 0.996 on "hey america", and its own tuning curve shows
+  it is over-inclusive rather than robust). Retrain them only after the 3-word phrase clears, so
+  that one variable moves at a time.
 
 **Definition of done (applies to every phrase, same clips, same harness):**
 `target >= 0.8 AND loudest non-target <= 0.4`, where target is the **weakest** of the two voices and

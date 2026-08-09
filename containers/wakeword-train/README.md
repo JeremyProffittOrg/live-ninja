@@ -20,11 +20,21 @@ catalog just flags engine availability).
    phrases) plus near-misses derived from the target phrase (single words,
    dropped last word, shuffled order), and procedural white/pink/brown/band
    noise + near-silence clips are added.
-3. **Augment + canvas** — random gain, synthetic room impulse response,
-   additive noise at 5–25 dB SNR; every clip is end-aligned (with jitter) on a
-   fixed 2.0 s canvas. 32 000 samples @ 16 kHz → 197 mel frames → **exactly 16
-   speech-embedding frames**, the `[1, 16, 96]` detector input that
-   `web/static/js/wakeword.mjs` (and openWakeWord's own models) use.
+3. **Augment + canvas** — random time warp (speaking rate *and* pitch, 0.78–1.28×,
+   applied to both classes so it can never become the class cue), then random
+   gain, synthetic room impulse response, additive noise at 5–25 dB SNR; every
+   clip is end-aligned (with jitter) on a fixed 2.0 s canvas. 32 000 samples @
+   16 kHz → 197 mel frames → **exactly 16 speech-embedding frames**, the
+   `[1, 16, 96]` detector input that `web/static/js/wakeword.mjs` (and
+   openWakeWord's own models) use.
+
+   The time warp is load-bearing, not polish: piper is asked for three
+   `length_scales` of one text, so without it nothing varies speaking rate and a
+   head's tolerance to rate is whatever the negatives happen to leave it. On
+   2026-08-09 that produced a `hey live ninja` head scoring **0.001 on a real
+   recording of its own phrase and 0.775 on the same recording at 1.30×** — it
+   had learned the phrase, into a manifold too thin for real speech to land in.
+   See `eval/README.md` for the harness that measures this.
 4. **Features** — openWakeWord's bundled melspectrogram + Google
    speech-embedding ONNX models (`AudioFeatures`, ONNX inference path only;
    the image carries no tflite runtime).
