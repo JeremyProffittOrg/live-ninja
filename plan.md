@@ -1470,8 +1470,27 @@ not a defect). Command:
 **Nothing this pipeline has produced clears it.** `hey-jarvis` does, at 0.998 / 0.221, and is the
 reference.
 
-**Restart policy for a training round.** Delete the record first — re-creating a `ready` phrase
-returns 409 `ErrCollision`, only `failed` retrains in place, and the app has no delete affordance:
+**Preferred retrain path for an EXPERIMENT — a scratch `wwId`, no destruction, no cap.**
+The container is S3-only and never touches DynamoDB (the Batch state-change watcher owns the
+status flip), and it writes to `wakewords/<wwId>/`. So an evaluation round needs no record
+deletion, no counter reset and no app interaction, and **cannot disturb the model the owner's
+device is serving**. The job definition tracks `:latest`, so a container push alone is picked up —
+no stack deploy needed:
+
+```
+aws batch submit-job --region us-east-1 \
+  --job-name ww-r3-liveninja --job-queue live-ninja-wakeword-train \
+  --job-definition live-ninja-wakeword-train \
+  --container-overrides 'command=["--phrase","hey live ninja","--ww-id","<scratch-id>","--user-id","82417102-18ff-4ac7-a290-967c1ec6fdae"]'
+```
+
+Then `aws s3 cp s3://live-ninja-wakewords-759775734231/wakewords/<scratch-id>/android/model.onnx
+containers/wakeword-train/eval/heads/<name>.onnx` and score. Promote to the real `wwId` only once a
+round clears the bar. Delete the scratch prefix afterwards.
+
+**Restart policy for a REAL retrain** (promoting a phrase the app serves). Delete the record first —
+re-creating a `ready` phrase returns 409 `ErrCollision`, only `failed` retrains in place, and the
+app has no delete affordance:
 `aws s3 rm s3://live-ninja-wakewords-759775734231/wakewords/<wwId>/ --recursive` then
 `aws dynamodb delete-item --table-name live-ninja --region us-east-1 --key
 '{"pk":{"S":"USER#82417102-18ff-4ac7-a290-967c1ec6fdae"},"sk":{"S":"WAKEWORD#<wwId>"}}'`, reset the
