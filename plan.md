@@ -1290,7 +1290,12 @@ a resumed run picks up**.
 - `hey-jarvis` is a **builtin**; the server answers its manifest route with a by-design 404
   `builtin_model` (`internal/webapp/wakeword_routes.go`).
 - **Model quality, measured on the PC** (peak score over recorded clips; see the Gotchas entry for
-  the harness). `hey-jarvis` is upstream openWakeWord and the quality bar:
+  the harness). `hey-jarvis` is upstream openWakeWord and the quality bar.
+
+  **Superseded 2026-08-09 — the numbers below were measured against a clip set that had no
+  phonetically-close near-miss for any phrase, and two of its files were 22050 Hz fed into a
+  16 kHz-only pipeline. See §7.4 for the corrected table. Kept because §7.4's history refers to
+  them.**
 
   | model | target | loudest non-target |
   |---|---|---|
@@ -1347,21 +1352,75 @@ as meaningless.**
   different distinctive word, mirror case for the carrier, `N_NEGATIVE_TTS` 160 → 400 (the set had
   been 2:1 *positive* while the class-imbalance weight assumed the opposite). Fixed both two-word
   phrases; **broke the three-word one** — see the table above.
-- `[~]` **Round 2 — near-misses shaped per phrase length** (`2b7b502`, pushed, image built): 3+
-  word phrases now vary **one position at a time** across every position rather than emitting 36
-  variants that all share "hey live". The two-word branch is byte-for-byte unchanged **because that
-  is the branch with measurements behind it** — `hey-sunshine` reproducing 0.311 is the control.
-  **IN FLIGHT at pause:** `hey-live-ninja` retrain submitted, status `training`, no manifest in S3
-  yet.
-- `[ ]` **`hey-sunshine` target is too weak** (0.518). It cleared the false-positive half of the
-  bar and was initially waved through on the trainer's own 97.9% recall; holding it to the same bar
-  is the more honest call. Untouched since round 1.
-- `[ ]` **If round 2 misses, raise the positive side, not the negatives.** 240 positives against a
-  much harder negative set is the next suspect; `N_POSITIVE` is an env knob that leaves the
-  now-working negative logic alone.
+- `[x]` **Round 2 — near-misses shaped per phrase length** (`2b7b502`): 3+ word phrases vary **one
+  position at a time** across every position rather than emitting 36 variants that all share "hey
+  live". The two-word branch is byte-for-byte unchanged. **Landed and MEASURED 2026-08-09
+  02:47Z — it made the three-word phrase worse, not better.** See the corrected table below.
+
+#### Corrected measurement, 2026-08-09 — the earlier clip set was flattering every model
+
+Re-measured with a rebuilt clip set: **54 clips, both installed SAPI voices, every file 16 kHz,
+text known by construction** (`clips.tsv`), and a per-head target map so "loudest non-target" is
+that head's own worst confusion rather than "every clip whose name starts with `pos_`".
+
+Two defects in the old set, each of which flattered the result:
+
+1. **Five clips were 22050 Hz** fed into a pipeline that assumes 16 kHz and never resamples. That
+   is why `wake_true_heyliveninja` scored **0.097 on the original, known-working model** — the
+   clip was junk, not the model.
+2. **No phrase had a phonetically close near-miss.** "hey banana" is not a hard test for
+   "hey automatica"; "hey america" is.
+
+| model | target (min / mean over 2 voices) | loudest non-target | worst confusion | bar |
+|---|---|---|---|---|
+| hey-jarvis (bundled, upstream) | 0.998 / 0.998 | **0.221** | hey moonshine | **PASS** |
+| hey-automatica (round 1) | 0.924 / 0.957 | **0.996** | **hey america** | FAIL |
+| hey-sunshine (round 1) | 0.518 / 0.758 | **0.999** | hey sunshine ninja | FAIL |
+| hey-live-ninja (pre-fix original) | 0.996 / 0.998 | 1.000 | fires on everything | FAIL |
+| hey-live-ninja (round 1) | 0.138 / 0.543 | 0.986 | hey moonshine | FAIL |
+| hey-live-ninja (**round 2**) | **0.001 / 0.074** | **0.997** | hey moonshine | FAIL |
+
+**`hey-automatica` does not actually clear the bar.** Its recorded 0.343 was the loudest score in a
+clip set containing nothing that sounds like "automatica". Against "hey america" it fires at
+**0.996** and against "hey automatic" at 0.994. Round 1 did not fix the two-word phrases either —
+it fixed them against the specific negatives that happened to be on disk. **Only `hey-jarvis`
+passes, and it is the one model this pipeline did not train.**
+
+**Round 2's model has not learned its phrase at all.** Full ranked dump: the six loudest clips are
+all "hey moonshine" / "hey moonshine ninja" (0.983–0.997), then "hey lima beans" at 0.784, then
+**everything else including its own target phrase at ≤0.148**. It correctly rejects the other 60+
+clips, so the negative training did work broadly — it simply kept one catastrophic confusion and
+lost the positive.
+
+**The out-of-distribution excuse does not apply, and this is what rules it out.** The standing
+gotcha says SAPI clips are OOD versus piper training audio, so target scores understate. But
+`hey-automatica` — same trainer, same piper TTS, same harness — scores **0.991** on SAPI audio. A
+model this pipeline trains *can* score 0.99 on these clips. So round 2's 0.001 is a genuine failure
+to learn the target, not a measurement artifact.
+
+**Refuted along the way** (recorded so it is not re-derived): the obvious theory was that the 3-word
+branch never emits a two-word `hey <distractor>` negative, so the model never saw that shape. It is
+true that it never emits one — and it is not the cause. `hey moonshine ninja` **is** an explicit
+training negative and round 2 scores it **0.996**. The model fires on a phrase it was trained to
+reject, so this is not near-miss coverage.
+
+- `[ ]` **Round 3 — raise the positive side, not the negatives.** This was already the plan's stated
+  next step and the measurement now supports it: 240 positives (720 canvases after `AUG_PER_POS=2`)
+  against 400 much harder negatives leaves the target under-determined, and the 3-word phrase has
+  the least margin because each near-miss shares 2 of its 3 words. `N_POSITIVE` is an env knob, so
+  this leaves the negative logic alone. **Headroom is available and measured: the job finishes in
+  ~2 min against an 18-minute deadline**, so several times the data costs nothing but wall clock.
+- `[ ]` **`hey-sunshine` and `hey-automatica` both need a round too** — neither clears the bar once
+  a close near-miss exists. Do not retrain them until the 3-word phrase clears, so that one variable
+  moves at a time.
 
 **Definition of done (applies to every phrase, same clips, same harness):**
-`target >= 0.8 AND loudest non-target <= 0.4`. `hey-automatica` already clears it at 0.991 / 0.343.
+`target >= 0.8 AND loudest non-target <= 0.4`, where target is the **weakest** of the two voices and
+the non-target set **excludes** clips that contain the target phrase ("hey live ninjas" firing is
+not a defect). Command:
+`python score3.py` in the session scratchpad's `wake/` directory — it prints a PASS/FAIL per head.
+**Nothing this pipeline has produced clears it.** `hey-jarvis` does, at 0.998 / 0.221, and is the
+reference.
 
 **Restart policy for a training round.** Delete the record first — re-creating a `ready` phrase
 returns 409 `ErrCollision`, only `failed` retrains in place, and the app has no delete affordance:
@@ -1410,10 +1469,25 @@ with no improvement in loudest non-target — then stop and report rather than k
   `s3://live-ninja-wakewords-759775734231/wakewords/<wwId>/android/model.onnx`, clips from Windows
   SAPI at 16 kHz mono (`System.Speech`, `SpeechAudioFormatInfo(16000, Sixteen, Mono)`).
   **Judge on target AND loudest non-target together** — the 2026-08-08 regression is invisible if
-  you watch only one, and a broken model still scores ~1.0 on its own phrase. Caveat that keeps
-  being relevant: these clips are SAPI while the models train on piper, so they are
-  out-of-distribution and absolute target numbers understate real performance. False-positive
-  *direction* is reliable; recall is not.
+  you watch only one, and a broken model still scores ~1.0 on its own phrase.
+
+  **Three ways this harness lies to you, all found on 2026-08-09, all cheap to avoid:**
+  1. **Every clip must be 16 kHz.** The pipeline reads raw PCM and never resamples, so a 22050 Hz
+     file is fed at the wrong rate and scores near zero. Five clips in the original set were
+     22050 Hz, which is the entire reason `wake_true_heyliveninja` scored 0.097 against a model
+     that was known to work. `score3.py` asserts the rate rather than trusting the filename.
+  2. **A clip set with no phonetically close near-miss will pass a bad model.** "hey banana" does
+     not test "hey automatica"; "hey america" does, and it took that model from a recorded 0.343
+     to 0.996. Generate near-misses that vary ONE sound, not one word.
+  3. **`pos_*` is not a target for every head.** Scoring "loudest non-target" as "every clip not
+     named `pos_*`" hides a model firing on another phrase's positive. Declare the target per head.
+
+  The OOD caveat is real but has a **control that tells you when to stop invoking it**: these clips
+  are SAPI while the models train on piper, so absolute target numbers understate. But
+  `hey-automatica` scores **0.991** on this SAPI set, so a model from this pipeline *can* score 0.99
+  here. Before blaming OOD for a low target, check what a known-good head from the same trainer
+  scores on the same clips — on 2026-08-09 that is what proved round 2 had genuinely lost its
+  phrase rather than merely being measured unfairly.
 - **`adb`, Git Bash, and remote paths.** `adb shell` commands containing an absolute path get
   MSYS-mangled into `C:/Program Files/Git/...`; prefix `MSYS_NO_PATHCONV=1` and quote the whole
   remote command. Local paths passed to `adb push` must be Windows-style (`C:/...`), not `/c/...`.
