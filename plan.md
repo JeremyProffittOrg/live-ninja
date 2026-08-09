@@ -17,7 +17,28 @@ Archived (history preserved in full, banners at the top of each):
 
 ---
 
-## Where things actually stand (2026-08-01)
+## Where things actually stand (2026-08-08)
+
+**§7 is the live workstream** and the only one mid-flight. Two owner bug reports on the Galaxy S9 —
+Settings crashing on open, and the wake word never responding — turned out to be one causal chain
+(the crash made the always-listening switch, the only thing that enables the wake word,
+unreachable). Both are fixed, shipped and verified on the device, along with two further defects
+found on the way: builtin phrases reporting a fetch failure for a model that ships in the apk, and
+a picker that never showed the user's own trained phrases.
+
+Chasing the owner's follow-up — *"seems like Hey &lt;anything&gt; gets a response"* — went deeper
+than the app. **Every model the training pipeline had ever produced fired on unrelated speech as
+hard as on its own phrase**, because the negative set contained almost nothing of the shape it
+needed to reject. That is now two rounds into being fixed: round 1 repaired both two-word phrases
+and broke the three-word one, round 2 is in flight. §7.4 carries the numbers, the bar, and the
+restart policy.
+
+Worth knowing before resuming: **reasoning lost to measurement four separate times today** — on the
+CI test, on the false triggers, on the fetch-failure message, and on the threshold. Each was
+settled in one shot by dumping actual state. The PC-side scoring loop in the Gotchas section is the
+fast way to do that and needs no device.
+
+## Where things actually stood (2026-08-01)
 
 **Newest first.** The mobile conversation shell shipped today (§4) — seven UI items, four green
 pipelines, verified on the physical tablet against production. Running it on real hardware turned up
@@ -1241,6 +1262,135 @@ Anything else — including an ugly workaround, a milestone that has to be marke
 Android codec overrunning into its stated fallback — is worked around and reported at the end,
 not paused on.
 
+## §7 — Android wake word: unreachable, then undiscriminating (2026-08-08) `[~]`
+
+Started as two owner bug reports on a Galaxy S9 and ran all the way down into the training
+pipeline. Everything through §7.3 is **shipped and verified**; §7.4 is **mid-iteration and is where
+a resumed run picks up**.
+
+### Locked decisions (user-confirmed 2026-08-08; do not revisit)
+
+- **Target device is the Galaxy S9 phone** (`SM-G965U`, serial `4633424442303098`), not the Tab S9
+  FE. It runs Android 10 / **SDK 29 — exactly the app's `minSdk`**, so it is the only device that
+  exercises the API floor.
+- **Iterate training until the models are right.** Standing authorization, given after two rounds
+  had already landed.
+- **The daily 3/day training cap may be bypassed** to keep iterating: reset `count` on
+  `USER#<uid>` / `WWTRAIN#<yyyy-mm-dd>`. Used repeatedly. The cap itself is not disabled.
+- `TapToTalkConnectingStateTest` **must not be quarantined or weakened** (carried from 2026-08-01;
+  honoured — it was fixed properly, see Gotchas).
+
+### Verified facts (each confirmed by command, not inference)
+
+- **Only four wake models exist**, in `s3://live-ninja-wakewords-759775734231/wakewords/`:
+  `hey-live-ninja-47df2e`, `hey-automatica-7e4f38`, `okay-joshua-5996e4`, `hey-sunshine-e3e953`.
+  All belong to `USER#82417102-18ff-4ac7-a290-967c1ec6fdae`.
+- The Android picker also offers `hey-ninja`, `ninja-go`, `hey-assistant-pro`, `okay-dojo`,
+  `ok-ninja`, `ninja` — **none of which have detectors**. Selecting one 404s.
+- `hey-jarvis` is a **builtin**; the server answers its manifest route with a by-design 404
+  `builtin_model` (`internal/webapp/wakeword_routes.go`).
+- **Model quality, measured on the PC** (peak score over recorded clips; see the Gotchas entry for
+  the harness). `hey-jarvis` is upstream openWakeWord and the quality bar:
+
+  | model | target | loudest non-target |
+  |---|---|---|
+  | hey-jarvis (bundled) | 0.998 | **0.221** |
+  | hey-automatica (round 1 retrain) | 0.991 | **0.343** |
+  | hey-sunshine (round 1 retrain) | 0.518 | **0.311** |
+  | hey-live-ninja (round 1 retrain) | **0.138** | **0.986** |
+
+- **Training status stays `training` in DynamoDB until an API read finalizes it.** `finalize()`
+  runs only on the Catalog/Get/Model paths, so polling DynamoDB directly never observes
+  completion — watch AWS Batch or S3 instead.
+
+### §7.1 `[x]` Settings crash + wake word unreachable — `d5aad54`
+
+`personaCatalog` was declared *below* the `init` block that read it; `viewModelScope` dispatches on
+`Main.immediate`, so `settingsStore.document.collect` ran during construction and `StateFlow`
+replayed into `buildPersonaPresets()` while the field was still JVM-null. That crash made the
+Settings switch — the **only** thing that sets `serviceEnabled` — unreachable, so the wake word had
+no path to being on at all (`wake.xml` did not exist on the device).
+Separately, `serviceEnabled` outlives the process but the service does not, and both callers of
+`WakeWordService.start` were unreachable on an ordinary launch. `MainActivity.onStart` now
+re-asserts the persisted intent via `shouldResumeWakeService(...)`.
+**Done when:** `./gradlew :app:testDebugUnitTest` green *and* Settings opens on the S9 with zero
+`FATAL` in `logcat -b crash`. Both hold.
+
+### §7.2 `[x]` "Couldn't fetch this phrase's model" — `9b87547`
+
+Two causes behind one message. Builtins were fetched from the server and their by-design 404 was
+read as failure, so **Hey Jarvis — the best model available — reported an error**. And every
+untrained catalog phrase returned `Failed` **with no log line at all**, making it undiagnosable.
+`sync()` now short-circuits builtins before the token check, and `NotTrained` is distinct from
+`Failed`. Help drawer updated in the same commit.
+
+### §7.3 `[x]` The picker never showed the user's own phrases — `684de60`
+
+Android read only the static `/static/wakewords/catalog.json`, which says of itself that
+user-trained phrases arrive in M6. `GET /api/v1/wakeword` has returned builtins **plus the caller's
+own wakewords** since M6 and nothing called it. Now preferred, with the static file as the
+signed-out/offline fallback; ESP32 WakeNet entries filtered by platform, and duplicate phrases
+collapsed (the bare slug `hey-live-ninja` vs the trained `hey-live-ninja-47df2e`).
+**Done when:** the S9 picker lists the trained phrases as "Trained · ready to use", one row each.
+Verified.
+
+### §7.4 `[~]` Training pipeline — models that fire on "hey anything"
+
+**The finding.** Every model this pipeline produced scored non-target speech as high as its own
+phrase. Cause: hard negatives were derived only from the target phrase, and `negative_phrases.txt`
+is 67 everyday sentences of which **two** begin with "hey" — so the model never saw a negative of
+the shape it must reject and learned "utterance beginning with *hey*". Old runs validated against
+55 such negatives and duly reported `valFalsePositiveRate: 0.0`; **treat any pre-`e52174c` metric
+as meaningless.**
+
+- `[x]` **Round 1 — carrier-swapped negatives** (`e52174c`): the target's leading word plus a
+  different distinctive word, mirror case for the carrier, `N_NEGATIVE_TTS` 160 → 400 (the set had
+  been 2:1 *positive* while the class-imbalance weight assumed the opposite). Fixed both two-word
+  phrases; **broke the three-word one** — see the table above.
+- `[~]` **Round 2 — near-misses shaped per phrase length** (`2b7b502`, pushed, image built): 3+
+  word phrases now vary **one position at a time** across every position rather than emitting 36
+  variants that all share "hey live". The two-word branch is byte-for-byte unchanged **because that
+  is the branch with measurements behind it** — `hey-sunshine` reproducing 0.311 is the control.
+  **IN FLIGHT at pause:** `hey-live-ninja` retrain submitted, status `training`, no manifest in S3
+  yet.
+- `[ ]` **`hey-sunshine` target is too weak** (0.518). It cleared the false-positive half of the
+  bar and was initially waved through on the trainer's own 97.9% recall; holding it to the same bar
+  is the more honest call. Untouched since round 1.
+- `[ ]` **If round 2 misses, raise the positive side, not the negatives.** 240 positives against a
+  much harder negative set is the next suspect; `N_POSITIVE` is an env knob that leaves the
+  now-working negative logic alone.
+
+**Definition of done (applies to every phrase, same clips, same harness):**
+`target >= 0.8 AND loudest non-target <= 0.4`. `hey-automatica` already clears it at 0.991 / 0.343.
+
+**Restart policy for a training round.** Delete the record first — re-creating a `ready` phrase
+returns 409 `ErrCollision`, only `failed` retrains in place, and the app has no delete affordance:
+`aws s3 rm s3://live-ninja-wakewords-759775734231/wakewords/<wwId>/ --recursive` then
+`aws dynamodb delete-item --table-name live-ninja --region us-east-1 --key
+'{"pk":{"S":"USER#82417102-18ff-4ac7-a290-967c1ec6fdae"},"sk":{"S":"WAKEWORD#<wwId>"}}'`, reset the
+`WWTRAIN#<day>` counter, then request training from the app's Settings → Wake word → Custom wake
+phrase. A trainer change only reaches Batch after a push to `main` rebuilds the image
+(`build-wakeword-container` in the Deploy run). One round ≈ 15 min. **Ceiling: 3 consecutive rounds
+with no improvement in loudest non-target — then stop and report rather than keep burning jobs.**
+
+**Backups (a failed round is recoverable).** Old S3 artifacts and the DynamoDB records for
+`hey-live-ninja-47df2e` and `hey-automatica-7e4f38` are under the session scratchpad
+`.../scratchpad/backup/`. These are machine-local and will not survive the machine.
+
+### §7.5 `[ ]` Deliberately not done
+
+- **Do NOT wire `recommendedThreshold` into the client.** It looks like a defect — the trainer
+  calibrates one per model and no client reads it — but measurement says adopting it would *hurt*:
+  `hey-automatica` publishes **0.9** yet is excellent at 0.5 (0.991 / 0.343), and 0.9 costs recall
+  (its own metrics: 93.8%). The heuristic `clip(percentile(neg_scores,99.5)+0.07, 0.5, 0.9)` was
+  written for 55 soft negatives; with deliberately near-identical carrier swaps the 99.5th
+  percentile is high **by design** and pins to the ceiling. Fix the heuristic before the client.
+- **The six catalog phrases with no detector.** A server-side training gap; the client now reports
+  it honestly rather than implying a network fault.
+- **`R.string` for "Always listening"** still says "without touching the **tablet**" on a phone.
+- `okay-joshua`'s `recommendedThreshold` of 0.754 predates the fix (55 negatives) — junk until
+  retrained.
+
 ## Standing rules (carried forward — these do not expire)
 
 - **Deploy = push to `main`.** Never deploy from a local machine. Watch the run to a terminal result.
@@ -1252,6 +1402,24 @@ not paused on.
 
 ## Gotchas that cost real time (don't re-learn these)
 
+- **Score a wake model on the PC in ~2 minutes, no device.** `onnxruntime` is installed. Replicate
+  `OwwPipeline.kt` exactly — 1280-sample chunks, 480 samples left context, mel `x/10+2`, 76-frame
+  mel window → one 96-d embedding, 16-embedding window → head — with the buffers prefilled from the
+  models' silence outputs, as `reset()` does. Mel and embedding models come from
+  `android/app/src/main/assets/wakeword/`, heads from
+  `s3://live-ninja-wakewords-759775734231/wakewords/<wwId>/android/model.onnx`, clips from Windows
+  SAPI at 16 kHz mono (`System.Speech`, `SpeechAudioFormatInfo(16000, Sixteen, Mono)`).
+  **Judge on target AND loudest non-target together** — the 2026-08-08 regression is invisible if
+  you watch only one, and a broken model still scores ~1.0 on its own phrase. Caveat that keeps
+  being relevant: these clips are SAPI while the models train on piper, so they are
+  out-of-distribution and absolute target numbers understate real performance. False-positive
+  *direction* is reliable; recall is not.
+- **`adb`, Git Bash, and remote paths.** `adb shell` commands containing an absolute path get
+  MSYS-mangled into `C:/Program Files/Git/...`; prefix `MSYS_NO_PATHCONV=1` and quote the whole
+  remote command. Local paths passed to `adb push` must be Windows-style (`C:/...`), not `/c/...`.
+- **NEVER run `connectedAndroidTest` against the owner's phone.** Gradle uninstalls before
+  installing and wipes sign-in, settings and downloaded models — it cost a real re-signin on
+  2026-08-08. Use the emulator (`liveninja-test`), or `adb install -r -g` for device checks.
 - **`TapToTalkConnectingStateTest` raced a network round trip. SOLVED 2026-08-08.** Kept here
   because the wrong answer was convincing for a week and is easy to re-derive.
 
