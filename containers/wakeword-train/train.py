@@ -193,6 +193,26 @@ def place_on_canvas(clip_f32, rng):
     return canvas
 
 
+def trim_silence(clip_f32, ratio=0.02, pad=800):
+    """Drop leading/trailing near-silence, keeping `pad` samples (50 ms) of run-up either side.
+
+    Threshold is relative to the clip's own peak, so it is gain-independent. Returns the input
+    unchanged if the clip is empty or entirely silent.
+    """
+    if clip_f32.size == 0:
+        return clip_f32
+    mag = np.abs(clip_f32)
+    peak = float(mag.max())
+    if peak <= 0.0:
+        return clip_f32
+    loud = np.nonzero(mag >= peak * ratio)[0]
+    if loud.size == 0:
+        return clip_f32
+    lo = max(0, int(loud[0]) - pad)
+    hi = min(len(clip_f32), int(loud[-1]) + 1 + pad)
+    return clip_f32[lo:hi]
+
+
 def time_warp(clip_f32, rng):
     """Resample by a random factor, varying speaking rate and pitch together.
 
@@ -217,20 +237,30 @@ def time_warp(clip_f32, rng):
 
     Applied to BOTH classes, so "has been resampled" can never itself become the class cue.
     """
-    n_in = len(clip_f32)
+    # Trim to the speech itself first. The canvas is the constraint on how far a clip can be SLOWED
+    # (place_on_canvas keeps only the last TARGET_SAMPLES, so an overrun drops the opening word and
+    # trains a "positive" that no longer contains the phrase) -- and silence padding counts against
+    # that budget without carrying any signal. Trimming first is what keeps the slow direction
+    # available for a long phrase.
+    #
+    # Round 3 (2026-08-09) clamped the range against the UNtrimmed length instead, which pinned the
+    # lower bound near 1.0 for the longest clips, so the three-word phrase was only ever sped up.
+    # That is the wrong direction: both test voices peak at ~1.15x, i.e. the real recording is
+    # SLOWER than what the model expects. Measured effect of that mistake -- the two-word phrase,
+    # whose clips are short enough to escape the clamp, improved on the slow side (0.869 -> 0.998 at
+    # 0.85x) while the three-word phrase barely moved (0.000 -> 0.174).
+    clip = trim_silence(clip_f32)
+    n_in = len(clip)
     if n_in < 2:
         return clip_f32
-    # Never stretch a clip past the canvas: place_on_canvas keeps only the last TARGET_SAMPLES,
-    # so a slowed-down clip that overruns would lose its opening word and be trained as a positive
-    # that no longer contains the phrase.
     lo = max(0.78, n_in / TARGET_SAMPLES)
     hi = 1.28
     if lo >= hi:
-        return clip_f32
+        return clip
     f = float(rng.uniform(lo, hi))
     n_out = max(1, int(n_in / f))
     return np.interp(
-        np.linspace(0, n_in - 1, n_out), np.arange(n_in), clip_f32
+        np.linspace(0, n_in - 1, n_out), np.arange(n_in), clip
     ).astype(np.float32)
 
 
@@ -786,6 +816,20 @@ def run_training(args, deadline):
             neg_texts, n_neg_tts, workdir / "neg", deadline, reserve_s,
             tts_batch, tts_chunk, min_required=8 if smoke else 40,
         )
+
+        # Clip lengths decide how much of the time_warp range survives its canvas clamp, and a
+        # phrase whose clips approach TARGET_SAMPLES loses the slow direction entirely. Logged
+        # because inferring it from model behaviour cost a training round on 2026-08-09.
+        for label, clips_ in (("positive", pos_clips), ("negative", neg_clips)):
+            raw = np.array([len(c) for c in clips_], dtype=np.float64)
+            trimmed = np.array([len(trim_silence(c)) for c in clips_], dtype=np.float64)
+            log.info(
+                "%s clip samples: raw med %d max %d | trimmed med %d max %d | "
+                "slowest warp allowed after trim %.2fx (canvas %d)",
+                label, int(np.median(raw)), int(raw.max()),
+                int(np.median(trimmed)), int(trimmed.max()),
+                max(0.78, float(trimmed.max()) / TARGET_SAMPLES), TARGET_SAMPLES,
+            )
 
         deadline.phase = "augment"
         canvases, labels = [], []

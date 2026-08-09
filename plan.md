@@ -1440,7 +1440,43 @@ The threshold is then fitted on the same `Xv` the FPR is reported against. `0.98
 `0.0072 × 138 = 1`: one error on each side of a set containing no new utterance. **Judge on the
 harness, never on the manifest.**
 
-- `[~]` **Round 3 — symmetric time-warp augmentation.** `time_warp()` resamples by
+- `[x]` **Round 3 — symmetric time-warp augmentation. RAN 2026-08-09, did NOT clear the bar, and
+  the way it failed identified a defect in the fix itself.** Trained to scratch ids
+  `hey-live-ninja-r3warp` / `hey-automatica-r3warp` (control, same round, same image).
+
+  | model | target (min/mean) | loudest non-target | vs previous |
+  |---|---|---|---|
+  | hey-live-ninja r3 | 0.023 / 0.128 | 0.996 | 0.001 → 0.023, still FAIL |
+  | hey-automatica r3 | 0.943 / 0.970 | 0.991 | 0.924 → 0.943, still FAIL |
+
+  `valRecallAtThreshold` fell 0.9897 → **0.9278** exactly as predicted, so the sibling leakage is
+  genuinely gone and the manifest metric is now honest.
+
+  **The differential is the finding.** On the SLOW side of the tuning curve the two-word phrase
+  improved a lot and the three-word phrase barely moved:
+
+  | | 0.85× | 0.95× | 1.00× |
+  |---|---|---|---|
+  | hey-automatica r1 → r3 | 0.869 → **0.998** | 0.972 → **0.994** | 0.991 → 0.997 |
+  | hey-live-ninja r2 → r3 | 0.000 → 0.174 | 0.000 → 0.070 | 0.001 → 0.023 |
+
+  **Cause: the canvas clamp in `time_warp` blocked the direction that was needed.** The lower bound
+  was `max(0.78, len(clip)/TARGET_SAMPLES)` computed on the UNtrimmed clip, so a clip approaching
+  the 2.0 s canvas got a lower bound near 1.0 and could only ever be **sped up**. Both test voices
+  peak at ~1.15×, meaning the real recording is *slower* than the model expects — so speed-up-only
+  augmentation adds coverage where it was already fine. The two-word phrase's clips are short
+  enough to escape the clamp, which is exactly why it improved and the three-word one did not.
+
+- `[~]` **Round 4 — trim silence before warping, and log the clip lengths.** `trim_silence()` drops
+  leading/trailing near-silence (threshold relative to the clip's own peak, 50 ms run-up kept)
+  before the warp, so silence padding stops consuming the canvas budget and the full
+  0.78–1.28× range survives for every clip length — verified: 0 canvas overruns at speech durations
+  0.75–1.30 s with up to 0.6 s of padding either side. The trainer now also logs the raw and trimmed
+  clip-length distribution and the slowest warp its clamp actually permits, because inferring that
+  from model behaviour is what cost round 3.
+
+  *Superseded description of round 3's mechanism, kept because the reasoning still holds:*
+  `time_warp()` resamples by
   `U(0.78, 1.28)`, varying rate and pitch together, applied to **both** classes so "has been
   resampled" can never become the class cue, and each augmented copy is now warped and re-placed
   from the source clip rather than sharing one canvas — which repairs the sibling leakage above as a
