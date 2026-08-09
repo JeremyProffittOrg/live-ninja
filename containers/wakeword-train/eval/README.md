@@ -20,9 +20,17 @@ powershell -ExecutionPolicy Bypass -File gen_clips.ps1
 # fetch the heads to score
 aws s3 cp s3://live-ninja-wakewords-759775734231/wakewords/<wwId>/android/model.onnx heads/<name>.onnx
 
-python score_heads.py            # every head in heads/
-python score_heads.py liveninja  # only heads whose name contains "liveninja"
+python score_heads.py                   # every head in heads/
+python score_heads.py liveninja         # only heads whose name contains "liveninja"
+python score_heads.py liveninja --warp  # also print the rate-tolerance curve
 ```
+
+`--warp` is the check a single score cannot give you. It sweeps the target clip across playback
+rates 0.85×–1.40× and flags a head `THIN` if it drops below 0.8 anywhere in 0.90×–1.30×. A head can
+score 1.000 at native rate and still be useless, because the test clip happened to land inside a
+narrow acceptance region — which is exactly how `hey-live-ninja` round 2 read as 0.001 while
+scoring 0.775 at 1.30×. Even `hey-automatica`, the best model this pipeline has produced, is `OK`
+on one SAPI voice and `THIN` on the other.
 
 `score_heads.py` reads the mel + embedding models from
 `android/app/src/main/assets/wakeword/`, so it replicates what the phone actually runs.

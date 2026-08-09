@@ -13,7 +13,6 @@ Two corrections over the earlier harness:
 ninja") are reported separately and excluded from the bar -- firing on those is not a defect, and
 including them would not be comparable to the numbers already recorded in plan.md.
 """
-import csv
 import glob
 import os
 import sys
@@ -63,10 +62,10 @@ def run_emb(win):
 
 
 def score_clip(head_s, path):
-    with wave.open(path, "rb") as w:
-        assert w.getframerate() == 16000, f"{path} is {w.getframerate()}Hz, pipeline needs 16000"
-        pcm = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32)
+    return score_clip_pcm(head_s, load_pcm(path))
 
+
+def score_clip_pcm(head_s, pcm):
     silent_mel = run_mel(np.zeros(CTX + CHUNK, dtype=np.float32))[-1]
     mel_buf = np.tile(silent_mel, (MEL_WIN, 1))
     emb_buf = np.tile(run_emb(mel_buf), (EMB_WIN, 1))
@@ -97,7 +96,46 @@ heads = {"hey-jarvis": os.path.join(ASSETS, "hey_jarvis_v0.1.onnx")}
 for p in sorted(glob.glob(os.path.join(SP, "heads", "*.onnx"))):
     heads[os.path.basename(p)[:-5]] = p
 
-only = sys.argv[1:] or None
+def warp(pcm, f):
+    """Resample by factor f (>1 = faster/higher), the axis train.py's time_warp augments."""
+    n_out = max(1, int(len(pcm) / f))
+    return np.interp(
+        np.linspace(0, len(pcm) - 1, n_out), np.arange(len(pcm)), pcm
+    ).astype(np.float32)
+
+
+def load_pcm(path):
+    with wave.open(path, "rb") as w:
+        assert w.getframerate() == 16000, f"{path} is {w.getframerate()}Hz, pipeline needs 16000"
+        return np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32)
+
+
+WARP_FACTORS = (0.85, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30, 1.40)
+# A head must hold up across the rates real speakers actually use. A single score at 1.00x cannot
+# tell a robust head from one whose acceptance region happens to contain the test clip: on
+# 2026-08-09 hey-live-ninja scored 0.001 at native and 0.775 at 1.30x, i.e. it HAD learned the
+# phrase but into a manifold too thin to land in.
+WARP_BAND = (0.90, 1.30)
+
+
+def warp_report(heads_sel):
+    print("factor:" + "".join(f"{f:>7.2f}" for f in WARP_FACTORS))
+    for name, path in heads_sel:
+        tgt, _ = head_spec(name)
+        hs = ort.InferenceSession(path, so, providers=["CPUExecutionProvider"])
+        for p, v, s in clips:
+            if s != tgt:
+                continue
+            pcm = load_pcm(p)
+            row = [score_clip_pcm(hs, warp(pcm, f)) for f in WARP_FACTORS]
+            inband = [r for r, f in zip(row, WARP_FACTORS) if WARP_BAND[0] <= f <= WARP_BAND[1]]
+            ok = min(inband) >= BAR_TARGET
+            print(f"{name}/{v:<6s}" + "".join(f"{r:7.3f}" for r in row)
+                  + f"   in-band min {min(inband):.3f} {'OK' if ok else 'THIN'}")
+
+
+only = [a for a in sys.argv[1:] if not a.startswith("-")] or None
+want_warp = "--warp" in sys.argv
 summary = []
 
 for name, path in heads.items():
@@ -129,6 +167,12 @@ for name, path in heads.items():
     print(f"  -> weakest target {worst_t:.3f} (mean {mean_t:.3f})   loudest non-target {top_n:.3f} ({top_v} {top_s})")
     print(f"  -> BAR target>={BAR_TARGET} & non-target<={BAR_NEG}: {'PASS' if ok else 'FAIL'}")
     summary.append((name, worst_t, mean_t, top_n, top_s, ok))
+
+if want_warp:
+    print("\n\n============== RATE TOLERANCE (peak score vs resampling factor) ==============")
+    warp_report([(n, p) for n, p in heads.items() if not only or any(o in n for o in only)])
+    print(f"in-band = {WARP_BAND[0]}x..{WARP_BAND[1]}x; THIN means the head only works at rates "
+          f"a real speaker may not hit")
 
 print("\n\n===================== SUMMARY =====================")
 print(f"{'model':22s} {'tgt(min)':>8s} {'tgt(avg)':>8s} {'loud-neg':>8s}  {'worst confusion':22s} verdict")
