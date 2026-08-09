@@ -1380,6 +1380,30 @@ Two defects in the old set, each of which flattered the result:
 | hey-live-ninja (round 1) | 0.138 / 0.543 | 0.986 | hey moonshine | FAIL |
 | hey-live-ninja (**round 2**) | **0.001 / 0.074** | **0.997** | hey moonshine | FAIL |
 
+#### The negative work DID fix the owner's actual complaint — measure breadth, not just the max
+
+"Loudest non-target" is a **max**, and a max cannot tell "fires on everything" apart from "rejects
+almost everything but has one catastrophic confusion". Those are completely different products, and
+the owner's report — *"seems like Hey &lt;anything&gt; gets a response"* — was the first kind.
+Counting how many of the 60 non-target clips score ≥ 0.5 separates them:
+
+| hey-live-ninja model | target (min) | loudest non-target | **non-targets ≥ 0.5** |
+|---|---|---|---|
+| r0 — pre-fix, **the model the phone is serving today** | 0.996 | 1.000 | **39 / 60** |
+| r1 (`e52174c`) | 0.138 | 0.986 | 9 / 60 |
+| r2 (`2b7b502`) | 0.001 | 0.997 | **7 / 60** |
+| r3 (time warp) | 0.023 | 0.996 | 10 / 60 |
+
+**Rounds 1 and 2 worked.** They cut false positives from 39/60 to 7/60 — a 4–5× reduction, and
+exactly the defect the owner reported. What they cost was recall. So the workstream is no longer
+"the negative fix failed"; it is **"recover recall without giving back the false-positive gains"**,
+and the remaining false positives are not broad any more — they are dominated by one confusion
+("hey moonshine" and its variants), which is a different and smaller problem than r0's.
+
+Recorded because the earlier framing — every round a failure — is wrong and would justify reverting
+`e52174c`/`2b7b502`. **Do not revert them.** r0 scores its own phrase 0.996 only because it scores
+*everything* ~1.0.
+
 **`hey-automatica` does not actually clear the bar.** Its recorded 0.343 was the loudest score in a
 clip set containing nothing that sounds like "automatica". Against "hey america" it fires at
 **0.996** and against "hey automatic" at 0.994. Round 1 did not fix the two-word phrases either —

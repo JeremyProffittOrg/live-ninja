@@ -163,10 +163,15 @@ for name, path in heads.items():
     worst_t = min(b for b, _ in tvals)
     mean_t = sum(b for b, _ in tvals) / len(tvals)
     top_n, top_v, top_s = max(nvals)
+    # The bar's non-target half is a MAX, which cannot tell "fires on everything" apart from
+    # "rejects almost everything but has one catastrophic confusion" -- and those are very different
+    # products. The owner's original report was the first kind.
+    n_hot = sum(1 for b, _, _ in nvals if b >= 0.5)
     ok = worst_t >= BAR_TARGET and top_n <= BAR_NEG
     print(f"  -> weakest target {worst_t:.3f} (mean {mean_t:.3f})   loudest non-target {top_n:.3f} ({top_v} {top_s})")
+    print(f"  -> non-targets >= 0.5: {n_hot}/{len(nvals)}")
     print(f"  -> BAR target>={BAR_TARGET} & non-target<={BAR_NEG}: {'PASS' if ok else 'FAIL'}")
-    summary.append((name, worst_t, mean_t, top_n, top_s, ok))
+    summary.append((name, worst_t, mean_t, top_n, top_s, ok, n_hot, len(nvals)))
 
 if want_warp:
     print("\n\n============== RATE TOLERANCE (peak score vs resampling factor) ==============")
@@ -175,6 +180,7 @@ if want_warp:
           f"a real speaker may not hit")
 
 print("\n\n===================== SUMMARY =====================")
-print(f"{'model':22s} {'tgt(min)':>8s} {'tgt(avg)':>8s} {'loud-neg':>8s}  {'worst confusion':22s} verdict")
-for name, wt, mt, tn, ts, ok in summary:
-    print(f"{name:22s} {wt:8.3f} {mt:8.3f} {tn:8.3f}  {ts:22s} {'PASS' if ok else 'FAIL'}")
+print(f"{'model':22s} {'tgt(min)':>8s} {'tgt(avg)':>8s} {'loud-neg':>8s} {'hot':>7s}  {'worst confusion':22s} verdict")
+for name, wt, mt, tn, ts, ok, hot, ntot in summary:
+    print(f"{name:22s} {wt:8.3f} {mt:8.3f} {tn:8.3f} {f'{hot}/{ntot}':>7s}  {ts:22s} {'PASS' if ok else 'FAIL'}")
+print("hot = non-target clips scoring >= 0.5, i.e. how BROAD the false positives are, not just how loud")
