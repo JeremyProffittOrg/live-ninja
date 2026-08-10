@@ -2610,68 +2610,10 @@ Resources:
             FrameOption: DENY
             Override: true
 
-  # WAFv2 does NOT support associating a WebACL with an HTTP API (v2) —
-  # AWS::WAFv2::WebACLAssociation only accepts APPLICATION_LOAD_BALANCER,
-  # API_GATEWAY (REST/v1), APPSYNC, COGNITO_USER_POOL, APP_RUNNER_SERVICE,
-  # and VERIFIED_ACCESS_INSTANCE as resource types (verified against the
-  # WAFv2 resource-type enum; HTTP API and CloudFront are both absent from
-  # WebACLAssociation's allowed list). So this WebACL is CLOUDFRONT-scope
-  # and attaches directly via CloudFrontDistribution's WebACLId property
-  # instead, which is the only supported path for an HTTP-API-backed
-  # CloudFront distribution. CLOUDFRONT scope requires the WebACL be
-  # created in us-east-1 — this stack already deploys there (samconfig.toml).
-  EdgeWebACL:
-    Type: AWS::WAFv2::WebACL
-    Properties:
-      Name: live-ninja-edge
-      Scope: CLOUDFRONT
-      Description: Rate limiting + AWS managed common rule set in front of the 
-        live-ninja CloudFront distribution.
-      DefaultAction:
-        Allow: {}
-      VisibilityConfig:
-        SampledRequestsEnabled: true
-        CloudWatchMetricsEnabled: true
-        MetricName: live-ninja-edge
-      Rules:
-      - Name: RateLimitPerIP
-        Priority: 0
-        Action:
-          Block: {}
-        Statement:
-          RateBasedStatement:
-            Limit: 2000
-            EvaluationWindowSec: 300
-            AggregateKeyType: IP
-        VisibilityConfig:
-          SampledRequestsEnabled: true
-          CloudWatchMetricsEnabled: true
-          MetricName: live-ninja-rate-limit
-      - Name: AWSManagedRulesCommonRuleSet
-        Priority: 1
-        OverrideAction:
-          None: {}
-        Statement:
-          ManagedRuleGroupStatement:
-            VendorName: AWS
-            Name: AWSManagedRulesCommonRuleSet
-              # SizeRestrictions_BODY defaults to blocking any request body
-              # over 8KB. POST /api/v1/fallback/stt accepts a multipart
-              # audio upload up to 25MB (internal/webapp/api_routes.go,
-              # io.LimitReader(f, 25<<20)) through this same CloudFront
-              # distribution/origin, so the managed rule's default Block
-              # action would break that upload path. Every other POST body
-              # on this API (transcript batches, tool invokes, JSON turns)
-              # is well under 8KB, so only this one sub-rule is downgraded
-              # to Count instead of excluding the whole managed group.
-            RuleActionOverrides:
-            - Name: SizeRestrictions_BODY
-              ActionToUse:
-                Count: {}
-        VisibilityConfig:
-          SampledRequestsEnabled: true
-          CloudWatchMetricsEnabled: true
-          MetricName: live-ninja-common-rules
+  # WAF removed 2026-08-09 (cost): a CLOUDFRONT-scope WebACL bills a fixed
+  # $5/month plus $1/rule regardless of traffic. Re-add EdgeWebACL and the
+  # distribution's WebACLId if rate limiting or the managed rule set is
+  # wanted again -- see git history for the exact prior definition.
 
   CloudFrontDistribution:
     Type: AWS::CloudFront::Distribution
@@ -2681,7 +2623,6 @@ Resources:
         Comment: live-ninja edge for live.jeremy.ninja
         Aliases:
         - !Ref DomainName
-        WebACLId: !GetAtt EdgeWebACL.Arn
         HttpVersion: http2and3
         IPV6Enabled: true
         PriceClass: PriceClass_100
