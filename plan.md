@@ -1,5 +1,9 @@
 # Plan
 
+> **On the `alexa-version` branch only:** migration work to Azure is governed by
+> [azure-migration-plan.md](azure-migration-plan.md), not by this file. This file continues to govern
+> the AWS product work (§7.4 wake-word training is still mid-flight). The two do not overlap.
+
 Consolidated **2026-07-31**. Single source of truth for **active work**.
 Deliberately-deferred future items live in [backlog.md](backlog.md) — those are **not** scheduled and
 must not be pulled in here without a decision.
