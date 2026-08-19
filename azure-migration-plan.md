@@ -327,29 +327,100 @@ immediately and in parallel with it.
 - [ ] **A2. Create the resource group and Log Analytics workspace.** Region `eastus2`, chosen because
       it carries both the Azure Speech HD voices and the realtime models — confirm in A3. Names:
       `rg-liveninja-prod`, `log-liveninja-prod`.
-      DoD: `az group show -n rg-liveninja-prod --query properties.provisioningState -o tsv` returns
-      `Succeeded`.
+      Create the workspace with `retentionInDays: 7` per the org rule — Log Analytics defaults to 30,
+      so the Azure side silently regresses against the AWS baseline (13 of 17 log groups are at 5 days,
+      two at 7) unless it is set. Add `workspaceCapping.dailyQuotaGb: 1`.
+      DoD: `az monitor log-analytics workspace show -g rg-liveninja-prod -n log-liveninja-prod --query '[provisioningState,retentionInDays]' -o tsv`
+      returns `Succeeded  7`. *(The old DoD checked the resource group, which passes with zero
+      workspaces created — and WS-J M4's "zero unhandled errors in Log Analytics" then has no data to
+      read.)*
+- [ ] **A3a. Create the AI Foundry / Cognitive Services account** `cog-liveninja-prod` in the
+      candidate region. A3 interrogates this resource and WS-B M1 deploys into it; without this step
+      A3's command targets an object nothing creates, and WS-B declares "Depends on: A3 only" while A3
+      needs what WS-B M1 makes — a circular dependency that stalls both.
+      DoD: `az cognitiveservices account show -g rg-liveninja-prod -n cog-liveninja-prod --query properties.provisioningState -o tsv`
+      returns `Succeeded`.
 - [ ] **A3. Confirm model availability in region.** Verify `gpt-realtime-2.1`, `gpt-realtime-2.1-mini`,
       and Voice Live are all deployable in the chosen region before anything is built on top.
+      **A3 is a gate, not a note.** WS-C and WS-E now declare it as a dependency: nothing provisions
+      into a region A3 has not approved. The old fallback said only "re-run A2 and A3 in
+      `swedencentral`", which left already-built Cosmos, Blob, Service Bus, Event Hubs and ACR
+      resources stranded in the rejected region, under region-free names that cannot coexist.
       DoD: `az cognitiveservices account list-models -g rg-liveninja-prod -n <foundry-resource> --query "[?contains(name,'realtime')].name" -o tsv`
-      lists at least one of `gpt-realtime-2.1` / `gpt-realtime-2`, and one mini variant.
-      If neither is present in `eastus2`, re-run A2 and A3 in `swedencentral` and record the change here.
-- [ ] **A4. Create the Entra app and federated credential.** Subject
-      `repo:JeremyProffittOrg/live-ninja:ref:refs/heads/alexa-version`. Use the immutable-ID subject
-      form if the org requires it, matching the `event` repo's pattern. Assign Contributor on
-      `rg-liveninja-prod` only — never at subscription scope.
-      DoD: `az ad app federated-credential list --id <new-app-id> --query "[].subject" -o tsv`
-      contains the `live-ninja` subject and does NOT contain any `event` subject.
+      lists at least one of `gpt-realtime-2.1` / `gpt-realtime-2`, and one mini variant — **and**
+      `az cognitiveservices account list-skus -l <region> --query "[?kind=='SpeechServices'] | length(@)" -o tsv`
+      is non-zero (A2 justifies `eastus2` by the Speech HD voices, which the model query does not
+      test), **and** the Voice Live endpoint for the region does not 404.
+      If any of the three fails in `eastus2`, re-run A2 and A3 in `swedencentral` under the name
+      `rg-liveninja-prod-<region>`, record the change here, and reuse nothing built in the rejected
+      region.
+- [ ] **A4. Create the Entra app and federated credential.** This organisation **does** use GitHub's
+      immutable-ID subject form — that is a recorded org fact, not a maybe, so derive it rather than
+      hedging: `ORG_ID=$(gh api orgs/JeremyProffittOrg --jq .id)`,
+      `REPO_ID=$(gh api repos/JeremyProffittOrg/live-ninja --jq .id)`, subject
+      `repo:JeremyProffittOrg@${ORG_ID}/live-ninja@${REPO_ID}:ref:refs/heads/alexa-version`.
+      Assign **Contributor** *and* **Role Based Access Control Administrator**
+      (`f58310d9-a9f6-439a-9e8d-f62e7b41a168`), both scoped to `rg-liveninja-prod` only, never at
+      subscription scope. Contributor alone cannot create role assignments, and every managed-identity
+      path this plan depends on — B3's Entra bearer token, F1's, E1's Key Vault access — is a role
+      assignment, so the Bicep deploy would fail `AuthorizationFailed` at the first one. Creating these
+      two assignments requires the bootstrap identity to hold Owner or User Access Administrator on the
+      group; Contributor cannot bootstrap itself.
+      DoD: a real login, not a read-back of the string just written — push a `workflow_dispatch` job
+      running `azure/login@v2` and assert
+      `gh run list --workflow=deploy-azure.yml --limit 1 --json conclusion -q '.[0].conclusion'`
+      returns `success`. An `AADSTS70021` means the subject form is wrong. Guard the other repo by
+      count rather than by listing a new app's own credentials:
+      `az ad app federated-credential list --id f16364f7-e9d4-4b28-95aa-7b11e2fe8ea7 --query "length(@)" -o tsv`
+      returns the same number before and after this run.
+- [ ] **A4a. Create the user-assigned managed identity** `id-liveninja-prod` and assign it
+      `Key Vault Crypto User`, `Key Vault Secrets User`, and `Cognitive Services OpenAI User` on
+      `rg-liveninja-prod`. The service mapping assigns "IAM roles → Managed identities" to WS-A and no
+      milestone created one.
+      DoD: `az role assignment list --assignee <mi-principal-id> --query "[].roleDefinitionName" -o tsv`
+      lists all three, and
+      `az role assignment list --assignee <workflow-app-id> --all --query "[?scope=='/subscriptions/adc40fff-bab3-4bd2-b961-1832d0375052']" -o tsv`
+      is empty.
+- [ ] **A4b. Create the Key Vault and migrate the five secrets.** The service mapping assigns
+      "SSM Parameter Store → Key Vault secrets + Container Apps secret refs" to WS-A and no milestone
+      did it; without this the run reaches cutover with every secret in AWS only.
+      **No code rewrite is needed.** `internal/config/config.go:100-105` shows `Loader.Get` returns the
+      environment override immediately when set and never calls SSM, so mounting the five override
+      names from `config.go:39-45` — `OPENAI_API_KEY`, `GEMINI_API_KEY`, `LWA_CLIENT_ID`,
+      `LWA_CLIENT_SECRET`, `DEVICE_CRED_PEPPER` — as Container Apps secret refs is sufficient.
+      Create `kv-liveninja-prod` and add a secret-sync step to A7 mirroring the shape of
+      `.github/workflows/deploy.yml:283-313`: values passed through `env:`, never on the command line,
+      `set -eu` and never `set -x`.
+      **`DEVICE_CRED_PEPPER` is the exception and must not be regenerated.** It is machine-generated
+      once by `openssl rand -hex 32` (`deploy.yml:315-327`) and deliberately never rotated; the
+      operator does not know its value, so `scripts/set-secret.sh` cannot supply it. Pipe it directly
+      from SSM to Key Vault without it passing through a log or the conversation. Regenerating it
+      invalidates every device credential lineage.
+      DoD: `az keyvault secret list --vault-name kv-liveninja-prod --query "length(@)" -o tsv` returns
+      `5`, and
+      `az containerapp show -g rg-liveninja-prod -n web --query "properties.template.containers[0].env[?secretRef].name" -o tsv`
+      lists all five names. **No secret value appears in any log, any output, or this file.**
 - [ ] **A5. Set GitHub repository variables** (variables, not secrets — these are identifiers):
       `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`,
       `AZURE_REGION`, `AZURE_OPENAI_ENDPOINT`, `AZURE_FOUNDRY_ENDPOINT`.
-      DoD: `gh variable list --repo JeremyProffittOrg/live-ninja | grep -c '^AZURE_'` returns 7 or more.
+      Add `AZURE_KEYVAULT_NAME` and `AZURE_JWT_KEY_ID` (E1 needs the latter, since the JWKS `kid`
+      changes — see E1).
+      DoD: `gh variable list --repo JeremyProffittOrg/live-ninja | grep -c '^AZURE_'` returns 9 or more.
 - [ ] **A6. Author the Bicep root.** `/c/dev/live-ninja/infra/main.bicep` plus one module per service.
       Apply the org stack standards: cost-allocation tags set once at deployment scope
       (`Project=live-ninja CostCenter=voice-ai Environment=prod ManagedBy=bicep DeployedVia=github-actions Owner=jeremy`),
       no third-party secrets manager beyond Key Vault, explicit retention on every log resource.
-      DoD: `az deployment group what-if -g rg-liveninja-prod -f /c/dev/live-ninja/infra/main.bicep --no-pretty-print`
-      exits 0 with no `Delete` operations listed.
+      Every module that produces logs — the Container Apps environment
+      (`appLogsConfiguration.destination: 'log-analytics'`, without which Container Apps logs reach no
+      workspace at all), Front Door, Service Bus, Cosmos, Event Hubs, Communication Services, Key Vault
+      — carries a diagnostic setting to `log-liveninja-prod`, and every log resource sets
+      `retentionInDays: 7`.
+      DoD: deploy, then assert — `az deployment group create -g rg-liveninja-prod -f /c/dev/live-ninja/infra/main.bicep --name a6 -o none`
+      succeeds, `az monitor log-analytics workspace show -g rg-liveninja-prod -n log-liveninja-prod --query retentionInDays -o tsv`
+      returns `7`, and every log-producing resource in the group has a diagnostic setting naming that
+      workspace. *(The old DoD — `what-if` "exits 0 with no `Delete` operations" — is true by
+      construction on a group A2 just created, where every operation is a Create, and inspects no
+      retention value.)*
 - [ ] **A7. Author `/c/dev/live-ninja/.github/workflows/deploy-azure.yml`.** Triggers on
       `push: branches: [alexa-version]`. Uses `azure/login@v2` with
       `permissions: { id-token: write, contents: read }`. **No client secret, no static credential.**
@@ -411,17 +482,44 @@ B4 are pure Go with no Azure infrastructure dependency.
 - [ ] **B1. Resolve the model-version question.** Deploy `gpt-realtime-2.1` in the Foundry portal. If
       it is not offerable, deploy `gpt-realtime-2`. Record which one won, verbatim, in the Execution
       log. This single fact propagates to B3, B4, WS-H, and WS-I.
-      DoD: `curl -sS -X POST "$AZURE_OPENAI_ENDPOINT/openai/v1/realtime/client_secrets" -H "Authorization: Bearer $(az account get-access-token --resource https://cognitiveservices.azure.com --query accessToken -o tsv)" -H 'Content-Type: application/json' -d '{"session":{"type":"realtime","model":"<chosen>"}}' | jq -e '.value'`
-      exits 0.
+      **Record only `MINT_OK` and the chosen model id in the Execution log — never the response
+      body.** The previous DoD ended `| jq -e '.value'`, which *prints* the freshly minted ephemeral
+      credential, and this plan separately requires writing "what each verification actually returned"
+      into the committed log. That combination is what stop condition 2 forbids. Do not run this line
+      under `set -x`.
+      DoD: `curl -sS -X POST "$AZURE_OPENAI_ENDPOINT/openai/v1/realtime/client_secrets" -H "Authorization: Bearer $(az account get-access-token --resource https://cognitiveservices.azure.com --query accessToken -o tsv)" -H 'Content-Type: application/json' -d '{"session":{"type":"realtime","model":"<chosen>"}}' | jq -e 'has("value")' > /dev/null && echo MINT_OK`
+      prints `MINT_OK`.
 - [ ] **B2. Extend the engine enum.** In `/c/dev/live-ninja/internal/voiceengine/engine.go` add
       `EngineAzureOpenAIRealtime = "azure-openai-realtime"`,
       `EngineAzureOpenAIRealtimeMini = "azure-openai-realtime-mini"`, and
       `EngineAzureVoiceLive = "azure-voice-live"`. Keep `EngineNovaSonic` as a **deprecated alias**
       resolving to `azure-voice-live` at mint time — the contract is additive-only
       (`contracts/README.md:27-30`) and a 10-year device may still send it.
-      `IsClientDirect()` must return `false` for `azure-voice-live` and `true` for both Azure OpenAI
-      engines.
-      DoD: `cd /c/dev/live-ninja && go test ./internal/voiceengine/ ./internal/realtime/` passes.
+      **There is no "mint time" alias hook today — one has to be created.** Engine routing is a direct
+      string compare at `cmd/realtime-broker/main.go:328` (`if engine == voiceengine.EngineNovaSonic`),
+      and `internal/realtime/mint.go:485-493` `validEngine` switches over exactly the four current
+      constants, returning false for anything else so `PinToEngine` falls through to
+      `EngineOpenAIRealtime`. A new constant in `engine.go` reaches neither. Three changes are
+      required, not one:
+      (a) add all three constants to the `validEngine` switch, or a device pinned to `azure-voice-live`
+      silently resolves to `openai-realtime` with no error;
+      (b) add `func (e Engine) Canonical() Engine` returning `EngineAzureVoiceLive` for
+      `EngineNovaSonic` — **this is the alias, there is no other alias point** — apply it right after
+      `ResolveEngine` returns, and change the broker's compare to
+      `if engine.Canonical() == voiceengine.EngineAzureVoiceLive`;
+      (c) redefine `IsClientDirect` as `e.Canonical() != EngineAzureVoiceLive` and make the broker use
+      it, so the predicate and the switch cannot drift. Note that `IsClientDirect` currently has **zero
+      callers** (`engine.go:28,32` only), so the plan's requirement on it constrained nothing.
+      **The write path and the contract must accept the new values too**, or a user selecting one gets
+      a 400 and the setting can never be stored: add all three to both `oneOf(...)` allowlists and
+      their error strings at `internal/webapp/settings_routes.go:502` and `:510-511`, and to **both**
+      enums in `contracts/settings.schema.json` (`voiceEngine.default` and
+      `voiceEngine.devices.additionalProperties`). This is additive per `contracts/README.md:27-30`;
+      `nova-sonic` stays. Derive all of them from one exported list if practical.
+      DoD: `cd /c/dev/live-ninja && go test ./internal/voiceengine/ ./internal/realtime/ ./internal/webapp/ ./cmd/realtime-broker/`
+      passes, with new cases asserting `PinToEngine("azure-voice-live", nil, "") == EngineAzureVoiceLive`,
+      `PinToEngine("nova-sonic", nil, "").Canonical() == EngineAzureVoiceLive`, and a settings PUT of
+      `voiceEngine.default = "azure-voice-live"` that is accepted and round-trips.
 - [ ] **B3. Azure mint path.** `/c/dev/live-ninja/internal/realtime/mint.go:40` currently hardcodes
       `clientSecretsURL = "https://api.openai.com/v1/realtime/client_secrets"`. Add an Azure mint
       targeting `$AZURE_OPENAI_ENDPOINT/openai/v1/realtime/client_secrets` with an Entra bearer token
@@ -725,10 +823,41 @@ has not approved.*
 
 *Blocks: WS-J. Depends on: **A3 (region locked)**, then A6. Runs parallel with WS-C and WS-D.*
 
-- [ ] **E1. Key Vault signing.** Replace the two KMS keys (`AuthKey`, `JwtKey` at
-      `template.yaml:1535-1587`) with Key Vault keys. `/c/dev/live-ninja/internal/auth/session.go`
-      signs JWTs through KMS today; swap the signer implementation and keep the JWKS surface
-      byte-identical so no issued token and no client breaks.
+- [ ] **E1. Key Vault signing — `JwtKey` only.** Replace `JwtKey` (`template.yaml:1561-1569`) with a
+      Key Vault `EC-P256` key. **Both `auth.NewSigner` call sites move in the same commit** —
+      `cmd/web/main.go:194` and `cmd/realtime-broker/main.go:925`. They must never straddle two keys:
+      the broker mints the short-lived bridge JWT that the WS-F bridge verifies
+      (`template.yaml:711-716` records that without it the bridged path 502s), so a half-migration
+      401s every bridged session.
+      **"Byte-identical JWKS" is not achievable and is withdrawn.** The `kid` is derived from the KMS
+      key ARN (`internal/auth/session.go:218-225`) and stamped into every JWT header (`:125-127`), and
+      a KMS `ECC_NIST_P256 SIGN_VERIFY` private key cannot be exported. Both the `kid` and the `x`/`y`
+      coordinates necessarily change. What stays identical is the *shape*: one `EC` / `P-256` / `ES256`
+      / `sig` entry per key. Carry the new kid in `AZURE_JWT_KEY_ID` (added to A5).
+- [ ] **E1a. Dual-key JWKS — required before dual-run, removable only after WS-J M4.**
+      `internal/auth/jwks.go:94` publishes exactly **one** key and `:219` fails closed on an unknown
+      `kid` (`kid %q not found in jwks`), with `ES256` the only permitted alg (`:144-146`). The signer
+      serves a built document for 24 hours (`jwks.go:31`) and the bridge caches the fetched one for an
+      hour. So during dual-run **and at any J3 rollback**, every token minted by the other stack is
+      rejected — in both directions, for far longer than the 15-minute access-token TTL
+      (`session.go:44-45`).
+      Extend `Signer.JWKS` to emit two entries: the Key Vault key plus a statically configured legacy
+      JWK carrying the KMS public key's `x`/`y`/`kid`. That material is public and safe as a repository
+      variable (`LEGACY_JWKS_JSON`, add to A5). Sign only with Key Vault; verify against both.
+      Remove the legacy entry only after WS-J M4's soak passes, as a named follow-up.
+      DoD: `curl -fsS https://<azure-web-host>/.well-known/jwks.json | jq -e '.keys|length==2'`, and
+      `go test ./internal/auth/ -run DualKey` proves a token minted under the AWS key verifies against
+      the Azure JWKS.
+- [ ] **E1b. Retire `AuthKey` — do not migrate it.** `AuthKey` (`template.yaml:1535-1544`) is
+      `SYMMETRIC_DEFAULT` / `ENCRYPT_DECRYPT` with rotation enabled, described as envelope encryption
+      of LWA refresh tokens. **Nothing uses it.** A repo-wide grep for `kms.Encrypt` / `kms.Decrypt`
+      returns no call sites, and `config.AuthKmsKeyID` is read (`internal/config/config.go:150,163`)
+      and never used. So no ciphertext exists under it and there is nothing to migrate — provisioning a
+      Key Vault counterpart would carry a dead dependency forward.
+      Drop `AUTH_KMS_KEY_ID`, `config.App.AuthKmsKeyID`, and the `AuthCrypto` IAM statement. The KMS
+      key itself keeps `DeletionPolicy: Retain` and is a WS-K deletion, not a WS-E one.
+      DoD: `cd /c/dev/live-ninja && grep -rn 'AuthKmsKeyID\|AUTH_KMS_KEY_ID' --include='*.go' . | grep -v archive`
+      returns nothing, and `go build ./...` exits 0.
       DoD: `cd /c/dev/live-ninja && go test ./internal/auth/` passes and
       `curl -fsS https://<azure-web-host>/.well-known/jwks.json | jq -e '.keys[0].kid'` returns a kid,
       where `<azure-web-host>` is the D1 Container Apps FQDN or the D4 Front Door endpoint.
@@ -747,16 +876,55 @@ has not approved.*
       delivery log.
 - [ ] **E5. Telemetry pipeline.** Event Hubs with Capture writing to Blob, replacing Firehose to S3.
       Azure Data Explorer replaces Glue and Athena for query.
-      DoD: an event posted to `/api/v1/telemetry` appears in a Capture blob within 5 minutes.
+      **The producer is not ported by provisioning the pipeline.**
+      `internal/webapp/telemetry_routes.go:153-155` calls `Firehose.PutRecordBatch` with
+      `firehosetypes.Record` values — the `FirehosePutBatchAPI` seam abstracts the client but not the
+      AWS request types — and returns `503 not_configured` when unset, logging only a startup warning.
+      This is the same route WS-B M6's `cache_ratio` signal rides, so leaving it unported takes the
+      cache-collapse alarm down with the telemetry lake. Add an `EventHubProducerAPI` seam beside the
+      Firehose one and replace the batch build, keeping the `{ok, accepted, rejected}` response shape.
+      Add the second producer: device telemetry reaches this stream by IoT Rule today
+      (`telemetry_routes.go:4-6`), so the WS-G IoT Hub message route must land in the same Event Hub.
+      Set Capture explicitly — `intervalInSeconds: 60`, `sizeLimitInBytes: 10485760`,
+      `skipEmptyArchives: true`. The AWS side buffers at 300s (`template.yaml:1779-1782`), and Capture
+      flushes on first-of-window-or-size, so a single test event lands at the *end* of the window: a
+      "within 5 minutes" check against a 300s window is a coin flip.
+      DoD: `cd /c/dev/live-ninja && go test ./internal/webapp/ -run Telemetry` passes, and a posted
+      event appears in a Capture blob within a **180-second** `timeout`, polled rather than slept.
 - [ ] **E6. Wake-word training job.** Container Apps Job plus Azure Container Registry, replacing AWS
-      Batch, ECR, `BatchVpc`, and its 8 networking resources. The training image at
-      `/c/dev/live-ninja/containers/wakeword-train/` moves unchanged.
-      DoD: `az containerapp job start -g rg-liveninja-prod -n wakeword-train` reaches `Succeeded`.
-- [ ] **E7. Ops notifications.** Azure Monitor action group replacing the SNS `OpsTopic`. Per the org
-      rule, no dashboards and no fixed-cost per-metric alarms — route on structured error logs and
-      dead-letter queue depth instead.
-      DoD: `az monitor action-group show -g rg-liveninja-prod -n ag-liveninja-ops --query enabled -o tsv`
-      returns `true`.
+      Batch, ECR, `BatchVpc`, and its 8 networking resources.
+      **The training image does not move unchanged.** `containers/wakeword-train/train.py:661-663`
+      imports boto3 and writes `model.onnx`, `model_fp32.onnx` and `manifest.json` to the S3 wakewords
+      bucket that E2 replaces. Port it to the Blob SDK.
+      **Port the caller too.** `internal/wakeword/service.go:99-105` is a `BatchAPI` over `SubmitJob`,
+      `DescribeJobs`, `ListJobs` and `TerminateJob`, used for submission, lazy status finalisation, the
+      `MaxActiveJobs` pre-submit backlog check, and cancel-on-delete. E6 named no replacement for any
+      of it. Map to the Container Apps job-execution API: start with per-execution env overrides,
+      execution show, execution list for the backlog gate, execution stop for cancel.
+      **`plan.md` §7.4 is mid-flight against `live-ninja-wakeword-train` on AWS Batch and is not
+      governed by this plan.** E6 must not delete the AWS Batch queue or job definition. That is WS-K,
+      and it is additionally blocked until §7.4 reaches its owner decision.
+      DoD: `cd /c/dev/live-ninja && go test ./internal/wakeword/` passes, and a started execution is
+      **polled to `Succeeded`** — not merely started, which is all the old command proved — with the
+      resulting `manifest.json` present in the Blob wakewords container.
+- [ ] **E7. Ops notifications.** Azure Monitor action group `ag-liveninja-ops` with an email receiver
+      at the operator address, replacing the SNS `OpsTopic`.
+      **An action group is a target, not an alert.** One with zero attached rules returns
+      `enabled: true`, which is why the old DoD could not fail. On AWS the topic has three named
+      publishers — CloudWatch alarms, SES bounce/complaint events, and the email subscription
+      (`template.yaml:2799-2837`) — and this milestone dropped all three.
+      **The org rule and the requirement conflict here, so resolve it explicitly rather than leaving it
+      silent.** Azure has no publish-to-action-group primitive equivalent to `sns:Publish`; reaching an
+      action group requires an alert rule, and both candidates carry a recurring per-rule charge.
+      Chosen path: **one** log search rule over `log-liveninja-prod` matching `severityLevel == Error`
+      or dead-lettered messages greater than zero, evaluated every 15 minutes — a single rule,
+      deliberately accepted as this stack's one fixed alerting charge, because the alternative is no
+      ops path at all. Route ACS bounce/complaint events into the same workspace by the E4 diagnostic
+      setting so the same rule covers them. **No dashboards. No per-metric alarms.**
+      If the operator prefers zero fixed alerting cost, the substitute is a daily cron Container Apps
+      Job that queries the workspace and emails on a non-empty result. Record which was chosen.
+      DoD: the action group has at least one attached rule, and a deliberately dead-lettered Service
+      Bus message produces an ops email whose message id is recorded verbatim in the Execution log.
 
 ---
 
@@ -777,9 +945,13 @@ WS-J M2 (which must exercise all six engines).*
 - [ ] **F2. Normaliser.** Add `/c/dev/live-ninja/internal/voiceengine/voicelive.go` beside `nova.go`
       and `openai.go`. Voice Live reuses the Azure OpenAI Realtime event names, so this is
       substantially thinner than `nova.go` (596 lines) — most events pass through the existing
-      `NormalizeOpenAI` path. Delete `nova.go` and `nova_test.go` only after F3 proves the replacement
-      works end to end.
-      DoD: `cd /c/dev/live-ninja && go test ./internal/voiceengine/` passes.
+      `NormalizeOpenAI` path.
+      **Split, so the ordering is a dependency rather than a sentence.** F2a adds `voicelive.go`;
+      F2b deletes `nova.go` and `nova_test.go` and is blocked by F3. As written, F2's DoD passed with
+      `nova.go` still present, so "delete only after F3" enforced nothing.
+      DoD (F2a): `cd /c/dev/live-ninja && go test ./internal/voiceengine/` passes.
+      DoD (F2b): the same, **and** `test ! -f /c/dev/live-ninja/internal/voiceengine/nova.go && test ! -f /c/dev/live-ninja/internal/voiceengine/nova_test.go`
+      exits 0.
 - [ ] **F3. Surface the Voice Live conversational features** that motivated choosing it over a plain
       bridge, via `session.update`: `turn_detection.type = azure_semantic_vad`,
       `remove_filler_words = true`, `input_audio_noise_reduction = azure_deep_noise_suppression`, and
@@ -790,7 +962,20 @@ WS-J M2 (which must exercise all six engines).*
 - [ ] **F4. Fix the usage gap.** `/c/dev/live-ninja/web/static/js/conversation.mjs:1022` records that
       `nova-bridge` never surfaced usage, so Nova sessions showed no cost at all. The new bridge
       **must** forward `response.done` usage from the first commit. Do not repeat this.
-      DoD: a bridged session produces a non-zero session cost in the UI badge.
+      **Three changes are required, not one, or the DoD cannot pass.**
+      (a) The neutral event schema has no usage field — `internal/voiceengine/event.go` has none, and
+      `NormalizeOpenAI` maps `response.done` to a bare `TypeTurnEnd` (`openai.go:80-81`), discarding
+      the usage object on the very path F2 says most events pass through. Add the field and populate it
+      in both `NormalizeOpenAI` and the new `voicelive.go`.
+      (b) Forward it from the bridge as the `usage` event shape `realtime.mjs` already emits.
+      (c) Add `"rates": realtime.RatesFor(resp.Model)` to the bridged branch at
+      `internal/webapp/api_routes.go:526-537` — the `gemini-direct` and `openai-direct` branches both
+      send it and the bridged one does not, so `conversation.mjs:1091` (`if (!rates) return;`) returns
+      before any arithmetic and the badge shows nothing no matter what the bridge sends. Add the Voice
+      Live model to `rates.go` in the same commit, or `RatesFor` silently prices it as `gpt-realtime`.
+      DoD: `cd /c/dev/live-ninja && go test ./internal/voiceengine/ ./internal/webapp/ ./internal/realtime/`
+      passes, and a bridged session produces a non-zero session cost in the UI badge **at the Voice
+      Live model's own rates, not the fallback**.
 - [ ] **F5. Do not port the dead infrastructure.** `cmd/nova-bridge/`, `containers/nova-bridge/`, the
       ECS cluster, ALB, target group, listener, task definition, both security groups, `BatchVpc` and
       its 8 networking resources, the `NovaBridge` ECR repo, and the `/nova/*` CloudFront behaviour —
@@ -857,19 +1042,59 @@ whole**. The long pole — start early, it needs physical device access.*
       `/c/dev/live-ninja/web/static/js/realtime.mjs` already branches on the `mode` field returned by
       `GET /api/v1/realtime/session`. Add `mode: "azure-openai-direct"`. Because Azure's Realtime API
       is protocol-identical to OpenAI's, this reuses the entire existing WebRTC path — only the SDP
-      POST host changes from `https://api.openai.com/v1/realtime/calls` to
-      `$AZURE_OPENAI_ENDPOINT/openai/v1/realtime/calls`. **Do not fork the transport.**
+      POST host changes. **Do not fork the transport** — but the host has no plumbing today and two
+      other values on that path are OpenAI-specific, so "only the host changes" is an assumption this
+      milestone must test rather than assert.
+      **Plumbing.** `realtime.mjs:98` is a module constant consumed through a default parameter that
+      the only construction site (`mic.mjs:190`) never overrides, and the session JSON
+      (`internal/webapp/api_routes.go:556-569`) carries no host field. Add `callsUrl` to the
+      `azure-openai-direct` branch of `GET /api/v1/realtime/session`, fed from a new `CallsURL` field
+      on the broker response, and have `connect()` prefer the minted value over the constant.
+      **CSP.** `internal/webapp/pages_routes.go:56` lists `https://api.openai.com` and no Azure host,
+      so the SDP POST is blocked by the browser before it leaves the page. Add the Azure Realtime
+      origin to `connect-src`, building `pageCSP` from `AZURE_OPENAI_ENDPOINT` at startup if the host
+      is not fixed at compile time. Extend `TestPageCSPMatchesSpec` (`render_test.go:139`) to assert
+      the host falls **inside** the `connect-src` directive — the current assertion is a substring that
+      holds whether or not an Azure host was ever added.
+      **Verify protocol identity against a real deployment before claiming reuse**, and record the
+      result verbatim: (1) the `oai-events` data-channel label (`realtime.mjs:699`) is accepted;
+      (2) the SDP POST takes `Authorization: Bearer <client_secrets .value>` with
+      `Content-Type: application/sdp` and returns a bare SDP answer; (3) the `session.update` naming
+      `gpt-4o-mini-transcribe` (`realtime.mjs:2269`) is accepted — on Azure that names a *deployment*,
+      and if none exists the update is rejected and transcription dies mid-session with audio still
+      flowing, so either it is accepted or A3 creates a deployment of that exact name. Any of the three
+      failing means this is a fork, not a reuse, and the milestone is re-scoped.
       DoD: `cd /c/dev/live-ninja && go test ./internal/webapp/ -run 'ImportMap|Render'` passes, and a
       browser session pinned to `azure-openai-realtime-mini` completes a turn.
 - [ ] **H2. Replace the Nova transport with the Voice Live transport.** Add `mode: "azure-voice-live"`,
-      reusing the WSS/PCM16 skeleton the Nova path established. Keep `mode: "nova-bridge"` accepted
-      and mapped to the new one, so a client holding an older cached bundle does not hard-fail.
+      reusing the WSS/PCM16 skeleton the Nova path established.
+      **Compatibility has to be server-side; the client-side version points the wrong way.** Keeping
+      `mode: "nova-bridge"` accepted in the *new* bundle does nothing for the failure that actually
+      occurs, which is the *old* bundle meeting the new server: `realtime.mjs:266-284` falls an
+      unrecognised mode through to a `clientSecret` check, and a bridged bootstrap has no client
+      secret, so it throws `mint_failed` and the session never starts. Until the new bundle is
+      confirmed rolled out, `internal/webapp/api_routes.go:526` keeps emitting `"mode": "nova-bridge"`
+      for the `azure-voice-live` engine while returning the new `wsUrl`; the new `realtime.mjs` accepts
+      both and routes both to the Voice Live transport. Flip the server to emit `azure-voice-live` in a
+      separate, later commit, after H3's warm-cache check passes. Also add both `azure-voice-live` and
+      `azure-openai-direct` to that mode dispatch so an unrecognised mode never reaches the
+      `clientSecret` branch again.
       DoD: a browser session on `azure-voice-live` completes a turn and reports a non-zero cost.
 - [ ] **H3. Guard the module graph.** A `conversation.mjs` change can silently kill the whole page for
       a client holding an older cached sibling module. Bump every fingerprint in the same deploy and
       verify against a primed cache, not just a hard reload.
-      DoD: `cd /c/dev/live-ninja && go test ./internal/webapp/ -run ImportMap` passes, and both a
-      hard-reload and a warm-cache reload render `/conversation`.
+      **Repoint the guard in the same commit as D4.** `internal/webapp/import_map_test.go:108` reads
+      `template.yaml` as its source of truth for object-store-backed prefixes, with `require.NoError`,
+      so once Bicep replaces that file the test either hard-fails or silently validates the retired
+      CloudFront table. This is the guard for the 2026-08-01 `/static/vendor/ort/` 403 incident the
+      test itself documents; leaving it pointed at `template.yaml` means it cannot see a Front
+      Door/Blob mismatch of exactly that shape. Repoint it to parse the Front Door route rules in
+      `/c/dev/live-ninja/infra/main.bicep`.
+      DoD: `cd /c/dev/live-ninja && go test ./internal/webapp/ -run ImportMap` passes **with the test
+      reading `infra/main.bicep`**, and a Playwright case under `/c/dev/live-ninja/tests/web/specs/`
+      loads `/conversation`, redeploys with a changed `conversation.mjs` fingerprint, reloads *without*
+      clearing storage, and asserts a named interactive control still responds. *(The old second
+      clause named no command, against this plan's own rule that every DoD is one.)*
 - [ ] **H4. Settings and Help.** Add the three engines to the settings picker and to the Help drawer in
       the same commit (`CLAUDE.md` rule).
       DoD: `cd /c/dev/live-ninja && go test ./internal/webapp/ -run 'TestHelpDrawer|Settings'` passes.
@@ -884,6 +1109,19 @@ whole**. The long pole — start early, it needs physical device access.*
       `/c/dev/live-ninja/android/app/src/main/java/ninja/jeremy/liveninja/config/BackendConfig.kt`.
       Because `live.jeremy.ninja` is kept as the domain (see WS-J), `BASE_URL` does not change at all.
       Add `AZURE_REALTIME_CALLS_URL` beside the existing `OPENAI_REALTIME_CALLS_URL`.
+      **Add a server-side client-version gate first — this is the blocking item.** An installed build
+      handed `mode: "azure-openai-direct"` does not fail closed: `RealtimeSessionCoordinator.kt:204-221`
+      falls an unknown mode through `else ->` to the WebRTC transport, and `callsUrl`
+      (`RealtimeSessionApi.kt:55`) is a compile-time constant that is **never** populated from the
+      session JSON. The result is the Azure ephemeral credential POSTed to `https://api.openai.com`.
+      The broker must not return an `azure-*` mode to a client whose `X-LN-Client` semver
+      (`contracts/headers.md:7-33`) predates the I6 release; older Android and firmware builds keep
+      receiving the `openai-direct` and `nova-bridge` shapes.
+      **Add a debug-build `BASE_URL_OVERRIDE`** read from `BuildConfig` and defaulting to `BASE_URL`,
+      so a debug APK can be pointed at `azure.live.jeremy.ninja` for WS-J M2. Release builds ignore it.
+      Without it the Android half of the dual-run exercises the AWS stack and passes dishonestly.
+      DoD additions: `go test ./internal/webapp/ -run 'RealtimeSessionModeGate'` proves an
+      `android/<pre-I6-semver>` header never receives a `mode` starting with `azure-`.
       DoD: `cd /c/dev/live-ninja/android && ./gradlew :app:assembleDebug` exits 0.
 - [ ] **I2. Extend `WebRtcTransport.kt`** to take the Azure SDP host from the session bootstrap rather
       than a compile-time constant. Same protocol, so no new transport class.
@@ -1254,3 +1492,6 @@ actually returned. Written as it happens, not reconstructed at the end.
   absent. WS-B M4 gains the missing `gpt-realtime-mini` and Voice Live entries plus a test that a
   shipped engine can never fall through `RatesFor`'s silent default. WS-B M6's threshold moves from
   80% to 95%: at 80% the mini engine has already tripled its cost.
+- **2026-08-19** — Milestone rewrites applied across WS-A, WS-B, WS-C, WS-D, WS-E, WS-F, WS-H, WS-I
+  and WS-J from the audit register in `/c/dev/live-ninja/azure-migration-gaps.md`. The register is the
+  authority on what remains; items still marked `[ ]` there are the ones this pass did not close.

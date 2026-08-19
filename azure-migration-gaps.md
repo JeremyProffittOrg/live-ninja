@@ -73,14 +73,14 @@ The most common defect class in the plan, and the most dangerous one for an unat
   Both tested `https://live.jeremy.ninja`, which answers from CloudFront until WS-J M3 repoints it.
   Each would have passed against the live AWS stack. VERIFIED. Both repointed.
 
-- [ ] **D2. WS-C M2 passes with zero Cosmos executed.** BLOCKER.
+- [x] **D2. WS-C M2 passes with zero Cosmos executed.** BLOCKER.
   `go test ./internal/store/...` "with zero test-file changes" is satisfied today by the unmodified
   DynamoDB implementation, because every store test injects `internal/testutil/ddbfake.go`, a
   633-line DynamoDB expression emulator. VERIFIED.
   FIX: require the Azure Cosmos DB emulator — `COSMOS_EMULATOR_ENDPOINT=... go test ./internal/store/... -tags cosmos`
   — running the same table-driven cases, and keep the DynamoDB path passing alongside.
 
-- [ ] **D3. WS-D M2's job count cannot detect a missing worker.** BLOCKER.
+- [x] **D3. WS-D M2's job count cannot detect a missing worker.** BLOCKER.
   `az containerapp job list --query "length(@)"` returning "6 or more" passes on the named set alone.
   `Makefile:15` lists 13 functions and `template.yaml` declares 13 `AWS::Serverless::Function`
   resources; `authorizer` and `deliverables-zipper` appear in no workstream. The template has exactly
@@ -101,11 +101,11 @@ The most common defect class in the plan, and the most dangerous one for an unat
   `go test ./cmd/iot-ingest/` returns `[no test files]` with exit 0, and the second clause only
   proves a directory was deleted. REPORTED.
 
-- [ ] **D6. WS-A M6's `what-if` check is true by construction.** MAJOR.
+- [x] **D6. WS-A M6's `what-if` check is true by construction.** MAJOR.
   "Exits 0 with no `Delete` operations" on a resource group WS-A M2 just created — every operation is
   a Create. Nothing in the command inspects a retention value. REPORTED.
 
-- [ ] **D7. WS-B M4 cannot detect a missing engine.** MAJOR.
+- [x] **D7. WS-B M4 cannot detect a missing engine.** MAJOR.
   `internal/realtime/rates.go:54` sets `defaultRates = modelRates["gpt-realtime"]` and `RatesFor`
   silently returns it for any unknown model; `rates_test.go:33` asserts that fallback is correct.
   `modelRates` has exactly two keys, so `openai-realtime-mini` is billed at full rates today.
@@ -115,24 +115,24 @@ The most common defect class in the plan, and the most dangerous one for an unat
 
 ## Runtime breakage
 
-- [ ] **R1. The page CSP has no Azure host.** BLOCKER. ANCHOR: WS-H M1.
+- [x] **R1. The page CSP has no Azure host.** BLOCKER. ANCHOR: WS-H M1.
   `internal/webapp/pages_routes.go:56` lists `https://api.openai.com` and no `*.openai.azure.com`.
   The Azure SDP POST is blocked before it leaves the page. `render_test.go:139` asserts only a
   substring that holds either way. VERIFIED.
 
-- [ ] **R2. New engine constants never reach the pin path.** BLOCKER. ANCHOR: WS-B M2.
+- [x] **R2. New engine constants never reach the pin path.** BLOCKER. ANCHOR: WS-B M2.
   `internal/realtime/mint.go:485-493` `validEngine` hardcodes the four current engines; anything else
   returns false and `PinToEngine` falls back to `openai-realtime`. The broker routes on a direct
   string compare, `cmd/realtime-broker/main.go:328` `if engine == voiceengine.EngineNovaSonic`, so
   there is no "mint-time alias" hook to hang `nova-sonic` → `azure-voice-live` on. `IsClientDirect`
   has zero callers outside its own definition. VERIFIED.
 
-- [ ] **R3. The settings write path rejects all three new engines.** BLOCKER. ANCHOR: WS-B M2, WS-H M4.
+- [x] **R3. The settings write path rejects all three new engines.** BLOCKER. ANCHOR: WS-B M2, WS-H M4.
   `internal/webapp/settings_routes.go:502` and `:510` hardcode the four current strings; selecting a
   new engine returns 400. `contracts/settings.schema.json` enums likewise list only four — the plan
   says `nova-sonic` must not be removed but never says the three new members are added. VERIFIED.
 
-- [ ] **R4. An installed Android build sends the Azure credential to OpenAI.** BLOCKER. ANCHOR: WS-I M1.
+- [x] **R4. An installed Android build sends the Azure credential to OpenAI.** BLOCKER. ANCHOR: WS-I M1.
   `RealtimeSessionApi.kt:55` declares `callsUrl` from the compile-time constant and `grep` shows it is
   **never** populated from the session JSON. `RealtimeSessionCoordinator.kt:204-221` has explicit
   branches for `nova-bridge` and `gemini-direct` and an `else ->` selecting WebRTC. So an old build
@@ -141,18 +141,18 @@ The most common defect class in the plan, and the most dangerous one for an unat
   FIX: gate `azure-*` modes server-side on the `X-LN-Client` version header, which already exists
   (`contracts/headers.md:7-33`), before WS-I ships.
 
-- [ ] **R5. A stale web bundle hard-fails on the new mode.** MAJOR. ANCHOR: WS-H M2.
+- [x] **R5. A stale web bundle hard-fails on the new mode.** MAJOR. ANCHOR: WS-H M2.
   `web/static/js/realtime.mjs:266-284` falls through an unrecognised `mode` to a `clientSecret` check
   and throws `mint_failed`; a bridged bootstrap has no client secret. The plan's compatibility shim
   points the wrong way — it keeps the new bundle accepting the old mode, but the failure is the old
   bundle meeting the new server. REPORTED.
 
-- [ ] **R6. Pending user reminders are stranded in AWS.** BLOCKER. ANCHOR: WS-J M1.
+- [x] **R6. Pending user reminders are stranded in AWS.** BLOCKER. ANCHOR: WS-J M1.
   `internal/tools/scheduler.go:146` creates one-shot EventBridge `at()` schedules in the group at
   `template.yaml:2512`. WS-J M1 migrates only DynamoDB, so every pending timer dies with WS-K.
   VERIFIED.
 
-- [ ] **R7. The J1 delta cannot observe a delete.** BLOCKER. ANCHOR: WS-J M1, M3.
+- [x] **R7. The J1 delta cannot observe a delete.** BLOCKER. ANCHOR: WS-J M1, M3.
   The table has no `StreamSpecification` (`grep` returns nothing; the definition at
   `template.yaml:1484-1530` has none), so a repeated full export can add and update but never see a
   DELETE. Sessions revoked during dual-run would come back to life at cutover. PITR **is** enabled
@@ -160,33 +160,33 @@ The most common defect class in the plan, and the most dangerous one for an unat
   FIX: DynamoDB incremental export from a recorded watermark, applying DELETE records as Cosmos
   deletes.
 
-- [ ] **R8. Two transactions span two partitions.** BLOCKER. ANCHOR: WS-C M2.
+- [x] **R8. Two transactions span two partitions.** BLOCKER. ANCHOR: WS-C M2.
   `internal/store/sessions.go:211` and `:391` issue `TransactWriteItems` across `userPK` = `USER#…`
   and `devicePK` = `DEVICE#…` (`types.go:209`, `:218`). Refresh-token rotate-exactly-once and the
   device-revocation interlock both depend on it. VERIFIED for the repo facts; INFERRED (Azure) that a
   Cosmos transactional batch cannot cross logical partitions.
   FIX: co-locate the device-binding META item into the user partition.
 
-- [ ] **R9. TTL semantics invert on every write, not just the import.** BLOCKER. ANCHOR: WS-C M2, WS-J M1.
+- [x] **R9. TTL semantics invert on every write, not just the import.** BLOCKER. ANCHOR: WS-C M2, WS-J M1.
   `internal/store/types.go:106` and every writer store an absolute unix epoch. The plan mentions the
   relative-vs-absolute difference once, inside WS-J M1, and only for the one-time import. REPORTED;
   INFERRED (Azure) that Cosmos reads `ttl` as seconds relative to `_ts`.
   Also: expired-but-unreaped rows exist by design (`internal/store/oauth.go:68`, `:214`) and WS-J M1's
   "zero mismatches" DoD forbids the correct behaviour of dropping them.
 
-- [ ] **R10. The JWKS has no dual-key window.** BLOCKER. ANCHOR: WS-E M1.
+- [x] **R10. The JWKS has no dual-key window.** BLOCKER. ANCHOR: WS-E M1.
   `internal/auth/jwks.go:94` publishes exactly one key and `:219` hard-fails on an unknown `kid`, with
   a 24-hour document cache (`jwks.go:31`). During dual-run and at rollback, tokens minted by the other
   stack are rejected in both directions. "Byte-identical JWKS" is unachievable anyway: the `kid` is
   derived from the KMS ARN (`session.go:218-225`) and KMS private key material cannot be exported.
   VERIFIED.
 
-- [ ] **R11. WS-E M1 misses the second signer.** MAJOR. ANCHOR: WS-E M1.
+- [x] **R11. WS-E M1 misses the second signer.** MAJOR. ANCHOR: WS-E M1.
   `auth.NewSigner` has two live call sites: `cmd/web/main.go:194` and
   `cmd/realtime-broker/main.go:925`. The milestone names only the web one, so the broker could keep
   signing under the old key and every bridged session 401s. VERIFIED.
 
-- [ ] **R12. `AuthKey` is unused and should be retired, not migrated.** MAJOR. ANCHOR: WS-E M1.
+- [x] **R12. `AuthKey` is unused and should be retired, not migrated.** MAJOR. ANCHOR: WS-E M1.
   It is `SYMMETRIC_DEFAULT` / `ENCRYPT_DECRYPT` (`template.yaml:1535-1544`), and a repo-wide grep for
   `kms.Encrypt`/`kms.Decrypt` returns no call sites. Nothing is encrypted under it. VERIFIED.
 
@@ -197,14 +197,14 @@ The most common defect class in the plan, and the most dangerous one for an unat
 - [x] **M1. No DNS milestone existed.** BLOCKER. Resolved: WS-D M5 and M5a added, WS-J M3 rewritten.
 - [x] **M2. No client live-events migration.** BLOCKER. Resolved: WS-G M5 added (locked decision 8).
 - [x] **M3. Android distribution left on S3.** MAJOR. Resolved: WS-I M7 added.
-- [ ] **M4. No Key Vault, and no secret migration.** BLOCKER. ANCHOR: WS-A.
+- [x] **M4. No Key Vault, and no secret migration.** BLOCKER. ANCHOR: WS-A.
   The service mapping assigns "SSM Parameter Store → Key Vault" to WS-A, and no WS-A milestone creates
   a vault or moves any of the five secrets. Mitigating: `internal/config/config.go:100-105` shows
   `Loader.Get` short-circuits to an env override, so the five override names at `config.go:39-45` can
   be mounted as Container Apps secret refs with **no** code rewrite. VERIFIED.
   Note the pepper cannot come from `set-secret.sh` — it is machine-generated
   (`.github/workflows/deploy.yml:315-327`) and regenerating it invalidates every device credential.
-- [ ] **M5. No managed identity, and Contributor cannot create role assignments.** BLOCKER. ANCHOR: WS-A M4.
+- [x] **M5. No managed identity, and Contributor cannot create role assignments.** BLOCKER. ANCHOR: WS-A M4.
   The mapping assigns "IAM roles → Managed identities" to WS-A; no milestone creates one. REPORTED;
   INFERRED (Azure) that built-in Contributor denies `roleAssignments/write`, which would fail the
   Bicep deploy the moment it assigns any data-plane role.
@@ -212,10 +212,10 @@ The most common defect class in the plan, and the most dangerous one for an unat
   "Take a write freeze" names no mechanism and none exists — a repo-wide grep for read-only or
   maintenance mode returns one unrelated comment. Six SQS queues keep draining into DynamoDB.
   REPORTED.
-- [ ] **M7. No restart policy outside WS-A.** MAJOR. ANCHOR: all workstreams.
+- [x] **M7. No restart policy outside WS-A.** MAJOR. ANCHOR: all workstreams.
   `grep -n "Restart policy"` returns a single line. WS-J M3 runs inside a write freeze and WS-J M4 is
   a 72-hour unattended window, both with no retry ceiling or abort trigger. VERIFIED.
-- [ ] **M8. No Log Analytics destination or retention.** MAJOR. ANCHOR: WS-A M2, M6.
+- [x] **M8. No Log Analytics destination or retention.** MAJOR. ANCHOR: WS-A M2, M6.
   WS-A M2's DoD checks the resource group, not the workspace. Nothing sets `retentionInDays`, and the
   org rule requires 7 days; Log Analytics defaults to 30. Nothing points Container Apps at the
   workspace, so WS-J M4's "zero errors in Log Analytics" may have no data to read. REPORTED.
@@ -224,24 +224,24 @@ The most common defect class in the plan, and the most dangerous one for an unat
 
 ## Sequencing and dependency defects
 
-- [ ] **S1. The workstream graph is inconsistent and cyclic.** MAJOR.
+- [x] **S1. The workstream graph is inconsistent and cyclic.** MAJOR.
   WS-G declares "Blocks: WS-J" but WS-J omits WS-G. WS-F declares "Blocks: nothing" while WS-D M4
   routes `/voice-live/*` to it and WS-J M2 must exercise it. `## Sequencing` states a third version.
   WS-B M5's DoD needed the container apps, making WS-B → WS-D → WS-F → WS-B at workstream
   granularity. REPORTED.
-- [ ] **S2. WS-A M3's region gate does not gate.** MAJOR.
+- [x] **S2. WS-A M3's region gate does not gate.** MAJOR.
   Its command targets a Foundry resource no milestone creates — WS-B M1 creates it, and WS-B declares
   "Depends on: A3 only", which is circular. Neither WS-C nor WS-E depends on A3, so Cosmos, Blob,
   Service Bus and Event Hubs get built in a region A3 has not approved. REPORTED.
-- [ ] **S3. WS-J M2 can pass without touching Azure.** MAJOR.
+- [x] **S3. WS-J M2 can pass without touching Azure.** MAJOR.
   Android is pinned to `live.jeremy.ninja`, which answers from AWS until WS-J M3, so the Android half
   of the dual-run checklist can be filled in green against the old stack. The DoD is also a
   hand-written checklist, against the plan's own rule that every DoD is a command. VERIFIED (the
   pinning); REPORTED (the rest).
-- [ ] **S4. WS-J M3's rollback restores DNS but not data.** BLOCKER.
+- [x] **S4. WS-J M3's rollback restores DNS but not data.** BLOCKER.
   Any rollback during the 72-hour soak discards every write made on Azure since the freeze. No
   reverse sync is defined. REPORTED.
-- [ ] **S5. WS-J M4 and all of WS-K have no usable DoD.** MAJOR.
+- [~] **S5. WS-J M4 and all of WS-K have no usable DoD.** MAJOR. *(J4 and K4 closed; K1, K2 and K3 still carry no DoD.)*
   WS-J M4 gives no KQL, no definition of "unhandled error", no watcher, and no action on failure.
   `grep -c "DoD:"` returns 53 for the plan and zero for K1-K3. WS-K M3 defers a credential problem
   that becomes live at WS-D M2: `internal/ghost/client.go` authenticates by the Lambda role's IAM
@@ -272,7 +272,7 @@ The most common defect class in the plan, and the most dangerous one for an unat
 
 ## Realtime protocol
 
-- [ ] **P1. The SDP host has no plumbing.** BLOCKER. ANCHOR: WS-H M1.
+- [x] **P1. The SDP host has no plumbing.** BLOCKER. ANCHOR: WS-H M1.
   `realtime.mjs:98` is a module constant consumed through a default parameter that the only
   construction site (`mic.mjs:190`) never overrides, and the session JSON
   (`internal/webapp/api_routes.go:556-569`) carries no host field. Two further OpenAI-specific values
@@ -280,15 +280,15 @@ The most common defect class in the plan, and the most dangerous one for an unat
   `gpt-4o-mini-transcribe` in a live `session.update` (`realtime.mjs:2269`), which on Azure names a
   deployment. REPORTED.
   "Protocol-identical" is an assumption the plan has not tested. Test all three before claiming reuse.
-- [ ] **P2. Bridged usage needs three changes, not one.** MAJOR. ANCHOR: WS-F M4.
+- [x] **P2. Bridged usage needs three changes, not one.** MAJOR. ANCHOR: WS-F M4.
   The neutral event schema has no usage field, so `NormalizeOpenAI` discards `response.done` usage;
   the bridged bootstrap returns no `rates` object, so `conversation.mjs:1091` returns before any
   arithmetic. REPORTED.
-- [ ] **P3. The module-graph guard reads a file the migration retires.** MAJOR. ANCHOR: WS-H M3.
+- [x] **P3. The module-graph guard reads a file the migration retires.** MAJOR. ANCHOR: WS-H M3.
   `internal/webapp/import_map_test.go:108` reads `template.yaml` as its source of truth for
   object-store-backed prefixes, with `require.NoError`. This is the guard for the 2026-08-01
   `/static/vendor/ort/` 403 incident. REPORTED.
-- [ ] **P4. WS-F M2's ordering is unenforced and WS-F has an undeclared dependency.** MAJOR.
+- [x] **P4. WS-F M2's ordering is unenforced and WS-F has an undeclared dependency.** MAJOR.
   Its DoD passes with `nova.go` still present, so "delete only after F3" is a sentence, not a
   constraint. And the bridged engine is not selectable in the web picker today
   (`conversation.html:707-711` records its removal on 2026-07-18), so WS-F M3 and M4 cannot be
@@ -298,17 +298,17 @@ The most common defect class in the plan, and the most dangerous one for an unat
 
 ## Platform
 
-- [ ] **PL1. The telemetry producer is never ported.** MAJOR. ANCHOR: WS-E M5.
+- [x] **PL1. The telemetry producer is never ported.** MAJOR. ANCHOR: WS-E M5.
   `internal/webapp/telemetry_routes.go:153-155` is compiled against the Firehose SDK and returns 503
   when unconfigured, logging only a startup warning. This is the same route WS-B M6's cache-ratio
   signal rides. REPORTED. The "within 5 minutes" DoD also races the Capture window it depends on —
   INFERRED (Azure).
-- [ ] **PL2. WS-E M7 creates a notification target and nothing that fires into it.** MAJOR.
+- [x] **PL2. WS-E M7 creates a notification target and nothing that fires into it.** MAJOR.
   An action group with zero rules returns `enabled: true`. On AWS the topic has three named
   publishers (`template.yaml:2799-2837`); the plan drops all three. REPORTED; INFERRED (Azure) that
   reaching an action group requires an alert rule, which conflicts with the org's no-fixed-cost rule
   — that conflict needs an explicit decision, not silence.
-- [ ] **PL3. The wake-word training image does not move unchanged.** MAJOR. ANCHOR: WS-E M6.
+- [x] **PL3. The wake-word training image does not move unchanged.** MAJOR. ANCHOR: WS-E M6.
   `containers/wakeword-train/train.py:661-663` uses boto3 to S3, and the caller
   `internal/wakeword/service.go:99-105` depends on four AWS Batch operations with no named
   replacement. The DoD is an async command that returns on queue, not on success. REPORTED.
@@ -323,11 +323,11 @@ The most common defect class in the plan, and the most dangerous one for an unat
 
 ## Security
 
-- [ ] **SEC1. WS-A M4's federated subject form is left as a hedge.** MAJOR.
+- [x] **SEC1. WS-A M4's federated subject form is left as a hedge.** MAJOR.
   The plan says "use the immutable-ID subject form if the org requires it"; the recorded org fact is
   that it does. The DoD reads back the string it just wrote, so it passes with the wrong form and the
   failure surfaces later as an `azure/login` failure. REPORTED.
-- [ ] **SEC2. WS-B M1's DoD prints a minted credential.** MAJOR.
+- [x] **SEC2. WS-B M1's DoD prints a minted credential.** MAJOR.
   It ends `| jq -e '.value'`, which prints the ephemeral secret, and the plan separately requires
   recording "what each verification actually returned" into the committed Execution log. REPORTED.
   FIX: `| jq -e 'has("value")' > /dev/null && echo MINT_OK`, and never run it under `set -x`.
@@ -340,3 +340,36 @@ The most common defect class in the plan, and the most dangerous one for an unat
 `workflow_dispatch` cutover hazard · `168bace` three false Verified facts withdrawn · `7ec645b` D5
 ordering (custom domain before validation token) · `c4c9474` the quota fact withdrawn · `274e90a`
 locked decisions 6-10 · `dfaff92` cost model corrected against its own arithmetic.
+
+---
+
+## Still open after the 2026-08-19 rewrite pass
+
+Eight items. Each is here because it needs a decision, physical access, or work outside the plan
+document itself — not because it was judged unimportant.
+
+- **D4** — WS-B M7 / WS-H M4 Help-drawer assertions. Needs the test loop written, not just the plan
+  text changed.
+- **D5** — WS-G M2's DoD still cannot fail.
+- **M6** — no write-freeze mechanism exists. This needs a real read-only mode shipped (a new WS-D
+  milestone) before WS-J M3 can honestly run. **The largest remaining gap.**
+- **S5 (partial)** — WS-K M1, M2 and M3 still have no definition of done. M3 in particular defers the
+  `internal/ghost` credential question, which becomes live at WS-D M2: `internal/ghost/client.go`
+  authenticates by the Lambda role's IAM grant, which a Container App does not have.
+- **G1** — firmware shadow and OTA topics are still `$aws/...`. Also unresolved: the OTA channel *is*
+  AWS IoT, so a device never reflashed before WS-K M2 is unreachable forever.
+- **G2** — device identity continuity into DPS, and the fielded-device count, are still unstated.
+- **G3** — the additive-only rule still needs applying to `contracts/api.md`'s `WSS /nova/session` and
+  the `mode: "nova-bridge"` response value, both of which fielded firmware depends on.
+- **PL4** — the assets container cannot reproduce the private-S3-behind-OAC posture. This is a real
+  choice between anonymous blob read on that one container and a Front Door Premium profile, and it
+  needs an operator decision rather than a default.
+
+## Verify before acting
+
+Every claim marked **INFERRED (Azure)** above is reasoning about Azure service behaviour, not a
+measurement — no Azure account was queried during this audit. Check these against current Microsoft
+documentation before building on them: Cosmos transactional-batch partition scope, Cosmos `ttl`
+relative-vs-absolute semantics, Front Door Standard's lack of a Private Link origin, the Azure
+alerting cost model, Event Hubs Capture window semantics, IoT Hub's MQTT topic restrictions, and
+whether Contributor alone can create role assignments.
