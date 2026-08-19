@@ -106,7 +106,24 @@ assumption and is marked as such where it appears.
   `QUOTA_MONTH_TOKENS`, and `QUOTA_SESSION_CAP_SECONDS` from the environment.
 - Defaults today: `defaultDailySecondsCap = 1800.0` (30 min/day), `defaultMonthlyTokenCap = 375000.0`
   (~$15/month), `defaultSessionCapSeconds = 600` (10 min).
-- **Raising to 60 min/day is an environment-variable change, not a code change.**
+- **CORRECTION 2026-08-19 — "Raising to 60 min/day is an environment-variable change, not a code
+  change" is withdrawn. The caps are inert: nothing in production writes the counters they read.**
+  The gates read `daySeconds` (`internal/realtime/quota.go:328`), `monthTokens` (`quota.go:750`) and
+  `dayTokens` (`quota.go:644`). The only production writer is `internal/realtime/quota.go:942`,
+  `UpdateExpression: "SET updatedAt = :ts ADD dayMints :one"` — mints only.
+  `grep -rn 'AddDayUsage\|AddMonthUsage' --include=*.go .` returns the two definitions
+  (`internal/store/usage.go:92`, `:102`) and exactly one caller, `usage.go:112`, which is
+  `BumpDayMints` passing `0, 0, 1`. So `daySeconds` and `dayTokens` are always zero and neither the
+  daily nor the monthly cap can ever trigger. `cmd/usage-rollup/main.go:192` sums a field that is
+  always zero.
+  This is a **pre-existing AWS defect, not something the migration introduces**, and it was already
+  recorded: `docs/launch-go-no-go-2026-07-26.md:41` marks per-user spend enforcement **HOLD** with the
+  same diagnosis. The live limits today are the mint bucket (`quota.go:57-58`, burst 6, one token per
+  3s) and 3 concurrent 600-second sessions — roughly 3 x 24h of session time per day, not one hour.
+  **Consequence for this plan:** the whole `## Cost model at 60 minutes a day, per user` section
+  describes a ceiling that does not exist, and WS-B M5 cannot be done by setting an environment
+  variable. Enforcement needs code (persist per-session seconds and tokens at session close) before
+  any cap is meaningful on Azure.
 
 **Client endpoint surfaces are centralised**
 - Android: every endpoint is a constant in
@@ -817,3 +834,12 @@ actually returned. Written as it happens, not reconstructed at the end.
   unexecutable as sequenced, and D5's own definition of done then queried
   `az afd custom-domain show` for two objects nothing had created. D5 now opens with D5a, which
   creates both custom domains and attaches them to the route, and only then writes the records.
+- **2026-08-19** — Fourth and last false entry in `## Verified facts` corrected, from the cost
+  reviewer and re-verified in the main thread. "Raising to 60 min/day is an environment-variable
+  change, not a code change" is withdrawn: the daily and monthly quota gates read counters that
+  production never writes, so both caps are inert. Verified by
+  `grep -rn 'AddDayUsage\|AddMonthUsage' --include=*.go .`, which returns the two definitions at
+  `internal/store/usage.go:92` and `:102` plus a single caller at `usage.go:112` (`BumpDayMints`,
+  passing `0, 0, 1`). Independently corroborated by `docs/launch-go-no-go-2026-07-26.md:41`, which
+  already carries this as a **HOLD**. This is a pre-existing AWS defect that the migration inherits
+  rather than causes, but it invalidates the premise of the cost-model section and of WS-B M5.
