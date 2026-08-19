@@ -409,6 +409,15 @@ B4 are pure Go with no Azure infrastructure dependency.
          and reach `Approved` well before J3. Doing it inside the J3 freeze window would put
          certificate issuance latency on the critical path of a write freeze.
       Do **not** touch the `live.jeremy.ninja` A/AAAA ALIAS records here — those are J3.
+      **`[!]` AUTHORIZATION GAP — D5 cannot run as the plan currently stands.** Every record above is
+      written into the `jeremy.ninja` Route 53 hosted zone, which lives in AWS account `759775734231`.
+      `## Standing authorizations` grants only "Read AWS resources for migration purposes" and lists
+      "Deleting or modifying any AWS resource in account `759775734231`" as NOT granted. Adding a
+      record is a modification of that account. **Unblocked by:** the operator adding an explicit
+      narrow grant covering the `live.jeremy.ninja` and `azure.live.jeremy.ninja` records only. Until
+      that grant is written into `## Standing authorizations` verbatim, D5 stops rather than
+      proceeding. This is not self-granted here on purpose — a standing authorization is the
+      operator's to write.
       DoD: `dig +short azure.live.jeremy.ninja` returns the Front Door endpoint hostname,
       `curl -fsS https://azure.live.jeremy.ninja/healthz` returns 200 over a valid certificate, and
       `az afd custom-domain show -g rg-liveninja-prod --profile-name <profile> --custom-domain-name <name> --query domainValidationState -o tsv`
@@ -599,11 +608,23 @@ B4 are pure Go with no Azure infrastructure dependency.
       `live.jeremy.ninja` in Route 53 from the CloudFront A + AAAA ALIAS pair
       (`template.yaml:2741-2759`) to a `CNAME` at the Front Door endpoint. `live` is a subdomain and
       not the zone apex, so a plain `CNAME` is legal here.
-      **Precondition: WS-D M5 shows `live.jeremy.ninja` already `Approved` on Front Door.**
+      **Precondition 1: WS-D M5 shows `live.jeremy.ninja` already `Approved` on Front Door.**
       Certificate issuance must not happen inside the freeze window.
-      Drop the TTL on the `live.jeremy.ninja` records to 60 seconds at least one full old-TTL before
-      the freeze begins, so both the cutover and any rollback propagate in about a minute rather than
-      at the zone default.
+      **Precondition 2 `[!]`: the same authorization gap flagged on D5 applies here and is larger.**
+      Repointing `live.jeremy.ninja` modifies Route 53 records in AWS account `759775734231`, which
+      `## Standing authorizations` lists as NOT granted. The cutover cannot execute until the operator
+      writes that narrow grant into the plan.
+      Set the replacement `CNAME` to a **60-second TTL at creation**, so a rollback propagates in
+      about a minute. There is no TTL pre-drop step on the outgoing records and none is possible:
+      `DnsRecordA` and `DnsRecordAAAA` (`template.yaml:2740-2759`) are Route 53 *aliases* — they carry
+      `AliasTarget:` and no `TTL:` property, and an alias inherits its target's TTL rather than
+      declaring one. Confirm what is actually being served before the freeze with
+      `dig live.jeremy.ninja | grep -E '^live\.jeremy\.ninja'`.
+      **Before cutting, disable the AWS pipeline:**
+      `gh workflow disable deploy.yml --repo JeremyProffittOrg/live-ninja`. `deploy.yml` carries
+      `workflow_dispatch:` alongside its `main` trigger, and both alias records are CloudFormation-owned,
+      so any manual dispatch after the cutover silently re-creates the CloudFront aliases and reverses
+      J3 with no error. Re-enabling it is a required step of any rollback.
       Because the domain does not change, the cutover needs no Android release, no firmware change,
       and no client certificate work — no client pins TLS (see Verified facts, DNS and TLS today).
       DoD: `dig +short live.jeremy.ninja` resolves to the Front Door endpoint and
@@ -709,3 +730,17 @@ actually returned. Written as it happens, not reconstructed at the end.
   D5 added covering the three Route 53 records and certificate validation; J3 given the D5
   precondition, the TTL pre-drop, and an explicit rollback; E1's definition of done corrected for the
   same production-hostname trap as D4.
+- **2026-08-19** — Post-edit review of the DNS change caught three defects in it, all verified
+  against the repo and all now corrected. (1) The J3 instruction to pre-drop the TTL on the
+  `live.jeremy.ninja` records was **not executable**: `template.yaml:2740-2759` shows `DnsRecordA` and
+  `DnsRecordAAAA` are Route 53 aliases carrying `AliasTarget:` and no `TTL:`, and an alias has no
+  settable TTL. Replaced with a 60-second TTL on the incoming `CNAME`, which is where the rollback
+  window actually comes from. (2) `deploy.yml` carries `workflow_dispatch:` and owns both alias
+  records through CloudFormation, so a manual dispatch after cutover would silently restore the
+  CloudFront aliases and reverse J3 with no error; J3 now disables the workflow before cutting and
+  re-enables it as part of rollback. (3) **Authorization gap, unresolved and blocking:** every record
+  D5 and J3 write lives in the `jeremy.ninja` hosted zone in AWS account `759775734231`.
+  `## Standing authorizations` grants only read access there and lists modification as NOT granted.
+  D5 and J3 are both marked `[!]` pending an explicit narrow grant from the operator. That grant is
+  deliberately **not** written here — a standing authorization is the operator's to give, and
+  self-granting one would fabricate consent that was never given.
