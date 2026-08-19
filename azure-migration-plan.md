@@ -152,10 +152,12 @@ assumption and is marked as such where it appears.
   recorded: `docs/launch-go-no-go-2026-07-26.md:41` marks per-user spend enforcement **HOLD** with the
   same diagnosis. The live limits today are the mint bucket (`quota.go:57-58`, burst 6, one token per
   3s) and 3 concurrent 600-second sessions — roughly 3 x 24h of session time per day, not one hour.
-  **Consequence for this plan:** the whole `## Cost model at 60 minutes a day, per user` section
-  describes a ceiling that does not exist, and WS-B M5 cannot be done by setting an environment
-  variable. Enforcement needs code (persist per-session seconds and tokens at session close) before
-  any cap is meaningful on Azure.
+  **Consequence for this plan, as resolved by locked decision 6:** the operator has ruled that 60
+  minutes is a planning figure and must never hard-block, so the fix is *not* to build enforcement.
+  WS-B M5a writes the counters for visibility only — so spend is measurable, `usage-rollup` stops
+  summing zeros, and WS-B M6 gains a server-side data source — and WS-B M5 turns the threshold into an
+  advisory warning. No 402 on daily minutes. The spend backstop is WS-A M8's budgets, which were
+  resized for exactly that reason.
 
 **Client endpoint surfaces are centralised**
 - Android: every endpoint is a constant in
@@ -413,8 +415,20 @@ B4 are pure Go with no Azure infrastructure dependency.
       - `gpt-realtime-2.1` — text in 4.00, cached text 0.40, text out 24.00, audio in 32.00, cached audio 0.40, audio out 64.00
       - `gpt-realtime-2.1-mini` — text in 0.60, cached text 0.06, text out 2.40, audio in 10.00, cached audio 0.30, audio out 20.00
       - `gpt-realtime-2` — identical to `gpt-realtime-2.1`
-
-      DoD: `cd /c/dev/live-ninja && go test ./internal/realtime/ -run Rates` passes.
+      - **`gpt-realtime-mini`** — the OpenAI mini rates. This entry is missing today, so
+        `openai-realtime-mini` is already billed in the UI badge at full `gpt-realtime` rates
+        (`internal/realtime/mint.go:34` defines the model id; `rates.go:27-48` has no key for it).
+      - **Voice Live Pro** rates for `azure-voice-live`, keyed on the model id the bridge sends.
+      Also re-verify the two existing entries: the `rates.go:20-26` header dates them to 2025-08.
+      **Change the fallback so a shipped engine can never be served by it.** `internal/realtime/rates.go:54`
+      sets `defaultRates = modelRates["gpt-realtime"]` and `RatesFor` (`rates.go:58-63`) silently
+      returns it for any unknown model — and `rates_test.go:33` asserts that behaviour, which is why
+      the current DoD cannot detect a missing engine. Keep the fallback for genuinely unknown ids, and
+      add `RatesForEngine` returning `(Rates, bool)` that logs `code=rates_missing` instead.
+      DoD: `cd /c/dev/live-ninja && go test ./internal/realtime/ -run Rates` passes **and** a new
+      `TestRatesCoverEveryShippedEngine` asserts every model id reachable from the six engine constants
+      in `internal/voiceengine` has an explicit `modelRates` key. `TestRatesForUnknownModelFallsBack`
+      must not be the thing that makes this pass.
 - [ ] **B5a. Make the usage counters real — measurement only, no enforcement.** Per locked
       decision 6, 60 minutes a day is a planning figure and must **never** hard-block a session. The
       counters are still written, because without them spend is invisible, `usage-rollup` sums zeros,
@@ -446,9 +460,22 @@ B4 are pure Go with no Azure infrastructure dependency.
       and a usable session — **a 402 on daily minutes is a test failure, not a pass.**
 - [ ] **B6. Cache-hit-rate telemetry.** `/c/dev/live-ninja/web/static/js/conversation.mjs:1089` already
       reads `input_token_details.cached_tokens_details`. Emit the cached-to-total input ratio as a
-      telemetry event and alert below 80%. **This is not optional:** at 60 min/day a cache collapse
-      takes the mini engine from $30/month to $329/month and the full engine from $83 to $1,054, with
-      no error and no other signal.
+      telemetry event and alert below **95%**, measured over a rolling 24 hours rather than per
+      session. **Not 80%.** Steady state is ~97.8% cached, derived from the cost model's own figures.
+      At an 80% cached share the mini engine already costs about $88/month against a $30.32 baseline —
+      a 2.9x overrun standing exactly at the old threshold, still silent. 95% corresponds to about
+      $42/month (1.4x). Emit a second, higher-severity signal below 85%.
+      **Compute the ratio server-side**, from the usage WS-F M4 forwards and from the authenticated
+      `POST /api/v1/transcript` cost body — not only in the browser, or Android and M5Stack sessions
+      contribute nothing. The browser path also returns early when rates are absent
+      (`conversation.mjs:1090`, `if (!rates) return;`), so on the bridged engine it computes nothing
+      at all until WS-F M4 lands. **Depends on: WS-F M4.**
+      **Signal path, to stay inside the org's no-fixed-cost rule:** emit a structured error log at
+      `level=error, code=cache_ratio_degraded` from the web container and let it route through the
+      WS-E M7 action group. Do not add a scheduled-query or per-metric alert rule for this.
+      **This is not optional:** a cache collapse takes the mini engine from $30/month to $329/month and
+      the full engine from $83 to $1,056, with no error and no other signal. With no hard daily cap
+      (locked decision 6), this and the WS-A M8 budgets are the entire cost-safety story.
       DoD: `cd /c/dev/live-ninja && go test ./internal/webapp/ -run Telemetry` passes and the new
       `cache_ratio` event exists in `/c/dev/live-ninja/contracts/telemetry.schema.json`.
 - [ ] **B7. Update the Help drawer.** Mandatory in the same commit per `/c/dev/live-ninja/CLAUDE.md`
@@ -839,31 +866,85 @@ without explicit per-step operator approval at the time.*
 
 ## Cost model at 60 minutes a day, per user
 
+**60 minutes a day is a planning assumption, not an enforced ceiling** (locked decision 6). Nothing
+blocks a user at 60 minutes; WS-A M8's budgets are the only backstop. Every figure below is what an
+average day costs, not what a bad day is capped at.
+
 Measured against Azure list prices read from the Azure pricing pages on 2026-08-18. Assumes 18
 minutes/day of user speech, 24 minutes/day of assistant speech, Microsoft's published conversion of
-10 tokens/second input and 20 tokens/second output audio, and near-100% prompt-cache hits.
+10 tokens/second input and 20 tokens/second output audio, near-100% prompt-cache hits, and — the
+term that was previously unstated — **an average of about 70 assistant turns per day over roughly 6
+sessions, re-reading about 11,300 tokens of context per turn, giving ~30.8M cached input tokens per
+month.** That cached term is roughly 26x the 1.19M raw audio tokens and is the dominant cost in every
+row below; the figures cannot be reproduced from the audio assumptions alone.
+
+**Cost scales linearly in turns per day.** At 140 turns/day the mini engine is roughly $40/month and
+Gemini roughly $197/month. Assumed user count is **N = 1** (single-owner instance,
+`internal/realtime/quota.go:56`).
 
 ```
 azure-openai-realtime-mini   gpt-realtime-2.1-mini    $30.32/mo   <- default engine
 azure-openai-realtime        gpt-realtime-2.1         $82.87/mo
-azure-voice-live             Voice Live Pro native    $81.72/mo   + bridge infrastructure
+azure-voice-live             Voice Live Pro native    $81.72/mo   PLACEHOLDER + bridge infra
 openai-realtime              gpt-realtime (unchanged) $81.72/mo
 gemini-flash-live            (unchanged, no caching) $104.60/mo
 ```
 
 Two numbers govern the design:
 
-1. **Cache collapse is a 13x event.** With zero cache hits, `azure-openai-realtime-mini` goes to
-   $329/month and `azure-openai-realtime` to $1,054/month. It produces no error and no other signal.
-   WS-B M6 exists solely to make it visible. Never inject a timestamp, reorder the tool list, or
-   rewrite the system prompt mid-session — all three invalidate the cached prefix.
+0. **The `azure-voice-live` row above is a placeholder, not a Voice Live price.** $81.72 is the
+   `gpt-realtime` figure copied across — it reproduces exactly from `internal/realtime/rates.go`'s
+   `gpt-realtime` entry, which is why it matches the `openai-realtime` row to the cent. Voice Live Pro
+   is priced separately and has not been sized. WS-B M4 must add a real entry.
+1. **Cache collapse is an 11x event on the default engine and a 13x event on the full engine.** The
+   multiplier is engine-dependent because the cached discount is: 33x on mini (10.00 vs 0.30), 80x on
+   the full model (32.00 vs 0.40). With zero cache hits `azure-openai-realtime-mini` goes from $30.32
+   to $329/month (10.9x) and `azure-openai-realtime` from $82.87 to $1,056/month (12.7x). The
+   previously published $1,054 was $2 off its own arithmetic — both rows now use one cached-token
+   volume. It produces no error and no other signal. WS-B M6 exists solely to make it visible. Never
+   inject a timestamp, reorder the tool list, or rewrite the system prompt mid-session — all three
+   invalidate the cached prefix.
 2. **The 10-minute session cap is a cost control, not only a UX rule.** It holds context near 14,600
    tokens. Raising it grows the per-turn re-read superlinearly. `QUOTA_SESSION_CAP_SECONDS` stays at 600.
 
-Standing Azure infrastructure, independent of usage, is estimated at $60 to $90 per month (Container
-Apps minimum replicas, Front Door Standard, the Cosmos serverless floor, the IoT Hub tier, and Log
-Analytics ingestion). **This is an estimate derived from service shapes, not a figure from the Azure
-pricing calculator.** WS-A M8 sets the budgets that will measure it for real.
+Standing Azure infrastructure, independent of usage. The earlier "$60 to $90 per month" figure named
+only five services and is **a floor, not an estimate of the total** — the plan provisions at least
+eight more that carry a standing or unavoidable charge. Line items, one per always-on resource:
+
+```
+PRICED IN THE ORIGINAL $60-$90 FLOOR
+  Container Apps minimum replicas (web, jobs, voice-live-bridge)
+  Front Door Standard base fee
+  IoT Hub tier
+  Log Analytics ingestion
+
+NAMED BUT NOT ACTUALLY SIZEABLE YET
+  Cosmos serverless RU + storage        [not yet sized - WS-C M3 measures it]
+                                        ("serverless floor" was a misnomer: serverless
+                                         Cosmos has no floor, it bills per consumed RU]
+
+MISSING FROM THE ORIGINAL FIGURE ENTIRELY
+  Azure Data Explorer cluster           [WS-E M5 - VM-backed, bills while it exists;
+                                         Athena billed per query, so this is a new class]
+  Event Hubs throughput units + Capture [WS-E M5 - Capture is an always-on add-on]
+  Service Bus namespace base charge     [WS-E M3]
+  Azure Container Registry + storage    [WS-E M6]
+  Blob Storage + transactions + egress  [WS-E M2]
+  Key Vault signing operations          [WS-E M1 - on every auth path]
+  Front Door egress GB + request charges
+  Azure OpenAI gpt-5.2 for the RCA analyzer
+                                        [WS-D M3 - cap 10/day x 2000 output tokens
+                                         = 600k output tokens/month on a frontier
+                                         model, plus input context; in neither table]
+  Azure OpenAI text-embedding-3-small   [WS-C M4]
+```
+
+**There is no total until WS-C M3 reports measured RU and WS-E M5 reports ingestion volume.** WS-A M8
+sets budgets from the upper bound, not from this floor. Add a milestone-completion step to WS-A: once
+the stack is live, run
+`az costmanagement query --scope "/subscriptions/adc40fff-bab3-4bd2-b961-1832d0375052/resourceGroups/rg-liveninja-prod" --timeframe MonthToDate --type ActualCost --dataset-aggregation '{"c":{"name":"Cost","function":"Sum"}}' --dataset-grouping name=ServiceName type=Dimension -o table`
+and record the per-service output verbatim in the Execution log. That replaces the estimate with a
+measurement.
 
 ---
 
@@ -969,3 +1050,17 @@ actually returned. Written as it happens, not reconstructed at the end.
   post-WS-J merge to `main` with a DoD that can actually fail, plus a new WS-I M7 moving Android
   distribution and `assetlinks.json` off S3 before the hostname cuts over; and WS-K M4 given a DoD
   and the `workflow_dispatch` hazard note.
+- **2026-08-19** — Cost model corrected against its own arithmetic. The five published per-engine
+  figures could not be reproduced from the stated assumptions: solving for the missing terms recovers
+  ~30.8M cached input tokens/month (about 70 assistant turns/day re-reading ~11,300 tokens), which is
+  ~26x the raw audio volume and the dominant cost in every row. That term is now stated, with a
+  linear-in-turns sensitivity line. The "13x" collapse claim was neither engine's figure — it is 10.9x
+  on mini and 12.7x on the full model, because the cached discount differs (33x vs 80x); the full
+  engine's $1,054 was $2 off its own arithmetic and is now $1,056. The `azure-voice-live` row is
+  marked PLACEHOLDER: $81.72 reproduces exactly from `rates.go`'s `gpt-realtime` entry, so it is that
+  price copied across, not a Voice Live Pro price. The standing-infrastructure figure is relabelled a
+  floor and expanded into line items — Azure Data Explorer, Event Hubs Capture, Service Bus, ACR,
+  Blob, Key Vault operations, Front Door egress and requests, and RCA/embedding token spend were all
+  absent. WS-B M4 gains the missing `gpt-realtime-mini` and Voice Live entries plus a test that a
+  shipped engine can never fall through `RatesFor`'s silent default. WS-B M6's threshold moves from
+  80% to 95%: at 80% the mini engine has already tripled its cost.
