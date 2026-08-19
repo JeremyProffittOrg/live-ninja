@@ -27,6 +27,19 @@ definition of done is a command with a pass/fail result.
 3. **IoT migrates to Azure IoT Hub.** Device twins replace AWS IoT device shadows. X.509 via Device
    Provisioning Service replaces fleet-provisioning-by-claim and the custom authorizer.
    `/c/dev/live-ninja/cmd/iot-authorizer` is deleted. Every fielded device requires a firmware reflash.
+
+   > **`[!]` VERIFIED CONTRADICTION, recorded 2026-08-19 — the decision itself is NOT revisited here;
+   > this records a false premise inside it for the operator to rule on.** The premise "X.509 replaces
+   > the custom authorizer" does not hold, because `cmd/iot-authorizer` does not serve devices.
+   > `cmd/iot-authorizer/main.go:1-2` states it is "the AWS IoT Core custom authorizer fronting MQTT
+   > over WebSockets for **the web and Android clients**", and
+   > `android/.../realtime/LiveEventsClient.kt:318` builds
+   > `wss://${c.endpoint}/mqtt?x-amz-customauthorizer-name=${c.authorizerName}`. Devices authenticate
+   > with X.509 and never touch it. IoT Hub's MQTT admits only fixed `devices/{id}/...` topics with
+   > per-device credentials, so it has no counterpart for a per-user `liveninja/user/<uid>/#` subtree
+   > gated by a first-party JWT. Deleting the authorizer therefore removes live events, presence, and
+   > the turn-taking lock for **every web and Android client**, which is a separate migration
+   > (Azure Web PubSub or SignalR) that no milestone currently owns. See WS-G.
 4. **Azure target is the existing org tenant and subscription.**
    - Tenant ID: `d0695ba8-1211-4da6-81a4-05427c842a2a`
    - Subscription ID: `adc40fff-bab3-4bd2-b961-1832d0375052`
@@ -70,7 +83,23 @@ assumption and is marked as such where it appears.
   - `internal/store/deliverables.go:182` (GSI1)
 
   Everything else is a key `GetItem`/`PutItem` or a single-partition `Query`. There are no `Scan`
-  calls on any serving path. **This makes the Cosmos DB port a 5-query problem, not a schema rewrite.**
+  calls on any serving path.
+
+**CORRECTION 2026-08-19 — the sizing claim above was wrong and is withdrawn.** The original text read
+"This makes the Cosmos DB port a 5-query problem, not a schema rewrite." Three commands disprove it:
+- `grep -rl 'aws-sdk-go-v2/service/dynamodb' --include=*.go . | grep -v _test | grep -v '^./internal/store/' | grep -v testutil`
+  returns **17 files** that build DynamoDB requests outside `internal/store`, each with its own private
+  interface rather than the `ddbAPI` seam: `internal/realtime/{quota,mint,guides,personas_store,voiceprefs}.go`,
+  `internal/codeupdate/store.go`, `internal/tools/{notes,registry}.go`, `internal/webapp/api_routes.go`,
+  and `cmd/{account-purge,codeupdate-dispatch,deliverables-zipper,email-dispatch,nova-bridge,realtime-broker,usage-rollup,web}`.
+  WS-C M2 scopes the port to `internal/store` only, so all 17 would still address a table WS-K deletes.
+- The seam is **not** storage-neutral. `internal/store/store.go:31-40` is typed entirely in DynamoDB SDK
+  structs, and the package carries 30 `UpdateExpression` and 85 `ConditionExpression` uses. "Satisfying
+  the same seam" from Cosmos means parsing DynamoDB expression grammar.
+- The seam declares **7** methods, not the "8 DynamoDB operations" WS-C M2 claims.
+
+  The accurate statement is: **a 5-index-query problem, plus 17 out-of-package call sites, plus a seam
+  that must be re-expressed in storage-neutral terms before Cosmos can satisfy it.**
 
 **Quota is already externalised**
 - `/c/dev/live-ninja/internal/realtime/quota.go:110-114` reads `QUOTA_DAILY_SECONDS`,
@@ -83,6 +112,16 @@ assumption and is marked as such where it appears.
 - Android: every endpoint is a constant in
   `/c/dev/live-ninja/android/app/src/main/java/ninja/jeremy/liveninja/config/BackendConfig.kt`.
   `BASE_URL = "https://live.jeremy.ninja"`; `OPENAI_REALTIME_CALLS_URL` is the only non-first-party host.
+  **Qualifier added 2026-08-19: "centralised" does not mean "server-steerable."** `callsUrl` is declared
+  at `RealtimeSessionApi.kt:55` as `val callsUrl: String = BackendConfig.OPENAI_REALTIME_CALLS_URL` and
+  is **never populated from the session JSON** — `grep -n 'callsUrl' RealtimeSessionApi.kt` returns only
+  that declaration. The mode dispatch at `RealtimeSessionCoordinator.kt:204-221` has explicit branches
+  for `nova-bridge` and `gemini-direct` and an `else ->` that selects the WebRTC transport. So an
+  installed build handed `mode: "azure-openai-direct"` does not fail closed: it takes the `else` branch
+  and POSTs the **Azure** ephemeral credential to the compile-time `https://api.openai.com` host. Any
+  rollout of an `azure-*` mode must be gated server-side on the `X-LN-Client` version header
+  (`contracts/headers.md:7-33`) before WS-I ships. This is why "the cutover needs no Android release"
+  is true only for the hostname, not for the engine flip.
 - Android transports live in `/c/dev/live-ninja/android/app/src/main/java/ninja/jeremy/liveninja/realtime/`:
   `WebRtcTransport.kt`, `GeminiLiveTransport.kt`, `NovaBridgeTransport.kt` (to be replaced).
 - Web: `/c/dev/live-ninja/web/static/js/realtime.mjs` (2,435 lines) holds all three transports and
@@ -744,3 +783,17 @@ actually returned. Written as it happens, not reconstructed at the end.
   D5 and J3 are both marked `[!]` pending an explicit narrow grant from the operator. That grant is
   deliberately **not** written here — a standing authorization is the operator's to give, and
   self-granting one would fabricate consent that was never given.
+- **2026-08-19** — Seven persona reviewers audited the plan against the repository on non-overlapping
+  slices. Their claims were re-verified in the main thread before anything was written here; only
+  command-confirmed items are recorded. Three entries in `## Verified facts` / `## Locked decisions`
+  were found to be false or materially incomplete and are corrected above: (a) the data-layer sizing
+  claim ("a 5-query problem, not a schema rewrite") is withdrawn — 17 files outside `internal/store`
+  build DynamoDB requests directly, the `ddbAPI` seam is typed in DynamoDB SDK structs with 30
+  `UpdateExpression` and 85 `ConditionExpression` uses, and it declares 7 methods not 8; (b) Locked
+  decision 3's premise that X.509 replaces `cmd/iot-authorizer` is contradicted by
+  `cmd/iot-authorizer/main.go:1-2` — that authorizer fronts MQTT for the web and Android clients, not
+  for devices, so deleting it removes live events for every client and needs its own migration; (c) the
+  Android "endpoints are centralised" fact is qualified — `callsUrl` is a compile-time constant never
+  read from the session JSON, so an old build handed an `azure-*` mode POSTs an Azure credential to
+  `api.openai.com` rather than failing closed. The decisions themselves are annotated, not reversed —
+  reversing a user-confirmed locked decision is the operator's call.
