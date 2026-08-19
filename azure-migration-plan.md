@@ -57,6 +57,38 @@ definition of done is a command with a pass/fail result.
    | `azure-openai-realtime-mini` | `gpt-realtime-2.1-mini` | client-direct WebRTC to Azure | **NEW** |
    | `azure-voice-live` | `gpt-realtime` via Voice Live | bridged WSS through Container Apps | **NEW**, replaces `nova-sonic` |
 
+6. **60 minutes a day is a planning figure, not an enforced ceiling** (operator, 2026-08-19, verbatim:
+   "60 minutes should not be a hard cap"). Chosen handling: **measure and soft-warn, never block.**
+   - Write `daySeconds` and `dayTokens` at session close so spend is visible, `usage-rollup` stops
+     summing zeros, and the WS-B M6 cache-ratio signal has a server-side source.
+   - Surface an in-product warning past the threshold. **Never return 402 on daily minutes.**
+   - The controls that are real today stay exactly as they are: `QUOTA_SESSION_CAP_SECONDS=600`,
+     3 concurrent sessions, and the mint bucket (`internal/realtime/quota.go:57-58`).
+   - **Accepted consequence:** with no daily ceiling, per-user spend is bounded only by session
+     concurrency, so WS-A M8's budgets are the only backstop. They are sized for that in decision 10.
+
+7. **Route 53 stays authoritative and the run may write two record sets there** (operator,
+   2026-08-19, verbatim: "you'll need to update dns"). This is a narrow exception to the blanket
+   prohibition on modifying AWS account `759775734231`, and it is the **only** AWS write this plan
+   authorizes. It covers the `live.jeremy.ninja` and `azure.live.jeremy.ninja` records in the
+   `jeremy.ninja` hosted zone and nothing else. No domain is registered in Azure and no Azure DNS
+   zone is created. See WS-D M5 and WS-J M3.
+
+8. **Client live events migrate to Azure Web PubSub** (operator, 2026-08-19). `cmd/iot-authorizer`
+   fronts MQTT over WebSockets for the web and Android clients, not for devices
+   (`cmd/iot-authorizer/main.go:1-2`), so IoT Hub's X.509 is not its replacement and deleting it
+   would remove live events, presence, and the turn-taking lock for every client. A new WS-G
+   milestone ports the client fan-out to Azure Web PubSub with a server-minted per-user token. This
+   supersedes the premise inside decision 3; decision 3 itself is otherwise unchanged.
+
+9. **`alexa-version` merges to `main` once WS-J is green** (operator, 2026-08-19). Until then,
+   pushing to `main` remains a stop condition. WS-I M6 (Android release) and WS-K M4 both require
+   `main` and therefore both wait for the merge rather than being worked around.
+
+10. **Cost Management budgets are $100 / $250 / $500** (operator, 2026-08-19), replacing the
+    $20 / $50 / $100 the plan first carried, which all sat below the plan's own $90-$120 monthly
+    baseline and would have fired every normal month. See WS-A M8 for scope, filter, and recipients.
+
 ---
 
 ## Verified facts (confirmed by reading the repo on 2026-08-18)
@@ -213,11 +245,18 @@ Granted, no mid-run confirmation needed:
 - Set GitHub repository **variables** on `JeremyProffittOrg/live-ninja`.
 - Push commits to `alexa-version` and let the Azure workflow deploy from it.
 - Read AWS resources for migration purposes.
+- **Create and modify the `live.jeremy.ninja` and `azure.live.jeremy.ninja` record sets in the
+  `jeremy.ninja` Route 53 hosted zone in AWS account `759775734231`** (granted 2026-08-19, locked
+  decision 7). WS-D M5 and WS-J M3 only. This is the sole AWS write this plan authorizes; every
+  other resource in that account remains read-only.
+- **Merge `alexa-version` to `main` once WS-J M4 has passed** (granted 2026-08-19, locked decision 9),
+  which unblocks WS-I M6 and WS-K M4. Before WS-J M4 passes, pushing to `main` remains forbidden.
 
 **NOT granted — these are stop conditions:**
-- Deleting or modifying any AWS resource in account `759775734231` (WS-K).
+- Deleting or modifying any AWS resource in account `759775734231` (WS-K), **other than the two
+  Route 53 record sets named above**.
 - Reprovisioning or deleting the existing M5Stack IoT Thing or its certificate (WS-G M4).
-- Pushing anything to `main`.
+- Pushing anything to `main` **before WS-J M4 has passed** (see locked decision 9).
 - Broadening the `JeremyProffittOrg/event` federated credential.
 
 ---
@@ -316,9 +355,25 @@ immediately and in parallel with it.
       DoD: `gh workflow view deploy-azure.yml --repo JeremyProffittOrg/live-ninja` shows the workflow and
       `gh run list --workflow=deploy-azure.yml --branch alexa-version --limit 1 --json conclusion -q '.[0].conclusion'`
       returns `success`.
-- [ ] **A8. Cost Management budgets** at $20 / $50 / $100, replacing the three `AWS::Budgets::Budget`
-      resources. Per the org rule, no dashboards and no fixed-cost per-metric alarms.
-      DoD: `az consumption budget list --query "length(@)" -o tsv` returns `3`.
+- [ ] **A8. Cost Management budgets** at **$100 / $250 / $500** (locked decision 10), replacing the
+      three `AWS::Budgets::Budget` resources. The original $20 / $50 / $100 all sat below the plan's
+      own $60-$90 standing-infrastructure estimate plus $30.32 default-engine usage, so every one of
+      them would have fired in a normal month and none could have signalled a cache collapse.
+      Because locked decision 6 removes any hard daily cap, **these budgets are the only spend
+      backstop in the system** — size and wire them accordingly.
+      - Scope each budget to `/subscriptions/adc40fff-bab3-4bd2-b961-1832d0375052/resourceGroups/rg-liveninja-prod`,
+        **never subscription scope** — the subscription is shared with `JeremyProffittOrg/event`, so a
+        subscription-scoped budget mixes in another project's spend and a subscription-scoped
+        list-count check fails for the wrong reason.
+      - Filter on the A6 tag `Project=live-ninja`, mirroring `template.yaml:2853-2855`.
+      - Give each an Actual notification at 100% **and** a Forecasted notification at 100%, to the
+        operator address, mirroring `template.yaml:2856-2864`. A budget with no notification is silent.
+      - Assumed user count is **N = 1** (single-owner instance, `internal/realtime/quota.go:56`).
+        Re-derive all three amounts if N changes.
+      Per the org rule, no dashboards and no fixed-cost per-metric alarms — Cost Management budgets
+      carry no fixed charge.
+      DoD: `az consumption budget list --scope "/subscriptions/adc40fff-bab3-4bd2-b961-1832d0375052/resourceGroups/rg-liveninja-prod" --query "[?contains(name,'liveninja')].{n:name,a:amount,c:length(notifications)}" -o tsv`
+      lists exactly 3 rows with amounts `100`, `250`, `500` and a non-zero notification count on each.
 
 **Restart policy (WS-A):** Bicep deployment failures are deterministic. Read the
 `az deployment group show` error, fix the template, redeploy. Ceiling 3 attempts per milestone; on
@@ -360,12 +415,35 @@ B4 are pure Go with no Azure infrastructure dependency.
       - `gpt-realtime-2` — identical to `gpt-realtime-2.1`
 
       DoD: `cd /c/dev/live-ninja && go test ./internal/realtime/ -run Rates` passes.
-- [ ] **B5. Raise the quota caps.** No code change. Set on the web and broker container apps:
-      `QUOTA_DAILY_SECONDS=3600` (60 min/day), `QUOTA_MONTH_TOKENS` recomputed for the chosen model's
-      price, and `QUOTA_SESSION_CAP_SECONDS=600` unchanged — it is what keeps context small and the
-      cache cheap (see Cost model).
-      DoD: `curl -sS -H "Authorization: Bearer $TOKEN" https://<app>/api/v1/realtime/session | jq -e '.rates'`
-      returns a rates object rather than a 402.
+- [ ] **B5a. Make the usage counters real — measurement only, no enforcement.** Per locked
+      decision 6, 60 minutes a day is a planning figure and must **never** hard-block a session. The
+      counters are still written, because without them spend is invisible, `usage-rollup` sums zeros,
+      and B6 has no server-side data source. Persist per-session seconds and tokens at session close
+      by calling `store.AddDayUsage(userID, day, tokens, seconds, 0)` and the month equivalent —
+      bridged engines from the Voice Live `response.done` usage that WS-F M4 forwards, client-direct
+      engines from the authenticated `POST /api/v1/transcript` cost body already parsed at
+      `internal/webapp/api_routes.go:812-822`.
+      **Do not add a 402 path on daily minutes.** Leave the existing real controls untouched:
+      `QUOTA_SESSION_CAP_SECONDS=600`, 3 concurrent sessions, and the mint bucket
+      (`internal/realtime/quota.go:57-58`).
+      DoD: `cd /c/dev/live-ninja && go test ./internal/webapp/ -run 'Usage|Transcript'` passes, a new
+      test asserts a completed session leaves non-zero `daySeconds` **and** that exceeding
+      `QUOTA_DAILY_SECONDS` still returns 200 rather than 402, and after one real session the
+      `USER#<uid>/USAGE#<YYYY-MM-DD>` item shows non-zero `daySeconds` and `dayTokens`.
+- [ ] **B5. Set the advisory threshold and the soft warning.** Depends on B5a. Set
+      `QUOTA_DAILY_SECONDS=3600` on the web and broker container apps as the **advisory** threshold —
+      crossing it raises the existing `X-LN-Quota-Warning` header and an in-product notice, and
+      nothing else. `QUOTA_SESSION_CAP_SECONDS=600` is unchanged: it is a cost control, not a UX rule,
+      because it holds context near 14,600 tokens (see Cost model).
+      `QUOTA_MONTH_TOKENS` is advisory on the same terms; set it from the cost model's stated
+      derivation and record in the Execution log **whether the counter sums all billed tokens
+      including cached re-reads (~35,000,000) or only uncached tokens (~1,300,000)** — the two differ
+      by 27x and the plan cannot be read either way.
+      Update the Help drawer in the same commit per `/c/dev/live-ninja/CLAUDE.md`: a user-visible
+      warning is a user-visible capability.
+      DoD: `cd /c/dev/live-ninja && go test ./internal/webapp/ -run 'Quota|TestHelpDrawer'` passes,
+      and a test user pushed past `QUOTA_DAILY_SECONDS` receives `X-LN-Quota-Warning` with HTTP 200
+      and a usable session — **a 402 on daily minutes is a test failure, not a pass.**
 - [ ] **B6. Cache-hit-rate telemetry.** `/c/dev/live-ninja/web/static/js/conversation.mjs:1089` already
       reads `input_token_details.cached_tokens_details`. Emit the cached-to-total input ratio as a
       telemetry event and alert below 80%. **This is not optional:** at 60 min/day a cache collapse
@@ -477,15 +555,10 @@ B4 are pure Go with no Azure infrastructure dependency.
          and reach `Approved` well before J3. Doing it inside the J3 freeze window would put
          certificate issuance latency on the critical path of a write freeze.
       Do **not** touch the `live.jeremy.ninja` A/AAAA ALIAS records here — those are J3.
-      **`[!]` AUTHORIZATION GAP — D5 cannot run as the plan currently stands.** Every record above is
-      written into the `jeremy.ninja` Route 53 hosted zone, which lives in AWS account `759775734231`.
-      `## Standing authorizations` grants only "Read AWS resources for migration purposes" and lists
-      "Deleting or modifying any AWS resource in account `759775734231`" as NOT granted. Adding a
-      record is a modification of that account. **Unblocked by:** the operator adding an explicit
-      narrow grant covering the `live.jeremy.ninja` and `azure.live.jeremy.ninja` records only. Until
-      that grant is written into `## Standing authorizations` verbatim, D5 stops rather than
-      proceeding. This is not self-granted here on purpose — a standing authorization is the
-      operator's to write.
+      **Authorization: GRANTED 2026-08-19 (locked decision 7).** These records live in AWS account
+      `759775734231`, where every other resource stays read-only. The grant covers
+      `live.jeremy.ninja` and `azure.live.jeremy.ninja` and nothing else — touching any other record
+      in the `jeremy.ninja` zone is still a stop condition.
       DoD: `dig +short azure.live.jeremy.ninja` returns the Front Door endpoint hostname,
       `curl -fsS https://azure.live.jeremy.ninja/healthz` returns 200 over a valid certificate, and
       `az afd custom-domain show -g rg-liveninja-prod --profile-name <profile> --custom-domain-name <name> --query domainValidationState -o tsv`
@@ -589,6 +662,24 @@ B4 are pure Go with no Azure infrastructure dependency.
       `/c/dev/live-ninja/firmware/components/ln_realtime/ln_realtime.c:64` keeps its OpenAI direct URL
       and swaps the `nova-bridge` mode (`ln_rt_session.c:18`) for `azure-voice-live`.
       DoD: `cd /c/dev/live-ninja/firmware && idf.py build` exits 0.
+- [ ] **G5. Migrate client live events to Azure Web PubSub** (locked decision 8). This is the
+      milestone that makes deleting `cmd/iot-authorizer` safe, and G2 must not delete it until G5 has
+      shipped. `cmd/iot-authorizer/main.go:1-2` states it is "the AWS IoT Core custom authorizer
+      fronting MQTT over WebSockets for **the web and Android clients**", and
+      `android/.../realtime/LiveEventsClient.kt:318` builds
+      `wss://${c.endpoint}/mqtt?x-amz-customauthorizer-name=${c.authorizerName}`. Devices authenticate
+      with X.509 and never touch it, so IoT Hub is not its replacement.
+      Port three surfaces to Azure Web PubSub with a server-minted per-user token, keeping the
+      per-user topic isolation the IoT policy provides today: `/c/dev/live-ninja/internal/sync/events.go`,
+      `/c/dev/live-ninja/internal/webapp/iot_routes.go` (the `GET /api/v1/iot/credentials` route and
+      its `endpoint`/`authorizerName`/`topicFilter` response shape), and the Android pair
+      `LiveEventsClient.kt` / `MqttCodec.kt`. Keep the existing response field names as a deprecated
+      alias per `contracts/README.md:27-30` so an installed build does not hard-fail.
+      **Until the fielded Android population has updated, AWS IoT Core, the authorizer Lambda, and the
+      credentials route must stay alive** — WS-K M2 is blocked on that, not only on the M5Stack.
+      DoD: `cd /c/dev/live-ninja && go test ./internal/sync/ ./internal/webapp/ -run 'Events|Iot'`
+      passes, and two browser sessions for the same user observe each other's presence and
+      turn-taking lock through Web PubSub with `cmd/iot-authorizer` stopped.
 - [ ] **G4. `[!]` BLOCKED BY DESIGN — provision the physical device.**
       `/c/dev/live-ninja/plan.md:1262` records an explicit prohibition on deleting or reprovisioning
       the existing M5Stack Thing or its certificate. Migrating it to IoT Hub necessarily reprovisions it.
@@ -652,9 +743,27 @@ B4 are pure Go with no Azure infrastructure dependency.
       DoD: `cd /c/dev/live-ninja/android && ./gradlew :app:connectedDebugAndroidTest` passes on both
       serials.
 - [ ] **I6. Release build.** Ship through `.github/workflows/android-release.yml`, not a local build.
-      DoD:
-      `gh run list --workflow=android-release.yml --branch alexa-version --limit 1 --json conclusion -q '.[0].conclusion'`
-      returns `success`.
+      **Blocked until WS-J M4 passes and `alexa-version` merges to `main`** (locked decision 9).
+      `build-and-publish` is hard-gated at `.github/workflows/android-release.yml:112` on
+      `github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'`, so a run
+      triggered from `alexa-version` skips that job and still reports `success` — the original DoD
+      below could pass with no APK ever built. Do not work around the guard; the merge is the path.
+      Also required before this ships: **I7**, or the APK the run publishes is unreachable.
+      DoD: after the merge,
+      `gh run view <id> --json jobs -q '.jobs[]|select(.name=="build-and-publish").conclusion'`
+      returns `success` **and** `curl -fsS https://live.jeremy.ninja/v1/app/android/latest | jq -r .versionCode`
+      is greater than the version this run started from.
+- [ ] **I7. Repoint Android distribution off S3.** `.github/workflows/android-release.yml:437-446`
+      publishes the APK, `android-latest.json`, and `android-assetlinks.json` into the AWS assets
+      bucket with `aws s3 cp`, and `internal/webapp/android_distribution_routes.go:21-23` serves them
+      by reading those S3 objects — including `/.well-known/assetlinks.json`, which is what makes the
+      `https://live.jeremy.ninja/auth/lwa/app-return` App Link verify. After WS-J M3 repoints the
+      hostname to Front Door, a stale `assetlinks.json` breaks the login handoff for every installed
+      build and the in-app update channel goes dead. Move the upload to `azure/login@v2` plus
+      `az storage blob upload` into the WS-E M2 assets container, and repoint the serving routes to
+      Blob. This must land **before** WS-J M3, not after.
+      DoD: `curl -fsS https://azure.live.jeremy.ninja/.well-known/assetlinks.json | jq -e '.[0].target.package_name=="ninja.jeremy.liveninja"'`
+      and `curl -fsS https://azure.live.jeremy.ninja/v1/app/android/latest | jq -e .versionCode` both exit 0.
 
 ---
 
@@ -678,10 +787,9 @@ B4 are pure Go with no Azure infrastructure dependency.
       not the zone apex, so a plain `CNAME` is legal here.
       **Precondition 1: WS-D M5 shows `live.jeremy.ninja` already `Approved` on Front Door.**
       Certificate issuance must not happen inside the freeze window.
-      **Precondition 2 `[!]`: the same authorization gap flagged on D5 applies here and is larger.**
-      Repointing `live.jeremy.ninja` modifies Route 53 records in AWS account `759775734231`, which
-      `## Standing authorizations` lists as NOT granted. The cutover cannot execute until the operator
-      writes that narrow grant into the plan.
+      **Precondition 2: authorization — GRANTED 2026-08-19 (locked decision 7).** Repointing
+      `live.jeremy.ninja` is covered by the narrow Route 53 grant. No other AWS resource in account
+      `759775734231` may be touched during the cutover.
       Set the replacement `CNAME` to a **60-second TTL at creation**, so a rollback propagates in
       about a minute. There is no TTL pre-drop step on the outgoing records and none is possible:
       `DnsRecordA` and `DnsRecordAAAA` (`template.yaml:2740-2759`) are Route 53 *aliases* — they carry
@@ -719,7 +827,13 @@ without explicit per-step operator approval at the time.*
       server-side from the `live-ninja` allowlist entry. Either keep one narrow AWS role for this call,
       or get ghost-cli to accept a different transport. **Do not close the AWS account until this is
       resolved**, or the voice code-update tool stops working.
-- [ ] **K4. `[!]` Retire the AWS OIDC role and `deploy.yml`.** Last, and only once K1 through K3 are done.
+- [ ] **K4. `[!]` Retire the AWS OIDC role and `deploy.yml`.** Last, and only once K1 through K3 are
+      done. `deploy.yml` lives on `main`, so this depends on the WS-J M4 merge in locked decision 9.
+      **Before this runs, disable rather than delete:** `deploy.yml` carries `workflow_dispatch:`
+      alongside its `main` trigger and owns the CloudFront alias records through CloudFormation, so
+      until it is gone a manual dispatch silently re-creates them and reverses WS-J M3.
+      DoD: `gh workflow list --repo JeremyProffittOrg/live-ninja --all | grep -c deploy.yml` returns
+      `0`, and `aws iam get-role --role-name gha-deploy` returns `NoSuchEntity`.
 
 ---
 
@@ -843,3 +957,15 @@ actually returned. Written as it happens, not reconstructed at the end.
   passing `0, 0, 1`). Independently corroborated by `docs/launch-go-no-go-2026-07-26.md:41`, which
   already carries this as a **HOLD**. This is a pre-existing AWS defect that the migration inherits
   rather than causes, but it invalidates the premise of the cost-model section and of WS-B M5.
+- **2026-08-19** — Five operator decisions locked (6 through 10 above) and the plan updated to match.
+  Verbatim where given: "60 minutes should not be a hard cap" and "you'll need to update dns".
+  Resulting edits: WS-B M5 split into M5a (write the counters, measurement only, an explicit test that
+  exceeding the daily threshold returns 200 not 402) and M5 (advisory threshold plus soft warning);
+  WS-A M8 rebudgeted to $100/$250/$500, resource-group-scoped, tag-filtered, with actual and
+  forecasted notifications, and noted as the only spend backstop now that no hard cap exists; the
+  narrow Route 53 grant added to `## Standing authorizations`, which cleared the `[!]` authorization
+  blocks on WS-D M5 and WS-J M3; a new WS-G M5 porting client live events to Azure Web PubSub, with
+  `cmd/iot-authorizer` deletion and WS-K M2 both blocked behind it; WS-I M6 marked blocked on the
+  post-WS-J merge to `main` with a DoD that can actually fail, plus a new WS-I M7 moving Android
+  distribution and `assetlinks.json` off S3 before the hostname cuts over; and WS-K M4 given a DoD
+  and the `workflow_dispatch` hazard note.
