@@ -381,11 +381,29 @@ immediately and in parallel with it.
 `az deployment group show` error, fix the template, redeploy. Ceiling 3 attempts per milestone; on
 the 4th, mark `[!]` with the exact `Code` and `Message` and move to another workstream.
 
+**Restart policy (WS-B, WS-C, WS-D, WS-E, WS-F, WS-G, WS-H, WS-I):** a failing `go test`, `gradlew`,
+`idf.py` or `az` step is deterministic — read the failure, fix it, re-run the same DoD command.
+Ceiling 3 attempts per milestone; on the 4th, mark `[!]` with the verbatim last 20 lines of output and
+move to the next unblocked milestone. A `429`, `503`, or timeout from an Azure control-plane call is
+transient instead: retry 3 times with 30s / 60s / 120s backoff before that counts as one attempt.
+This ceiling governs; no hook, wrapper, or outer loop adds its own.
+
+**Restart policy (WS-J):** J1 and J2 follow the standard policy. **J3 and J4 do not retry.** A J3 step
+that fails after the freeze has begun triggers the J3 rollback immediately — records plus the reverse
+delta — marks J3 `[!]`, and ends this run's cutover attempt. A second cutover needs a fresh freeze
+window and a fresh J1 delta.
+
+**Restart policy (WS-K):** none. Every milestone waits for explicit operator approval and never
+retries. WS-K's per-step approval requirement overrides the `## Stop conditions (only these)` list;
+reaching WS-K with no approval available ends the run cleanly rather than idling on it.
+
 ---
 
 ### WS-B — Voice engines
 
-*Blocks: WS-F, WS-H, WS-I. Depends on: A3 only, and only for the live test.*
+*Blocks: WS-F, WS-H, WS-I. Depends on: A3 (B1 only, for the live test). B5a and B5 additionally
+depend on WS-D M1 — their checks need a deployed container app, so they cannot run inside a
+pure-code workstream.*
 
 This is the workstream that delivers what was asked for and the one that can ship first. B2 through
 B4 are pure Go with no Azure infrastructure dependency.
@@ -487,17 +505,77 @@ B4 are pure Go with no Azure infrastructure dependency.
 
 ### WS-C — Data layer (Cosmos DB)
 
-*Blocks: WS-D. Depends on: A2.*
+*Blocks: WS-D. Depends on: **A3 (region locked)**, then A2. Nothing provisions into a region A3
+has not approved.*
 
 - [ ] **C1. Provision Cosmos DB for NoSQL, serverless.** Container `main` in database `liveninja`,
-      partition key `/pk`, TTL enabled on `ttl`. Serverless avoids a provisioned-RU standing charge at
-      this scale.
-      DoD: `az cosmosdb sql container show -g rg-liveninja-prod -a <acct> -d liveninja -n main --query resource.partitionKey.paths -o tsv`
-      returns `/pk`.
-- [ ] **C2. Port `internal/store` behind the existing seam.** The `ddbAPI` interface at
-      `/c/dev/live-ninja/internal/store/store.go:31-40` already abstracts the 8 DynamoDB operations and
-      the tests already inject a fake. Implement a Cosmos-backed type satisfying the same seam.
-      DoD: `cd /c/dev/live-ninja && go test ./internal/store/...` passes with zero test-file changes.
+      partition key `/pk`. Serverless avoids a provisioned-RU standing charge at this scale — but note
+      it has **no floor and no reservation**, so it bills per consumed RU and the cost model cannot
+      carry a number for it until C3 measures one.
+      Three settings that silently change correctness are not optional:
+      - `--default-consistency-level Strong`. 12 call sites pass `ConsistentRead: aws.Bool(true)` and
+        the reason is written down at `internal/store/sessions.go:292` — "used to adjudicate a lost
+        rotate race without GSI lag". Single-region serverless carries no write-latency penalty for
+        Strong.
+      - `--ttl -1` on the container. Per-item `ttl` is **ignored** unless the container default is set.
+      - `--backup-policy-type Continuous --continuous-tier Continuous7Days`, plus
+        `az resource lock create --lock-type CanNotDelete` on the account. The table it replaces has
+        `PointInTimeRecoveryEnabled: true` and `DeletionPolicy: Retain` / `UpdateReplacePolicy: Retain`
+        (`template.yaml:1486-1487`, `:1529-1530`); the plan previously replaced that with nothing.
+      DoD, all three must pass:
+      `az cosmosdb sql container show -g rg-liveninja-prod -a <acct> -d liveninja -n main --query resource.partitionKey.paths -o tsv`
+      returns `/pk`;
+      `az cosmosdb sql container show -g rg-liveninja-prod -a <acct> -d liveninja -n main --query resource.defaultTtl -o tsv`
+      returns `-1`; and
+      `az cosmosdb show -g rg-liveninja-prod -n <acct> --query '[consistencyPolicy.defaultConsistencyLevel, backupPolicy.type]' -o tsv`
+      returns `Strong  Continuous`.
+- [ ] **C2a. Replace the seam, then port `internal/store`.** The plan previously said to implement a
+      Cosmos type "satisfying the same seam". That is not possible as written: `ddbAPI`
+      (`internal/store/store.go:31-40`) declares **7** methods typed entirely in DynamoDB SDK structs,
+      and the package carries **30 `UpdateExpression`** and **85 `ConditionExpression`** uses — so
+      satisfying it from Cosmos would mean parsing DynamoDB expression grammar. Replace the seam with
+      a storage-neutral interface in domain terms (Get / Put / Delete / Query / ConditionalPut /
+      AtomicAdd / TransactionalBatch). No `UpdateExpression` or `ConditionExpression` string may
+      survive into the Cosmos implementation.
+      **Write conversion is mandatory on every path, not just at import.** `internal/store/types.go:106`
+      and every writer store `ttl` as an absolute unix epoch; Cosmos reads the `ttl` property as
+      seconds relative to `_ts`. The Cosmos store must write `ttl = max(1, item.TTL - now)` and keep
+      the absolute value in a separate `expiresAtEpoch` property so reads and J1 reconciliation stay
+      comparable. Persisting an absolute epoch there gives every session, OAuth state, pairing row and
+      idempotency marker a ~56-year lifetime, silently.
+      DoD: `cd /c/dev/live-ninja && COSMOS_EMULATOR_ENDPOINT=https://localhost:8081 go test ./internal/store/... -tags cosmos`
+      passes against the Cosmos emulator running the same table-driven cases, **and**
+      `go test ./internal/store/...` (the DynamoDB path) still passes, **and** a test asserts an item
+      written with `TTL = now+600` produces a document whose `ttl` is within 2 of `600` — not a
+      10-digit number.
+      *(The old DoD — `go test ./internal/store/...` "with zero test-file changes" — was satisfied by
+      the unmodified DynamoDB implementation, because every store test injects
+      `internal/testutil/ddbfake.go`, a 633-line DynamoDB expression emulator. It could go green with
+      zero lines of Cosmos ever executed.)*
+- [ ] **C2b. Port the 17 out-of-package DynamoDB callers.** WS-C previously scoped the port to
+      `internal/store` alone. `grep -rl 'aws-sdk-go-v2/service/dynamodb' --include=*.go . | grep -v _test | grep -v '^./internal/store/' | grep -v testutil`
+      returns 17 files, each owning a private DynamoDB interface rather than the seam:
+      `internal/realtime/{quota,mint,guides,personas_store,voiceprefs}.go`,
+      `internal/codeupdate/store.go`, `internal/tools/{notes,registry}.go`,
+      `internal/webapp/api_routes.go`, and
+      `cmd/{account-purge,codeupdate-dispatch,deliverables-zipper,email-dispatch,nova-bridge,realtime-broker,usage-rollup,web}`.
+      Left unported, each still addresses a table WS-K deletes. (`cmd/nova-bridge` is deleted by WS-F
+      M5 rather than ported.)
+      DoD: `grep -rl 'aws-sdk-go-v2/service/dynamodb' --include='*.go' . | grep -v archive | grep -v '^./.claude'`
+      returns no path outside `internal/testutil/`.
+- [ ] **C2c. Re-model the two cross-partition transactions.** `internal/store/sessions.go:211` and
+      `:391` issue `TransactWriteItems` spanning `userPK` (`USER#…`, `types.go:209`) and `devicePK`
+      (`DEVICE#…`, `types.go:218`) — two different logical partitions. A Cosmos transactional batch is
+      confined to one. These are not incidental: they are refresh-token rotate-exactly-once and the
+      device-revocation interlock, and degrading them into two non-atomic writes opens exactly the
+      window that lets a stolen refresh token be replayed. The code also depends on
+      `*types.TransactionCanceledException` and per-index cancellation reasons
+      (`sessions.go:406`), which have no Cosmos analogue.
+      **Chosen path:** co-locate the device-binding META item into the `USER#<uid>` partition so a
+      single-partition batch is legal.
+      DoD: `cd /c/dev/live-ninja && go test ./internal/store/ -run 'Rotate|Bind|Revoke' -tags cosmos`
+      passes against the emulator, including a new case asserting that a device revoked between the
+      session update and the device check still yields `ErrDeviceRevoked`.
 - [ ] **C3. Port the 5 secondary-index queries.** Cosmos indexes every property by default, so each
       becomes a cross-partition query rather than a GSI read. Convert exactly these five and measure
       the RU cost of each: `users.go:31`, `sessions.go:80`, `sessions.go:562`, `devices.go:325`,
@@ -509,8 +587,24 @@ B4 are pure Go with no Azure infrastructure dependency.
       `amazon.titan-embed-text-v2:0` at 512 dims. Replace with Azure OpenAI `text-embedding-3-small`
       requesting `dimensions: 512`, so the stored vector width is unchanged. Every `EMB` item records
       its model, so stale vectors are detectable and a one-shot re-embed job can find them.
-      DoD: `cd /c/dev/live-ninja && go test ./internal/memory/` passes, and a query for items whose
-      recorded model is still the Titan id returns 0 rows.
+      **Split, because the second half cannot run inside WS-C.** C4a is the code change and belongs
+      here; C4b is the data job and moves to WS-J, after M1 has loaded Cosmos — the old DoD queried
+      Cosmos for Titan-model rows, which cannot be evaluated until J1 has run, and J1 depends on WS-C.
+      As written the milestone could never be marked done.
+      **C4a (here).** Add model filtering to `internal/memory/search.go`. `search.go:63-65` scores the
+      query vector against every embedding in the user's partition with no reference to `e.Model`,
+      and both models are 512-dim, so during any re-embed window Titan and `text-embedding-3-small`
+      vectors are ranked against each other in incompatible spaces — wrong recall, no error. The field
+      is already stored (`internal/store/entities.go:98`, written at `internal/memory/write.go:124`).
+      Skip embeddings whose `Model` differs from the active embedder; if that leaves a user with none,
+      fall back to non-semantic recall rather than ranking across spaces.
+      DoD: `cd /c/dev/live-ninja && go test ./internal/memory/` passes, including a new case where a
+      partition holding one Titan-model and one Azure-model vector returns only the Azure-model one.
+      **C4b (WS-J, after M1).** Run the one-shot re-embed: for each `EMB` item still recording the
+      Titan id, load its `ENT` item, recompute `EmbedText` (the EMB item does not store the source
+      text — `internal/memory/write.go:113,139`), and rewrite vector and model id.
+      DoD: `SELECT VALUE COUNT(1) FROM c WHERE STARTSWITH(c.sk,'EMB#') AND c.model = 'amazon.titan-embed-text-v2:0'`
+      returns 0.
 
 ---
 
@@ -518,20 +612,54 @@ B4 are pure Go with no Azure infrastructure dependency.
 
 *Blocks: WS-J. Depends on: WS-C, A6.*
 
-- [ ] **D1. Containerise the web app.** `/c/dev/live-ninja/cmd/web/main.go` needs no code change — it
-      is already a plain Fiber server listening on `$PORT`. Write
-      `/c/dev/live-ninja/containers/web/Dockerfile` (multi-stage, distroless, arm64) and deploy to
-      Container Apps with HTTP scaling.
-      DoD: `curl -fsS https://<container-app-fqdn>/healthz` returns 200.
+- [ ] **D1. Containerise the web app.** The **process model** needs no change — `cmd/web/main.go` is
+      a plain Fiber server on `$PORT`. The **dependency wiring does**: `cmd/web/main.go:29-35`
+      constructs five AWS clients (DynamoDB, Firehose, Lambda, S3, SQS) plus the KMS signer. Each has
+      an owner — store → C2, Firehose → E5, S3 → E2, SQS → E3, KMS → E1 — and one has none yet:
+      **`internal/webapp/api_routes.go:363-380` reaches `realtime-broker` over `lambda:Invoke`**, while
+      D2 turns that broker into an internal-ingress HTTP Container App. Replace `invokeRealtimeBroker`
+      with an HTTP POST to the broker's internal FQDN authenticated by the managed identity, keeping
+      the `brokerRequest`/`brokerResponse` JSON shape byte-identical so the existing tests stand.
+      Write `/c/dev/live-ninja/containers/web/Dockerfile` (multi-stage, distroless, arm64) and deploy
+      to Container Apps with HTTP scaling.
+      **`/healthz` alone is not a sufficient check.** Every one of those dependencies degrades by
+      logging a warning and continuing, so the app starts and `/healthz` returns 200 with the
+      session-mint, telemetry, code-update and deliverables paths all dead.
+      DoD: `curl -fsS https://<container-app-fqdn>/healthz` returns 200, **and**
+      `curl -fsS -H "Authorization: Bearer $TOKEN" https://<container-app-fqdn>/api/v1/realtime/session | jq -e '.mode'`
+      returns a mode, **and**
+      `az containerapp logs show -g rg-liveninja-prod -n web --tail 200 | grep -E 'disabled|not_configured'`
+      returns nothing.
 - [ ] **D2. Port the 12 background workers.** `realtime-broker` becomes an **internal-ingress**
       Container App — it must stay unreachable from the internet exactly as it is today, because it
       holds the OpenAI key. Queue consumers (`email-dispatch`, `rca-analyzer`, `codeupdate-dispatch`)
       become Container Apps Jobs with Service Bus scale rules. Scheduled ones (`usage-rollup`,
       `account-purge`, `topics-extract`) become cron Jobs. `iot-ingest` and `shadow-ingest` move in
       WS-G. **`cmd/iot-authorizer` and `cmd/nova-bridge` are deleted, not ported.**
-      DoD: `az containerapp job list -g rg-liveninja-prod --query "length(@)" -o tsv` returns 6 or more,
-      and `cd /c/dev/live-ninja && make build` succeeds for the remaining `FUNCTIONS` list in
-      `/c/dev/live-ninja/Makefile`.
+      **The inventory above was short by two and misclassified three.** `Makefile:15` lists 13
+      functions and `template.yaml` declares 13 `AWS::Serverless::Function` resources.
+      `AuthorizerFunction` (`template.yaml:590`) and `DeliverablesZipperFunction` (`template.yaml:906`)
+      appeared in no workstream at all. And the template contains exactly **one** `Type: Schedule`
+      event — `template.yaml:838-841`, `rate(1 hour)`, `usage-rollup`. So:
+      - Cron Job: `usage-rollup` only.
+      - Queue-driven Jobs: `email-dispatch`, `rca-analyzer`, `codeupdate-dispatch`.
+      - **Event-driven, not cron** — `topics-extract`, `account-purge`, `deliverables-zipper`. Each is
+        async-invoked with a per-request payload (`template.yaml:957`, `:1292`;
+        `cmd/deliverables-zipper/main.go:2-4`). Each needs a Service Bus queue plus an event-driven
+        Job; add those three queues to E3's count.
+      - **`cmd/authorizer` is deleted.** `internal/webapp/middleware.go:295-325` already performs the
+        same JWT + `tokensValidAfter` + status check as a Bearer fallback, so Container Apps ingress
+        needs no authorizer. Record the cost: this loses the authorizer's 60s per-user cache
+        (`cmd/authorizer/main.go:11-13`) and therefore adds one Cosmos `GetUser` read per
+        authenticated request — put that read in C3's RU report.
+      - **`cmd/iot-authorizer` is NOT deleted here.** It fronts client MQTT, not device MQTT; its
+        deletion is blocked behind WS-G M5 (locked decision 8).
+      DoD: `for j in email-dispatch rca-analyzer codeupdate-dispatch usage-rollup topics-extract account-purge deliverables-zipper; do az containerapp job show -g rg-liveninja-prod -n "$j" --query name -o tsv || exit 1; done`
+      prints all 7 names, **and**
+      `az containerapp show -g rg-liveninja-prod -n realtime-broker --query properties.configuration.ingress.external -o tsv`
+      returns `false`, **and** `cd /c/dev/live-ninja && make build` succeeds for the remaining
+      `FUNCTIONS` list. *(The old "6 or more" count passed on the named set alone and could never
+      surface the two missing programs.)*
 - [ ] **D3. Repoint the RCA analyzer.** `/c/dev/live-ninja/cmd/rca-analyzer/` calls Bedrock. Repoint to
       Azure OpenAI `gpt-5.2`. Keep the daily cap and cooldown parameters that exist today
       (`RcaDailyCap`, `RcaCooldownMinutes` in `template.yaml`).
@@ -595,7 +723,7 @@ B4 are pure Go with no Azure infrastructure dependency.
 
 ### WS-E — Supporting services
 
-*Blocks: WS-J. Depends on: A6. Runs parallel with WS-C and WS-D.*
+*Blocks: WS-J. Depends on: **A3 (region locked)**, then A6. Runs parallel with WS-C and WS-D.*
 
 - [ ] **E1. Key Vault signing.** Replace the two KMS keys (`AuthKey`, `JwtKey` at
       `template.yaml:1535-1587`) with Key Vault keys. `/c/dev/live-ninja/internal/auth/session.go`
@@ -634,7 +762,9 @@ B4 are pure Go with no Azure infrastructure dependency.
 
 ### WS-F — Voice Live bridge (replaces nova-bridge)
 
-*Depends on: B2, A6. Blocks: nothing.*
+*Depends on: B2, A6 — and for F3 and F4 only, H2 and H4, which supply the client and the picker
+entry that make a bridged session startable at all. Blocks: D4 (the `/voice-live/*` route) and
+WS-J M2 (which must exercise all six engines).*
 
 - [ ] **F1. New service `/c/dev/live-ninja/cmd/voice-live-bridge/`.** Keep the four-step connection
       contract documented at `/c/dev/live-ninja/cmd/nova-bridge/main.go:16-24` — verify the
@@ -671,7 +801,8 @@ B4 are pure Go with no Azure infrastructure dependency.
 
 ### WS-G — IoT Hub and firmware
 
-*Depends on: A6. Blocks: WS-J. The long pole — start early, it needs physical device access.*
+*Depends on: A6. Blocks: WS-K M2 (via G5), and WS-J M2's device surface only — **not WS-J as a
+whole**. The long pole — start early, it needs physical device access.*
 
 - [ ] **G1. Provision IoT Hub and Device Provisioning Service** with X.509 attestation replacing
       fleet-provisioning-by-claim.
@@ -796,18 +927,59 @@ B4 are pure Go with no Azure infrastructure dependency.
 
 ### WS-J — Data migration and cutover
 
-*Depends on: WS-C, WS-D, WS-E, WS-H, WS-I.*
+*Depends on: WS-C, WS-D, WS-E, **WS-F**, WS-H, WS-I. WS-G is required only for J2's device
+surface: if G4 is still `[!]`, J2 records the device line as `[!] deferred — M5Stack remains on
+AWS IoT Core` and WS-J proceeds. G5 must have shipped before WS-K M2, but does not block WS-J.*
 
-- [ ] **J1. Export and import.** Export the DynamoDB table to S3, transform to Cosmos documents, bulk
-      import. Preserve TTL semantics — DynamoDB TTL is an absolute epoch-seconds attribute while
-      Cosmos TTL is a relative seconds value, so this needs a per-item conversion, not a straight copy.
-      DoD: item counts match per `pk` prefix. Write the comparison to
-      `/c/dev/live-ninja/docs/migration-reconciliation.md`; zero mismatches required.
-- [ ] **J2. Dual-run.** Run Azure against the imported data behind a preview hostname
-      (`azure.live.jeremy.ninja`) while `live.jeremy.ninja` stays on AWS. Exercise every surface: web,
-      Android, all six engines.
-      DoD: a checklist in the Execution log with one line per engine per surface, each carrying a pass
-      and a session id.
+- [ ] **J1. Export, transform, import — and record the watermark.** Export the DynamoDB table to S3,
+      transform to Cosmos documents, bulk import.
+      **TTL transform rule, explicit.** DynamoDB TTL is an absolute epoch-seconds attribute; Cosmos
+      reads `ttl` as seconds relative to `_ts`. Compute `remaining = item.ttl - <import epoch>`, then:
+      no `ttl` attribute → omit the property; `remaining > 0` → set `ttl = remaining`;
+      **`remaining <= 0` → DROP the item** and append its `pk`/`sk` to
+      `/c/dev/live-ninja/docs/migration-dropped-expired.md`. Expired-but-unreaped rows exist by design
+      — DynamoDB reaps up to 48 hours late and the code already treats them as gone
+      (`internal/store/oauth.go:68`, `:214`: "unreaped rows are treated as gone"). Importing them with
+      a clamped or negative TTL would resurrect dead OAuth states, pairing nonces and app-handoff codes
+      as immortal documents.
+      **Record the export watermark** (`ExportTime`) in `/c/dev/live-ninja/docs/migration-reconciliation.md`.
+      **The delta is an incremental export, not a re-run of this one.** The table has **no**
+      `StreamSpecification` — `grep -n 'StreamSpecification\|StreamViewType' template.yaml` returns
+      nothing — so a repeated full export can add and update but can never observe a DELETE, and
+      deletes are routine here (`internal/store/sessions.go:545-553` `RevokeAllForUser`,
+      `store.go:269` `batchDeleteKeys`). Sessions revoked, entities forgotten and accounts purged on
+      AWS during dual-run would come back to life on Azure at cutover. PITR **is** enabled
+      (`template.yaml:1529-1530`), so use
+      `aws dynamodb export-table-to-point-in-time --export-type INCREMENTAL_EXPORT --incremental-export-specification ExportFromTime=<watermark>,ExportToTime=<freeze>,ExportViewType=NEW_AND_OLD_IMAGES`,
+      and the importer must apply DELETE records (old image present, new image absent) as Cosmos
+      deletes rather than skipping them.
+      **Migrate the pending one-shot schedules too.** User timers and reminders are not DynamoDB rows:
+      `internal/tools/scheduler.go:146` creates one-shot EventBridge `at()` schedules in the group at
+      `template.yaml:2512`. Exporting only the table strands every pending reminder, and WS-K M1
+      destroys them. Export with `aws scheduler list-schedules --group-name live-ninja` and re-create
+      each in Azure.
+      DoD: per-`pk`-prefix counts match `source_count - dropped_expired_count`, with
+      `dropped_expired_count` taken from `migration-dropped-expired.md` and every dropped row carrying
+      `ttl <= <import epoch>`; the comparison is written to
+      `/c/dev/live-ninja/docs/migration-reconciliation.md` with zero **unexplained** mismatches; the
+      count of applied deletes in the delta is reported; and
+      `aws scheduler list-schedules --group-name live-ninja --query 'length(Schedules)'` equals the
+      number re-created in Azure.
+- [ ] **J2. Dual-run.** Run Azure against the imported data behind the preview hostname
+      `azure.live.jeremy.ninja` (created in WS-D M5) while `live.jeremy.ninja` stays on AWS. Exercise
+      every surface: web, Android, all six engines.
+      **The Android half cannot pass honestly without a host override.** `BackendConfig.kt:9` pins
+      `BASE_URL` to `live.jeremy.ninja`, which answers from CloudFront until J3 — so an Android tester
+      following this milestone would exercise the **AWS** stack and mark the row green. WS-I M1 must
+      add a debug-build `BASE_URL_OVERRIDE` (release builds ignore it) before J2 runs.
+      **Every row must prove which stack served it.** The plan already flags this trap for D4 and E1;
+      it applies here with more force, because J2 is the last gate before cutover.
+      If WS-G M4 is still `[!]`, record the device row as `[!] deferred — M5Stack remains on AWS IoT
+      Core` rather than blocking; that is an accepted carve-out, not a pass.
+      DoD: `/c/dev/live-ninja/scripts/dualrun-check.sh` exits 0. It asserts one session id per engine
+      per surface in `/c/dev/live-ninja/docs/dualrun-checklist.md` and, for each row, that the captured
+      `X-LN-Server` response header matches the Container Apps build stamp rather than the AWS one.
+      Any row whose host is `live.jeremy.ninja` fails the script.
 - [ ] **J3. Freeze, re-sync, cut DNS.** Take a write freeze, re-run the J1 delta, then repoint
       `live.jeremy.ninja` in Route 53 from the CloudFront A + AAAA ALIAS pair
       (`template.yaml:2741-2759`) to a `CNAME` at the Front Door endpoint. `live` is a subdomain and
@@ -832,11 +1004,24 @@ B4 are pure Go with no Azure infrastructure dependency.
       and no client certificate work — no client pins TLS (see Verified facts, DNS and TLS today).
       DoD: `dig +short live.jeremy.ninja` resolves to the Front Door endpoint and
       `curl -fsS https://live.jeremy.ninja/healthz` returns 200.
-      **Rollback:** re-create the two ALIAS records from `template.yaml:2741-2759`. Recovery is
-      bounded by the 60-second TTL and needs no Azure-side change.
-- [ ] **J4. Soak.** 72 hours on Azure with the AWS stack still standing and re-pointable.
-      DoD: zero unhandled errors in Log Analytics across the window, and the B6 cache-ratio telemetry
-      stays above 80%.
+      **Rollback is data-safe only until the first write lands on Cosmos.**
+      Before any Azure write: re-create the two ALIAS records from `template.yaml:2741-2759`. Recovery
+      is bounded by the 60-second TTL on the record being replaced and needs no Azure-side change.
+      After any Azure write — which includes the whole of J4's 72-hour soak — re-creating the records
+      is **not sufficient**: every write made on Azure since the freeze is discarded. A rollback then
+      also requires a reverse delta from Cosmos back into DynamoDB, and
+      **rolling back without it is a stop condition.** Re-enable `deploy.yml` as part of any rollback.
+- [ ] **J4. Soak.** 72 hours on Azure with the AWS stack still standing and re-pointable. The window
+      outlives any single session, so it needs a watcher rather than an operator: poll hourly with a
+      background job whose filter matches failure as well as success
+      (`PASS|FAIL|Traceback|Error|FAILED|Killed|OOM`), because a watcher matching only the happy path
+      stays silent through a crashloop.
+      **On failure: execute the J3 rollback, including the reverse delta, and mark J4 `[!]`.** Do not
+      retry the soak in place.
+      DoD: `/c/dev/live-ninja/scripts/soak-check.sh` exits 0 at T+72h. It runs
+      `ContainerAppConsoleLogs_CL | where TimeGenerated > ago(72h) | where Log_s matches regex '"level":"(error|fatal)"' | summarize count()`
+      and requires `0`, and requires `min(cache_ratio) >= 0.95` across the window — 0.95, matching the
+      revised WS-B M6 threshold, not the 0.80 this milestone previously named.
 
 ---
 
@@ -958,8 +1143,13 @@ Start these three on day one, in parallel:
 - **WS-G** (IoT and firmware) — the long pole, because it needs physical device access and is already
   partly blocked.
 
-Then WS-C and WS-E in parallel once A2 lands. WS-D behind WS-C. WS-F behind B2. WS-H and WS-I behind
-B3. WS-J only when D, E, H, and I are all green. WS-K last, and only with per-step approval.
+**A3 locks the region before anything else provisions.** Then WS-C and WS-E in parallel. WS-D behind
+WS-C. WS-F behind B2, and its demonstrable milestones (F3, F4) behind H2 and H4. WS-H and WS-I behind
+B3. WS-J only when C, D, E, F, H and I are all green — WS-G's device milestone is explicitly not a
+WS-J prerequisite. WS-K last, and only with per-step approval.
+
+If the region changes at A3, the resource group is renamed `rg-liveninja-prod-<region>` and A2 is
+re-run under the new name. Nothing built in a rejected region is reused.
 
 Never let the run idle on a blocked item. If WS-G M4 blocks on physical device access, all of WS-A
 through WS-F is still runnable.
