@@ -93,6 +93,24 @@ assumption and is marked as such where it appears.
 - Firmware IoT: `/c/dev/live-ninja/firmware/components/ln_iot/include/ln_iot.h:99` expects an AWS ATS
   endpoint (`xxxx-ats.iot.us-east-1.amazonaws.com`) and does mTLS plus fleet-provisioning-by-claim.
 
+**DNS and TLS today (confirmed 2026-08-19)**
+- `jeremy.ninja` is registered and its zone is authoritative on Route 53. `nslookup -type=NS
+  jeremy.ninja 8.8.8.8` returns `ns-997.awsdns-60.net`, `ns-232.awsdns-29.com`,
+  `ns-1344.awsdns-40.org`, `ns-2020.awsdns-60.co.uk`.
+- `live.jeremy.ninja` is a record **inside** the `jeremy.ninja` zone, not a zone of its own
+  (`nslookup -type=SOA live.jeremy.ninja 8.8.8.8` returns the `jeremy.ninja` SOA). It is a subdomain,
+  not the apex, so a plain `CNAME` to Front Door is legal — no ALIAS/ANAME constraint applies.
+- Today it is an A + AAAA ALIAS pair pointing at the CloudFront distribution
+  (`/c/dev/live-ninja/template.yaml:2741-2759`), with the zone supplied as the `HostedZoneId` stack
+  parameter (`template.yaml:17-19`).
+- **No client pins TLS.** `grep -rniE 'certificatePinner|pinning|network_security_config|sha256/'
+  /c/dev/live-ninja/android/app/src/main` returns nothing, and
+  `/c/dev/live-ninja/android/app/src/main/AndroidManifest.xml` declares no `networkSecurityConfig`.
+  The ACM-to-Front-Door certificate swap is therefore invisible to every fielded client.
+- `BASE_URL` is a single constant at
+  `/c/dev/live-ninja/android/app/src/main/java/ninja/jeremy/liveninja/config/BackendConfig.kt:9`, and
+  every other Android endpoint is derived from it.
+
 **Secrets and config**
 - SSM parameters in use: `/live-ninja/prod/openai/api_key`, `/live-ninja/prod/gemini/api_key`,
   `/live-ninja/prod/lwa/client_id`, `/live-ninja/prod/lwa/client_secret`,
@@ -171,7 +189,7 @@ end. The run does not pause for anything else.
 | Lambda `WebFunction` + Lambda Web Adapter | Azure Container Apps (HTTP ingress) | WS-D |
 | 12 background Lambdas | Azure Container Apps Jobs (event + cron) | WS-D |
 | API Gateway HTTP API | Container Apps ingress | WS-D |
-| CloudFront + ACM + Route53 | Azure Front Door Standard + Azure DNS + managed cert | WS-A |
+| CloudFront + ACM + Route53 | Azure Front Door Standard + managed cert. **Route 53 stays the authoritative zone — no Azure DNS, no domain registration in Azure.** | WS-D (D4, D5) |
 | DynamoDB single table | Cosmos DB for NoSQL (serverless) | WS-C |
 | S3 x 6 buckets | Azure Blob Storage containers | WS-E |
 | KMS `AuthKey` + `JwtKey` | Azure Key Vault keys (sign) | WS-E |
@@ -357,14 +375,44 @@ B4 are pure Go with no Azure infrastructure dependency.
       Azure OpenAI `gpt-5.2`. Keep the daily cap and cooldown parameters that exist today
       (`RcaDailyCap`, `RcaCooldownMinutes` in `template.yaml`).
       DoD: `cd /c/dev/live-ninja && go test ./internal/rca/ ./cmd/rca-analyzer/` passes.
-- [ ] **D4. Front Door, DNS, and certificate.** Reproduce the CloudFront behaviour table from
-      `template.yaml:2618-2740`: default to the web app, `/static/vendor/*` and `/static/models/*` to
-      Blob, `/static/*` to the web app, and a new `/voice-live/*` to the WS-F bridge. Keep a security
-      headers policy equivalent to `SecurityHeadersPolicy`. Per the repo's web-cache rule, HTML is
-      served `no-cache`, fingerprinted assets keep long-lived immutable caching, and nothing
-      intercepts API, SSE, or WebSocket traffic.
-      DoD: `curl -sI https://live.jeremy.ninja/ | grep -i '^cache-control'` shows a no-cache form, and
-      `curl -sI https://live.jeremy.ninja/static/<fingerprinted-asset>` shows `immutable`.
+- [ ] **D4. Front Door routing and cache behaviour.** Reproduce the CloudFront behaviour table
+      from `template.yaml:2618-2740`: default to the web app, `/static/vendor/*` and
+      `/static/models/*` to Blob, `/static/*` to the web app, and a new `/voice-live/*` to the WS-F
+      bridge. Keep a security headers policy equivalent to `SecurityHeadersPolicy`. Per the repo's
+      web-cache rule, HTML is served `no-cache`, fingerprinted assets keep long-lived immutable
+      caching, and nothing intercepts API, SSE, or WebSocket traffic.
+      **Test against the Front Door default endpoint, never against `live.jeremy.ninja`.** At this
+      point in the sequence `live.jeremy.ninja` still resolves to CloudFront — J3 is what repoints it
+      — so curling the production name here answers from the live AWS stack and would pass without
+      Front Door being involved at all.
+      DoD: with
+      `FD=$(az afd endpoint show -g rg-liveninja-prod --profile-name <profile> --endpoint-name <ep> --query hostName -o tsv)`,
+      `curl -sI "https://$FD/" | grep -i '^cache-control'` shows a no-cache form, and
+      `curl -sI "https://$FD/static/<fingerprinted-asset>"` shows `immutable`.
+- [ ] **D5. DNS records and certificate validation — Route 53 stays authoritative.** The application
+      keeps the URL `https://live.jeremy.ninja`. Nothing is registered in Azure, no Azure DNS zone is
+      created, and the `jeremy.ninja` nameservers do not change. Only records are added inside the
+      existing Route 53 hosted zone. Rationale: moving the zone would migrate every unrelated record
+      in `jeremy.ninja` at once — including the mail sender records that WS-E M4 has not replaced yet
+      — and its rollback is a nameserver change with propagation delay, where the record-level
+      approach rolls back one record at a time.
+      Add three records in Route 53:
+      1. `TXT` at `_dnsauth.azure.live.jeremy.ninja` — the Front Door managed-certificate validation
+         token for the WS-J M2 preview host. Front Door writes this record automatically only when
+         the zone lives in Azure DNS; on Route 53 it is added by hand. **Leave it in place after
+         validation** — it is read again on certificate rotation.
+      2. `CNAME` `azure.live.jeremy.ninja` -> the Front Door endpoint hostname from D4. This is the
+         hostname WS-J M2 dual-runs against; that milestone assumes it exists but never creates it.
+      3. `TXT` at `_dnsauth.live.jeremy.ninja` — the validation token for the production host. Add it
+         **here, during D5**, not at cutover. Domain validation and certificate issuance are
+         independent of where the A/CNAME record points, so the production certificate can be issued
+         and reach `Approved` well before J3. Doing it inside the J3 freeze window would put
+         certificate issuance latency on the critical path of a write freeze.
+      Do **not** touch the `live.jeremy.ninja` A/AAAA ALIAS records here — those are J3.
+      DoD: `dig +short azure.live.jeremy.ninja` returns the Front Door endpoint hostname,
+      `curl -fsS https://azure.live.jeremy.ninja/healthz` returns 200 over a valid certificate, and
+      `az afd custom-domain show -g rg-liveninja-prod --profile-name <profile> --custom-domain-name <name> --query domainValidationState -o tsv`
+      returns `Approved` for **both** `azure.live.jeremy.ninja` and `live.jeremy.ninja`.
 
 ---
 
@@ -377,7 +425,10 @@ B4 are pure Go with no Azure infrastructure dependency.
       signs JWTs through KMS today; swap the signer implementation and keep the JWKS surface
       byte-identical so no issued token and no client breaks.
       DoD: `cd /c/dev/live-ninja && go test ./internal/auth/` passes and
-      `curl -fsS https://live.jeremy.ninja/.well-known/jwks.json | jq -e '.keys[0].kid'` returns a kid.
+      `curl -fsS https://<azure-web-host>/.well-known/jwks.json | jq -e '.keys[0].kid'` returns a kid,
+      where `<azure-web-host>` is the D1 Container Apps FQDN or the D4 Front Door endpoint.
+      **Not `live.jeremy.ninja`** — until J3 that name answers from CloudFront and the AWS stack, so
+      testing it here would pass against the old KMS-backed JWKS and prove nothing about Key Vault.
 - [ ] **E2. Blob Storage.** Six containers replacing the six S3 buckets (user, wakewords, assets, logs,
       analytics, deliverables). Preserve the 180-day deliverables lifecycle rule (`template.yaml:1877`).
       DoD: `az storage container list --account-name <acct> --query "length(@)" -o tsv` returns `6`.
@@ -544,11 +595,21 @@ B4 are pure Go with no Azure infrastructure dependency.
       Android, all six engines.
       DoD: a checklist in the Execution log with one line per engine per surface, each carrying a pass
       and a session id.
-- [ ] **J3. Freeze, re-sync, cut DNS.** Take a write freeze, re-run the J1 delta, repoint
-      `live.jeremy.ninja` to Front Door. Because the domain does not change, the cutover itself needs
-      no Android release and no firmware change.
+- [ ] **J3. Freeze, re-sync, cut DNS.** Take a write freeze, re-run the J1 delta, then repoint
+      `live.jeremy.ninja` in Route 53 from the CloudFront A + AAAA ALIAS pair
+      (`template.yaml:2741-2759`) to a `CNAME` at the Front Door endpoint. `live` is a subdomain and
+      not the zone apex, so a plain `CNAME` is legal here.
+      **Precondition: WS-D M5 shows `live.jeremy.ninja` already `Approved` on Front Door.**
+      Certificate issuance must not happen inside the freeze window.
+      Drop the TTL on the `live.jeremy.ninja` records to 60 seconds at least one full old-TTL before
+      the freeze begins, so both the cutover and any rollback propagate in about a minute rather than
+      at the zone default.
+      Because the domain does not change, the cutover needs no Android release, no firmware change,
+      and no client certificate work — no client pins TLS (see Verified facts, DNS and TLS today).
       DoD: `dig +short live.jeremy.ninja` resolves to the Front Door endpoint and
       `curl -fsS https://live.jeremy.ninja/healthz` returns 200.
+      **Rollback:** re-create the two ALIAS records from `template.yaml:2741-2759`. Recovery is
+      bounded by the 60-second TTL and needs no Azure-side change.
 - [ ] **J4. Soak.** 72 hours on Azure with the AWS stack still standing and re-pointable.
       DoD: zero unhandled errors in Log Analytics across the window, and the B6 cache-ratio telemetry
       stays above 80%.
@@ -633,3 +694,18 @@ actually returned. Written as it happens, not reconstructed at the end.
 - **2026-08-18** — Four migration decisions locked by the operator. See Locked decisions.
 - **2026-08-18** — This plan written from a full read of the repository. No Azure resource created yet.
   **Next action: WS-A M1.**
+- **2026-08-19** — DNS decision recorded and the plan corrected. Route 53 stays the authoritative
+  zone for `jeremy.ninja`; no domain is registered in Azure and no Azure DNS zone is created. The
+  application keeps the URL `https://live.jeremy.ninja` through and after cutover. Verified by
+  command: `nslookup -type=NS jeremy.ninja 8.8.8.8` returned the four `awsdns` nameservers, and
+  `nslookup -type=SOA live.jeremy.ninja 8.8.8.8` returned the `jeremy.ninja` SOA, proving `live` is a
+  record in that zone and not a delegated zone. `grep -rniE
+  'certificatePinner|pinning|network_security_config|sha256/'
+  /c/dev/live-ninja/android/app/src/main` returned no matches, so the certificate issuer change is
+  invisible to clients. Plan edits: service-mapping row reassigned from WS-A to WS-D and "Azure DNS"
+  removed; a "DNS and TLS today" block added to Verified facts; D4 retitled and its definition of
+  done repointed from `live.jeremy.ninja` (which still answers from CloudFront at that point in the
+  sequence, so it would have passed against the AWS stack) to the Front Door default endpoint; a new
+  D5 added covering the three Route 53 records and certificate validation; J3 given the D5
+  precondition, the TTL pre-drop, and an explicit rollback; E1's definition of done corrected for the
+  same production-hostname trap as D4.
