@@ -435,7 +435,19 @@ B4 are pure Go with no Azure infrastructure dependency.
       in `jeremy.ninja` at once — including the mail sender records that WS-E M4 has not replaced yet
       — and its rollback is a nameserver change with propagation delay, where the record-level
       approach rolls back one record at a time.
-      Add three records in Route 53:
+      **D5a runs first — the records cannot be written before it.** No milestone created the Front
+      Door custom domains, and the `_dnsauth` validation token below is a *property of an existing
+      custom domain*, not something that can be known in advance. Create both domains and attach them
+      to the route:
+      `az afd custom-domain create -g rg-liveninja-prod --profile-name <profile> --custom-domain-name azure-live --host-name azure.live.jeremy.ninja --minimum-tls-version TLS12 --certificate-type ManagedCertificate`,
+      the same again for `live` / `live.jeremy.ninja`, then
+      `az afd route update -g rg-liveninja-prod --profile-name <profile> --endpoint-name <ep> --route-name default --custom-domains azure-live live`.
+      Read each token with
+      `az afd custom-domain show -g rg-liveninja-prod --profile-name <profile> --custom-domain-name <name> --query validationProperties.validationToken -o tsv`.
+      Attaching `live.jeremy.ninja` to the route before J3 is safe: the route only serves traffic that
+      DNS actually sends it, and DNS still points at CloudFront until J3.
+
+      Then add three records in Route 53:
       1. `TXT` at `_dnsauth.azure.live.jeremy.ninja` — the Front Door managed-certificate validation
          token for the WS-J M2 preview host. Front Door writes this record automatically only when
          the zone lives in Azure DNS; on Route 53 it is added by hand. **Leave it in place after
@@ -797,3 +809,11 @@ actually returned. Written as it happens, not reconstructed at the end.
   read from the session JSON, so an old build handed an `azure-*` mode POSTs an Azure credential to
   `api.openai.com` rather than failing closed. The decisions themselves are annotated, not reversed —
   reversing a user-confirmed locked decision is the operator's call.
+- **2026-08-19** — Ordering defect in D5 found by the platform reviewer and corrected. As first
+  written, D5 instructed the run to add a `_dnsauth` TXT record carrying "the Front Door
+  managed-certificate validation token" before any Front Door custom domain existed. The token is a
+  property of an existing custom domain — it is read back with
+  `az afd custom-domain show --query validationProperties.validationToken` — so the step was
+  unexecutable as sequenced, and D5's own definition of done then queried
+  `az afd custom-domain show` for two objects nothing had created. D5 now opens with D5a, which
+  creates both custom domains and attaches them to the route, and only then writes the records.
