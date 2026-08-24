@@ -8,13 +8,13 @@ package webapp
 import (
 	"fmt"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/clientver"
 	"github.com/JeremyProffittOrg/live-ninja/internal/observ"
 )
 
@@ -32,11 +32,11 @@ import (
 // flag is a harmless no-op there) and for local dev without the ldflags.
 var BuildVersion = "0.0.0+dev"
 
-// clientHeaderPattern is contracts/headers.md's X-LN-Client grammar,
-// verbatim: "<surface>/<semver>+<build>".
-var clientHeaderPattern = regexp.MustCompile(`^(web|android|m5stack)/(\d+)\.(\d+)\.(\d+)\+([A-Za-z0-9._-]+)$`)
-
-// clientVersion is a successfully parsed X-LN-Client header.
+// clientVersion is a successfully parsed X-LN-Client header. The grammar and
+// the parsing live in internal/clientver, because cmd/realtime-broker needs
+// the same grammar from the far side of a Lambda invoke and must not import
+// this package (azure-voice-plan.md WS-D M1). This stays as a thin local alias
+// so the compat callers below read unchanged.
 type clientVersion struct {
 	surface             string
 	major, minor, patch int
@@ -47,23 +47,19 @@ func (v clientVersion) semver() string {
 	return fmt.Sprintf("%d.%d.%d", v.major, v.minor, v.patch)
 }
 
-// parseClientVersion parses raw against clientHeaderPattern. A
+// parseClientVersion parses raw against contracts/headers.md's grammar. A
 // missing/malformed header (including an unrecognized surface token)
 // returns ok=false — callers must degrade gracefully (never 5xx) per
 // headers.md, treating an unparseable header as "unknown", not as a
 // hostile input to reject outright.
 func parseClientVersion(raw string) (cv clientVersion, ok bool) {
-	m := clientHeaderPattern.FindStringSubmatch(strings.TrimSpace(raw))
-	if m == nil {
+	v, ok := clientver.Parse(raw)
+	if !ok {
 		return clientVersion{}, false
 	}
-	major, err1 := strconv.Atoi(m[2])
-	minor, err2 := strconv.Atoi(m[3])
-	patch, err3 := strconv.Atoi(m[4])
-	if err1 != nil || err2 != nil || err3 != nil {
-		return clientVersion{}, false
-	}
-	return clientVersion{surface: m[1], major: major, minor: minor, patch: patch, build: m[5]}, true
+	return clientVersion{
+		surface: v.Surface, major: v.Major, minor: v.Minor, patch: v.Patch, build: v.Build,
+	}, true
 }
 
 // parseSemver parses a bare "MAJOR.MINOR.PATCH" string (the config-side

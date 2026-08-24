@@ -531,3 +531,29 @@ func TestSpeakingLockGuards(t *testing.T) {
 		"releaseSpeakingTurn() is the only caller of release(); stop() reverting to it "+
 			"would restore the 30-second wait its own comment says it removes")
 }
+
+// TestAzureRealtimeOriginIsInTheCSP (azure-voice-plan.md WS-D M3). The
+// gpt-live-azure engines POST their SDP offer to the Azure OpenAI resource
+// host with the minted ephemeral secret. connect-src is an explicit allowlist,
+// so without this origin the browser blocks the POST and the failure surfaces
+// as a console CSP violation rather than anything the client can report —
+// indistinguishable, from the user's side, from the engine being down.
+//
+// This test is written to FAIL on the pre-WS-D-M3 policy: `-run CSP` used to
+// pass green with both Azure origins absent (gap register D11).
+func TestAzureRealtimeOriginIsInTheCSP(t *testing.T) {
+	const origin = "https://ln-aoai-eastus2.openai.azure.com"
+	assert.Contains(t, pageCSP, origin, "the Azure OpenAI realtime host must be an allowed connect-src")
+
+	connectAt := strings.Index(pageCSP, "connect-src")
+	require.GreaterOrEqual(t, connectAt, 0)
+	end := strings.Index(pageCSP[connectAt:], ";")
+	require.Greater(t, end, 0)
+	assert.Contains(t, pageCSP[connectAt:connectAt+end], origin,
+		"the origin must be inside the connect-src directive, not merely somewhere in the policy")
+
+	// The OpenAI host must survive alongside it — openai-realtime stays the
+	// platform default and the existing four engines are untouched.
+	assert.Contains(t, pageCSP[connectAt:connectAt+end], "https://api.openai.com",
+		"adding Azure must not displace the OpenAI origin")
+}

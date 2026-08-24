@@ -260,3 +260,90 @@ func TestHandleLogsIncludeTxID(t *testing.T) {
 	assert.Equal(t, "tx-broker-logged", dones[0]["txId"])
 	assert.Equal(t, "error", dones[0]["outcome"])
 }
+
+// TestAzureClientGateFailsClosed covers WS-D M1. The broker is invoked with a
+// marshaled struct and sees no HTTP headers of its own, so before this gate
+// existed there was no way to distinguish a client that can handle an Azure
+// credential from one compiled against api.openai.com. The gate must therefore
+// treat "said nothing" as "old client".
+func TestAzureClientGateFailsClosed(t *testing.T) {
+	azure := []voiceengine.Engine{
+		voiceengine.EngineGPTLiveAzure,
+		voiceengine.EngineGPTLiveAzureMini,
+		voiceengine.EngineAzureVoiceLive,
+		voiceengine.EngineAzureVoiceLiveLite,
+	}
+
+	for _, engine := range azure {
+		// No version, no capabilities: the shape every already-installed
+		// client has. Must NOT be trusted with an Azure credential.
+		if clientSupportsAzure(Request{Surface: "web"}, engine) {
+			t.Errorf("%s: a client sending neither version nor capabilities was trusted", engine)
+		}
+		// A garbage header must not be trusted either.
+		if clientSupportsAzure(Request{Surface: "web", ClientVersion: "not-a-version"}, engine) {
+			t.Errorf("%s: an unparseable X-LN-Client was trusted", engine)
+		}
+		// The live Android build's real header does not match the
+		// contracts/headers.md grammar, so it must fail closed too.
+		if clientSupportsAzure(Request{Surface: "android", ClientVersion: "android/0.2.2-hal+r5"}, engine) {
+			t.Errorf("%s: the live android header was trusted despite not parsing", engine)
+		}
+		// Declaring the WRONG mode must not unlock the other one.
+		wrong := "azure-direct"
+		if !engine.IsVoiceLive() {
+			wrong = "voice-live-direct"
+		}
+		if clientSupportsAzure(Request{Surface: "web", Capabilities: []string{wrong}}, engine) {
+			t.Errorf("%s: declaring %q unlocked the wrong bootstrap mode", engine, wrong)
+		}
+		// Declaring the RIGHT mode is what unlocks it.
+		if !clientSupportsAzure(Request{Surface: "web", Capabilities: []string{modeForEngine(engine)}}, engine) {
+			t.Errorf("%s: declaring %q did not unlock it", engine, modeForEngine(engine))
+		}
+	}
+
+	// A new-enough Android build qualifies on version alone, so clients that
+	// shipped before the capability header still work.
+	if !clientSupportsAzure(
+		Request{Surface: "android", ClientVersion: "android/0.3.0+r6"},
+		voiceengine.EngineGPTLiveAzure,
+	) {
+		t.Error("android 0.3.0 should meet the surface minimum")
+	}
+	if clientSupportsAzure(
+		Request{Surface: "android", ClientVersion: "android/0.2.9+r5"},
+		voiceengine.EngineGPTLiveAzure,
+	) {
+		t.Error("android 0.2.9 is below the surface minimum and must fail closed")
+	}
+	// m5stack has no Azure-capable build; it must never qualify on version.
+	if clientSupportsAzure(
+		Request{Surface: "m5stack", ClientVersion: "m5stack/8.0.0+2026"},
+		voiceengine.EngineGPTLiveAzure,
+	) {
+		t.Error("no m5stack firmware supports Azure; it must not qualify on version")
+	}
+}
+
+// TestSessionResponseCarriesCallsURL covers WS-D M2. callsUrl rides the
+// DEFAULT openai-direct path, not just the Azure one, so the field is
+// exercised by every session and cannot rot between releases.
+func TestSessionResponseCarriesCallsURL(t *testing.T) {
+	var resp Response
+	if err := json.Unmarshal([]byte(`{"mode":"openai-direct","callsUrl":"https://api.openai.com/v1/realtime/calls"}`), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.CallsURL != realtime.OpenAICallsURL {
+		t.Errorf("callsUrl round-trip = %q, want %q", resp.CallsURL, realtime.OpenAICallsURL)
+	}
+
+	// It must serialize under exactly the name the clients read.
+	out, err := json.Marshal(Response{Mode: "openai-direct", CallsURL: realtime.OpenAICallsURL})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(out), `"callsUrl":"https://api.openai.com/v1/realtime/calls"`) {
+		t.Errorf("callsUrl missing or misnamed in %s", out)
+	}
+}

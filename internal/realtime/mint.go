@@ -39,6 +39,15 @@ const MiniRealtimeModel = "gpt-realtime-mini"
 // overridden by the client that later connects with the ephemeral secret.
 const clientSecretsURL = "https://api.openai.com/v1/realtime/client_secrets"
 
+// OpenAICallsURL is the SDP POST target a client-direct WebRTC session opens
+// with the minted ephemeral secret. It is exported so the broker can put it on
+// the wire as `callsUrl` for EVERY client-direct session, not just the Azure
+// ones: emitting it on the default path is what keeps the field exercised and
+// stops it rotting between releases (azure-voice-plan.md WS-D M2). Clients
+// that predate the field fall back to their own compiled-in constant, which is
+// this same value.
+const OpenAICallsURL = "https://api.openai.com/v1/realtime/calls"
+
 // ephemeralTTLSeconds is how long a minted client secret stays valid.
 // Clients use it immediately to open their WebRTC/WSS session, so 60s is
 // deliberately tight (shared spec: expires_after 60).

@@ -49,11 +49,17 @@ const pageCSP = "default-src 'self'; " +
 	"img-src 'self' data:; " +
 	// wss://generativelanguage.googleapis.com is the gemini-flash-live
 	// engine's client-direct Live API socket (M13, realtime.mjs
-	// #connectGemini). The wakewords bucket hosts trained wake-word
+	// #connectGemini). ln-aoai-eastus2.openai.azure.com is the Azure OpenAI
+	// Realtime SDP host for the gpt-live-azure engines — without it the
+	// browser blocks the SDP POST with an error that reads like a network
+	// fault rather than a policy denial (azure-voice-plan.md WS-D M3).
+	// The Voice Live origin is NOT here yet: its resource is blocked on
+	// WS-A M4, and this list takes real hosts only, never placeholders.
+	// The wakewords bucket hosts trained wake-word
 	// detectors fetched via presigned S3 URLs (wakeword.mjs fetchVerified) —
 	// SHA-256-pinned client-side, so the wildcard-free bucket host is the
 	// only other extra origin.
-	"connect-src 'self' https://api.openai.com wss://generativelanguage.googleapis.com https://live-ninja-wakewords-759775734231.s3.amazonaws.com https://live-ninja-wakewords-759775734231.s3.us-east-1.amazonaws.com wss://a17oe0gnthrosw-ats.iot.us-east-1.amazonaws.com; " +
+	"connect-src 'self' https://api.openai.com https://ln-aoai-eastus2.openai.azure.com wss://generativelanguage.googleapis.com https://live-ninja-wakewords-759775734231.s3.amazonaws.com https://live-ninja-wakewords-759775734231.s3.us-east-1.amazonaws.com wss://a17oe0gnthrosw-ats.iot.us-east-1.amazonaws.com; " +
 	"media-src 'self' blob:; " +
 	"worker-src 'self' blob:; " +
 	"base-uri 'self'; " +

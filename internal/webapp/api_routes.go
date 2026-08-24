@@ -283,6 +283,13 @@ type brokerRequest struct {
 	VoiceOverride string          `json:"voiceOverride,omitempty"`
 	MicEagerness  string          `json:"micEagerness,omitempty"`
 	Payload       json.RawMessage `json:"payload,omitempty"`
+	// ClientVersion forwards the inbound X-LN-Client header, and Capabilities
+	// the inbound X-LN-Capabilities header. The broker is invoked with this
+	// marshaled struct rather than a forwarded HTTP request, so anything not
+	// named here is invisible to it — the Azure client gate depends on both
+	// (azure-voice-plan.md WS-D M1).
+	ClientVersion string   `json:"clientVersion,omitempty"`
+	Capabilities  []string `json:"capabilities,omitempty"`
 }
 
 // brokerResponse mirrors cmd/realtime-broker's Response.
@@ -309,6 +316,7 @@ type brokerResponse struct {
 		ExpiresAt string `json:"expiresAt"`
 	} `json:"clientSecret,omitempty"`
 	Model         string          `json:"model,omitempty"`
+	CallsURL      string          `json:"callsUrl,omitempty"`
 	Voice         string          `json:"voice,omitempty"`
 	SessionConfig json.RawMessage `json:"sessionConfig,omitempty"`
 	ToolManifest  json.RawMessage `json:"toolManifest,omitempty"`
@@ -490,6 +498,8 @@ func handleRealtimeSession(deps *Deps) fiber.Handler {
 			Persona:       persona,
 			VoiceOverride: voice,
 			MicEagerness:  eagerness,
+			ClientVersion: c.Get("X-LN-Client"),
+			Capabilities:  parseClientCapabilities(c.Get("X-LN-Capabilities")),
 		})
 		if err != nil {
 			deps.Log.Error("api: realtime session mint failed", slog.String("error", err.Error()), slog.String("userId", userID))
@@ -558,6 +568,7 @@ func handleRealtimeSession(deps *Deps) fiber.Handler {
 			"engine":        resp.Engine,
 			"clientSecret":  resp.ClientSecret,
 			"model":         resp.Model,
+			"callsUrl":      resp.CallsURL,
 			"voice":         resp.Voice,
 			"sessionConfig": resp.SessionConfig,
 			"toolManifest":  resp.ToolManifest,
@@ -1218,4 +1229,26 @@ func handleFallbackTTS(deps *Deps) fiber.Handler {
 		c.Set("Content-Type", contentType)
 		return c.Send(audio)
 	}
+}
+
+// parseClientCapabilities splits the X-LN-Capabilities request header into the
+// list of session-bootstrap modes the client declares it can handle (for
+// example "azure-direct,voice-live-direct"). Empty entries and surrounding
+// whitespace are dropped; an absent header yields nil, which the broker reads
+// as "declares nothing" and therefore "gets no Azure engine".
+func parseClientCapabilities(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

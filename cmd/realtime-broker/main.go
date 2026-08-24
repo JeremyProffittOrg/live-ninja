@@ -49,6 +49,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
+	"github.com/JeremyProffittOrg/live-ninja/internal/clientver"
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
 	"github.com/JeremyProffittOrg/live-ninja/internal/observ"
 	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
@@ -78,6 +79,19 @@ type Request struct {
 	// empty means auto.
 	MicEagerness string          `json:"micEagerness,omitempty"`
 	Payload      json.RawMessage `json:"payload,omitempty"`
+	// ClientVersion is the caller's raw X-LN-Client header value, forwarded
+	// verbatim by the web function. This broker is invoked with a marshaled
+	// struct, NOT a forwarded HTTP request, so it sees no headers of its own
+	// — without this field there is no way to tell a current client from a
+	// two-year-old one, and the Azure gate below would fail closed for every
+	// session (azure-voice-plan.md WS-D M1, gap register W3).
+	ClientVersion string `json:"clientVersion,omitempty"`
+	// Capabilities is the set of session-bootstrap modes the calling client
+	// understands (e.g. "azure-direct", "voice-live-direct"). A client that
+	// does not send it gets no Azure engine, which is the fail-closed
+	// property the version gate alone cannot provide: two of the three
+	// surfaces do not send a parseable X-LN-Client today.
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 type turnPayload struct {
@@ -130,14 +144,19 @@ type Response struct {
 	// Mode is the session-bootstrap transport (FR-VE-03): "openai-direct"
 	// (client-direct WebRTC/WSS to OpenAI; ClientSecret populated) or
 	// "nova-bridge" (backend media bridge; WSURL+BridgeToken populated).
-	Mode          string                 `json:"mode,omitempty"`
-	Engine        string                 `json:"engine,omitempty"`
-	ClientSecret  *realtime.ClientSecret `json:"clientSecret,omitempty"`
-	Model         string                 `json:"model,omitempty"`
-	Voice         string                 `json:"voice,omitempty"`
-	SessionConfig json.RawMessage        `json:"sessionConfig,omitempty"`
-	ToolManifest  json.RawMessage        `json:"toolManifest,omitempty"`
-	SessionID     string                 `json:"sessionId,omitempty"`
+	Mode         string                 `json:"mode,omitempty"`
+	Engine       string                 `json:"engine,omitempty"`
+	ClientSecret *realtime.ClientSecret `json:"clientSecret,omitempty"`
+	Model        string                 `json:"model,omitempty"`
+	// CallsURL is the SDP POST target for the WebRTC bootstrap. Emitted on
+	// openai-direct as well as azure-direct, so the default path exercises
+	// the field from day one and it cannot rot unnoticed. A client that does
+	// not know the field falls back to its compiled-in OpenAI constant.
+	CallsURL      string          `json:"callsUrl,omitempty"`
+	Voice         string          `json:"voice,omitempty"`
+	SessionConfig json.RawMessage `json:"sessionConfig,omitempty"`
+	ToolManifest  json.RawMessage `json:"toolManifest,omitempty"`
+	SessionID     string          `json:"sessionId,omitempty"`
 	// Nova-bridge success fields (Mode == "nova-bridge" only): the WSS URL
 	// to open and the short-lived per-session first-party token (also
 	// embedded in WSURL) the bridge verifies before opening Bedrock.
@@ -304,6 +323,27 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 		engine = voiceengine.EngineOpenAIRealtime
 	}
 
+	// Client-capability gate (azure-voice-plan.md WS-D M1). An Azure engine
+	// hands the client a credential it must POST to an Azure host; a client
+	// built before this release has that host compiled in as api.openai.com
+	// and would send the Azure credential to OpenAI. So an Azure pin is
+	// honoured ONLY for a client that has proved it can handle one.
+	//
+	// It fails closed by construction: no declared capability and no
+	// parseable version means "old client", and an old client gets the
+	// platform default. This runs BEFORE the quota gate and before any mint,
+	// so a rejected client costs nothing.
+	if engine.IsAzure() && !clientSupportsAzure(req, engine) {
+		l.Warn("realtime-broker: client cannot handle the pinned Azure engine; falling back",
+			slog.String("engine", string(engine)),
+			slog.String("surface", req.Surface),
+			slog.String("clientVersion", req.ClientVersion),
+			slog.String("reason", "client_too_old"))
+		observ.EmitMetric(metricsNamespace, "EngineFallback", 1, "Count",
+			map[string]string{"Surface": req.Surface, "From": string(engine), "Reason": "client_too_old"})
+		engine = voiceengine.EngineOpenAIRealtime
+	}
+
 	// Pre-spend gate: bucket -> daily -> monthly. Runs and settles before
 	// any OpenAI/Bedrock (or even SSM key) touch, so a rejection costs
 	// nothing — and gates both engines identically at session start.
@@ -460,6 +500,7 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 		Engine:        string(engine),
 		ClientSecret:  &res.ClientSecret,
 		Model:         res.Model,
+		CallsURL:      realtime.OpenAICallsURL,
 		Voice:         res.Voice,
 		SessionConfig: res.SessionConfig,
 		ToolManifest:  res.ToolManifest,
@@ -982,4 +1023,51 @@ func wireSuspendAlerts(gate *realtime.Gate, logger *slog.Logger, awsCfg aws.Conf
 				slog.String("error", err.Error()), slog.String("userId", a.UserID))
 		}
 	})
+}
+
+// azureMinimums are the per-surface client versions that first shipped the
+// Azure bootstrap modes. A client at or above its surface's minimum is
+// trusted to handle an Azure credential even if it predates the explicit
+// capability list.
+//
+// The web surface is deliberately absent: it does not send X-LN-Client at
+// all today, so it can only ever qualify through Capabilities. Android is
+// listed but its live builds send "android/0.2.2-hal+r5", which the
+// contracts/headers.md grammar rejects outright over the pre-release suffix
+// — so in practice Android also qualifies only through Capabilities until
+// that header is fixed (gap register F3).
+var azureMinimums = map[string][3]int{
+	"android": {0, 3, 0},
+	"m5stack": {9, 9, 9}, // no M5Stack build supports Azure; keep it unreachable
+}
+
+// modeForEngine is the session-bootstrap mode an engine produces. A client
+// must declare this mode in Request.Capabilities to be handed that engine.
+func modeForEngine(e voiceengine.Engine) string {
+	if e.IsVoiceLive() {
+		return "voice-live-direct"
+	}
+	return "azure-direct"
+}
+
+// clientSupportsAzure reports whether the calling client can handle the
+// bootstrap shape the pinned Azure engine produces. Capability declaration
+// wins; a parseable version at or above the surface minimum is the fallback
+// for clients that shipped before the capability list existed.
+func clientSupportsAzure(req Request, engine voiceengine.Engine) bool {
+	want := modeForEngine(engine)
+	for _, c := range req.Capabilities {
+		if c == want {
+			return true
+		}
+	}
+	v, ok := clientver.Parse(req.ClientVersion)
+	if !ok {
+		return false
+	}
+	min, known := azureMinimums[v.Surface]
+	if !known {
+		return false
+	}
+	return v.AtLeast(min[0], min[1], min[2])
 }
