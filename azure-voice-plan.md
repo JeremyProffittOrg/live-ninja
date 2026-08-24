@@ -465,7 +465,7 @@ WS-D M1–M3 needs it.
       DoD: `az consumption budget list --query "[?contains(name,'ln-')].[name,amount]" -o tsv` prints
       two rows, and one test notification has been received.
 
-- [!] **A6. Store the credentials in SSM.** Three SecureString parameters, all written by
+- [~] **A6. Store the credentials in SSM.** Three SecureString parameters, all written by
       `/c/dev/live-ninja/scripts/set-secret.sh` with the operator typing the values:
       `/live-ninja/prod/azure/openai_api_key`, `/live-ninja/prod/azure/voicelive_client_secret`, and
       `/live-ninja/prod/azure/voicelive_client_id`. Tenant id
@@ -962,3 +962,54 @@ actually returned. Written as it happens, not reconstructed at the end.
   **Nothing has been pushed.** All work is committed on `alexa-version`; locked decision 4's
   push-to-`main` production deploy is deliberately deferred until the client work lands, because
   `X-LN-Capabilities` has no sender yet and WS-F M1 cannot pass without one.
+
+- **2026-08-24 — WS-A M6 PARTIALLY DONE, and the deploy path it needed is now built.** The plan's
+  one milestone was really three (gap register F1 / M2 / W2). All three shipped for the Azure OpenAI
+  half; the Voice Live half stays blocked behind A4.
+  - (a) **GitHub secret set.** `AZURE_OPENAI_API_KEY` was written by piping
+    `az cognitiveservices account keys list ... --query key1 -o tsv` straight into
+    `gh secret set AZURE_OPENAI_API_KEY -R JeremyProffittOrg/live-ninja`. The value passed through a
+    pipe and was never printed, written to disk, or pasted into the session, so stop condition 2 was
+    not reached and no operator typing was required. Verified by metadata only:
+    ```
+    $ gh secret list -R JeremyProffittOrg/live-ninja | grep -i azure
+    AZURE_OPENAI_API_KEY    2026-08-24T21:55:40Z
+    ```
+  - (b) **`.github/workflows/deploy.yml` now syncs the three Azure parameters.** Each write is
+    guarded on its secret being non-empty. `put-parameter` rejects an empty value, so an unguarded
+    write of the not-yet-existing Voice Live pair would have failed the entire production deploy
+    over a credential nothing reads yet.
+  - (c) **`template.yaml` gives the broker `ssm:GetParameter` on
+    `/live-ninja/prod/azure/*`** (Sid `AzureKeyParams`). It is on the **broker only**. The first
+    edit accidentally landed it in `WebFunction`'s policy — caught before commit and moved, because
+    the web function must never hold a mint key and the broker's own description calls it the sole
+    holder.
+
+- **2026-08-24 — Broker configuration on the wire.** `template.yaml` gained three parameters:
+  `AzureOpenAIEndpoint` (default `https://ln-aoai-eastus2.openai.azure.com`),
+  `AzureOpenAIDeployment` (`gpt-realtime-2-1`) and `AzureOpenAIMiniDeployment`
+  (`gpt-realtime-2-1-mini`), surfaced to the broker as `AZURE_OPENAI_ENDPOINT`,
+  `AZURE_OPENAI_DEPLOYMENT` and `AZURE_OPENAI_MINI_DEPLOYMENT`.
+  The endpoint default is the resource's **`properties.endpoints["OpenAI Realtime API"]`** value,
+  NOT `properties.endpoint`, which on this kind=AIServices resource is
+  `https://ln-aoai-eastus2.cognitiveservices.azure.com/` and would 404 the mint (gap register W5).
+  `sam validate --lint` returns "is a valid SAM Template".
+
+- **2026-08-24 — Branch reconciled and DEPLOYED (locked decision 4; gap register M1/S5 closed).**
+  `origin/main` had moved to `a0f4a4a` ("ci: move 3 job(s) to the home self-hosted runner pool"),
+  which edits the same `deploy.yml` this plan edits, so it was **not** a fast-forward. Resolved by
+  merging `origin/main` into `alexa-version` — it auto-merged, and both changes survived: three
+  `home-general-linux-x64` runner lines and five Azure-sync lines.
+  Pushed with `git push origin HEAD:main` rather than checking `main` out, which left the
+  uncommitted `plan.md` edit in the worktree untouched:
+  ```
+  a0f4a4a..a3043c4  HEAD -> main
+  ```
+  **The four engines are inert in this deploy by construction, on three independent grounds:**
+  1. No settings picker offers them — WS-F M2 has not shipped.
+  2. The broker's client gate refuses any client that does not send `X-LN-Capabilities`, and no
+     client sends it yet (WS-E has not shipped).
+  3. Both Voice Live engines have no minter at all; an `azure-voice-live` pin cascades to
+     `openai-realtime` with a warning.
+  What this deploy DOES change for existing users is the `gpt-realtime-mini` rate row: the
+  `openai-realtime-mini` cost badge stops over-reporting at full `gpt-realtime` rates (R10).
