@@ -22,7 +22,15 @@ env:
 
 jobs:
   test:
-    runs-on: [self-hosted, Linux, X64, home-general-linux-x64]
+    # TEMPORARY (2026-08-24): reverted from
+    # [self-hosted, Linux, X64, home-general-linux-x64].
+    # live-ninja is not dispatching to the home-linux-private runner group even
+    # after being granted it, so a0f4a4a left this repo with no working deploy
+    # path from 2026-08-11 onward — it carried [skip ci], so it never ran its
+    # own workflow, and nothing pushed to main until 2026-08-24 to surface it.
+    # Restore the self-hosted line once dispatch works; the grant is already in
+    # place (runner group 3, repository id 1303872500).
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
@@ -43,7 +51,15 @@ jobs:
   # Path filter: the wakeword-train container image is only rebuilt when
   # containers/** changes (or on manual dispatch, as a recovery lever).
   changes:
-    runs-on: [self-hosted, Linux, X64, home-general-linux-x64]
+    # TEMPORARY (2026-08-24): reverted from
+    # [self-hosted, Linux, X64, home-general-linux-x64].
+    # live-ninja is not dispatching to the home-linux-private runner group even
+    # after being granted it, so a0f4a4a left this repo with no working deploy
+    # path from 2026-08-11 onward — it carried [skip ci], so it never ran its
+    # own workflow, and nothing pushed to main until 2026-08-24 to surface it.
+    # Restore the self-hosted line once dispatch works; the grant is already in
+    # place (runner group 3, repository id 1303872500).
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
@@ -242,7 +258,15 @@ jobs:
       needs.test.result == 'success' &&
       contains(fromJSON('["success", "skipped"]'), needs.build-wakeword-container.result) &&
       contains(fromJSON('["success", "skipped"]'), needs.build-nova-container.result)
-    runs-on: [self-hosted, Linux, X64, home-general-linux-x64]
+    # TEMPORARY (2026-08-24): reverted from
+    # [self-hosted, Linux, X64, home-general-linux-x64].
+    # live-ninja is not dispatching to the home-linux-private runner group even
+    # after being granted it, so a0f4a4a left this repo with no working deploy
+    # path from 2026-08-11 onward — it carried [skip ci], so it never ran its
+    # own workflow, and nothing pushed to main until 2026-08-24 to surface it.
+    # Restore the self-hosted line once dispatch works; the grant is already in
+    # place (runner group 3, repository id 1303872500).
+    runs-on: ubuntu-latest
     permissions:
       id-token: write # required for OIDC
       contents: read
