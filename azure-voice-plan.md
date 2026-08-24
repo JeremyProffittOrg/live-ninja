@@ -405,20 +405,20 @@ WS-D M1–M3 needs it.
 
 ### WS-A — Azure resources (blocks WS-B M1, WS-C M1)
 
-- [ ] **A1. Create the resource groups.** Two, so the Voice Live blast radius is its own container
+- [x] **A1. Create the resource groups.** Two, so the Voice Live blast radius is its own container
       per locked decision 2: `ln-azure-openai-rg` and `ln-voicelive-rg`, both in `eastus2`, both
       tagged `project=live-ninja` and `plan=azure-voice-plan` (the budgets in A5 filter on those
       tags).
       DoD: `az group list --query "[?tags.plan=='azure-voice-plan'].name" -o tsv` prints exactly two
       names.
 
-- [ ] **A2. Create the Azure OpenAI (Microsoft Foundry) resource.** Name `ln-aoai-eastus2`, kind
+- [x] **A2. Create the Azure OpenAI (Microsoft Foundry) resource.** Name `ln-aoai-eastus2`, kind
       `AIServices`, region `eastus2` (A3), with a custom subdomain — the
       `<resource>.openai.azure.com` host form in A1 requires one.
       DoD: `az cognitiveservices account show -n ln-aoai-eastus2 -g ln-azure-openai-rg --query
       "properties.endpoint" -o tsv` prints an `https://ln-aoai-eastus2.openai.azure.com/`-shaped URL.
 
-- [ ] **A3. Deploy the realtime models.** Deploy `gpt-realtime-2.1` as a **GlobalStandard**
+- [x] **A3. Deploy the realtime models.** Deploy `gpt-realtime-2.1` as a **GlobalStandard**
       deployment named `gpt-realtime-2-1`, and `gpt-realtime-2.1-mini` as `gpt-realtime-2-1-mini`.
       If `2.1` is not offerable in this subscription, fall back to `gpt-realtime-2`, then
       `gpt-realtime`/`gpt-realtime-mini` (A3). **Record which model id actually deployed, verbatim,
@@ -426,7 +426,7 @@ WS-D M1–M3 needs it.
       DoD: `az cognitiveservices account deployment list -n ln-aoai-eastus2 -g ln-azure-openai-rg
       --query "[].name" -o tsv` prints both deployment names.
 
-- [ ] **A4. Create the Voice Live resource and its service principal.** Foundry resource
+- [!] **A4. Create the Voice Live resource and its service principal.** Foundry resource
       `ln-voicelive` in `ln-voicelive-rg`, with a custom subdomain (the
       `<resource>.services.ai.azure.com` host in A5 needs one). Then an Entra app registration
       `ln-voicelive-client` with a client secret, granted `Cognitive Services User` **and**
@@ -435,6 +435,28 @@ WS-D M1–M3 needs it.
       DoD: `az role assignment list --assignee <appId> --all --query "[].scope" -o tsv` prints **only**
       the `ln-voicelive` resource id, twice, and nothing else. Any other scope in that output is a
       failure of locked decision 2's isolation and must be removed before proceeding.
+
+      **[!] BLOCKED 2026-08-24 — stop condition 1. This machine's only Azure identity cannot create
+      an Entra app registration.** It is the service principal `azure-owner-deployer`
+      (`f16364f7-e9d4-4b28-95aa-7b11e2fe8ea7`). It holds ARM rights on the subscription but **no
+      Microsoft Graph rights at all**:
+      ```
+      $ az account show --query "user.type" -o tsv
+      servicePrincipal
+      $ az rest --method GET --url ".../servicePrincipals(appId='f16364f7-...')/memberOf" --query value -o tsv
+      (empty - no directory role)
+      $ az ad app list --query "[0].displayName" -o tsv
+      ERROR: Insufficient privileges to complete the operation.
+      ```
+      WHAT UNBLOCKS IT, and who supplies it: the operator, either by (a) creating
+      `ln-voicelive-client` in the Entra portal, adding a client secret, and granting it
+      `Cognitive Services User` + `Foundry User` scoped to `ln-voicelive` only; or (b) granting this
+      service principal the Graph application permission `Application.ReadWrite.OwnedBy` plus the
+      `Application Developer` directory role, after which A4 runs unattended as written.
+      Recommended: (b), because it makes this and every future run self-service.
+      **A4 blocks all of WS-C and both Voice Live engines** (`azure-voice-live`,
+      `azure-voice-live-lite`). It does NOT block `gpt-live-azure` / `gpt-live-azure-mini`, which
+      need only WS-A M2/M3 (done) — so the run continues on the Azure OpenAI half.
 
 - [ ] **A5. Set the budgets.** This is the only spend backstop — the daily quota counters are inert
       today (see the WS-B M6 note), so nothing else will surface a runaway. Two budgets, one per
@@ -456,7 +478,7 @@ WS-D M1–M3 needs it.
 
 ### WS-B — Broker: engines, mint, rates (pure Go; start immediately, no Azure dependency)
 
-- [ ] **B1. Live-mint smoke test.** Depends on A3 and A6. Proves the endpoint, the key, the model id,
+- [x] **B1. Live-mint smoke test.** Depends on A3 and A6. Proves the endpoint, the key, the model id,
       and the voice all work before any Go code depends on them.
       **Record only `MINT_OK` and the chosen model id in the Execution log — never the response
       body.** Do not run this under `set -x`. Stop condition 2 governs.
@@ -773,3 +795,62 @@ actually returned. Written as it happens, not reconstructed at the end.
 - **2026-08-24** — Plan written from a full read of the repository and of Microsoft Learn. Four
   operator decisions locked (see `## Locked decisions`). No Azure resource created yet, no code
   changed yet. **Next action: WS-A M1 and WS-B M2 and WS-D M1, started together.**
+
+- **2026-08-24** — Audit landed as `/c/dev/live-ninja/azure-voice-gaps.md` (commit `29c2686`):
+  47 findings from an eleven-reviewer audit, each adversarially verified. Plan committed as
+  `75df361`. Work proceeds on branch `alexa-version`, NOT `main` — see gap-register M1/S5;
+  locked decision 4 is deferred until the code is green, so no production deploy has happened.
+
+- **2026-08-24 — WS-A M1 DONE.** `az group create` for `ln-azure-openai-rg` and `ln-voicelive-rg`,
+  both `eastus2`, both tagged `project=live-ninja plan=azure-voice-plan`.
+  DoD returned exactly two names:
+  ```
+  $ az group list --query "[?tags.plan=='azure-voice-plan'].name" -o tsv
+  ln-azure-openai-rg
+  ln-voicelive-rg
+  ```
+
+- **2026-08-24 — WS-A M2 DONE, and its DoD is WRONG (gap-register W5, now confirmed live).**
+  `ln-aoai-eastus2` created, kind `AIServices`, sku `S0`, custom subdomain, `provisioningState`
+  `Succeeded`. But `properties.endpoint` is **`https://ln-aoai-eastus2.cognitiveservices.azure.com/`**,
+  not the `openai.azure.com` form the DoD asserts. The realtime host the plan needs is real, it is
+  just in the endpoint MAP:
+  ```
+  $ az cognitiveservices account show -n ln-aoai-eastus2 -g ln-azure-openai-rg       --query 'properties.endpoints."OpenAI Realtime API"' -o tsv
+  https://ln-aoai-eastus2.openai.azure.com/
+  ```
+  REPLACEMENT DoD for A2: query `properties.endpoints."OpenAI Realtime API"`, not `properties.endpoint`.
+  Also recorded: this same resource exposes a `Voice Live Realtime API` endpoint at the
+  `cognitiveservices.azure.com` host, NOT the `services.ai.azure.com` host A5 states. WS-C M2's
+  `voiceLiveEndpoint` must be re-derived from the endpoint map of the actual Voice Live resource
+  rather than assembled from the hostname template in A5.
+
+- **2026-08-24 — WS-A M3 DONE. Model ids that actually deployed, verbatim (this propagates to
+  WS-B M2, M5, WS-E and WS-F):**
+  ```
+  Deployment             Model                  Version     Cap    State
+  gpt-realtime-2-1       gpt-realtime-2.1       2026-07-07  10     Succeeded
+  gpt-realtime-2-1-mini  gpt-realtime-2.1-mini  2026-07-07  10     Succeeded
+  ```
+  A3's primary target was correct — no fallback needed. Quota limit is 10 units per model in
+  `eastus2` (`az cognitiveservices usage list`), and both deployments take the full 10. Note
+  `az cognitiveservices account deployment update` does not exist in az 2.89.1; changing capacity
+  is delete + create.
+
+- **2026-08-24 — WS-B M1 DONE. Two things settled that the plan left open.**
+  1. **`cedar` IS accepted on Azure.** A4's ambiguity resolves in our favour, so WS-B M4's voice
+     mapping is a no-op plus a test and `SupportedVoices` is reused unchanged.
+  2. **Gap-register F2 is REFUTED by live evidence.** F2 claimed Azure rejects
+     `audio.input.transcription.model = "gpt-4o-mini-transcribe"` because Azure requires a
+     deployment name and WS-A M3 deploys no transcription model. The FULL production session
+     config — the exact object `Minter.Mint` builds at `internal/realtime/mint.go:295-306`,
+     including that transcription model, `semantic_vad`, `near_field` noise reduction, instructions
+     and tools — mints successfully:
+  ```
+  minimal body (DoD as written)  -> HTTP 200, MINT_OK (cedar accepted)
+  full production session config -> HTTP 200, MINT_OK
+  ```
+  R5's "the Azure minter can reuse this builder verbatim" therefore HOLDS at mint time. Not yet
+  verified: whether transcription EVENTS actually arrive at session runtime — that is WS-F M1's job.
+  Per stop condition 2 the key was piped from `az` into `curl` and never printed, and the minted
+  `ek_` was never written to a file that survived the command.
