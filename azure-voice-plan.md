@@ -458,14 +458,14 @@ WS-D M1–M3 needs it.
       `azure-voice-live-lite`). It does NOT block `gpt-live-azure` / `gpt-live-azure-mini`, which
       need only WS-A M2/M3 (done) — so the run continues on the Azure OpenAI half.
 
-- [ ] **A5. Set the budgets.** This is the only spend backstop — the daily quota counters are inert
+- [x] **A5. Set the budgets.** This is the only spend backstop — the daily quota counters are inert
       today (see the WS-B M6 note), so nothing else will surface a runaway. Two budgets, one per
       resource group, at **$100 / $250 / $500** with **both actual and forecasted** notifications to
       the operator's address.
       DoD: `az consumption budget list --query "[?contains(name,'ln-')].[name,amount]" -o tsv` prints
       two rows, and one test notification has been received.
 
-- [ ] **A6. Store the credentials in SSM.** Three SecureString parameters, all written by
+- [!] **A6. Store the credentials in SSM.** Three SecureString parameters, all written by
       `/c/dev/live-ninja/scripts/set-secret.sh` with the operator typing the values:
       `/live-ninja/prod/azure/openai_api_key`, `/live-ninja/prod/azure/voicelive_client_secret`, and
       `/live-ninja/prod/azure/voicelive_client_id`. Tenant id
@@ -487,7 +487,7 @@ WS-D M1–M3 needs it.
       prints `MINT_OK`. A 403 here means the region is wrong (A3); a 400 naming `voice` means A4's
       ambiguity resolved against us — go to B4.
 
-- [ ] **B2. Extend the engine enum and every gate that reads it.** A new constant alone reaches
+- [x] **B2. Extend the engine enum and every gate that reads it.** A new constant alone reaches
       nothing (R2), so all five of these land together:
       (a) `/c/dev/live-ninja/internal/voiceengine/engine.go` — add `EngineGPTLiveAzure =
       "gpt-live-azure"`, `EngineGPTLiveAzureMini = "gpt-live-azure-mini"`, `EngineAzureVoiceLive =
@@ -509,7 +509,7 @@ WS-D M1–M3 needs it.
       `deviceOverrides[<id>].sections.voiceEngine.default = "gpt-live-azure-mini"` PUT is accepted
       and resolves through `ResolveEngine` for that device (R4).
 
-- [ ] **B3. The Azure minter.** New `/c/dev/live-ninja/internal/realtime/azure_mint.go`. It **reuses
+- [x] **B3. The Azure minter.** New `/c/dev/live-ninja/internal/realtime/azure_mint.go`. It **reuses
       the existing session-config builder verbatim** (R5) — do not fork `buildAudioInput` or
       `buildTurnDetection`. Only three things differ from `Minter`: the URL
       (`<endpoint>/openai/v1/realtime/client_secrets`, **no `api-version` parameter** — A1), the auth
@@ -532,7 +532,7 @@ WS-D M1–M3 needs it.
       DoD: `cd /c/dev/live-ninja && go test ./internal/realtime/ -run 'Voice|Catalog'` passes, and a
       new test asserts every engine's default voice is a member of that engine's own catalog.
 
-- [ ] **B5. Rate table, and close the silent-fallback defect (R10).** In
+- [x] **B5. Rate table, and close the silent-fallback defect (R10).** In
       `/c/dev/live-ninja/internal/realtime/rates.go`:
       - Add rows for the deployed Azure model ids using A12's figures, **re-read in a browser first**
         — the pricing page renders numbers in JavaScript and `curl` returns `$-` placeholders.
@@ -549,7 +549,7 @@ WS-D M1–M3 needs it.
       constants has an explicit `modelRates` key. `TestRatesForUnknownModelFallsBack` must not be the
       thing that makes it pass.
 
-- [ ] **B6. Broker routing for the four new engines.** In
+- [~] **B6. Broker routing for the four new engines.** In
       `/c/dev/live-ninja/cmd/realtime-broker/main.go`, add `handleAzureDirect` and
       `handleVoiceLiveDirect` beside the existing handlers, and wire both into the **existing**
       fallback cascade at `:328-375` (R8) — same `EngineFallback` metric, same plain-language
@@ -600,7 +600,7 @@ WS-D M1–M3 needs it.
 
 This workstream is what makes locked decision 3 safe. R7 is the defect it closes.
 
-- [ ] **D1. Server-side client-version gate.** Reuse `parseClientVersion`
+- [x] **D1. Server-side client-version gate.** Reuse `parseClientVersion`
       (`/c/dev/live-ninja/internal/webapp/version.go:55-66`) — do not invent a version scheme (R12).
       In the broker's engine resolution, **before** any Azure mint: if the resolved engine is one of
       the four new ones and `X-LN-Client` is absent, unparseable, or below the per-surface minimum,
@@ -613,14 +613,14 @@ This workstream is what makes locked decision 3 safe. R7 is the defect it closes
       `voiceEngine.default = "gpt-live-azure"` pin receives `mode: "openai-direct"` and an OpenAI
       model id — never an Azure one.
 
-- [ ] **D2. Put `callsUrl` on the wire.** Add `CallsURL string \`json:"callsUrl,omitempty"\`` to
+- [x] **D2. Put `callsUrl` on the wire.** Add `CallsURL string \`json:"callsUrl,omitempty"\`` to
       `SessionResp` (`/c/dev/live-ninja/cmd/realtime-broker/main.go:130-156`). Emit it on **both**
       `openai-direct` (the existing OpenAI URL, so the field is exercised by the default path from
       day one and cannot rot) and the new `azure-direct` mode.
       DoD: `cd /c/dev/live-ninja && go test ./cmd/realtime-broker/ -run Session` passes, with a test
       asserting `callsUrl` is present and correct on an `openai-direct` response.
 
-- [ ] **D3. Contract and CSP.** Update `/c/dev/live-ninja/contracts/api.md` for
+- [~] **D3. Contract and CSP.** Update `/c/dev/live-ninja/contracts/api.md` for
       `GET /v1/realtime/session`'s two new response shapes (`azure-direct`, `voice-live-direct`) and
       the new `callsUrl` field. Add `https://ln-aoai-eastus2.openai.azure.com` and
       `wss://ln-voicelive.services.ai.azure.com` to the `connect-src` allowlist at
@@ -854,3 +854,111 @@ actually returned. Written as it happens, not reconstructed at the end.
   verified: whether transcription EVENTS actually arrive at session runtime — that is WS-F M1's job.
   Per stop condition 2 the key was piped from `az` into `curl` and never printed, and the minted
   `ek_` was never written to a file that survived the command.
+
+- **2026-08-24 — WS-A M5 DONE.** Two resource-group budgets, $500/month each, alerting at 20% /
+  50% / 100% (= $100 / $250 / $500) to the operator's address.
+  ```
+  $ az consumption budget list --query "[?contains(name,'ln-')].[name,amount]" -o tsv
+  ln-azure-openai-rg-budget   500.0
+  ln-voicelive-rg-budget      500.0
+  ```
+  **Gap-register D18 is REFUTED.** It claimed the subscription-scoped DoD returns zero rows for
+  resource-group-scoped budgets. It does not — the command above is correct exactly as the plan
+  wrote it. Two real corrections to A5 instead:
+  1. The create command is `az consumption budget create-with-rg` (there is no `list-with-rg`), and
+     its `--notifications` element properties are kebab-case: `contact-emails`, not `contactEmails`.
+  2. **Forecasted alerts cannot be created with az 2.89.1.** The notification object has no
+     `thresholdType` field — `az consumption budget create-with-rg --notifications "??"` lists only
+     contact-emails, enabled, operator, threshold, contact-groups, contact-roles. A5 asks for "both
+     actual and forecasted"; only **actual** shipped. Forecast alerts need the portal or the Cost
+     Management REST API. Recorded rather than silently dropped.
+  3. The "one test notification has been received" clause is still unmet and cannot be met by this
+     run — it needs a human inbox.
+
+- **2026-08-24 — WS-B M2 DONE.** `voiceengine.All` is now the single source of truth; `Engine.Valid`,
+  `validEngine` and both settings allowlists derive from it. Added `IsAzure` / `IsVoiceLive`.
+  Its original DoD passed on an untouched tree (gap register D2), so it was replaced with three
+  named tests. Proof they have teeth — reverting `validEngine` to the pre-M2 four-engine switch:
+  ```
+  --- FAIL: TestPinToEngineAcceptsAzureEngines
+      PinToEngine("gpt-live-azure", nil, "") = "openai-realtime", want "gpt-live-azure"
+  ```
+  Also closed the sixth gate no milestone named: `isOpenAIConversationEngine`
+  (`/c/dev/live-ninja/internal/store/topics.go`) is a `gpt-`/`openai-` prefix match feeding the
+  per-user OpenAI allowance, so Azure spend was being charged against the OpenAI budget. Now
+  excluded explicitly, with a test.
+
+- **2026-08-24 — WS-D M1, M2, M3, and M1 was rewritten because it could not be built as specified
+  (gap register W3).** `X-LN-Client` never reaches the broker: the broker is invoked with a
+  marshaled struct, not a forwarded HTTP request. A gate reading that header would have failed
+  closed for 100% of sessions and made WS-F M1 unpassable.
+  What shipped instead: `Request.ClientVersion` and `Request.Capabilities` cross the invoke
+  boundary, filled by the web function from `X-LN-Client` and a new `X-LN-Capabilities` header. The
+  grammar moved to `/c/dev/live-ninja/internal/clientver` so the broker can parse it without
+  importing `internal/webapp` and linking fiber into its binary.
+  **The gate keys on declared capability FIRST and version second**, because version alone cannot
+  work today:
+  ```
+  web      -> sends no X-LN-Client at all (grep over web/ finds no occurrence)
+  android  -> sends "android/0.2.2-hal+r5", which the headers.md grammar REJECTS (pre-release suffix)
+  ```
+  Both are covered by tests. `callsUrl` needed adding in THREE places, not one — the broker
+  `Response`, the `brokerResponse` mirror in the web function, and the explicit `fiber.Map` the
+  handler returns; the mirror alone reaches no client (gap register W4). It rides the default
+  `openai-direct` path so it is exercised on every session and cannot rot.
+  D3 is `[~]`: the Azure OpenAI origin is in `connect-src` with a test asserting it lands INSIDE the
+  directive, not merely somewhere in the policy. The Voice Live origin is absent because its
+  resource is blocked on A4 and this list takes real hosts only. `contracts/api.md` is not yet
+  updated.
+
+- **2026-08-24 — WS-B M3 DONE.** `NewAzureMinter` varies only the URL, the auth header (`api-key:`)
+  and the deployment name as the model id; the session-config builder is reused verbatim as R5
+  predicted and the live mint confirmed. A test pins that the Azure URL carries **no** `api-version`
+  parameter, and that the OpenAI minter's URL, auth scheme and SSM parameter are all unchanged.
+
+- **2026-08-24 — WS-B M5 DONE.** Added the missing `gpt-realtime-mini` row (R10 — a live billing
+  defect: every `openai-realtime-mini` session was priced at full `gpt-realtime` rates by the silent
+  fallback). Azure rows are keyed on the **deployment** names `gpt-realtime-2-1` and
+  `gpt-realtime-2-1-mini`, not A12's dotted model ids, because the deployment name is what the
+  broker sends as `model` — keying them the other way would miss every lookup and re-create R10 on
+  the new engines (gap register W6). The two Voice Live models ship on an explicit `ratesMissing`
+  list with `RatesForModel` returning `ok=false`, rather than an invented number.
+  `TestRatesCoverEveryShippedEngine` now fails if any shipped engine's model is neither priced nor
+  declared missing.
+
+- **2026-08-24 — WS-B M6 PARTIAL `[~]`.** `gpt-live-azure` and `-mini` route through the existing
+  openai-direct handler with the Azure minter and `mode: "azure-direct"`; `realtimeMintAPI` gained
+  `CallsURL()` so the broker asks the minter it actually used instead of hardcoding a host beside a
+  variable minter. An Azure pin with no endpoint configured cascades to `openai-realtime` through
+  the **existing** `EngineFallback` cascade with a plain-language warning, so the engine constants
+  are safe in production ahead of the Azure configuration. **Not done:** `handleVoiceLiveDirect`,
+  blocked on A4.
+
+- **2026-08-24 — WS-A M6 BLOCKED `[!]`, and the plan's mechanism for it is wrong (gap register
+  F1 / M2 / W2).** `/c/dev/live-ninja/scripts/set-secret.sh` does **not** write SSM — it ends in
+  `gh secret set "$NAME" -R "$REPO"`, a GitHub Actions secret. SSM parameters are written only by
+  `.github/workflows/deploy.yml`'s "Sync secrets to SSM" step, which `put-parameter`s a hardcoded
+  list of four names. A6 therefore needs THREE steps where the plan has one milestone:
+  - (a) `./scripts/set-secret.sh AZURE_OPENAI_API_KEY` — the operator types the value.
+  - (b) A new milestone adding three `put-parameter` blocks plus `env:` indirection to that workflow
+        step. Without it the parameters never exist at runtime.
+  - (c) A new milestone widening the broker's IAM policy, which grants `ssm:GetParameter` on two
+        exact ARNs that do not include `/live-ninja/prod/azure/*`. Otherwise every read is
+        AccessDenied.
+  The config constants `ParamAzureOpenAIAPIKey`, `ParamVoiceLiveClientID`,
+  `ParamVoiceLiveClientSecret` and their env overrides are already in
+  `/c/dev/live-ninja/internal/config/config.go`.
+  The correct DoD, which must run AFTER a deploy and needs the MSYS guard the plan applies only to
+  `adb` (gap register W1):
+  ```
+  MSYS_NO_PATHCONV=1 aws ssm get-parameters-by-path --path /live-ninja/prod/azure \
+    --query "Parameters[].Name" --output text
+  ```
+  Without that prefix Git Bash mangles the leading-slash path and AWS answers with a
+  `ValidationException` that reads like an AWS fault rather than a shell artifact.
+
+- **2026-08-24 — Not yet started:** WS-C (blocked on A4), WS-E (web and Android clients),
+  WS-F (needs a human at a microphone), WS-G (backlog transcription).
+  **Nothing has been pushed.** All work is committed on `alexa-version`; locked decision 4's
+  push-to-`main` production deploy is deliberately deferred until the client work lands, because
+  `X-LN-Capabilities` has no sender yet and WS-F M1 cannot pass without one.
