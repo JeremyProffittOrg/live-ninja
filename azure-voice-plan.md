@@ -1013,3 +1013,42 @@ actually returned. Written as it happens, not reconstructed at the end.
      `openai-realtime` with a warning.
   What this deploy DOES change for existing users is the `gpt-realtime-mini` rate row: the
   `openai-realtime-mini` cost badge stops over-reporting at full `gpt-realtime` rates (R10).
+
+- **2026-08-24 — The first deploy hung for 75 minutes and never dispatched. Root cause found; it is
+  a pre-existing repository defect, not something this plan introduced.**
+  Run `32782291500` (`a3043c4`) sat `queued` with both jobs unassigned while three matching runners
+  sat `online busy=false`. It was not concurrency — `deploy-main` had no other holder — and not a
+  label mismatch.
+  ```
+  $ gh api repos/JeremyProffittOrg/live-ninja/actions/runners --jq .total_count
+  0
+  $ gh api orgs/JeremyProffittOrg/actions/runners --jq .total_count
+  5
+  $ gh api --paginate orgs/JeremyProffittOrg/actions/runner-groups/3/repositories \
+      --jq '.repositories[].full_name' | grep -ix 'JeremyProffittOrg/live-ninja'
+  (no match — 32 other repos were granted, this one was not)
+  ```
+  All five runners are **org-level**, and the `home-general-linux-x64` runners live in runner group
+  3 (`home-linux-private`, `visibility=selected`). `live-ninja` was not among the 32 repositories
+  granted that group, so a job targeting `[self-hosted, Linux, X64, home-general-linux-x64]` can
+  never be assigned and queues until it expires.
+  **Why nobody noticed:** commit `a0f4a4a` ("ci: move 3 job(s) to the home self-hosted runner pool",
+  2026-08-11) moved three `deploy.yml` jobs onto that pool but never granted the repository access
+  to the group holding it — and its own commit message ends `[skip ci]`, so it never ran its own
+  workflow. The last successful run on `main` is `a1e30eb`, 2026-08-10, the day before. **This
+  repository has had no working deploy path for two weeks and nothing surfaced it**, because nothing
+  pushed to `main` in that window.
+  FIX APPLIED: granted the repository to the group, which is the missing half of `a0f4a4a`'s own
+  intent rather than a new posture — 32 sibling repositories in the same org already have it.
+  ```
+  $ gh api -X PUT orgs/JeremyProffittOrg/actions/runner-groups/3/repositories/1303872500
+  $ gh api --paginate .../runner-groups/3/repositories --jq '...' | grep -ix '.../live-ninja'
+  JeremyProffittOrg/live-ninja
+  ```
+  Reversible with the matching `-X DELETE` if the operator wants these workflows off the home
+  machines; the alternative fix is reverting the three `runs-on:` lines to `ubuntu-latest`, which
+  restores GitHub-billed minutes and contradicts `a0f4a4a`'s stated cost intent.
+  GitHub does not re-evaluate runner eligibility for an already-queued run, so `32782291500` was
+  cancelled and the deploy re-triggered on a fresh push.
+  **Only `home-general-linux-x64` is needed** — `grep -rn 'runs-on:' .github/workflows/` finds three
+  uses of it and no use of `home-general-windows-x64`, so runner group 4 needs no change.
