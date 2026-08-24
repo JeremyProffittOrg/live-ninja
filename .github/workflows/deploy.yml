@@ -286,6 +286,9 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           LWA_CLIENT_ID: ${{ vars.LWA_CLIENT_ID }}
           LWA_CLIENT_SECRET: ${{ secrets.LWA_CLIENT_SECRET }}
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_VOICELIVE_CLIENT_ID: ${{ secrets.AZURE_VOICELIVE_CLIENT_ID }}
+          AZURE_VOICELIVE_CLIENT_SECRET: ${{ secrets.AZURE_VOICELIVE_CLIENT_SECRET }}
         run: |
           set -eu
 
@@ -312,6 +315,30 @@ jobs:
             --type SecureString \
             --value "$LWA_CLIENT_SECRET" \
             --overwrite >/dev/null
+
+          # Azure voice engines (azure-voice-plan.md WS-A M6). Each is written
+          # only when its secret is actually set: the Voice Live pair does not
+          # exist yet (its Entra app registration is blocked on WS-A M4), and
+          # put-parameter rejects an empty value, so an unguarded write would
+          # fail the whole deploy over a credential nothing reads yet.
+          if [ -n "${AZURE_OPENAI_API_KEY:-}" ]; then
+            aws ssm put-parameter               --name "/live-ninja/prod/azure/openai_api_key"               --type SecureString               --value "$AZURE_OPENAI_API_KEY"               --overwrite >/dev/null
+            echo "azure/openai_api_key synced"
+          else
+            echo "AZURE_OPENAI_API_KEY not set; the gpt-live-azure engines will cascade to openai-realtime"
+          fi
+
+          if [ -n "${AZURE_VOICELIVE_CLIENT_ID:-}" ]; then
+            aws ssm put-parameter               --name "/live-ninja/prod/azure/voicelive_client_id"               --type SecureString               --value "$AZURE_VOICELIVE_CLIENT_ID"               --overwrite >/dev/null
+            echo "azure/voicelive_client_id synced"
+          else
+            echo "AZURE_VOICELIVE_CLIENT_ID not set; the Voice Live engines stay unconfigured"
+          fi
+
+          if [ -n "${AZURE_VOICELIVE_CLIENT_SECRET:-}" ]; then
+            aws ssm put-parameter               --name "/live-ninja/prod/azure/voicelive_client_secret"               --type SecureString               --value "$AZURE_VOICELIVE_CLIENT_SECRET"               --overwrite >/dev/null
+            echo "azure/voicelive_client_secret synced"
+          fi
 
           # cred_pepper is generated once by the workflow and never rotated here;
           # only created if the parameter does not already exist.

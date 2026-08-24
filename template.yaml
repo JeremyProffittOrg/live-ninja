@@ -60,6 +60,23 @@ Parameters:
     Default: gpt-realtime
     Description: OpenAI Realtime model id the realtime broker mints client
       secrets for.
+  AzureOpenAIEndpoint:
+    Type: String
+    Default: https://ln-aoai-eastus2.openai.azure.com
+    Description: Azure OpenAI resource host the broker mints Azure ephemeral
+      secrets from. This is properties.endpoints["OpenAI Realtime API"] on the
+      Foundry resource, NOT properties.endpoint, which on a kind=AIServices
+      resource is the cognitiveservices.azure.com form. Empty disables the
+      gpt-live-azure engines, which then cascade to openai-realtime.
+  AzureOpenAIDeployment:
+    Type: String
+    Default: gpt-realtime-2-1
+    Description: Azure DEPLOYMENT name for the gpt-live-azure engine. Azure's
+      model field takes the deployment name, not the dotted model id.
+  AzureOpenAIMiniDeployment:
+    Type: String
+    Default: gpt-realtime-2-1-mini
+    Description: Azure DEPLOYMENT name for the gpt-live-azure-mini engine.
   OpenAIMonthlyBudgetUsd:
     Type: Number
     Default: 100
@@ -673,7 +690,8 @@ Resources:
       FunctionName: live-ninja-realtime-broker
       Description: >-
         Direct-invoke realtime token broker (invoked by the web function in M2+).
-        Sole holder of ssm:GetParameter on the OpenAI API key parameter.
+        Sole holder of ssm:GetParameter on the OpenAI, Gemini and Azure API
+        key parameters.
       CodeUri: .build/realtime-broker/
       LoggingConfig:
         LogGroup: !Ref RealtimeBrokerLogGroup
@@ -699,6 +717,13 @@ Resources:
           # the bridge URL (wireNovaBridge). Without this the nova path 502s
           # nova_bridge_unavailable even with the bridge healthy.
           JWT_KMS_KEY_ID: !GetAtt JwtKey.Arn
+          # azure-voice-plan.md WS-B M6: the gpt-live-azure engines. When
+          # AZURE_OPENAI_ENDPOINT is empty the broker builds no Azure minter and
+          # an Azure pin cascades to openai-realtime with a warning, so these
+          # are safe to ship ahead of the credential.
+          AZURE_OPENAI_ENDPOINT: !Ref AzureOpenAIEndpoint
+          AZURE_OPENAI_DEPLOYMENT: !Ref AzureOpenAIDeployment
+          AZURE_OPENAI_MINI_DEPLOYMENT: !Ref AzureOpenAIMiniDeployment
       Policies:
       - Version: "2012-10-17"
         Statement:
@@ -736,6 +761,12 @@ Resources:
           - ssm:GetParameter
           Resource:
           - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/gemini/api_key"
+        - Sid: AzureKeyParams
+          Effect: Allow
+          Action:
+          - ssm:GetParameter
+          Resource:
+          - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/azure/*"
         - Sid: SsmSecureStringDecrypt
           Effect: Allow
           Action:
