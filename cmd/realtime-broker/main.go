@@ -212,6 +212,11 @@ type fallbackAPI interface {
 // a network call.
 type realtimeMintAPI interface {
 	Mint(ctx context.Context, personaID, voice, eagerness, instructionsSuffix, surface string) (*realtime.MintResult, error)
+	// CallsURL is the SDP POST target for the secrets this minter issues.
+	// The broker puts it on the wire rather than letting each client infer
+	// the host from the engine name — that inference is exactly what would
+	// send an Azure credential to api.openai.com.
+	CallsURL() string
 }
 
 type broker struct {
@@ -219,7 +224,13 @@ type broker struct {
 	gate       *realtime.Gate
 	minter     realtimeMintAPI
 	miniMinter realtimeMintAPI
-	fallback   fallbackAPI
+	// azureMinter/azureMiniMinter serve the gpt-live-azure pins. They are nil
+	// when the Azure endpoint is not configured, which makes an Azure pin
+	// cascade to openai-realtime through the existing fallback rather than
+	// failing the session.
+	azureMinter     realtimeMintAPI
+	azureMiniMinter realtimeMintAPI
+	fallback        fallbackAPI
 
 	// ddb/table back the per-mint Guide Entity injection (guides.go): the
 	// broker Queries the caller's GUIDE# prefix and appends enabled guides
@@ -449,9 +460,31 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 		guideSuffix = realtime.GuideInstructions(guides)
 	}
 
+	// The Azure OpenAI pins reuse this whole path unchanged: same session
+	// config, same ephemeral-secret shape, same client WebRTC transport. Only
+	// the minter differs, and the client learns the different SDP host from
+	// the callsUrl this handler returns.
+	mode := "openai-direct"
 	openAIMinter := b.minter
-	if engine == voiceengine.EngineOpenAIRealtimeMini {
+	switch engine {
+	case voiceengine.EngineOpenAIRealtimeMini:
 		openAIMinter = b.miniMinter
+	case voiceengine.EngineGPTLiveAzure:
+		openAIMinter, mode = b.azureMinter, "azure-direct"
+	case voiceengine.EngineGPTLiveAzureMini:
+		openAIMinter, mode = b.azureMiniMinter, "azure-direct"
+	}
+
+	// An Azure pin with no Azure minter configured cascades to the platform
+	// default, the same way a downed Nova bridge or Gemini mint does. It must
+	// never 502 a session that openai-realtime could have served.
+	if openAIMinter == nil && engine.IsAzure() {
+		l.Warn("realtime-broker: azure engine pinned but no azure minter configured; falling back",
+			slog.String("engine", string(engine)))
+		observ.EmitMetric(metricsNamespace, "EngineFallback", 1, "Count",
+			map[string]string{"Surface": req.Surface, "From": string(engine), "Reason": "not_configured"})
+		warnings = append(warnings, "The Azure voice engine is unavailable right now; using the default voice engine for this conversation.")
+		engine, mode, openAIMinter = voiceengine.EngineOpenAIRealtime, "openai-direct", b.minter
 	}
 	metricDimensions := map[string]string{
 		"Surface": req.Surface,
@@ -496,11 +529,11 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 		slog.String("voice", res.Voice))
 
 	return Response{
-		Mode:          "openai-direct",
+		Mode:          mode,
 		Engine:        string(engine),
 		ClientSecret:  &res.ClientSecret,
 		Model:         res.Model,
-		CallsURL:      realtime.OpenAICallsURL,
+		CallsURL:      openAIMinter.CallsURL(),
 		Voice:         res.Voice,
 		SessionConfig: res.SessionConfig,
 		ToolManifest:  res.ToolManifest,
@@ -935,16 +968,18 @@ func main() {
 	wireSuspendAlerts(gate, logger, awsCfg, appCfg.EmailQueueURL, os.Getenv("OWNER_EMAIL"))
 
 	b := &broker{
-		log:           logger,
-		gate:          gate,
-		minter:        realtime.NewMinter(loader, model),
-		miniMinter:    realtime.NewMinter(loader, realtime.MiniRealtimeModel),
-		geminiMint:    realtime.NewGeminiMinter(loader, realtime.GeminiLiveModelFromEnv()),
-		fallback:      realtime.NewFallbackClient(loader),
-		ddb:           ddb,
-		table:         appCfg.TableName,
-		settings:      ddb, // *dynamodb.Client satisfies SettingsGetter (GetItem)
-		bridgeBaseURL: os.Getenv("NOVA_BRIDGE_URL"),
+		log:             logger,
+		gate:            gate,
+		minter:          realtime.NewMinter(loader, model),
+		miniMinter:      realtime.NewMinter(loader, realtime.MiniRealtimeModel),
+		azureMinter:     newAzureMinterFromEnv(loader, os.Getenv("AZURE_OPENAI_DEPLOYMENT")),
+		azureMiniMinter: newAzureMinterFromEnv(loader, os.Getenv("AZURE_OPENAI_MINI_DEPLOYMENT")),
+		geminiMint:      realtime.NewGeminiMinter(loader, realtime.GeminiLiveModelFromEnv()),
+		fallback:        realtime.NewFallbackClient(loader),
+		ddb:             ddb,
+		table:           appCfg.TableName,
+		settings:        ddb, // *dynamodb.Client satisfies SettingsGetter (GetItem)
+		bridgeBaseURL:   os.Getenv("NOVA_BRIDGE_URL"),
 	}
 	wireNovaBridge(b, logger, ctx, appCfg.JWTKmsKeyID)
 	lambda.Start(b.Handle)
@@ -1070,4 +1105,21 @@ func clientSupportsAzure(req Request, engine voiceengine.Engine) bool {
 		return false
 	}
 	return v.AtLeast(min[0], min[1], min[2])
+}
+
+// newAzureMinterFromEnv builds an Azure minter when both the resource endpoint
+// and the deployment name are configured, and returns nil otherwise. A nil
+// minter is a supported state: the pin cascades to openai-realtime with a
+// warning rather than failing the session, so shipping the engine constants
+// ahead of the Azure configuration is safe.
+//
+// AZURE_OPENAI_ENDPOINT is the resource's OpenAI host — the value of
+// properties.endpoints["OpenAI Realtime API"], not properties.endpoint, which
+// on a kind=AIServices resource is the cognitiveservices.azure.com form.
+func newAzureMinterFromEnv(loader *config.Loader, deployment string) realtimeMintAPI {
+	endpoint := strings.TrimSpace(os.Getenv("AZURE_OPENAI_ENDPOINT"))
+	if endpoint == "" || strings.TrimSpace(deployment) == "" {
+		return nil
+	}
+	return realtime.NewAzureMinter(loader, endpoint, deployment)
 }

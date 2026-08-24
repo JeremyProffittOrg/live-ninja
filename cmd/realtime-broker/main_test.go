@@ -347,3 +347,94 @@ func TestSessionResponseCarriesCallsURL(t *testing.T) {
 		t.Errorf("callsUrl missing or misnamed in %s", out)
 	}
 }
+
+// TestAzurePinRoutesToTheAzureMinter covers WS-B M6. Three things must hold:
+// an Azure-capable client pinned to an Azure engine reaches the AZURE minter
+// and is told the AZURE SDP host; the same pin on an unconfigured broker
+// cascades to openai-realtime with a warning instead of failing; and the
+// OpenAI minter is never handed an Azure session.
+func TestAzurePinRoutesToTheAzureMinter(t *testing.T) {
+	const azureCalls = "https://ln-aoai-eastus2.openai.azure.com/openai/v1/realtime/calls"
+
+	newMint := func(secret, model, calls string) *fakeRealtimeMint {
+		return &fakeRealtimeMint{
+			result: &realtime.MintResult{
+				ClientSecret: realtime.ClientSecret{Value: secret, ExpiresAt: "2026-08-24T20:00:00Z"},
+				Model:        model,
+				Voice:        "cedar",
+			},
+			callsURL: calls,
+		}
+	}
+
+	t.Run("routes to azure and names the azure host", func(t *testing.T) {
+		ddb := testutil.NewFakeDynamo()
+		seedEnginePin(t, ddb, "u1", string(voiceengine.EngineGPTLiveAzure))
+		openai := newMint("ek_openai", "gpt-realtime", "")
+		azure := newMint("ek_azure", "gpt-realtime-2-1", azureCalls)
+
+		b := newGeminiTestBroker(ddb, nil)
+		b.log = slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))
+		b.minter = openai
+		b.azureMinter = azure
+
+		resp, err := b.Handle(context.Background(), Request{
+			UserID: "u1", Surface: "web",
+			Capabilities: []string{"azure-direct"},
+		})
+		require.NoError(t, err)
+		require.Empty(t, resp.Error)
+		assert.Equal(t, "azure-direct", resp.Mode)
+		assert.Equal(t, string(voiceengine.EngineGPTLiveAzure), resp.Engine)
+		assert.Equal(t, "gpt-realtime-2-1", resp.Model)
+		assert.Equal(t, azureCalls, resp.CallsURL, "the client must be told the Azure SDP host")
+		assert.Equal(t, 1, azure.calls, "the Azure minter should have been used")
+		assert.Equal(t, 0, openai.calls, "the OpenAI minter must never serve an Azure session")
+	})
+
+	t.Run("unconfigured azure cascades to openai instead of failing", func(t *testing.T) {
+		ddb := testutil.NewFakeDynamo()
+		seedEnginePin(t, ddb, "u1", string(voiceengine.EngineGPTLiveAzure))
+		openai := newMint("ek_openai", "gpt-realtime", "")
+
+		b := newGeminiTestBroker(ddb, nil)
+		b.log = slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))
+		b.minter = openai
+		b.azureMinter = nil // endpoint not configured
+
+		resp, err := b.Handle(context.Background(), Request{
+			UserID: "u1", Surface: "web",
+			Capabilities: []string{"azure-direct"},
+		})
+		require.NoError(t, err)
+		require.Empty(t, resp.Error, "an unconfigured Azure engine must not 502 a session openai could serve")
+		assert.Equal(t, "openai-direct", resp.Mode)
+		assert.Equal(t, string(voiceengine.EngineOpenAIRealtime), resp.Engine)
+		assert.Equal(t, realtime.OpenAICallsURL, resp.CallsURL)
+		assert.Equal(t, 1, openai.calls)
+		assert.Contains(t, resp.QuotaWarning, "Azure voice engine is unavailable",
+			"the user should be told once, plainly, that the engine changed")
+	})
+
+	t.Run("a client that declares nothing never reaches azure", func(t *testing.T) {
+		ddb := testutil.NewFakeDynamo()
+		seedEnginePin(t, ddb, "u1", string(voiceengine.EngineGPTLiveAzure))
+		openai := newMint("ek_openai", "gpt-realtime", "")
+		azure := newMint("ek_azure", "gpt-realtime-2-1", azureCalls)
+
+		b := newGeminiTestBroker(ddb, nil)
+		b.log = slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))
+		b.minter = openai
+		b.azureMinter = azure
+
+		// No Capabilities, no ClientVersion: an already-installed client.
+		resp, err := b.Handle(context.Background(), Request{UserID: "u1", Surface: "web"})
+		require.NoError(t, err)
+		require.Empty(t, resp.Error)
+		assert.Equal(t, "openai-direct", resp.Mode)
+		assert.Equal(t, string(voiceengine.EngineOpenAIRealtime), resp.Engine)
+		assert.Equal(t, realtime.OpenAICallsURL, resp.CallsURL,
+			"an old client must never be handed an Azure host")
+		assert.Equal(t, 0, azure.calls, "an old client must never reach the Azure minter")
+	})
+}

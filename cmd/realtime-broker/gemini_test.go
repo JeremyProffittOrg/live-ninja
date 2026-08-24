@@ -31,11 +31,21 @@ type fakeRealtimeMint struct {
 	result *realtime.MintResult
 	err    error
 	calls  int
+	// callsURL lets a test stand in for an Azure minter, whose only visible
+	// difference from the OpenAI one at this seam is the SDP host it names.
+	callsURL string
 }
 
 func (f *fakeRealtimeMint) Mint(context.Context, string, string, string, string, string) (*realtime.MintResult, error) {
 	f.calls++
 	return f.result, f.err
+}
+
+func (f *fakeRealtimeMint) CallsURL() string {
+	if f.callsURL != "" {
+		return f.callsURL
+	}
+	return realtime.OpenAICallsURL
 }
 
 func (f *fakeGeminiMint) MintForSurface(_ context.Context, voice, instructions, _ string) (*realtime.GeminiMintResult, error) {
