@@ -269,3 +269,43 @@ func TestBuildBridgeSession_CustomBaseAndErrors(t *testing.T) {
 		t.Fatalf("custom base URL not normalized: %q", bs.WSURL)
 	}
 }
+
+// TestPinToEngineAcceptsAzureEngines pins the four Azure engines added by
+// azure-voice-plan.md WS-B M2. It exists because a pin validEngine rejects is
+// treated as ABSENT and silently falls through to openai-realtime (R2), so a
+// missing case here is not a build error or a test failure anywhere else — it
+// is a user whose chosen engine quietly stops being honoured.
+func TestPinToEngineAcceptsAzureEngines(t *testing.T) {
+	azure := []voiceengine.Engine{
+		voiceengine.EngineGPTLiveAzure,
+		voiceengine.EngineGPTLiveAzureMini,
+		voiceengine.EngineAzureVoiceLive,
+		voiceengine.EngineAzureVoiceLiveLite,
+	}
+
+	for _, want := range azure {
+		if got := PinToEngine(string(want), nil, ""); got != want {
+			t.Errorf("PinToEngine(%q, nil, \"\") = %q, want %q — an Azure pin fell through to the default", want, got, want)
+		}
+		// The deprecated per-device map must accept them too (R4): the two
+		// paths are validated separately and can drift.
+		devices := map[string]string{"dev-1": string(want)}
+		if got := PinToEngine("openai-realtime", devices, "dev-1"); got != want {
+			t.Errorf("PinToEngine(default, devices[dev-1]=%q, \"dev-1\") = %q, want %q", want, got, want)
+		}
+	}
+
+	// Every engine the product ships must survive a round trip through the
+	// pin resolver, so adding a constant to voiceengine.All without teaching
+	// validEngine about it fails here rather than in production.
+	for _, e := range voiceengine.All {
+		if got := PinToEngine(string(e), nil, ""); got != e {
+			t.Errorf("voiceengine.All contains %q but PinToEngine resolved it to %q", e, got)
+		}
+	}
+
+	// An unknown pin must still fall through to the platform default.
+	if got := PinToEngine("gpt-live-mars", nil, ""); got != voiceengine.EngineOpenAIRealtime {
+		t.Errorf("unknown pin resolved to %q, want openai-realtime", got)
+	}
+}

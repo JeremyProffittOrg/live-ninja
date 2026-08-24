@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 )
 
@@ -272,4 +273,102 @@ func TestPersonaHiddenValidation(t *testing.T) {
 			t.Errorf("a document without persona.hidden must stay valid: %s", msg)
 		}
 	})
+}
+
+// azureEngines are the four pins added by azure-voice-plan.md WS-B M2.
+var azureEngines = []string{
+	"gpt-live-azure",
+	"gpt-live-azure-mini",
+	"azure-voice-live",
+	"azure-voice-live-lite",
+}
+
+// TestSettingsPutAcceptsAzureEngineDefault covers the settings WRITE path
+// (R3): before WS-B M2 the oneOf allowlists rejected every Azure engine with a
+// 400, so the pin could never be stored and no amount of broker work would
+// make the engine reachable.
+func TestSettingsPutAcceptsAzureEngineDefault(t *testing.T) {
+	for _, engine := range azureEngines {
+		d := store.DefaultSettings()
+		ve := d["voiceEngine"].(map[string]any)
+		ve["default"] = engine
+		if msg := validateAndNormalizeSettings(d); msg != "" {
+			t.Errorf("voiceEngine.default = %q rejected: %q", engine, msg)
+		}
+
+		// The deprecated per-device map is a separate allowlist (R4).
+		d = store.DefaultSettings()
+		ve = d["voiceEngine"].(map[string]any)
+		ve["devices"] = map[string]any{"dev-1": engine}
+		if msg := validateAndNormalizeSettings(d); msg != "" {
+			t.Errorf("voiceEngine.devices[dev-1] = %q rejected: %q", engine, msg)
+		}
+	}
+
+	// The validator must still reject a genuinely unknown engine, or it has
+	// stopped being a gate at all.
+	d := store.DefaultSettings()
+	d["voiceEngine"].(map[string]any)["default"] = "gpt-live-mars"
+	if msg := validateAndNormalizeSettings(d); msg == "" {
+		t.Error("unknown engine gpt-live-mars was accepted; the allowlist is not gating")
+	} else if !strings.Contains(msg, "gpt-live-azure") {
+		t.Errorf("rejection message does not name the shipped engines, so it has drifted from the check: %q", msg)
+	}
+}
+
+// TestDeviceOverrideAzureEnginePinResolves covers the M31 per-device path
+// (R4). voiceEngine.devices is deprecated; new clients pin through
+// deviceOverrides[deviceId].sections.voiceEngine, which is flattened by
+// store.EffectiveSettings before realtime.PinToEngine ever sees it. The two
+// paths are validated and resolved by different code and can drift apart.
+func TestDeviceOverrideAzureEnginePinResolves(t *testing.T) {
+	const deviceID = "device-under-test"
+
+	for _, engine := range azureEngines {
+		doc := store.DefaultSettings()
+		doc["deviceOverrides"] = map[string]any{
+			deviceID: map[string]any{
+				"sections": map[string]any{
+					"voiceEngine": map[string]any{
+						"voiceEngine": map[string]any{
+							"default": engine,
+							"devices": map[string]any{},
+						},
+					},
+				},
+			},
+		}
+
+		eff := store.EffectiveSettings(doc, deviceID)
+		ve, ok := eff["voiceEngine"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: effective settings lost the voiceEngine section", engine)
+		}
+		got, _ := ve["default"].(string)
+		if got != engine {
+			t.Errorf("%s: EffectiveSettings resolved the device override to %q", engine, got)
+			continue
+		}
+		if resolved := realtime.PinToEngine(got, nil, ""); string(resolved) != engine {
+			t.Errorf("%s: PinToEngine dropped the flattened override to %q", engine, resolved)
+		}
+	}
+
+	// A device with no override still gets the account default, so the
+	// override path cannot leak one device's engine onto every other device.
+	doc := store.DefaultSettings()
+	doc["voiceEngine"].(map[string]any)["default"] = "gpt-live-azure"
+	doc["deviceOverrides"] = map[string]any{
+		deviceID: map[string]any{
+			"sections": map[string]any{
+				"voiceEngine": map[string]any{
+					"voiceEngine": map[string]any{"default": "gemini-flash-live", "devices": map[string]any{}},
+				},
+			},
+		},
+	}
+	eff := store.EffectiveSettings(doc, "some-other-device")
+	if got, _ := eff["voiceEngine"].(map[string]any)["default"].(string); got != "gpt-live-azure" {
+		t.Errorf("unrelated device got %q, want the account default gpt-live-azure", got)
+	}
 }

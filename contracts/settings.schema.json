@@ -193,7 +193,11 @@
             "openai-realtime",
             "openai-realtime-mini",
             "nova-sonic",
-            "gemini-flash-live"
+            "gemini-flash-live",
+            "gpt-live-azure",
+            "gpt-live-azure-mini",
+            "azure-voice-live",
+            "azure-voice-live-lite"
           ],
           "default": "openai-realtime"
         },
@@ -206,7 +210,11 @@
               "openai-realtime",
               "openai-realtime-mini",
               "nova-sonic",
-              "gemini-flash-live"
+              "gemini-flash-live",
+              "gpt-live-azure",
+              "gpt-live-azure-mini",
+              "azure-voice-live",
+              "azure-voice-live-lite"
             ]
           },
           "default": {}

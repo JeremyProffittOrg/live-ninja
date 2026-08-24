@@ -480,17 +480,20 @@ func PinToEngine(def string, devices map[string]string, deviceID string) voiceen
 	return voiceengine.EngineOpenAIRealtime
 }
 
-// validEngine reports whether s names a known engine, returning it typed.
+// validEngine reports whether s names a known engine, returning it typed. It
+// defers to voiceengine.Engine.Valid, which is derived from voiceengine.All —
+// keeping this in step with the settings write path and the JSON contract
+// without a second switch to forget (azure-voice-plan.md WS-B M2(c)).
+//
+// A pin this rejects is treated as ABSENT by PinToEngine, which then falls
+// through to the account default and finally to openai-realtime, with no
+// error. That silence is why this function must never be narrower than the
+// settings validator that let the pin be stored in the first place.
 func validEngine(s string) (voiceengine.Engine, bool) {
-	switch voiceengine.Engine(s) {
-	case voiceengine.EngineOpenAIRealtime,
-		voiceengine.EngineOpenAIRealtimeMini,
-		voiceengine.EngineNovaSonic,
-		voiceengine.EngineGeminiFlashLive:
-		return voiceengine.Engine(s), true
-	default:
-		return "", false
+	if e := voiceengine.Engine(s); e.Valid() {
+		return e, true
 	}
+	return "", false
 }
 
 // NovaTokenMinter mints the short-lived first-party JWT scoped to the Nova

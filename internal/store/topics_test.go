@@ -528,3 +528,42 @@ func TestListConversationsUsesOnlyQueryAndKeyLookups(t *testing.T) {
 			"M11 history serving path must be Query/GetItem only — saw %s", op)
 	}
 }
+
+// TestAzureSpendIsNotChargedToTheOpenAIAllowance guards the classifier that
+// decides whose budget a conversation's dollars land in. The Azure OpenAI
+// engine pins and their deployed model ids are gpt-* strings, so the original
+// prefix match counted Azure spend against the user's OpenAI allowance and
+// fired the allowance warning for money never spent with OpenAI
+// (azure-voice-plan.md WS-B M2(f), gap register).
+func TestAzureSpendIsNotChargedToTheOpenAIAllowance(t *testing.T) {
+	openAI := []string{
+		"gpt-realtime",
+		"gpt-realtime-mini",
+		"openai-realtime",
+		"openai-realtime-mini",
+		"GPT-Realtime", // tags are case-normalized before the test
+	}
+	notOpenAI := []string{
+		"gpt-live-azure",
+		"gpt-live-azure-mini",
+		"azure-voice-live",
+		"azure-voice-live-lite",
+		"gpt-realtime-2-1",
+		"gpt-realtime-2-1-mini",
+		"azure-realtime",
+		"phi4-mm-realtime",
+		"gemini-flash-live",
+		"nova-sonic",
+	}
+
+	for _, tag := range openAI {
+		if !isOpenAIConversationEngine(tag) {
+			t.Errorf("%q should count toward the OpenAI allowance", tag)
+		}
+	}
+	for _, tag := range notOpenAI {
+		if isOpenAIConversationEngine(tag) {
+			t.Errorf("%q must NOT count toward the OpenAI allowance — it is not billed by OpenAI", tag)
+		}
+	}
+}

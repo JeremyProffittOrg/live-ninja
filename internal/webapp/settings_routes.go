@@ -39,6 +39,7 @@ import (
 	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	lnsync "github.com/JeremyProffittOrg/live-ninja/internal/sync"
+	"github.com/JeremyProffittOrg/live-ninja/internal/voiceengine"
 )
 
 // RegisterSettingsRoutes mounts the settings page and the settings/
@@ -499,16 +500,16 @@ func validateAndNormalizeSettings(doc map[string]any) string {
 	if !ok {
 		return "voiceEngine must be an object"
 	}
-	if s, ok := ve["default"].(string); !ok || !oneOf(s, "openai-realtime", "openai-realtime-mini", "nova-sonic", "gemini-flash-live") {
-		return "voiceEngine.default must be one of openai-realtime, openai-realtime-mini, nova-sonic, gemini-flash-live"
+	if s, ok := ve["default"].(string); !ok || !oneOf(s, voiceengine.AllStrings()...) {
+		return "voiceEngine.default must be one of " + engineList()
 	}
 	devices, ok := ve["devices"].(map[string]any)
 	if !ok {
 		return "voiceEngine.devices must be an object"
 	}
 	for id, pin := range devices {
-		if s, ok := pin.(string); !ok || !oneOf(s, "openai-realtime", "openai-realtime-mini", "nova-sonic", "gemini-flash-live") {
-			return "voiceEngine.devices[" + id + "] must be one of openai-realtime, openai-realtime-mini, nova-sonic, gemini-flash-live"
+		if s, ok := pin.(string); !ok || !oneOf(s, voiceengine.AllStrings()...) {
+			return "voiceEngine.devices[" + id + "] must be one of " + engineList()
 		}
 	}
 
@@ -622,6 +623,11 @@ func numberVal(v any) (float64, bool) {
 		return 0, false
 	}
 }
+
+// engineList renders the shipped engine set for a validation error message,
+// derived from voiceengine.All so the message can never name a different set
+// than the check that produced it.
+func engineList() string { return strings.Join(voiceengine.AllStrings(), ", ") }
 
 func oneOf(s string, opts ...string) bool {
 	for _, o := range opts {

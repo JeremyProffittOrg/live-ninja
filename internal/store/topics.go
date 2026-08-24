@@ -798,12 +798,31 @@ func (s *Store) SumConversationCosts(ctx context.Context, userID, from, to strin
 	return sum, nil
 }
 
+// azureConversationTags are the engine/model tags billed to Azure rather than
+// to the OpenAI platform. They are excluded BEFORE the gpt-/openai- prefix
+// test below, because the Azure OpenAI pins and their deployed model ids are
+// themselves gpt-* strings ("gpt-live-azure", "gpt-realtime-2-1") and would
+// otherwise draw down the user's OpenAI allowance for money that was never
+// spent with OpenAI (azure-voice-plan.md WS-B M2(f)).
+var azureConversationTags = []string{
+	"gpt-live-azure",
+	"azure-voice-live",
+	"azure-realtime",
+	"gpt-realtime-2-1", // the WS-A M3 deployment names, which clients tag by
+	"phi4-",
+}
+
 // isOpenAIConversationEngine accepts both the model tags emitted by current
 // clients ("gpt-realtime", future gpt-* variants) and the older engine-family
 // tags ("openai-realtime"). Explicit Gemini/Nova rows never count toward the
-// user's OpenAI allowance.
+// user's OpenAI allowance, and neither does anything billed to Azure.
 func isOpenAIConversationEngine(engine string) bool {
 	engine = strings.ToLower(strings.TrimSpace(engine))
+	for _, azure := range azureConversationTags {
+		if strings.HasPrefix(engine, azure) {
+			return false
+		}
+	}
 	return strings.HasPrefix(engine, "gpt-") || strings.HasPrefix(engine, "openai-")
 }
 
