@@ -1052,3 +1052,62 @@ actually returned. Written as it happens, not reconstructed at the end.
   cancelled and the deploy re-triggered on a fresh push.
   **Only `home-general-linux-x64` is needed** — `grep -rn 'runs-on:' .github/workflows/` finds three
   uses of it and no use of `home-general-windows-x64`, so runner group 4 needs no change.
+
+- **2026-08-24 — DEPLOYED TO PRODUCTION. Run `32789823377` (`8480db1`) completed `success`.**
+  ```
+  test: success   changes: success   deploy: success   web-quality: success
+  build-nova-container: skipped   build-wakeword-container: skipped
+  ```
+  Post-deploy verification, all four checks run against the live account:
+  ```
+  $ aws lambda get-function-configuration --function-name live-ninja-realtime-broker \
+      --query "Environment.Variables.{endpoint:AZURE_OPENAI_ENDPOINT,dep:AZURE_OPENAI_DEPLOYMENT,mini:AZURE_OPENAI_MINI_DEPLOYMENT}"
+  { "endpoint": "https://ln-aoai-eastus2.openai.azure.com",
+    "dep": "gpt-realtime-2-1", "mini": "gpt-realtime-2-1-mini" }
+
+  $ MSYS_NO_PATHCONV=1 aws ssm get-parameters-by-path --path /live-ninja/prod/azure \
+      --query "Parameters[].Name" --output text
+  /live-ninja/prod/azure/openai_api_key
+
+  $ aws iam get-role-policy --role-name live-ninja-RealtimeBrokerFunctionRole-bVSpwLARj6Rs \
+      --policy-name RealtimeBrokerFunctionRolePolicy0 \
+      --query 'PolicyDocument.Statement[?Sid==`AzureKeyParams`].Resource' --output text
+  arn:aws:ssm:us-east-1:759775734231:parameter/live-ninja/prod/azure/*
+
+  $ aws cloudformation describe-stacks --stack-name live-ninja --query "Stacks[0].StackStatus"
+  UPDATE_COMPLETE
+  ```
+  Exactly one of the three Azure SSM parameters exists, which is the correct count today: the two
+  Voice Live guards skipped because their secrets do not exist while A4 is blocked. **WS-A M6 is
+  `[~]`, not `[x]` — it completes when A4 unblocks and the Voice Live pair syncs.**
+
+- **2026-08-24 — Two deploy attempts were lost before this one; both causes are recorded so a fresh
+  session does not rediscover them.**
+  1. **The runner-group blocker above.** Granting the repository to group 3 did NOT unblock
+     dispatch: runs `32782291500` and `32788635426` sat `queued` for 75 and 10 minutes respectively
+     with `tiny310`, `tiny502` and `elite006` all `online busy=false`, labels matching exactly, no
+     concurrency holder, `restricted_to_workflows: false`, and repo Actions `enabled` with
+     `allowed_actions: all`. Other group-3 repositories dispatch normally, so the pool works and the
+     cause is specific to this repository's grant. **Unresolved — see the `[!]` note below.**
+     Worked around by moving the three jobs back to `ubuntu-latest`, which dispatched instantly.
+  2. **A self-inflicted skip.** The commit reverting those jobs quoted `a0f4a4a` and contained the
+     literal skip-CI token in its message body. GitHub honours that token from the body, so the push
+     landed (`f239589..c453096`) and **no workflow run was created at all** — which reads exactly
+     like a broken trigger. Fixed by rewording the message to name the token rather than contain it,
+     and force-pushing with `--force-with-lease` (`c453096` -> `8480db1`). Nothing was built on the
+     discarded commit.
+     **Rule for this repository: never put the literal skip-CI token in a commit message, even when
+     quoting another commit.** `deploy.yml` has `on: push: branches: [main]` with no `paths-ignore`,
+     so every push to `main` — documentation included — is a full production deploy, and the only
+     thing that suppresses one is that token.
+
+- **[!] OPEN — self-hosted runner dispatch.** `main` is currently on GitHub-billed `ubuntu-latest`
+  for three jobs that `a0f4a4a` deliberately moved to free self-hosted runners. The revert is
+  commented in place in `.github/workflows/deploy.yml`.
+  WHAT UNBLOCKS IT, and who supplies it: the operator, by determining why
+  `JeremyProffittOrg/live-ninja` does not receive job assignments from runner group 3 despite being
+  a granted member. The grant itself is already in place and does **not** need redoing
+  (`gh api -X PUT orgs/JeremyProffittOrg/actions/runner-groups/3/repositories/1303872500`, verified
+  present). Once dispatch works, restore the three `runs-on:` lines to
+  `[self-hosted, Linux, X64, home-general-linux-x64]`. Reversing the grant instead is
+  `gh api -X DELETE` on the same path.
