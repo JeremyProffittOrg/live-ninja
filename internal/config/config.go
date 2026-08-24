@@ -30,6 +30,14 @@ const (
 	ParamLWAClientID      = "/live-ninja/prod/lwa/client_id"
 	ParamLWAClientSecret  = "/live-ninja/prod/lwa/client_secret"
 	ParamDeviceCredPepper = "/live-ninja/prod/device/cred_pepper"
+	// Azure voice engines (azure-voice-plan.md WS-A M6). The Azure OpenAI
+	// resource key authenticates the ephemeral-secret mint; the Voice Live
+	// pair authenticates the Entra client-credentials exchange. Tenant id and
+	// the endpoint hostnames are identifiers, not secrets, and ride in plain
+	// template.yaml environment variables instead.
+	ParamAzureOpenAIAPIKey     = "/live-ninja/prod/azure/openai_api_key"
+	ParamVoiceLiveClientID     = "/live-ninja/prod/azure/voicelive_client_id"
+	ParamVoiceLiveClientSecret = "/live-ninja/prod/azure/voicelive_client_secret"
 )
 
 // Local-dev environment variable overrides for each SSM parameter above.
@@ -37,11 +45,14 @@ const (
 // this lets a developer run any function against `go run` without AWS
 // credentials or a deployed stack.
 const (
-	EnvOverrideOpenAIAPIKey     = "OPENAI_API_KEY"
-	EnvOverrideGeminiAPIKey     = "GEMINI_API_KEY"
-	EnvOverrideLWAClientID      = "LWA_CLIENT_ID"
-	EnvOverrideLWAClientSecret  = "LWA_CLIENT_SECRET"
-	EnvOverrideDeviceCredPepper = "DEVICE_CRED_PEPPER"
+	EnvOverrideOpenAIAPIKey          = "OPENAI_API_KEY"
+	EnvOverrideGeminiAPIKey          = "GEMINI_API_KEY"
+	EnvOverrideLWAClientID           = "LWA_CLIENT_ID"
+	EnvOverrideLWAClientSecret       = "LWA_CLIENT_SECRET"
+	EnvOverrideDeviceCredPepper      = "DEVICE_CRED_PEPPER"
+	EnvOverrideAzureOpenAIAPIKey     = "AZURE_OPENAI_API_KEY"
+	EnvOverrideVoiceLiveClientID     = "AZURE_VOICELIVE_CLIENT_ID"
+	EnvOverrideVoiceLiveClientSecret = "AZURE_VOICELIVE_CLIENT_SECRET"
 )
 
 // cacheTTL is how long a resolved SSM parameter value is kept in memory

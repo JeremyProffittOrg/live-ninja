@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
@@ -158,5 +159,54 @@ func TestMiniMinterBindsExactModelInRequestAndResult(t *testing.T) {
 	}
 	if session.Model != MiniRealtimeModel {
 		t.Fatalf("returned session config model = %q, want %q", session.Model, MiniRealtimeModel)
+	}
+}
+
+// TestAzureMinterTargetsTheAzureEndpoint covers WS-B M3. The Azure path
+// differs from the OpenAI path in exactly three ways — URL, auth header and
+// model id — and this asserts each, plus the two things that must NOT change:
+// the OpenAI minter's own URL, and the session-config object, which a live
+// mint on 2026-08-24 proved Azure accepts byte-for-byte.
+func TestAzureMinterTargetsTheAzureEndpoint(t *testing.T) {
+	const endpoint = "https://ln-aoai-eastus2.openai.azure.com"
+
+	az := NewAzureMinter(nil, endpoint+"/", "gpt-realtime-2-1")
+
+	if got, want := az.mintEndpoint(), endpoint+"/openai/v1/realtime/client_secrets"; got != want {
+		t.Errorf("azure mint URL = %q, want %q", got, want)
+	}
+	// The GA path takes NO api-version parameter; adding one selects a
+	// preview surface deprecated from 2026-04-30.
+	if strings.Contains(az.mintEndpoint(), "api-version") {
+		t.Errorf("azure mint URL must carry no api-version parameter, got %q", az.mintEndpoint())
+	}
+	if got, want := az.CallsURL(), endpoint+"/openai/v1/realtime/calls"; got != want {
+		t.Errorf("azure calls URL = %q, want %q", got, want)
+	}
+	if got, want := az.Model(), "gpt-realtime-2-1"; got != want {
+		t.Errorf("azure model = %q, want the DEPLOYMENT name %q", got, want)
+	}
+	if !az.azureAPIKey {
+		t.Error("azure minter must authenticate with the api-key header, not Authorization: Bearer")
+	}
+	param, _ := az.credential()
+	if param != config.ParamAzureOpenAIAPIKey {
+		t.Errorf("azure minter reads %q, want %q", param, config.ParamAzureOpenAIAPIKey)
+	}
+
+	// The OpenAI minter must be completely unmoved by all of the above.
+	oa := NewMinter(nil, "")
+	if got := oa.mintEndpoint(); got != clientSecretsURL {
+		t.Errorf("openai mint URL changed to %q, want %q", got, clientSecretsURL)
+	}
+	if got := oa.CallsURL(); got != OpenAICallsURL {
+		t.Errorf("openai calls URL = %q, want %q", got, OpenAICallsURL)
+	}
+	if oa.azureAPIKey {
+		t.Error("openai minter must keep Authorization: Bearer")
+	}
+	oaParam, _ := oa.credential()
+	if oaParam != config.ParamOpenAIAPIKey {
+		t.Errorf("openai minter reads %q, want %q", oaParam, config.ParamOpenAIAPIKey)
 	}
 }

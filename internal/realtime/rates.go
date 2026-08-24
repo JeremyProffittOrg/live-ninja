@@ -46,6 +46,56 @@ var modelRates = map[string]Rates{
 		CachedTextInPer1M:  0.75,
 		CachedAudioInPer1M: 3.00,
 	},
+	// gpt-realtime-mini was a MODEL ID with no rate row, so every
+	// openai-realtime-mini session was priced at full gpt-realtime rates by
+	// the defaultRates fallback below — a live billing defect in the cost
+	// badge, not new work (azure-voice-plan.md R10). Adding the row makes the
+	// existing mini engine read correctly cheaper.
+	"gpt-realtime-mini": {
+		TextInPer1M:        0.60,
+		TextOutPer1M:       2.40,
+		AudioInPer1M:       10.00,
+		AudioOutPer1M:      20.00,
+		CachedTextInPer1M:  0.06,
+		CachedAudioInPer1M: 0.30,
+	},
+	// Azure OpenAI Realtime, keyed on the DEPLOYMENT names WS-A M3 actually
+	// created, because the deployment name is what the broker sends as
+	// `model` and therefore what RatesFor is called with. Keying these on the
+	// dotted model ids would miss every lookup and silently re-create the
+	// defect above (gap register W6).
+	// Azure list rates per 1M tokens, carried from azure-migration-plan.md
+	// WS-B M4 (read 2026-08-18); gpt-realtime-2.1 matches gpt-realtime-2.
+	"gpt-realtime-2-1": {
+		TextInPer1M:        4.00,
+		TextOutPer1M:       24.00,
+		AudioInPer1M:       32.00,
+		AudioOutPer1M:      64.00,
+		CachedTextInPer1M:  0.40,
+		CachedAudioInPer1M: 0.40,
+	},
+	"gpt-realtime-2-1-mini": {
+		TextInPer1M:        0.60,
+		TextOutPer1M:       2.40,
+		AudioInPer1M:       10.00,
+		AudioOutPer1M:      20.00,
+		CachedTextInPer1M:  0.06,
+		CachedAudioInPer1M: 0.30,
+	},
+}
+
+// ratesMissing names models that are deliberately shipped WITHOUT a rate row,
+// because no rate has been published for them. RatesForModel reports these as
+// "unknown" so the cost badge can be suppressed, rather than letting
+// defaultRates quietly present gpt-realtime prices as if they were measured.
+//
+// azure-realtime and phi4-mm-realtime are Azure AI Voice Live models. Voice
+// Live bills by tier (Pro/Basic/Lite) and azure-realtime appears in the
+// supported-models table but in none of the published tier rows, so there is
+// no number to put here that would not be invented.
+var ratesMissing = map[string]bool{
+	"azure-realtime":   true,
+	"phi4-mm-realtime": true,
 }
 
 // defaultRates backstops any model id not (yet) listed in modelRates —
@@ -55,9 +105,29 @@ var defaultRates = modelRates["gpt-realtime"]
 
 // RatesFor returns the per-1M-token rate table for model, falling back to
 // the gpt-realtime rates for unknown or future model names.
+//
+// Prefer RatesForModel on any new call site. This fallback is what made R10
+// invisible: a model with no row was billed at full gpt-realtime rates and
+// nothing anywhere said so.
 func RatesFor(model string) Rates {
 	if r, ok := modelRates[model]; ok {
 		return r
 	}
 	return defaultRates
+}
+
+// RatesForModel returns the rate table for model and whether it is a real,
+// published rate. ok=false means the caller must suppress the cost badge
+// rather than render an estimate — either the model is on the ratesMissing
+// list, or it has no row at all and would otherwise be silently priced as
+// gpt-realtime (azure-voice-plan.md WS-B M5).
+func RatesForModel(model string) (Rates, bool) {
+	if ratesMissing[model] {
+		return Rates{}, false
+	}
+	r, ok := modelRates[model]
+	if !ok {
+		return defaultRates, false
+	}
+	return r, true
 }

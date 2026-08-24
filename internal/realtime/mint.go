@@ -211,6 +211,69 @@ type Minter struct {
 	httpc  *http.Client
 	loader *config.Loader
 	model  string
+
+	// Azure variant. Zero values mean the OpenAI platform path, so a Minter
+	// built by NewMinter behaves byte-for-byte as it did before Azure existed
+	// — openai-realtime is the platform default and must not shift under it.
+	//
+	// Only three things actually differ on Azure (azure-voice-plan.md R5,
+	// proved by a live mint on 2026-08-24): the URL, the auth header, and the
+	// model id. The session-config object itself is identical, including
+	// audio.input.transcription.model, which Azure accepts unchanged.
+	mintURL     string
+	callsURL    string
+	keyParam    string
+	keyEnv      string
+	azureAPIKey bool // send `api-key: <key>` instead of `Authorization: Bearer <key>`
+}
+
+// mintEndpoint returns the client_secrets URL this Minter posts to.
+func (m *Minter) mintEndpoint() string {
+	if m.mintURL != "" {
+		return m.mintURL
+	}
+	return clientSecretsURL
+}
+
+// CallsURL returns the SDP POST target a client must use with the secrets this
+// Minter issues. The broker puts it on the wire as `callsUrl` so the client
+// never has to infer the host from the engine name.
+func (m *Minter) CallsURL() string {
+	if m.callsURL != "" {
+		return m.callsURL
+	}
+	return OpenAICallsURL
+}
+
+// credential returns the SSM parameter and env-override names for this
+// Minter's API key.
+func (m *Minter) credential() (param, env string) {
+	if m.keyParam != "" {
+		return m.keyParam, m.keyEnv
+	}
+	return config.ParamOpenAIAPIKey, config.EnvOverrideOpenAIAPIKey
+}
+
+// NewAzureMinter builds a Minter against an Azure OpenAI resource. endpoint is
+// the resource's OpenAI host (properties.endpoints["OpenAI Realtime API"], NOT
+// properties.endpoint, which on a kind=AIServices resource is the
+// cognitiveservices.azure.com form); deployment is the DEPLOYMENT name from
+// WS-A M3, which is what Azure's model field expects — not the dotted model id.
+//
+// The Azure GA path takes no api-version query parameter. Adding one silently
+// selects a preview surface that is deprecated from 2026-04-30.
+func NewAzureMinter(loader *config.Loader, endpoint, deployment string) *Minter {
+	endpoint = strings.TrimSuffix(strings.TrimSpace(endpoint), "/")
+	return &Minter{
+		httpc:       &http.Client{Timeout: 10 * time.Second},
+		loader:      loader,
+		model:       deployment,
+		mintURL:     endpoint + "/openai/v1/realtime/client_secrets",
+		callsURL:    endpoint + "/openai/v1/realtime/calls",
+		keyParam:    config.ParamAzureOpenAIAPIKey,
+		keyEnv:      config.EnvOverrideAzureOpenAIAPIKey,
+		azureAPIKey: true,
+	}
 }
 
 // NewMinter builds a Minter. model comes from OPENAI_REALTIME_MODEL
@@ -325,16 +388,21 @@ func (m *Minter) Mint(ctx context.Context, personaID, voice, eagerness, instruct
 		return nil, fmt.Errorf("realtime: marshal mint request: %w", err)
 	}
 
-	apiKey, err := m.loader.Get(ctx, config.ParamOpenAIAPIKey, config.EnvOverrideOpenAIAPIKey)
+	keyParam, keyEnv := m.credential()
+	apiKey, err := m.loader.Get(ctx, keyParam, keyEnv)
 	if err != nil {
-		return nil, fmt.Errorf("realtime: resolve openai key: %w", err)
+		return nil, fmt.Errorf("realtime: resolve mint key: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, clientSecretsURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.mintEndpoint(), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("realtime: build mint request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	if m.azureAPIKey {
+		req.Header.Set("api-key", apiKey)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := m.httpc.Do(req)
