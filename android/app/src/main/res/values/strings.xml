@@ -353,6 +353,10 @@
     <string name="settings_engine_nova_desc">Lowest cost — audio is relayed through Live Ninja\'s servers, which can add a little latency</string>
     <string name="settings_engine_gemini">Gemini Flash Live</string>
     <string name="settings_engine_gemini_desc">Cheapest engine — no infrastructure cost. Preview-status model.</string>
+    <string name="settings_engine_azure">Azure OpenAI Realtime</string>
+    <string name="settings_engine_azure_desc">Same model and voices as OpenAI Realtime, served from Microsoft Azure — choose it for provider or data-residency reasons, not to save money</string>
+    <string name="settings_engine_azure_mini">Azure OpenAI Realtime Mini</string>
+    <string name="settings_engine_azure_mini_desc">The cheaper Azure model — roughly a third the audio cost, slightly less nuance. Also device-direct.</string>
     <string name="settings_gemini_voice_label">Gemini voice</string>
     <string name="settings_gemini_voice_offline">Voice catalog unavailable — the default voice will be used</string>
 

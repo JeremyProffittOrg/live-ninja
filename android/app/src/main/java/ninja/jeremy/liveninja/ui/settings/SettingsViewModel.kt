@@ -1361,6 +1361,10 @@ class SettingsViewModel @Inject constructor(
         /** Engine value whose selection reveals the Gemini voice picker (M13). */
         const val GEMINI_ENGINE = "gemini-flash-live"
 
+        /** Azure OpenAI Realtime pins (azure-voice-plan.md WS-F M2). */
+        const val AZURE_ENGINE = "gpt-live-azure"
+        const val AZURE_MINI_ENGINE = "gpt-live-azure-mini"
+
         /** Client-side pre-check mirror of the backend phrase validation. */
         const val MAX_PHRASE_LENGTH = 40
         const val MIN_PHRASE_LENGTH = 3

@@ -719,6 +719,28 @@
               <span class="ln-choice__desc">Cheapest engine — no infrastructure cost. Preview-status model. Also runs directly from your device.</span>
             </span>
           </label>
+          {{- /* azure-voice-plan.md WS-F M2: the Azure OpenAI pins. Same
+                 transport, same 60s config-bound ephemeral secret and the same
+                 voices as the OpenAI engines — only the provider differs, so
+                 the copy leads on data residency rather than implying a
+                 quality or feature change. The two Voice Live pins are NOT
+                 here: they have no minter until their Entra credential
+                 exists, and an option that always falls back is worse than no
+                 option. */}}
+          <label class="ln-choice">
+            <input type="radio" name="voiceEngine" value="gpt-live-azure">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Azure OpenAI Realtime</span>
+              <span class="ln-choice__desc">The same model and voices as OpenAI Realtime, served from Microsoft Azure instead. Choose it for provider or data-residency reasons — it costs about the same. Also runs directly from your device.</span>
+            </span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="voiceEngine" value="gpt-live-azure-mini">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Azure OpenAI Realtime Mini</span>
+              <span class="ln-choice__desc">The cheaper Azure model — roughly a third the audio cost of the full one, with slightly less nuance. Also runs directly from your device.</span>
+            </span>
+          </label>
         </div>
         <p class="ln-hint">All engines share the same tools, memory, and transcripts — only cost, latency, and voice quality differ.</p>
       </fieldset>
@@ -1311,7 +1333,17 @@
             in the workshop can be blunt while the desk browser stays formal. To make them match,
             use <em>Device settings → Apply these settings to all devices</em>.</dd>
           <dt>Voice engine</dt>
-          <dd>Which speech-to-speech model powers your conversations. All engines share the same tools, memory, and transcripts — only cost, latency, and voice quality differ.</dd>
+          <dd>Which speech-to-speech model powers your conversations. All engines share the same
+            tools, memory, and transcripts — only cost, latency, and voice quality differ. Every
+            option runs directly from your device; audio never passes through Live Ninja's servers.
+            <em>OpenAI Realtime</em> is the default and the highest quality.
+            <em>OpenAI Realtime Mini</em> is cheaper and faster with slightly less nuance.
+            <em>Gemini Flash Live</em> is the cheapest, on a preview-status model.
+            <em>Azure OpenAI Realtime</em> and <em>Azure OpenAI Realtime Mini</em> are the same
+            models and voices served from Microsoft Azure rather than OpenAI — pick them for
+            provider or data-residency reasons, not to save money, as the full Azure model costs
+            about the same as the OpenAI one. If an engine is briefly unavailable, the conversation
+            falls back to the default and tells you so rather than failing.</dd>
           <dt>Turn detection</dt>
           <dd>How it decides you've finished speaking. <em>Semantic VAD</em> judges from meaning and is the recommended setting; <em>Server VAD</em> simply waits for a fixed silence gap. Mic pickup sensitivity and how long it keeps listening after a reply live here too. The <em>Audio</em> picker in the bottom bar changes mic pickup without opening Settings, and the Android app has the same Low/Med/High control above its conversation.</dd>
           <dt>Appearance</dt>

@@ -96,3 +96,52 @@ func TestShippedAndroidVersionClearsTheMinimum(t *testing.T) {
 	assert.Truef(t, ok,
 		"the shipped android build produces %q, which contracts/headers.md rejects", header)
 }
+
+// azurePickerEngines are the engines WS-F M2 makes selectable. The two Voice
+// Live pins are deliberately excluded: they have no minter until their Entra
+// credential exists, so offering them would give the user an option that
+// always silently falls back to the default.
+var azurePickerEngines = []string{"gpt-live-azure", "gpt-live-azure-mini"}
+
+// TestAzureEnginesAreSelectableInThePicker closes the gap that made every
+// earlier picker milestone vacuous: TestHelpDrawer and the page-render tests
+// all pass with zero Azure copy present, so nothing failed when the engines
+// existed in the schema and the broker but nothing offered them.
+func TestAzureEnginesAreSelectableInThePicker(t *testing.T) {
+	page := readRepoFile(t, "web/templates/pages/conversation.html")
+
+	for _, engine := range azurePickerEngines {
+		assert.Containsf(t, page, `name="voiceEngine" value="`+engine+`"`,
+			"%s is accepted by the settings schema and routed by the broker, but no radio offers it", engine)
+	}
+
+	// The Voice Live pins must NOT appear until they have a minter.
+	for _, engine := range []string{"azure-voice-live", "azure-voice-live-lite"} {
+		assert.NotContainsf(t, page, `name="voiceEngine" value="`+engine+`"`,
+			"%s has no minter; offering it gives the user a choice that always falls back", engine)
+	}
+}
+
+// TestHelpDrawerDocumentsTheAzureEngines enforces CLAUDE.md's rule that any
+// change to a feature or setting updates the Help copy in the same commit. The
+// existing TestHelpDrawer suite checks the drawer's structure, not its
+// coverage, so it cannot catch a new engine shipping undocumented.
+func TestHelpDrawerDocumentsTheAzureEngines(t *testing.T) {
+	page := readRepoFile(t, "web/templates/pages/conversation.html")
+
+	drawerStart := strings.Index(page, `id="helpDrawer"`)
+	require.GreaterOrEqual(t, drawerStart, 0, "the help drawer must exist")
+	drawer := page[drawerStart:]
+
+	assert.Contains(t, drawer, "Azure",
+		"the Help drawer must tell users what the Azure engines are")
+
+	// The copy must not sell Azure as a saving: the full Azure model lists at
+	// the same rate as the OpenAI one, and only the mini is cheaper.
+	lower := strings.ToLower(drawer)
+	azureAt := strings.Index(lower, "azure openai realtime")
+	require.GreaterOrEqual(t, azureAt, 0, "the Help drawer must name the Azure engines")
+	assert.Truef(t,
+		strings.Contains(lower, "data-residency") || strings.Contains(lower, "data residency"),
+		"the Help copy must say WHY to pick Azure (provider/data residency), not imply it is cheaper")
+}

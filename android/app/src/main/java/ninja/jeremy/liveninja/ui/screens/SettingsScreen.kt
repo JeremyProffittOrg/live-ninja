@@ -1313,6 +1313,24 @@ private fun VoiceEngineSection(
                 description = stringResource(R.string.settings_engine_gemini_desc),
                 enabled = true,
             ),
+            // azure-voice-plan.md WS-F M2. Same transport and same
+            // config-bound ephemeral secret as the OpenAI pins — only the
+            // provider differs. The two Voice Live pins are deliberately
+            // absent: they have no minter until their Entra credential
+            // exists, and an option that always falls back to the default is
+            // worse than no option at all.
+            RadioOption(
+                value = SettingsViewModel.AZURE_ENGINE,
+                label = stringResource(R.string.settings_engine_azure),
+                description = stringResource(R.string.settings_engine_azure_desc),
+                enabled = true,
+            ),
+            RadioOption(
+                value = SettingsViewModel.AZURE_MINI_ENGINE,
+                label = stringResource(R.string.settings_engine_azure_mini),
+                description = stringResource(R.string.settings_engine_azure_mini_desc),
+                enabled = true,
+            ),
         ),
         selected = voiceEngineDefault,
         onSelect = onSetVoiceEngine,
