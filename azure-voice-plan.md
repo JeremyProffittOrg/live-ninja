@@ -634,7 +634,7 @@ This workstream is what makes locked decision 3 safe. R7 is the defect it closes
 
 ### WS-E — Clients (depends on WS-D M2)
 
-- [ ] **E1. Web: honour `callsUrl`, add the Voice Live transport.** In
+- [~] **E1. Web: honour `callsUrl`, add the Voice Live transport.** In
       `/c/dev/live-ninja/web/static/js/realtime.mjs`: read `callsUrl` from the mint response,
       falling back to `OPENAI_CALLS_URL` (`:98`) when absent, so an older server keeps working. The
       `azure-direct` mode then reuses the **existing** WebRTC path unchanged — same SDP POST, same
@@ -652,7 +652,7 @@ This workstream is what makes locked decision 3 safe. R7 is the defect it closes
       DoD: `cd /c/dev/live-ninja && go test ./internal/webapp/` passes, and a browser session pinned
       to `gpt-live-azure` completes a turn and shows a non-zero cost badge.
 
-- [ ] **E2. Android: read `callsUrl` from JSON.** This is the R7 fix.
+- [x] **E2. Android: read `callsUrl` from JSON.** This is the R7 fix.
       `parseSession` (`/c/dev/live-ninja/android/app/src/main/java/ninja/jeremy/liveninja/realtime/RealtimeSessionApi.kt:167-227`)
       must read `callsUrl` from the response and only fall back to
       `BackendConfig.OPENAI_REALTIME_CALLS_URL` (`:55`) when it is absent. `WebRtcTransport` needs no
@@ -667,7 +667,7 @@ This workstream is what makes locked decision 3 safe. R7 is the defect it closes
       server-authored first frame). Same control-channel handshake as E1.
       DoD: `cd /c/dev/live-ninja/android && ./gradlew :app:testDebugUnitTest` passes.
 
-- [ ] **E4. Build and install on the Galaxy S9 phone** (locked decision 5). The target serial is
+- [~] **E4. Build and install on the Galaxy S9 phone** (locked decision 5). The target serial is
       fixed: `4633424442303098` (`SM-G965U`, SDK 29). **Three devices are attached to this machine**,
       so a bare `adb shell` fails with "more than one device" — every command below targets `-s`
       explicitly. Confirm the phone is the device being reached before installing:
@@ -1111,3 +1111,68 @@ actually returned. Written as it happens, not reconstructed at the end.
   present). Once dispatch works, restore the three `runs-on:` lines to
   `[self-hosted, Linux, X64, home-general-linux-x64]`. Reversing the grant instead is
   `gh api -X DELETE` on the same path.
+
+- **2026-08-25 — WS-E M1 and M2 DONE. The Azure `/calls` contract was probed live first, and R7's
+  premise held.** Before writing either client, the deployed Azure endpoint was probed with a real
+  minted `ek_` and a deliberately invalid SDP body:
+  ```
+  /calls                          -> HTTP 400 "Failed to parse offer: failed to unmarshal SDP: EOF"
+  /calls?model=gpt-realtime-2-1   -> HTTP 400 "Failed to parse offer: failed to unmarshal SDP: EOF"
+  ```
+  Both forms reach Azure's SDP parser, so authentication and routing work with the **existing**
+  `Authorization: Bearer ek_` + `Content-Type: application/sdp` request unchanged, and the `?model=`
+  suffix is tolerated. WS-E M1's "reuses the existing WebRTC path unchanged" is therefore confirmed
+  rather than assumed, and neither client needed a new transport for `azure-direct`.
+  - **Web** (`/c/dev/live-ninja/web/static/js/realtime.mjs`): reads `minted.callsUrl` into a
+    per-session field used by the SDP POST, falling back to the compiled-in `OPENAI_CALLS_URL`; and
+    sends `X-LN-Capabilities: azure-direct` on the mint. `authFetch` spreads caller headers first,
+    so the header survives.
+  - **Android** (`RealtimeSessionApi.kt`): `parseSession` now reads `callsUrl` — this is the R7 fix.
+    Added `MODE_AZURE_DIRECT`; `azure-direct` already satisfied the existing `else ->` validation
+    branch because it carries a `clientSecret`.
+  - Neither client declares `voice-live-direct`. That transport is not written, and declaring it
+    would make the broker hand over an Entra token the client cannot use. Tests on **both** sides
+    assert that absence, so it cannot be added by accident ahead of the branch.
+
+- **2026-08-25 — The Android `X-LN-Client` header was broken and is now fixed (gap register F3).**
+  `contracts/headers.md` admits no pre-release suffix, and `VERSION_NAME` carried one, so the live
+  value `android/0.2.2-hal+r5` was **rejected by every server-side parser**. This client counted as
+  "unknown" on every request and the `ClientVersions` metric never saw an Android build — a
+  pre-existing defect, unrelated to Azure, that this plan's gate work surfaced.
+  `ClientId.WIRE_SEMVER` now trims at the first `-`. `ClientIdTest` asserts the emitted value against
+  `contracts/headers.md`'s regex verbatim, so it cannot regress silently.
+  Version bumped to **0.3.0 / versionCode 6**, which also clears the broker's
+  `azureMinimums["android"]` entry, so this build qualifies by version as well as by capability.
+
+- **2026-08-25 — WS-E M4 PARTIAL `[~]`. The APK is built and installed on the Galaxy S9.**
+  ```
+  $ adb -s 4633424442303098 shell getprop ro.product.model   -> SM-G965U
+  $ adb -s 4633424442303098 shell getprop ro.build.version.sdk -> 29
+  $ adb -s 4633424442303098 shell getprop ro.product.cpu.abi  -> arm64-v8a
+  $ adb -s 4633424442303098 install -r app/build/outputs/apk/debug/app-debug.apk
+  Performing Streamed Install
+  Success
+  $ adb -s ... shell "dumpsys package ninja.jeremy.liveninja | grep -E 'versionCode=|versionName='"
+      versionCode=6 minSdk=29 targetSdk=35
+      versionName=0.3.0
+  ```
+  App launches and stays up (`pidof` -> 15574) with an empty `logcat -b crash` buffer.
+  **The DoD's grep must be an exact match.** `pm list packages | grep ninja.jeremy.liveninja` is a
+  substring test that passes on any package containing that string; the form used above is
+  `grep -x 'package:ninja.jeremy.liveninja'` (gap register D14).
+  **NOT DONE:** "pin that device to `gpt-live-azure` in Settings and run one real spoken turn." No
+  picker offers the Azure engines yet (WS-F M2), and a spoken turn needs a human at the phone. That
+  half belongs to WS-F M1.
+  Also confirmed: gap register S8 is real — `JAVA_HOME` on this machine is stored **with literal
+  quotes** (`"C:\Users\Jeremy\jdk-temurin17\jdk-17.0.19+10"`), which breaks every gradle invocation.
+  Every gradle command in this run was prefixed with
+  `export JAVA_HOME="$(echo "$JAVA_HOME" | tr -d '"')"`. Fixing the stored value is an operator
+  machine-config change, not a repository change.
+  Test totals after the change: **334 Android unit tests, 0 failures, 0 errors.**
+
+- **2026-08-25 — WS-E M3 remains `[ ]`, blocked behind A4.** `VoiceLiveTransport.kt` cannot be
+  written against an endpoint that does not exist. Note for whoever picks it up: gap register
+  research found `GeminiLiveTransport.kt` is **not** the structural precedent the plan claims. Gemini
+  streams PCM over a WebSocket; Voice Live needs WebRTC peer-connection plumbing with SDP negotiated
+  over a WSS control channel plus RTP media. Size that milestone against `WebRtcTransport.kt`, not
+  against the Gemini transport.
