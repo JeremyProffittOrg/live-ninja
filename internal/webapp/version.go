@@ -101,8 +101,18 @@ type compatVersionSet struct {
 var compatSurfaces = []string{"web", "android", "m5stack"}
 
 func loadCompatVersions() compatVersionSet {
-	defaultMin := map[string]string{"web": "0.5.0", "android": "1.0.0", "m5stack": "1.0.0"}
-	defaultRecommended := map[string]string{"web": "0.9.0", "android": "2.1.0", "m5stack": "1.4.2"}
+	// These must track the versions the surfaces ACTUALLY ship. The android
+	// entries were previously 1.0.0/2.1.0 — values that match the worked
+	// examples in contracts/headers.md, not any build that has ever existed:
+	// the app has only ever been 0.x. The gate never fired because the app
+	// also sent an unparseable header ("android/0.2.2-hal+r5"), and
+	// VersionMiddleware exempts anything it cannot parse. Fixing the header
+	// activated the gate and 426'd every request from a current build.
+	//
+	// TestShippedAndroidVersionClearsTheMinimum reads the real versionName out
+	// of android/app/build.gradle.kts and fails if these drift apart again.
+	defaultMin := map[string]string{"web": "0.5.0", "android": "0.2.0", "m5stack": "1.0.0"}
+	defaultRecommended := map[string]string{"web": "0.9.0", "android": "0.3.0", "m5stack": "1.4.2"}
 
 	set := compatVersionSet{min: map[string]string{}, recommended: map[string]string{}}
 	for _, surface := range compatSurfaces {

@@ -1,6 +1,7 @@
 package webapp
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -51,4 +52,47 @@ func TestWebClientHonoursServerCallsURL(t *testing.T) {
 	// is the constructor default and ignores what the server said.
 	assert.NotContains(t, js, "? this.callsUrl + '?model='",
 		"the SDP POST must use the per-session host, not the constructor default")
+}
+
+// TestShippedAndroidVersionClearsTheMinimum is the guard for a defect that
+// shipped silently for a long time: loadCompatVersions declared a minimum
+// android version of 1.0.0 and a recommended of 2.1.0 — the worked examples
+// from contracts/headers.md — while the app has only ever been 0.x.
+//
+// It never fired because the app ALSO sent an unparseable X-LN-Client
+// ("android/0.2.2-hal+r5"), and VersionMiddleware exempts any header it cannot
+// parse. The two defects masked each other exactly. Fixing the header made the
+// gate live and 426'd every request from the current build, with
+// "This android client version (0.3.0) is no longer supported (minimum 1.0.0)".
+//
+// So the check that matters is not "is the header well-formed" or "is the
+// minimum sane" in isolation — it is that the version the app actually ships
+// clears the minimum the server actually enforces.
+func TestShippedAndroidVersionClearsTheMinimum(t *testing.T) {
+	gradle := readRepoFile(t, "android/app/build.gradle.kts")
+
+	m := regexp.MustCompile(`versionName\s*=\s*"([^"]+)"`).FindStringSubmatch(gradle)
+	require.Len(t, m, 2, "could not read versionName from android/app/build.gradle.kts")
+
+	// The wire value is trimmed at the first '-' by ClientId.WIRE_SEMVER,
+	// because contracts/headers.md admits no pre-release suffix.
+	shipped := strings.SplitN(m[1], "-", 2)[0]
+	major, minor, patch := parseSemver(shipped)
+
+	versions := loadCompatVersions()
+	minVer := versions.min["android"]
+	minMajor, minMinor, minPatch := parseSemver(minVer)
+
+	assert.Falsef(t,
+		semverLess(major, minor, patch, minMajor, minMinor, minPatch),
+		"the shipped android build (%s) is BELOW the enforced minimum (%s) — "+
+			"every request from a current build would be rejected with 426",
+		shipped, minVer)
+
+	// The header the app builds from this version must itself parse, or the
+	// gate silently stops applying and hides any future mismatch.
+	header := "android/" + shipped + "+r1"
+	_, ok := parseClientVersion(header)
+	assert.Truef(t, ok,
+		"the shipped android build produces %q, which contracts/headers.md rejects", header)
 }
