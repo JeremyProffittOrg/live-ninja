@@ -1176,3 +1176,50 @@ actually returned. Written as it happens, not reconstructed at the end.
   streams PCM over a WebSocket; Voice Live needs WebRTC peer-connection plumbing with SDP negotiated
   over a WSS control channel plus RTP media. Size that milestone against `WebRtcTransport.kt`, not
   against the Gemini transport.
+
+- **2026-08-25 — INCIDENT, caused by this run, found on the S9 and fixed. Two long-standing defects
+  had been masking each other, and fixing one activated the other.**
+  After installing the 0.3.0 build the phone showed:
+  ```
+  Couldn't start the conversation
+  This android client version (0.3.0) is no longer supported (minimum 1.0.0). Please update to continue.
+  ```
+  ROOT CAUSE, both halves pre-existing:
+  1. `loadCompatVersions` (`/c/dev/live-ninja/internal/webapp/version.go`) declared
+     `android` min **1.0.0** and recommended **2.1.0**. Those are the worked examples in
+     `contracts/headers.md` — `X-LN-Client: android/2.1.0+r48` is the doc's own sample line — not any
+     build that has ever existed. The Android app has only ever been `0.x`, so that minimum could
+     never be satisfied by anything.
+  2. The app sent an **unparseable** `X-LN-Client` (`android/0.2.2-hal+r5`), and
+     `VersionMiddleware` returns `c.Next()` on any header it cannot parse, by design:
+     "A missing/malformed X-LN-Client never triggers the gate either".
+  So a threshold nothing could meet sat behind a header nothing could read, and the pair was inert.
+  Fixing the header (commit `c5d3e50`, gap register F3) removed the mask, the gate went live for the
+  first time, and every request from a current build returned 426.
+  FIX: thresholds now track what Android actually ships — min **0.2.0** (so every real build,
+  including the `0.2.x` field installs, passes) and recommended **0.3.0**. The app was deliberately
+  NOT bumped to 1.0.0 to satisfy the fictional number.
+  GUARD: `TestShippedAndroidVersionClearsTheMinimum`
+  (`/c/dev/live-ninja/internal/webapp/azure_client_contract_test.go`) reads `versionName` out of
+  `/c/dev/live-ninja/android/app/build.gradle.kts` and asserts BOTH that it clears the enforced
+  minimum AND that the header it produces parses. Verified to have teeth — restoring the 1.0.0
+  minimum fails it:
+  ```
+  --- FAIL: TestShippedAndroidVersionClearsTheMinimum
+      the shipped android build (0.3.0) is BELOW the enforced minimum (1.0.0) —
+      every request from a current build would be rejected with 426
+  ```
+  **Checking either half alone would have missed this.** The header being well-formed and the
+  minimum being sane are each fine in isolation; only the pair is a defect. Any future guard against
+  this class has to assert the shipped version against the enforced minimum, not either one alone.
+  BLAST RADIUS: Android only, and only between `c5d3e50` and `8cb5592` on 2026-08-25. The web surface
+  is never version-gated (`cv.surface == "web"` returns early), and `0.2.x` field installs still send
+  the malformed header, so they were never affected.
+
+- **2026-08-25 — Deploys verified. Runs `32819610187` (`1950df1`, WS-E clients) and `32820074873`
+  (`8cb5592`, the compat fix) both completed `success` on every job.**
+  Verified on the device after the second deploy: the app relaunched to **"Ready" / "Tap to talk"**
+  with no error banner, `pidof` -> 23464, and `MIN_SUPPORTED_CLIENT_VERSION_ANDROID` is unset on
+  `live-ninja-web` so the corrected code default (0.2.0) is what production uses.
+  **WS-E M4's remaining half is unchanged:** pinning the S9 to `gpt-live-azure` and speaking a turn
+  still needs WS-F M2's picker and a human at the phone.
