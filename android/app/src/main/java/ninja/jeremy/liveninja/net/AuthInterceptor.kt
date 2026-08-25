@@ -14,7 +14,30 @@ import okhttp3.Response
  * `android/<semver>+<build>`.
  */
 object ClientId {
-    val HEADER_VALUE: String = "android/${BuildConfig.VERSION_NAME}+r${BuildConfig.VERSION_CODE}"
+    /**
+     * `contracts/headers.md` admits only `MAJOR.MINOR.PATCH` — no pre-release
+     * suffix. `VERSION_NAME` carries one ("0.2.2-hal"), so sending it raw
+     * produced "android/0.2.2-hal+r5", which every server-side parser REJECTS.
+     * The compat middleware then treated this client as "unknown" on every
+     * request, and the ClientVersions metric never saw an Android build.
+     * Trimming at the first '-' keeps the label for display while putting a
+     * parseable semver on the wire.
+     */
+    private val WIRE_SEMVER: String = BuildConfig.VERSION_NAME.substringBefore('-')
+
+    val HEADER_VALUE: String = "android/$WIRE_SEMVER+r${BuildConfig.VERSION_CODE}"
+
+    /**
+     * Session-bootstrap modes THIS build can handle, sent as
+     * `X-LN-Capabilities`. The broker refuses to hand an Azure credential to a
+     * client that does not name the matching mode, so an already-installed
+     * build can never be given one — it would POST it to the compiled-in
+     * OpenAI host.
+     *
+     * `voice-live-direct` is deliberately absent: that transport is not
+     * written. Do not add a mode here before its branch ships.
+     */
+    const val CAPABILITIES: String = "azure-direct"
 }
 
 /**
@@ -95,7 +118,9 @@ class AuthInterceptor @Inject constructor(
     }
 
     private fun authorized(request: Request, token: String?): Request {
-        val builder = request.newBuilder().header("X-LN-Client", ClientId.HEADER_VALUE)
+        val builder = request.newBuilder()
+            .header("X-LN-Client", ClientId.HEADER_VALUE)
+            .header("X-LN-Capabilities", ClientId.CAPABILITIES)
         if (token != null && request.header("Authorization") == null) {
             builder.header("Authorization", "Bearer $token")
             // Random app-instance id, never a hardware identifier. The backend

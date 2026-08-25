@@ -81,6 +81,15 @@ data class RealtimeSession(
 ) {
     companion object {
         const val MODE_OPENAI_DIRECT = "openai-direct"
+
+        /**
+         * Azure OpenAI Realtime. Same WebRTC transport and same config-bound
+         * ephemeral secret as [MODE_OPENAI_DIRECT] — only the SDP host differs,
+         * and that arrives as `callsUrl`. Verified against the live Azure
+         * endpoint 2026-08-24: identical `Authorization: Bearer ek_` and
+         * `Content-Type: application/sdp`, and the `?model=` suffix is tolerated.
+         */
+        const val MODE_AZURE_DIRECT = "azure-direct"
         const val MODE_NOVA_BRIDGE = "nova-bridge"
         const val MODE_GEMINI_DIRECT = "gemini-direct"
     }
@@ -219,6 +228,14 @@ class RealtimeSessionApi @Inject constructor(
                 voice = json.optString("voice").ifEmpty { null },
                 sessionId = json.optString("sessionId").ifEmpty { null },
                 quotaWarning = quotaWarning,
+                // The SDP host is the SERVER's decision, because the engine
+                // decides it: an azure-direct session must not be posted to
+                // api.openai.com. Before this was read from the wire, callsUrl
+                // was always the compile-time constant no matter what the
+                // broker said. The fallback keeps this build working against a
+                // broker that predates the field.
+                callsUrl = json.optString("callsUrl")
+                    .ifEmpty { BackendConfig.OPENAI_REALTIME_CALLS_URL },
                 wsUrl = wsUrl,
                 bridgeToken = json.optString("token").ifEmpty { null },
                 geminiEndpoint = geminiEndpoint,

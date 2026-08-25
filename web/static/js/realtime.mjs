@@ -96,6 +96,15 @@ import { authFetch, createToolDispatcher, ApiError } from './toolclient.mjs';
 
 const SESSION_PATH = '/api/v1/realtime/session';
 const OPENAI_CALLS_URL = 'https://api.openai.com/v1/realtime/calls';
+// Session-bootstrap modes THIS build can actually handle, sent as
+// X-LN-Capabilities on the mint. The broker refuses to hand an Azure
+// credential to a client that does not name the matching mode, so an
+// already-installed build can never be given one — it would POST it to
+// api.openai.com, which is the compiled-in host below.
+//
+// Do NOT add a mode here before the branch that implements it ships.
+// 'voice-live-direct' is deliberately absent: that transport is not written.
+const CLIENT_CAPABILITIES = 'azure-direct';
 const DC_OPEN_TIMEOUT_MS = 10_000;
 // Trickle-less ICE wait cap. Host/srflx candidates land well inside this;
 // the old 2s cap added up to 1.5s of dead air to every connect (owner:
@@ -246,7 +255,7 @@ export async function acquireMicStream({ deviceId = null } = {}) {
 async function mintOnce(sessionPath) {
   let resp;
   try {
-    resp = await authFetch(sessionPath);
+    resp = await authFetch(sessionPath, { headers: { 'X-LN-Capabilities': CLIENT_CAPABILITIES } });
   } catch (err) {
     if (err && err.name === 'AuthLostError') throw err;
     throw new RealtimeError('broker_unavailable', 'Could not reach the voice service.');
@@ -462,6 +471,7 @@ export class RealtimeSession extends EventTarget {
   #geminiCancelled = new Set(); // toolCallCancellation ids: suppress late results
   #geminiControlQueue = []; // wire control frames completed during socket replacement
   #geminiUsage = null; // latest usageMetadata, surfaced at turnComplete
+  #callsUrlForSession = ''; // server-supplied SDP host for the current session
 
   constructor({ sessionPath = SESSION_PATH, callsUrl = OPENAI_CALLS_URL } = {}) {
     super();
@@ -623,6 +633,12 @@ export class RealtimeSession extends EventTarget {
     }
     const bootstrapMs = performance.now() - t0;
     this.#mode = minted.mode || 'openai-direct';
+    // The SDP host comes from the server (broker `callsUrl`), because the
+    // engine decides it: azure-direct posts to the Azure resource, not to
+    // api.openai.com. Falling back to the compiled-in constant keeps this
+    // build working against a broker that predates the field.
+    this.#callsUrlForSession =
+      typeof minted.callsUrl === 'string' && minted.callsUrl ? minted.callsUrl : this.callsUrl;
     this.#sessionId = minted.sessionId || 'web-' + Date.now().toString(36);
     this.#model = minted.model || '';
     this.#voice = minted.voice || '';
@@ -774,9 +790,8 @@ export class RealtimeSession extends EventTarget {
       }
 
       const sdpStart = performance.now();
-      const url = this.#model
-        ? this.callsUrl + '?model=' + encodeURIComponent(this.#model)
-        : this.callsUrl;
+      const base = this.#callsUrlForSession || this.callsUrl;
+      const url = this.#model ? base + '?model=' + encodeURIComponent(this.#model) : base;
       let callResp;
       try {
         callResp = await fetch(url, {

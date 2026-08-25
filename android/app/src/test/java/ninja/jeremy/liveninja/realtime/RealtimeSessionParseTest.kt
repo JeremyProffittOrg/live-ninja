@@ -142,4 +142,77 @@ class RealtimeSessionParseTest {
             assertEquals("invalid_response", e.kind)
         }
     }
+
+    /**
+     * The R7 fix. `parseSession` never read `callsUrl`, so
+     * [RealtimeSession.callsUrl] was always the compile-time OpenAI constant
+     * no matter what the broker said — an azure-direct session would have
+     * POSTed its Azure ephemeral secret to api.openai.com.
+     */
+    @Test
+    fun azureDirect_usesTheServerSuppliedCallsUrl() {
+        val body = JSONObject(
+            """
+            {
+              "mode": "azure-direct",
+              "clientSecret": {"value": "ek_azure", "expiresAt": "2026-08-24T12:01:00Z"},
+              "model": "gpt-realtime-2-1",
+              "voice": "cedar",
+              "sessionId": "rs-az-1",
+              "callsUrl": "https://ln-aoai-eastus2.openai.azure.com/openai/v1/realtime/calls"
+            }
+            """.trimIndent(),
+        )
+        val session = RealtimeSessionApi.parseSession(body, 200, null)
+
+        assertEquals(RealtimeSession.MODE_AZURE_DIRECT, session.mode)
+        assertEquals("ek_azure", session.clientSecret)
+        assertEquals("gpt-realtime-2-1", session.model)
+        assertEquals(
+            "https://ln-aoai-eastus2.openai.azure.com/openai/v1/realtime/calls",
+            session.callsUrl,
+        )
+    }
+
+    /**
+     * The other half: a response with no `callsUrl` must still reach OpenAI,
+     * so this build keeps working against a broker that predates the field.
+     */
+    @Test
+    fun openAiDirect_withoutCallsUrl_fallsBackToTheOpenAiHost() {
+        val body = JSONObject(
+            """
+            {
+              "clientSecret": {"value": "ek_secret"},
+              "model": "gpt-realtime"
+            }
+            """.trimIndent(),
+        )
+        val session = RealtimeSessionApi.parseSession(body, 200, null)
+
+        assertEquals(
+            ninja.jeremy.liveninja.config.BackendConfig.OPENAI_REALTIME_CALLS_URL,
+            session.callsUrl,
+        )
+    }
+
+    /**
+     * An explicit OpenAI `callsUrl` on the wire must be honoured too — the
+     * broker emits it on openai-direct precisely so the field is exercised by
+     * the default path and cannot rot between releases.
+     */
+    @Test
+    fun openAiDirect_honoursAnExplicitCallsUrl() {
+        val body = JSONObject(
+            """
+            {
+              "clientSecret": {"value": "ek_secret"},
+              "model": "gpt-realtime",
+              "callsUrl": "https://api.openai.com/v1/realtime/calls"
+            }
+            """.trimIndent(),
+        )
+        val session = RealtimeSessionApi.parseSession(body, 200, null)
+        assertEquals("https://api.openai.com/v1/realtime/calls", session.callsUrl)
+    }
 }
