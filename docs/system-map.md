@@ -61,7 +61,8 @@ Tool catalog by name and file: comms `send_email` (sendemail.go); scheduling `se
 `recall_note` (notes.go); deliverables `deliverable_create|zip|deliver`, `file_list|read|create`
 (deliverable.go, file.go); memory `memory_search`, `memory_write`, `entity_get`, `plan_upsert`,
 `forget` (memory.go); `profile_suggest` (profilesuggest.go); code updates
-`code_update_repos|start|status` (codeupdate.go). `Unadvertised` params
+`code_update_repos|start|status` (codeupdate.go); `knowledge_search`/`knowledge_recent`
+(knowledge.go, owner-only, SQS relay). `Unadvertised` params
 are enforced but never shown to the model (e.g.
 set_timer's legacy "seconds" alias, kept working but not taught). `OutOfRangeHint` deliberately
 redirects the model to a sibling tool on a bound violation (set_timer overflow -> set_reminder) —

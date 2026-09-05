@@ -56,6 +56,18 @@ func TestSetVolumeInstructionsPinTheMediaDefaultAndNamedStreamRule(t *testing.T)
 	}
 }
 
+// TestKnowledgeInstructionsPinTheRelayClause pins the knowledge-plane plan's
+// verbatim persona clause (milestone live-ninja-relay, item
+// live-ninja-knowledge-tools) and the two behaviours that make the relay
+// safe to speak from: the <user_data> data rule and "say exactly the
+// sentence the tool returns" for the home store not answering.
+func TestKnowledgeInstructionsPinTheRelayClause(t *testing.T) {
+	assert.Contains(t, coreInstructions, "for anything about your code sessions, e-mail or web reading, use knowledge_search")
+	assert.Contains(t, coreInstructions, "knowledge_recent")
+	assert.Contains(t, coreInstructions, "<user_data>")
+	assert.Contains(t, coreInstructions, "speak exactly that sentence")
+}
+
 func TestCameraInstructionsPinCaptureConsentAndDefaults(t *testing.T) {
 	assert.Contains(t, coreInstructions, "take_photo")
 	assert.Contains(t, coreInstructions, "record_video")

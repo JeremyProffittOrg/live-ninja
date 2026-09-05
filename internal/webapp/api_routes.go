@@ -618,6 +618,19 @@ func buildAPIToolsRegistry(deps *Deps) *tools.Registry {
 		Ghost:              deps.Ghost,
 		CodeUpdate:         deps.CodeUpdate,
 		CodeUpdateQueueURL: deps.CodeUpdateQueueURL,
+
+		// The owner's personal knowledge store (knowledge-plane, live-ninja-relay):
+		// knowledge_search / knowledge_recent enqueue onto kp-query-requests and
+		// poll kp-query-results. Both names come from template.yaml; the
+		// DynamoDB GetItem client is the DDB field above (NewRegistry defaults
+		// it). Same wiring lesson again — without these two lines the IAM grant
+		// and the env vars would be in place and both tools would answer
+		// not_configured with nothing else looking wrong.
+		KnowledgeQueueURL:     os.Getenv("KNOWLEDGE_QUERY_QUEUE_URL"),
+		KnowledgeResultsTable: os.Getenv("KNOWLEDGE_RESULTS_TABLE"),
+	}
+	if toolDeps.KnowledgeQueueURL == "" || toolDeps.KnowledgeResultsTable == "" {
+		deps.Log.Warn("api: knowledge_search/knowledge_recent disabled (KNOWLEDGE_QUERY_QUEUE_URL or KNOWLEDGE_RESULTS_TABLE not set)")
 	}
 	if deps.Deliv != nil { // M9 deliverable_* tools (nil interface stays nil → not_configured)
 		toolDeps.Deliverables = deps.Deliv
@@ -781,6 +794,9 @@ func handleToolsInvoke(deps *Deps, registry *tools.Registry) fiber.Handler {
 			SessionID:      sessionID,
 			Surface:        surface,
 			DeviceID:       deviceID,
+			// From the verified auth context, never the body: OwnerOnly tools
+			// (knowledge_*) gate on it in Registry.Invoke.
+			Role: Role(c),
 		})
 		return c.Status(res.StatusCode()).JSON(res)
 	}
@@ -1137,6 +1153,7 @@ func executeFallbackToolCall(c *fiber.Ctx, registry *tools.Registry, tc brokerCh
 		SessionID:      sessionID,
 		Surface:        surface,
 		DeviceID:       deviceID,
+		Role:           Role(c),
 	})
 }
 

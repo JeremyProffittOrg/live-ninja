@@ -132,6 +132,17 @@ func TestHelpDrawerCoversTheAppsCapabilities(t *testing.T) {
 			"help panel must explain the %q settings section", want)
 	}
 
+	// The owner's knowledge store (knowledge-plane live-ninja-relay): the
+	// capability under "What you can ask for" and its one failure mode under
+	// "Tips and troubleshooting" — the spoken fallback sentence is quoted so a
+	// user who hears it can find this entry.
+	for _, want := range []string{
+		"Ask about your own work",
+		"the home knowledge store did not answer",
+	} {
+		assert.Containsf(t, help, want, "help panel must cover the knowledge store: %q", want)
+	}
+
 	// Every page reachable from the app shell.
 	for _, want := range []string{"History", "Memory", "Personas", "Downloads"} {
 		assert.Containsf(t, help, ">"+want+"<", "help panel must describe the %s page", want)

@@ -39,6 +39,31 @@ Parameters:
     ConstraintDescription: >-
       Must be a full Lambda function ARN. It is used as an IAM policy Resource,
       where an empty or partial value would produce a malformed policy.
+  KnowledgeQueryRequestQueueName:
+    Type: String
+    Default: kp-query-requests
+    Description: >-
+      Name of the knowledge-plane stack's Live Ninja relay request queue
+      (JeremyProffittOrg/knowledge-plane infra/template.yaml QueryRequestQueue;
+      stack output QueryRequestQueueName). The owner-only knowledge_search and
+      knowledge_recent tools SendMessage one request here and read the answer
+      from KnowledgeQueryResultsTableName. Same account and region, so the ARN
+      and URL are derived with Fn::Sub below; Fn::ImportValue is deliberately
+      not used, for the same lifecycle-coupling reason as
+      GhostCommandFunctionArn. The queue's own policy admits only this stack's
+      WebFunctionRole (knowledge-plane parameter LiveNinjaToolRoleArn).
+    AllowedPattern: "^[A-Za-z0-9_-]{1,80}$"
+    ConstraintDescription: Must be a plain SQS queue name (it is interpolated into an ARN and a URL).
+  KnowledgeQueryResultsTableName:
+    Type: String
+    Default: kp-query-results
+    Description: >-
+      Name of the knowledge-plane stack's relay results table (QueryResultsTable;
+      stack output QueryResultsTableName). The knowledge tools GetItem by
+      requestId here, every 200 ms for at most 2.5 s; nothing in this stack ever
+      writes to it.
+    AllowedPattern: "^[A-Za-z0-9_.-]{3,255}$"
+    ConstraintDescription: Must be a plain DynamoDB table name (it is interpolated into an ARN).
   IotAuthorizerSigningPublicKey:
     Type: String
     Default: ""
@@ -356,6 +381,12 @@ Resources:
           # code_update_* tools reporting not_configured.
           CODE_UPDATE_QUEUE_URL: !Ref CodeUpdateQueue
           GHOST_COMMAND_FUNCTION_ARN: !Ref GhostCommandFunctionArn
+          # The owner's personal knowledge store (knowledge-plane stack,
+          # milestone live-ninja-relay): knowledge_search / knowledge_recent
+          # enqueue one request here and poll the results table by requestId.
+          # Either unset leaves both tools reporting not_configured.
+          KNOWLEDGE_QUERY_QUEUE_URL: !Sub "https://sqs.${AWS::Region}.amazonaws.com/${AWS::AccountId}/${KnowledgeQueryRequestQueueName}"
+          KNOWLEDGE_RESULTS_TABLE: !Ref KnowledgeQueryResultsTableName
       Events:
         CatchAll:
           Type: HttpApi
@@ -427,6 +458,22 @@ Resources:
           - sqs:SendMessage
           Resource:
           - !GetAtt CodeUpdateQueue.Arn
+          # knowledge-plane relay (live-ninja-relay): send exactly one request
+          # per knowledge_* call and read exactly one answer row. Nothing else
+          # on either resource - no Receive/Delete on the queue (kp-worker is
+          # its only consumer), no Put/Query/Scan on the table.
+        - Sid: KnowledgeRelayEnqueue
+          Effect: Allow
+          Action:
+          - sqs:SendMessage
+          Resource:
+          - !Sub "arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:${KnowledgeQueryRequestQueueName}"
+        - Sid: KnowledgeRelayResultsRead
+          Effect: Allow
+          Action:
+          - dynamodb:GetItem
+          Resource:
+          - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${KnowledgeQueryResultsTableName}"
         - Sid: InvokeRealtimeBroker
           Effect: Allow
           Action:
@@ -2944,6 +2991,13 @@ Outputs:
   HttpApiEndpoint:
     Description: HTTP API invoke URL (origin behind CloudFront).
     Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  WebFunctionRoleArn:
+    Description: >-
+      Execution role of live-ninja-web, the only Lambda that runs tools. The
+      knowledge-plane stack's LiveNinjaToolRoleArn parameter must equal this
+      value for its kp-query-requests queue policy to admit knowledge_search /
+      knowledge_recent (live-ninja-relay).
+    Value: !GetAtt WebFunctionRole.Arn
   CloudFrontDomain:
     Description: CloudFront distribution domain name.
     Value: !GetAtt CloudFrontDistribution.DomainName

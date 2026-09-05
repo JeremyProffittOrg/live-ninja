@@ -318,7 +318,15 @@ type Definition struct {
 	// rendered, so a model is never invited to call a local action the current
 	// client cannot perform.
 	Surfaces []string
-	Handler  HandlerFunc
+	// OwnerOnly restricts the tool to the account owner. Invoke enforces it
+	// after re-authorization and before the idempotency claim (Live Ninja plan
+	// v1.1 M40.1's gate, shipped first for the knowledge_* tools): a member's
+	// call is refused with CodeForbidden and never reaches the Handler. The
+	// role comes from the verified auth context (Invocation.Role); when that
+	// is absent the registry asks the store, so an older authorizer context
+	// degrades to a fresh lookup, never to an open door.
+	OwnerOnly bool
+	Handler   HandlerFunc
 }
 
 // ReauthorizeFunc re-checks, at call time, that the user behind a still-
@@ -446,6 +454,19 @@ type Deps struct {
 	// out its 24h TTL, which is the pre-fix behaviour, never a silent success.
 	IdempotencyRelease IdempotencyReleaseAPI
 
+	// The owner's personal knowledge store (knowledge-plane, milestone
+	// live-ninja-relay) behind knowledge_search / knowledge_recent.
+	// KnowledgeQueueURL is env KNOWLEDGE_QUERY_QUEUE_URL — the knowledge-plane
+	// stack's kp-query-requests queue the tools SendMessage to (through the
+	// same SQS client as send_email). KnowledgeResultsTable is env
+	// KNOWLEDGE_RESULTS_TABLE — kp-query-results, polled by GetItem through
+	// KnowledgeResults, which NewRegistry defaults from DDB when that client
+	// also supports GetItem (the production *dynamodb.Client does). Any of the
+	// three missing makes both tools report not_configured.
+	KnowledgeQueueURL     string
+	KnowledgeResultsTable string
+	KnowledgeResults      KnowledgeResultsAPI
+
 	Reauthorize ReauthorizeFunc
 
 	// Now is the clock; defaulted to time.Now by NewRegistry (tests
@@ -515,6 +536,14 @@ func NewRegistry(deps *Deps) (*Registry, error) {
 			deps.IdempotencyRelease = releaser
 		}
 	}
+	// Same seam for the knowledge relay's result reads: the production
+	// DynamoDB client already carries GetItem, so the web function needs no
+	// extra wiring beyond the two env-derived names.
+	if deps.KnowledgeResults == nil {
+		if getter, ok := deps.DDB.(KnowledgeResultsAPI); ok {
+			deps.KnowledgeResults = getter
+		}
+	}
 	if deps.Profile == nil {
 		st := deps.Store
 		deps.Profile = func(ctx context.Context, userID string) store.Profile {
@@ -577,6 +606,10 @@ func definitions() []*Definition {
 		codeUpdateReposDefinition(),
 		codeUpdateStartDefinition(),
 		codeUpdateStatusDefinition(),
+		// The owner's personal knowledge store by voice, through the
+		// knowledge-plane SQS relay (knowledge.go). Owner-only.
+		knowledgeSearchDefinition(),
+		knowledgeRecentDefinition(),
 		// Device-local session controls: declared here so the manifest advertises
 		// them, executed by the client (see devicesession.go).
 		stopListeningDefinition(),
@@ -795,6 +828,15 @@ func (r *Registry) Invoke(ctx context.Context, inv Invocation) (res *Result) {
 		return res
 	}
 
+	// Owner-only gate (Definition.OwnerOnly): identity is proven and still
+	// active; now the role. Before the idempotency claim on purpose — a
+	// refused call must not burn the caller's key.
+	if def.OwnerOnly && !r.isOwner(ctx, inv) {
+		l.Warn("tools: owner-only tool refused", slog.String("role", inv.Role))
+		res.Error = toolErrf(CodeForbidden, "%s is available to the account owner only", def.Name)
+		return res
+	}
+
 	// Idempotency guard for side-effecting tools: claim the IDEMP# marker
 	// before execute so a duplicate delivery can never repeat the side effect
 	// (at-most-once). claimedIdempotency records that THIS invocation owns the
@@ -849,6 +891,30 @@ func (r *Registry) Invoke(ctx context.Context, inv Invocation) (res *Result) {
 		r.publishChange(ctx, l, inv, output)
 	}
 	return res
+}
+
+// isOwner decides Definition.OwnerOnly. Invocation.Role is set by the HTTP
+// layer from the verified auth context (the authorizer's `role`, or the user
+// row on local JWT verification) and is definitive when present: "owner"
+// passes, any other role is refused. An EMPTY role means the context did not
+// carry one, so the store is asked afresh — the same read Reauthorize just
+// made — rather than assuming either answer.
+func (r *Registry) isOwner(ctx context.Context, inv Invocation) bool {
+	switch inv.Role {
+	case store.RoleOwner:
+		return true
+	case "":
+	default:
+		return false
+	}
+	if r.deps.Store == nil || inv.UserID == "" {
+		return false
+	}
+	u, err := r.deps.Store.GetUser(ctx, inv.UserID)
+	if err != nil || u == nil {
+		return false
+	}
+	return u.Role == store.RoleOwner
 }
 
 // changeEventKind maps a tool to the event kind its success should announce.
