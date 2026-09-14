@@ -1721,12 +1721,12 @@ workstream `managed-kb-knowledge` stays in the backlog (scope decision below).
   sums them into `monthMemEvents`/`monthMemRetrievals`. Done when:
   `aws budgets describe-budgets --account-id 759775734231 --query "Budgets[?BudgetName=='live-ninja-agentcore-25'].BudgetName" --output text`
   prints the name and `go test ./cmd/usage-rollup/ ./internal/store/` passes.
-- [~] `event-writer` — `internal/agentmemory` (new package: SDK wrapper, exchange pairing,
+- [x] `event-writer` — `internal/agentmemory` (new package: SDK wrapper, exchange pairing,
   idempotent client tokens `sessionId#seq`); `handleTranscript` writes one event per exchange when
   the mode admits the caller's role and transcripts are stored; failures are logged and never
   fail the flush. Done when: `go test ./internal/agentmemory/ ./internal/webapp/ -race` passes
   with cases for pairing, mode gating, and a failing client.
-- [~] `mint-preload` — the web mint request carries `role`; the broker calls
+- [x] `mint-preload` — the web mint request carries `role`; the broker calls
   `RetrieveMemoryRecords` (namespace `/users/{actorId}/`, topK 10, 400 ms deadline) on every mint
   path and the fallback turn, and appends `realtime.RememberedBlock` after BASE KNOWLEDGE;
   timeout or error mints unchanged; `memoryUsageDirective` tells the model the block exists.
@@ -1739,7 +1739,7 @@ workstream `managed-kb-knowledge` stays in the backlog (scope decision below).
   Help drawer + Memory page copy updated in the same commit. Done when:
   `go test ./internal/tools/ ./internal/webapp/` passes (including `TestHelpDrawer`) and the
   owner's 10-question smoke set answers 9 of 10 by voice on web and Android.
-- [~] `purge-and-export` — `cmd/account-purge` deletes the actor's events and records (fails the
+- [x] `purge-and-export` — `cmd/account-purge` deletes the actor's events and records (fails the
   run on error so the async retry re-runs); the account export adds the records. Done when:
   `go test ./cmd/account-purge/ ./internal/webapp/ -run 'Purge|Export'` passes.
 - [ ] `emb-retire` — not before 2026-09-28 and only with the smoke set passing: remove `EMB#`
@@ -1803,6 +1803,13 @@ unchanged.
   `list: 2 record(s)`; `purged: 1 event(s), 2 record(s)`; `RESULT: OK`. The kept probe actor was
   purged too (`purged smoke-20260914-125024: 1 event(s), 4 record(s)`). Extraction, namespacePath
   retrieval, listing, DisplayText and purge are all verified against the deployed memory.
+- 2026-09-14 — code milestone pushed as `80fe86d`; Deploy run 34847039414 `success` (test, deploy,
+  web-quality, nova container all green). `aws lambda get-function-configuration` on the web,
+  broker and account-purge functions → `AGENTCORE_MEMORY_ID=live_ninja_memory-5H6F7wCQhH`,
+  `AGENTCORE_MEMORY_MODE=owner`. `event-writer`, `mint-preload`, `purge-and-export` done by their
+  test commands; `memory-tools-cutover` stays `[~]` until the owner runs the 10-question voice smoke
+  set on web and Android (the code and Help copy are live; only the owner can speak the questions).
+  `emb-retire` not before 2026-09-28.
 
 ## Standing rules (carried forward — these do not expire)
 
