@@ -64,6 +64,33 @@ data class MemoryAck(
     val ok: Boolean = true,
 )
 
+/**
+ * One record AWS extracted from the user's own conversations
+ * (agentcore-memory, `GET /api/v1/memory/remembered`). Read-only apart from
+ * forget: consolidation re-derives records, so there is nothing to edit.
+ */
+@Serializable
+data class RememberedDto(
+    val id: String? = null,
+    val text: String? = null,
+    /** `/users/<actor>/facts/` or `/users/<actor>/preferences/`. */
+    val namespace: String? = null,
+    val createdAt: String? = null,
+) {
+    val isPreference: Boolean get() = namespace.orEmpty().contains("/preferences/")
+}
+
+/**
+ * `GET /api/v1/memory/remembered`: `enabled=false` means learning from
+ * conversations is not switched on for this account (rollout mode), which
+ * the screen must say rather than "nothing learned yet".
+ */
+@Serializable
+data class RememberedListResponse(
+    val enabled: Boolean = true,
+    val items: List<RememberedDto> = emptyList(),
+)
+
 /** One Guide Entity (DynamoDB GUIDE# item, FR-MEM-07). */
 @Serializable
 data class GuideDto(

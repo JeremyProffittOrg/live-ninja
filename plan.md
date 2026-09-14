@@ -1810,6 +1810,10 @@ unchanged.
   test commands; `memory-tools-cutover` stays `[~]` until the owner runs the 10-question voice smoke
   set on web and Android (the code and Help copy are live; only the owner can speak the questions).
   `emb-retire` not before 2026-09-28.
+- 2026-09-14 — `android-learned-list` (was a backlog follow-up) built the same day so both clients
+  match: Android Memory screen gains a third tab "Learned" backed by `GET/DELETE /api/v1/memory/remembered`
+  (`RememberedDto`, `MemoryRepository.listRemembered/forgetRemembered`, `MemoryViewModel` learned
+  state + confirm dialog, `MemoryViewModelLearnedTest`). Off-account renders "Not switched on", not "empty".
 
 ## Standing rules (carried forward — these do not expire)
 

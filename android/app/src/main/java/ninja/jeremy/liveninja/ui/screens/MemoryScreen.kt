@@ -62,6 +62,7 @@ import ninja.jeremy.liveninja.R
 import ninja.jeremy.liveninja.ui.memory.EntityType
 import ninja.jeremy.liveninja.ui.memory.EntityUi
 import ninja.jeremy.liveninja.ui.memory.GuideUi
+import ninja.jeremy.liveninja.ui.memory.LearnedUi
 import ninja.jeremy.liveninja.ui.memory.MemoryNotice
 import ninja.jeremy.liveninja.ui.memory.MemoryViewModel
 
@@ -111,8 +112,11 @@ fun MemoryScreen(modifier: Modifier = Modifier) {
                     style = MaterialTheme.typography.titleLarge,
                     modifier = Modifier.weight(1f),
                 )
-                val loading =
-                    if (tab == 0) state.entitiesLoading else state.guidesLoading
+                val loading = when (tab) {
+                    0 -> state.entitiesLoading
+                    1 -> state.guidesLoading
+                    else -> state.learnedLoading
+                }
                 if (loading) {
                     CircularProgressIndicator(
                         modifier = Modifier.padding(12.dp).size(24.dp),
@@ -121,7 +125,11 @@ fun MemoryScreen(modifier: Modifier = Modifier) {
                 } else {
                     IconButton(
                         onClick = {
-                            if (tab == 0) viewModel.refreshEntities() else viewModel.refreshGuides()
+                            when (tab) {
+                                0 -> viewModel.refreshEntities()
+                                1 -> viewModel.refreshGuides()
+                                else -> viewModel.refreshLearned()
+                            }
                         },
                         modifier = Modifier.size(48.dp),
                     ) {
@@ -145,10 +153,17 @@ fun MemoryScreen(modifier: Modifier = Modifier) {
                     text = { Text(stringResource(R.string.memory_tab_guides)) },
                     modifier = Modifier.heightIn(min = 48.dp),
                 )
+                Tab(
+                    selected = tab == 2,
+                    onClick = { tab = 2 },
+                    text = { Text(stringResource(R.string.memory_tab_learned)) },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                )
             }
             when (tab) {
                 0 -> EntitiesTab(viewModel = viewModel)
-                else -> GuidesTab(viewModel = viewModel)
+                1 -> GuidesTab(viewModel = viewModel)
+                else -> LearnedTab(viewModel = viewModel)
             }
         }
     }
@@ -158,6 +173,27 @@ fun MemoryScreen(modifier: Modifier = Modifier) {
             entity = entity,
             onForget = { viewModel.requestForget(entity) },
             onDismiss = viewModel::closeDetail,
+        )
+    }
+
+    state.confirmForgetLearned?.let { record ->
+        AlertDialog(
+            onDismissRequest = viewModel::cancelForgetLearned,
+            title = { Text(stringResource(R.string.memory_learned_forget_confirm_title)) },
+            text = { Text(stringResource(R.string.memory_learned_forget_confirm_body, record.text)) },
+            confirmButton = {
+                Button(
+                    onClick = viewModel::confirmForgetLearned,
+                    enabled = !state.forgetLearnedInProgress,
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) { Text(stringResource(R.string.memory_forget)) }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = viewModel::cancelForgetLearned,
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) { Text(stringResource(R.string.dialog_cancel)) }
+            },
         )
     }
 
@@ -474,6 +510,86 @@ private fun GuideCard(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+// ---- Learned tab (agentcore-memory) ----
+
+@Composable
+private fun LearnedTab(viewModel: MemoryViewModel) {
+    val state by viewModel.state.collectAsState()
+
+    when {
+        state.learnedLoading && !state.learnedLoaded -> CenteredProgress()
+        state.learnedError && state.learned.isEmpty() -> CenteredError(
+            titleRes = R.string.memory_learned_error_title,
+            bodyRes = R.string.memory_error_body,
+            onRetry = viewModel::refreshLearned,
+        )
+        state.learnedLoaded && !state.learnedEnabled -> CenteredEmpty(
+            titleRes = R.string.memory_learned_off_title,
+            bodyRes = R.string.memory_learned_off_body,
+        )
+        state.learnedLoaded && state.learned.isEmpty() -> CenteredEmpty(
+            titleRes = R.string.memory_learned_empty_title,
+            bodyRes = R.string.memory_learned_empty_body,
+        )
+        else -> LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            item(key = "caption") {
+                Text(
+                    stringResource(R.string.memory_learned_caption),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+            }
+            items(state.learned, key = { it.id }) { record ->
+                LearnedCard(
+                    record = record,
+                    onForget = { viewModel.requestForgetLearned(record) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LearnedCard(record: LearnedUi, onForget: () -> Unit) {
+    Card(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 64.dp)
+                .padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(record.text, style = MaterialTheme.typography.bodyLarge)
+                val kind = stringResource(
+                    if (record.isPreference) R.string.memory_learned_kind_preference
+                    else R.string.memory_learned_kind_fact,
+                )
+                val meta = listOfNotNull(
+                    kind,
+                    record.learnedLabel?.let { stringResource(R.string.memory_learned_when, it) },
+                ).joinToString(" · ")
+                Text(
+                    meta,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            IconButton(onClick = onForget, modifier = Modifier.size(48.dp)) {
+                Icon(
+                    Icons.Outlined.DeleteOutline,
+                    contentDescription = stringResource(R.string.memory_forget_cd, record.text),
+                )
             }
         }
     }

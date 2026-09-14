@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import ninja.jeremy.liveninja.net.EntityDto
 import ninja.jeremy.liveninja.net.GuideDto
+import ninja.jeremy.liveninja.net.RememberedDto
 
 /**
  * The six M10 entity types (sort-key discriminator in ENT#<type>#<id>).
@@ -56,6 +57,17 @@ data class GuideUi(
     val dto: GuideDto,
 )
 
+/**
+ * One record Live Ninja learned on its own from a conversation
+ * (agentcore-memory). [isPreference] picks the row's kind label.
+ */
+data class LearnedUi(
+    val id: String,
+    val text: String,
+    val isPreference: Boolean,
+    val learnedLabel: String?,
+)
+
 /** Snackbar-level notices (mapped to string resources by the screen). */
 enum class MemoryNotice {
     FORGOTTEN,
@@ -83,6 +95,16 @@ data class MemoryUiState(
     val guidesLoaded: Boolean = false,
     val guidesError: Boolean = false,
     val guides: List<GuideUi> = emptyList(),
+    // Learned tab (agentcore-memory records)
+    val learnedLoading: Boolean = false,
+    val learnedLoaded: Boolean = false,
+    val learnedError: Boolean = false,
+    /** false = learning from conversations is not switched on for this account. */
+    val learnedEnabled: Boolean = true,
+    val learned: List<LearnedUi> = emptyList(),
+    /** Learned record awaiting the forget confirmation dialog. */
+    val confirmForgetLearned: LearnedUi? = null,
+    val forgetLearnedInProgress: Boolean = false,
 )
 
 /**
@@ -107,6 +129,56 @@ class MemoryViewModel @Inject constructor(
         val s = _state.value
         if (!s.entitiesLoaded && !s.entitiesLoading) refreshEntities()
         if (!s.guidesLoaded && !s.guidesLoading) refreshGuides()
+        if (!s.learnedLoaded && !s.learnedLoading) refreshLearned()
+    }
+
+    // ---- learned from conversations (agentcore-memory) ----
+
+    fun refreshLearned() {
+        _state.update { it.copy(learnedLoading = true, learnedError = false) }
+        viewModelScope.launch {
+            try {
+                val response = repository.listRemembered()
+                _state.update {
+                    it.copy(
+                        learnedLoading = false,
+                        learnedLoaded = true,
+                        learnedError = false,
+                        learnedEnabled = response.enabled,
+                        learned = response.items.mapNotNull(::toUi),
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(learnedLoading = false, learnedError = true) }
+            }
+        }
+    }
+
+    fun requestForgetLearned(record: LearnedUi) =
+        _state.update { it.copy(confirmForgetLearned = record) }
+
+    fun cancelForgetLearned() = _state.update { it.copy(confirmForgetLearned = null) }
+
+    fun confirmForgetLearned() {
+        val record = _state.value.confirmForgetLearned ?: return
+        if (_state.value.forgetLearnedInProgress) return
+        _state.update { it.copy(forgetLearnedInProgress = true) }
+        viewModelScope.launch {
+            try {
+                repository.forgetRemembered(record.id)
+                _notices.tryEmit(MemoryNotice.FORGOTTEN)
+                _state.update {
+                    it.copy(
+                        forgetLearnedInProgress = false,
+                        confirmForgetLearned = null,
+                        learned = it.learned.filterNot { r -> r.id == record.id },
+                    )
+                }
+            } catch (e: Exception) {
+                _notices.tryEmit(MemoryNotice.FORGET_FAILED)
+                _state.update { it.copy(forgetLearnedInProgress = false, confirmForgetLearned = null) }
+            }
+        }
     }
 
     // ---- entities ----
@@ -272,6 +344,18 @@ class MemoryViewModel @Inject constructor(
             updatedLabel = dto.updatedAt?.let(::formatDate),
             attrLines = dto.attrLines,
             relationCount = dto.relations.orEmpty().size,
+        )
+    }
+
+    private fun toUi(dto: RememberedDto): LearnedUi? {
+        val id = dto.id ?: return null
+        val text = dto.text?.trim().orEmpty()
+        if (text.isEmpty()) return null
+        return LearnedUi(
+            id = id,
+            text = text,
+            isPreference = dto.isPreference,
+            learnedLabel = dto.createdAt?.let(::formatDate),
         )
     }
 

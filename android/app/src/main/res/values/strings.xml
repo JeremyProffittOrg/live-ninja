@@ -168,6 +168,18 @@
     <string name="memory_guide_priority_raise">Raise priority of %1$s</string>
     <string name="memory_guide_priority_lower">Lower priority of %1$s</string>
     <string name="memory_guide_update_failed">Couldn\'t update the guide. Try again.</string>
+    <string name="memory_tab_learned">Learned</string>
+    <string name="memory_learned_caption">Facts and preferences Live Ninja picked up on its own while you talked. They appear a minute or so after a conversation and are brought into every new one.</string>
+    <string name="memory_learned_kind_fact">Fact</string>
+    <string name="memory_learned_kind_preference">Preference</string>
+    <string name="memory_learned_when">learned %1$s</string>
+    <string name="memory_learned_empty_title">Nothing learned yet</string>
+    <string name="memory_learned_empty_body">Have a conversation, and what matters shows up here shortly after.</string>
+    <string name="memory_learned_off_title">Not switched on for this account yet</string>
+    <string name="memory_learned_off_body">Learning from conversations is being rolled out gradually. Everything you ask it to remember still works as before.</string>
+    <string name="memory_learned_error_title">Couldn\'t load what was learned</string>
+    <string name="memory_learned_forget_confirm_title">Forget this?</string>
+    <string name="memory_learned_forget_confirm_body">“%1$s” will no longer be brought into your conversations. This can\'t be undone.</string>
 
     <string name="assistant_service_label">Live Ninja assistant</string>
     <string name="recognition_service_label">Live Ninja speech service</string>

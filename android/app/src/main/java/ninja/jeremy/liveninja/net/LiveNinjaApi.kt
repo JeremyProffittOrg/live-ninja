@@ -133,6 +133,18 @@ interface LiveNinjaApi {
     suspend fun forgetMemory(@Path("id") id: String): MemoryAck
 
     /**
+     * What Live Ninja learned on its own from the user's conversations
+     * (agentcore-memory long-term records). `enabled=false` when the account
+     * is outside the rollout mode.
+     */
+    @GET("api/v1/memory/remembered")
+    suspend fun listRemembered(): RememberedListResponse
+
+    /** Forget one learned record. 404 when it is not this user's. */
+    @DELETE("api/v1/memory/remembered/{id}")
+    suspend fun forgetRemembered(@Path("id") id: String): MemoryAck
+
+    /**
      * List the caller's Guide Entities (FR-MEM-09). The backend seeds the
      * default "AI is an emerging technology" guide on first list, so this is
      * never empty for a fresh user.

@@ -7,6 +7,7 @@ import ninja.jeremy.liveninja.net.GuideDto
 import ninja.jeremy.liveninja.net.GuideListResponse
 import ninja.jeremy.liveninja.net.GuidePutRequest
 import ninja.jeremy.liveninja.net.LiveNinjaApi
+import ninja.jeremy.liveninja.net.RememberedListResponse
 
 /**
  * Android access to the M10 Memory Layer + Guide Entities surface
@@ -28,6 +29,13 @@ class MemoryRepository @Inject constructor(
     }
 
     suspend fun listGuides(): GuideListResponse = api.listGuides()
+
+    /** Learned-from-conversations records (agentcore-memory). */
+    suspend fun listRemembered(): RememberedListResponse = api.listRemembered()
+
+    suspend fun forgetRemembered(id: String) {
+        api.forgetRemembered(id)
+    }
 
     /**
      * Persist a guide edit (toggle / priority). PUT replaces, so the caller's
