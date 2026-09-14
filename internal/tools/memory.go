@@ -14,7 +14,10 @@ package tools
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -103,7 +106,9 @@ func memorySearchDefinition() *Definition {
 			"tasks, and plans) by meaning, not exact words. ALWAYS call this before answering any " +
 			"question about the user's personal facts — their home or work address, names, " +
 			"birthdays, preferences, plans, or anything they may have told you in a past " +
-			"conversation — and before saying you don't know such a fact.",
+			"conversation — and before saying you don't know such a fact. Results carry the " +
+			"entities you saved under results and, under remembered, plain-text facts learned " +
+			"automatically from earlier conversations.",
 		Params: []ParamSpec{
 			{Name: "query", Type: "string", Required: true, MinLen: 1, MaxLen: 300,
 				Description: "What to look for, phrased naturally, e.g. 'sister's birthday' or 'the kitchen remodel project'."},
@@ -215,7 +220,28 @@ func handleMemorySearch(ctx context.Context, deps *Deps, inv Invocation, args ma
 		r["score"] = h.Score
 		results = append(results, r)
 	}
-	return map[string]any{"results": results, "count": len(results)}, nil
+	out := map[string]any{"results": results, "count": len(results)}
+	// agentcore-memory: the records AWS extracted from earlier conversations
+	// ride along under `remembered`. A retrieval failure degrades to the
+	// entity results alone — never to a tool error.
+	if deps.AgentMemory != nil && deps.AgentMemory.Admits(inv.Role) {
+		recs, rerr := deps.AgentMemory.Search(ctx, inv.UserID, query, limit)
+		if rerr != nil {
+			deps.Log.Warn("tools: memory_search agentcore retrieve failed", "error", rerr.Error())
+		} else if len(recs) > 0 {
+			remembered := make([]map[string]any, 0, len(recs))
+			for _, r := range recs {
+				item := map[string]any{"text": r.Text, "score": r.Score}
+				if !r.CreatedAt.IsZero() {
+					item["learnedAt"] = r.CreatedAt.UTC().Format(time.RFC3339)
+				}
+				remembered = append(remembered, item)
+			}
+			out["remembered"] = remembered
+			out["count"] = len(results) + len(recs)
+		}
+	}
+	return out, nil
 }
 
 func handleMemoryWrite(ctx context.Context, deps *Deps, inv Invocation, args map[string]any) (map[string]any, *ToolError) {
@@ -249,6 +275,8 @@ func handleMemoryWrite(ctx context.Context, deps *Deps, inv Invocation, args map
 	if ent == nil {
 		return nil, toolErrf(CodeNotFound, "no such entity to update (or it belongs to another user)")
 	}
+
+	rememberEntity(ctx, deps, inv, ent)
 
 	out := entityOutput(ent)
 	out["status"] = "saved"
@@ -307,6 +335,8 @@ func handlePlanUpsert(ctx context.Context, deps *Deps, inv Invocation, args map[
 		return nil, toolErrf(CodeNotFound, "no such plan to update (or it belongs to another user)")
 	}
 
+	rememberEntity(ctx, deps, inv, ent)
+
 	out := entityOutput(ent)
 	out["status"] = "saved"
 	out["planId"] = ent.EntityID
@@ -319,6 +349,15 @@ func handleForget(ctx context.Context, deps *Deps, inv Invocation, args map[stri
 		return nil, toolErrf(CodeNotConfigured, "the memory layer is not configured")
 	}
 	entityID := args["entityId"].(string)
+	// The entity's name is needed AFTER the delete to forget the matching
+	// AgentCore records, so read it first (one GetItem; nil is fine — the
+	// delete below reports not_found on its own).
+	var name string
+	if deps.AgentMemory != nil && deps.AgentMemory.Admits(inv.Role) {
+		if ent, gerr := deps.Memory.Get(ctx, inv.UserID, entityID); gerr == nil && ent != nil {
+			name = ent.Name
+		}
+	}
 	deleted, err := deps.Memory.Forget(ctx, inv.UserID, entityID)
 	if err != nil {
 		deps.Log.Error("tools: forget failed", "error", err.Error())
@@ -327,7 +366,64 @@ func handleForget(ctx context.Context, deps *Deps, inv Invocation, args map[stri
 	if !deleted {
 		return nil, toolErrf(CodeNotFound, "no such entity (or it belongs to another user)")
 	}
-	return map[string]any{"status": "forgotten", "entityId": entityID}, nil
+	out := map[string]any{"status": "forgotten", "entityId": entityID}
+	if name != "" {
+		// agentcore-memory: drop the extracted records that name the entity
+		// too, so a forgotten person does not come back through the
+		// REMEMBERED block. Best-effort; reported in the result.
+		if n, ferr := deps.AgentMemory.ForgetMatching(ctx, inv.UserID, name); ferr != nil {
+			deps.Log.Warn("tools: forget agentcore records failed", "error", ferr.Error())
+		} else if n > 0 {
+			out["rememberedForgotten"] = n
+		}
+	}
+	return out, nil
+}
+
+// rememberEntity mirrors a saved entity into AgentCore as an explicit
+// "remember this" exchange (agentcore-memory, locked decision 7: dual
+// running). Best-effort: the DynamoDB write already succeeded and is what
+// the tool result reports.
+func rememberEntity(ctx context.Context, deps *Deps, inv Invocation, ent *MemoryEntity) {
+	if ent == nil || deps.AgentMemory == nil || !deps.AgentMemory.Admits(inv.Role) {
+		return
+	}
+	if err := deps.AgentMemory.RememberFact(ctx, inv.UserID, inv.SessionID, entityFactText(ent)); err != nil {
+		deps.Log.Warn("tools: agentcore remember failed", "error", err.Error())
+	}
+}
+
+// entityFactText flattens an entity into one sentence the extraction
+// strategies can read: "<type> <name>: k=v; k=v; relation->target".
+func entityFactText(ent *MemoryEntity) string {
+	var b strings.Builder
+	b.WriteString(ent.Type)
+	b.WriteString(" ")
+	b.WriteString(ent.Name)
+	if len(ent.Attrs) > 0 {
+		keys := make([]string, 0, len(ent.Attrs))
+		for k := range ent.Attrs {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		b.WriteString(":")
+		for i, k := range keys {
+			if i > 0 {
+				b.WriteString(";")
+			}
+			b.WriteString(" ")
+			b.WriteString(k)
+			b.WriteString("=")
+			b.WriteString(fmt.Sprint(ent.Attrs[k]))
+		}
+	}
+	for _, r := range ent.Relations {
+		b.WriteString("; ")
+		b.WriteString(r.Type)
+		b.WriteString(" -> ")
+		b.WriteString(r.TargetID)
+	}
+	return b.String()
 }
 
 // entityOutput renders a MemoryEntity as the client/model-safe result map.

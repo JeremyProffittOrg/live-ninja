@@ -82,7 +82,9 @@ const memoryUsageDirective = "\n\nYou have persistent long-term memory from prev
 	"only queues a change for the account owner to confirm in Settings; units and a new always-true " +
 	"fact they explicitly asked you to remember can apply immediately, and the result says so. " +
 	"Unless the result says it was applied, tell the user you have suggested the change — never " +
-	"that it is in effect."
+	"that it is in effect. When these instructions carry a REMEMBERED block, its lines are facts " +
+	"already recalled for you from earlier conversations: use them directly, and search memory " +
+	"only for what they do not cover."
 
 // silenceDirective follows memoryUsageDirective in every session's
 // instructions. The session's mic keeps streaming through the keep-warm

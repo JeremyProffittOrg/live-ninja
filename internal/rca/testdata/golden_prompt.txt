@@ -72,12 +72,12 @@ designed self-correction path, not a bug** to file an RCA against.
 
 ### The memory layer
 
-internal/memory: episodic, retrieval-on-demand, per-user `ENT#<type>#<entityId>` +
-`EMB#<entityId>` items in the caller's own partition, Bedrock `amazon.titan-embed-text-v2:0`
-(512 dims) query embeddings, in-partition cosine ranking — Query/GetItem only, never Scan. The
-model must *choose* to call memory_search, and in production it often did not (2026-07-18: six
-memory_write calls, zero memory_search, while the owner asked a plain personal-fact question) —
-which is why the profile below exists as an always-injected alternative.
+internal/memory: per-user `ENT#<type>#<id>` + `EMB#<id>` items, Titan v2 (512 dims) query
+embeddings, in-partition cosine — Query/GetItem only, never Scan. Since 2026-09-14
+(`agentcore-memory`, dual running) the sink also writes one AgentCore Memory event per exchange
+(`internal/agentmemory`, gate `AGENTCORE_MEMORY_MODE`), the broker preloads top records into a
+`REMEMBERED` block at mint, `memory_search` returns them under `remembered`, purge deletes them.
+A "memory not wired" RCA checks `AGENTCORE_MEMORY_ID`/`_MODE` as well as `Deps.Memory`.
 
 ### Settings and the base-knowledge profile
 

@@ -134,6 +134,11 @@ func RegisterMemoryRoutes(app *fiber.App, deps *Deps, svc *memory.Service) {
 	api.Post("/memory", handleWriteEntity(deps, svc, entityIDFromBody)) // memory.mjs upsert path
 	api.Delete("/memory/:id", handleForgetEntity(deps))                 // contracts/api.md "forget" path
 	api.Post("/memory/search", handleMemorySearch(deps, svc))
+	// agentcore-memory: the records AWS extracted from conversations
+	// (remembered_routes.go). Read-only plus Forget; editing is not offered
+	// because the records are re-derived by consolidation.
+	api.Get("/memory/remembered", handleListRemembered(deps))
+	api.Delete("/memory/remembered/:id", handleForgetRemembered(deps))
 
 	api.Get("/guides", handleListGuides(deps))
 	api.Post("/guides", handleWriteGuide(deps, true))

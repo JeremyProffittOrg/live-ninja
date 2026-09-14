@@ -428,3 +428,56 @@ func TestPurgeRefusesMalformedS3Prefix(t *testing.T) {
 		t.Errorf("malformed prefix widened into a delete")
 	}
 }
+
+// ---- agentcore-memory ----
+
+type fakeMemoryPurger struct {
+	users []string
+	fail  bool
+}
+
+type purgeMemErr struct{}
+
+func (purgeMemErr) Error() string { return "agentcore throttled" }
+
+func (f *fakeMemoryPurger) PurgeActor(_ context.Context, userID string) (int, int, error) {
+	if f.fail {
+		return 0, 0, purgeMemErr{}
+	}
+	f.users = append(f.users, userID)
+	return 3, 2, nil
+}
+
+func TestPurgeRunPurgesAgentCoreMemory(t *testing.T) {
+	p, _, fs3, _, _, st := newTestPurger(t)
+	seedUserFootprint(t, st, fs3)
+	mem := &fakeMemoryPurger{}
+	p.Memory = mem
+
+	if err := p.Run(context.Background(), Event{UserID: "u1", RequestedAt: "2026-09-14T12:00:00Z"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(mem.users) != 1 || mem.users[0] != "u1" {
+		t.Errorf("PurgeActor calls = %v, want [u1]", mem.users)
+	}
+}
+
+func TestPurgeRunFailsWhenAgentCoreMemoryFails(t *testing.T) {
+	p, _, fs3, _, _, st := newTestPurger(t)
+	seedUserFootprint(t, st, fs3)
+	p.Memory = &fakeMemoryPurger{fail: true}
+
+	err := p.Run(context.Background(), Event{UserID: "u1", RequestedAt: "2026-09-14T12:00:00Z"})
+	if err == nil {
+		t.Fatal("Run succeeded although the memory purge failed; the async retry would never re-run")
+	}
+	// The table partition is deleted AFTER the memory step, so a failed
+	// memory purge leaves the profile in place for the retry to find.
+	items, qerr := st.QueryUserPartition(context.Background(), "u1")
+	if qerr != nil {
+		t.Fatal(qerr)
+	}
+	if len(items) == 0 {
+		t.Error("USER# partition was deleted before the memory purge succeeded")
+	}
+}

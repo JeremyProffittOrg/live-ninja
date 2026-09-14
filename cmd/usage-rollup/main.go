@@ -65,6 +65,9 @@ type usageItem struct {
 	SK         string  `dynamodbav:"sk"`
 	DayTokens  float64 `dynamodbav:"dayTokens"`
 	DaySeconds float64 `dynamodbav:"daySeconds"`
+	// agentcore-memory counters (store.AddDayMemoryUsage).
+	DayMemEvents     float64 `dynamodbav:"dayMemEvents"`
+	DayMemRetrievals float64 `dynamodbav:"dayMemRetrievals"`
 }
 
 var (
@@ -179,7 +182,7 @@ func rollupUser(ctx context.Context, client ddbAPI, table, uid, month string) er
 		return fmt.Errorf("usage-rollup: query usage items for %s: %w", uid, err)
 	}
 
-	var monthTokens, monthSeconds float64
+	var monthTokens, monthSeconds, monthMemEvents, monthMemRetrievals float64
 	for _, raw := range out.Items {
 		var item usageItem
 		if err := attributevalue.UnmarshalMap(raw, &item); err != nil {
@@ -190,6 +193,8 @@ func rollupUser(ctx context.Context, client ddbAPI, table, uid, month string) er
 		}
 		monthTokens += item.DayTokens
 		monthSeconds += item.DaySeconds
+		monthMemEvents += item.DayMemEvents
+		monthMemRetrievals += item.DayMemRetrievals
 	}
 
 	_, err = client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
@@ -198,10 +203,12 @@ func rollupUser(ctx context.Context, client ddbAPI, table, uid, month string) er
 			"pk": &types.AttributeValueMemberS{Value: pk},
 			"sk": &types.AttributeValueMemberS{Value: monthSK},
 		},
-		UpdateExpression: aws.String("SET monthTokens = :mt, monthSeconds = :ms, updatedAt = :ua"),
+		UpdateExpression: aws.String("SET monthTokens = :mt, monthSeconds = :ms, monthMemEvents = :me, monthMemRetrievals = :mr, updatedAt = :ua"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":mt": &types.AttributeValueMemberN{Value: strconv.FormatFloat(monthTokens, 'f', -1, 64)},
 			":ms": &types.AttributeValueMemberN{Value: strconv.FormatFloat(monthSeconds, 'f', -1, 64)},
+			":me": &types.AttributeValueMemberN{Value: strconv.FormatFloat(monthMemEvents, 'f', -1, 64)},
+			":mr": &types.AttributeValueMemberN{Value: strconv.FormatFloat(monthMemRetrievals, 'f', -1, 64)},
 			":ua": &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
 		},
 	})

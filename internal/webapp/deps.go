@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/agentmemory"
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/codeupdate"
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
@@ -93,6 +94,13 @@ type Deps struct {
 	// deliverables routes then answer 503 and the deliverable_* tools
 	// report not_configured.
 	Deliv *deliv.Service
+
+	// AgentMemory is the agentcore-memory seam (internal/agentmemory): the
+	// transcript sink writes events, the memory tools and the Memory page
+	// read records, the export lists them. nil when AGENTCORE_MEMORY_ID is
+	// unset or the mode is off; every method on a nil *Service is a no-op
+	// and Admits() is false, so callers need no nil checks of their own.
+	AgentMemory *agentmemory.Service
 
 	// Firehose is the M7 telemetry-lake sink (Kinesis Firehose Direct
 	// PUT -> live-ninja-analytics S3 bucket -> Glue/Athena, wired in

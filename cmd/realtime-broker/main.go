@@ -48,6 +48,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/agentmemory"
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/clientver"
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
@@ -86,6 +87,11 @@ type Request struct {
 	// two-year-old one, and the Azure gate below would fail closed for every
 	// session (azure-voice-plan.md WS-D M1, gap register W3).
 	ClientVersion string `json:"clientVersion,omitempty"`
+	// Role is the caller's verified role ("owner" | "member"), forwarded by
+	// the web function. The agentcore-memory rollout gate
+	// (AGENTCORE_MEMORY_MODE=owner) decides the REMEMBERED preload from it,
+	// so no user read is needed at mint.
+	Role string `json:"role,omitempty"`
 	// Capabilities is the set of session-bootstrap modes the calling client
 	// understands (e.g. "azure-direct", "voice-live-direct"). A client that
 	// does not send it gets no Azure engine, which is the fail-closed
@@ -241,6 +247,10 @@ type broker struct {
 	// settings reads the caller's voiceEngine pin at mint (FR-VE-03); the
 	// same *dynamodb.Client as ddb (it satisfies both Query and GetItem).
 	settings realtime.SettingsGetter
+	// memory is the agentcore-memory seam (plan.md mint-preload): one
+	// RetrieveMemoryRecords per mint renders the REMEMBERED block. nil when
+	// AGENTCORE_MEMORY_ID is unset or the mode is off.
+	memory *agentmemory.Service
 	// novaMint mints the short-lived per-session bridge token for
 	// nova-pinned devices (auth.Signer-backed); nil when JWT_KMS_KEY_ID is
 	// unset, in which case a nova mint returns a "bridge unavailable" error.
@@ -447,7 +457,8 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 	// as the voice read: an empty or unreadable profile yields "" and mints
 	// exactly as it did pre-M15.
 	baseKnowledge := realtime.BuildBaseKnowledge(
-		store.LoadProfileForDevice(ctx, b.settings, b.table, req.UserID, req.DeviceID), time.Now())
+		store.LoadProfileForDevice(ctx, b.settings, b.table, req.UserID, req.DeviceID), time.Now()) +
+		b.rememberedBlock(ctx, l, req)
 
 	// Guide Entity injection (FR-MEM-07): append the user's enabled guides
 	// to the persona instructions, priority order. Best-effort — a guide
@@ -562,7 +573,8 @@ func (b *broker) handleNovaBridge(ctx context.Context, l *slog.Logger, req Reque
 
 	sv := realtime.ResolveSessionVoiceForDevice(ctx, b.settings, b.table, req.UserID, req.DeviceID, req.Persona, req.VoiceOverride)
 	baseKnowledge := realtime.BuildBaseKnowledge(
-		store.LoadProfileForDevice(ctx, b.settings, b.table, req.UserID, req.DeviceID), time.Now())
+		store.LoadProfileForDevice(ctx, b.settings, b.table, req.UserID, req.DeviceID), time.Now()) +
+		b.rememberedBlock(ctx, l, req)
 	guideSuffix := ""
 	if guides, gerr := realtime.LoadEnabledGuides(ctx, b.ddb, b.table, req.UserID); gerr != nil {
 		l.Warn("realtime-broker: guide load failed; minting Nova without guides",
@@ -653,7 +665,8 @@ func (b *broker) handleGeminiDirect(ctx context.Context, l *slog.Logger, req Req
 	gv := realtime.ResolveSessionGeminiVoiceForDevice(ctx, b.settings, b.table, req.UserID, req.DeviceID, req.Persona)
 	accentDirective := realtime.AccentDirective(gv.AccentID)
 	baseKnowledge := realtime.BuildBaseKnowledge(
-		store.LoadProfileForDevice(ctx, b.settings, b.table, req.UserID, req.DeviceID), time.Now())
+		store.LoadProfileForDevice(ctx, b.settings, b.table, req.UserID, req.DeviceID), time.Now()) +
+		b.rememberedBlock(ctx, l, req)
 
 	guideSuffix := ""
 	if guides, gerr := realtime.LoadEnabledGuides(ctx, b.ddb, b.table, req.UserID); gerr != nil {
@@ -730,7 +743,8 @@ func (b *broker) handleFallbackTurn(ctx context.Context, l *slog.Logger, req Req
 	// and fails in the text fallback, which is a worse bug than the outage
 	// that triggered the fallback.
 	extraSystem := realtime.SessionDirectives + realtime.BuildBaseKnowledge(
-		store.LoadProfileForDevice(ctx, b.settings, b.table, req.UserID, req.DeviceID), time.Now())
+		store.LoadProfileForDevice(ctx, b.settings, b.table, req.UserID, req.DeviceID), time.Now()) +
+		b.rememberedBlock(ctx, l, req)
 
 	// Tool-capable turn: the server-executable tool catalog only. The
 	// model's tool_calls are returned verbatim for the WEB function to
@@ -979,6 +993,7 @@ func main() {
 		ddb:             ddb,
 		table:           appCfg.TableName,
 		settings:        ddb, // *dynamodb.Client satisfies SettingsGetter (GetItem)
+		memory:          agentmemory.NewFromAWSConfig(awsCfg, agentmemory.ConfigFromEnv(), logger),
 		bridgeBaseURL:   os.Getenv("NOVA_BRIDGE_URL"),
 	}
 	wireNovaBridge(b, logger, ctx, appCfg.JWTKmsKeyID)
@@ -1122,4 +1137,40 @@ func newAzureMinterFromEnv(loader *config.Loader, deployment string) realtimeMin
 		return nil
 	}
 	return realtime.NewAzureMinter(loader, endpoint, deployment)
+}
+
+// rememberedPreloadBudget bounds the one RetrieveMemoryRecords call a mint
+// makes. AWS quotes about 200 ms; past this the session mints without the
+// block rather than delaying the user's first word.
+const rememberedPreloadBudget = 400 * time.Millisecond
+
+// rememberedPreloadTopK is how many records the REMEMBERED block carries.
+const rememberedPreloadTopK = 10
+
+// rememberedBlock renders the caller's top long-term memory records for the
+// session instructions (plan.md agentcore-memory, milestone mint-preload).
+// Empty when memory is not configured, the rollout mode does not admit the
+// caller's role, the call times out, or there is nothing remembered — every
+// one of those mints exactly as before.
+func (b *broker) rememberedBlock(ctx context.Context, l *slog.Logger, req Request) string {
+	if !b.memory.Admits(req.Role) {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, rememberedPreloadBudget)
+	defer cancel()
+	start := time.Now()
+	recs, err := b.memory.Preload(ctx, req.UserID, rememberedPreloadTopK)
+	observ.EmitMetric(metricsNamespace, "MemoryPreloadLatency",
+		float64(time.Since(start).Milliseconds()), "Milliseconds", nil)
+	if err != nil {
+		l.Warn("realtime-broker: memory preload failed; minting without the REMEMBERED block",
+			slog.String("error", err.Error()))
+		observ.EmitMetric(metricsNamespace, "MemoryPreloadErrors", 1, "Count", nil)
+		return ""
+	}
+	texts := make([]string, 0, len(recs))
+	for _, r := range recs {
+		texts = append(texts, r.Text)
+	}
+	return realtime.RememberedBlock(texts)
 }

@@ -2694,3 +2694,11 @@ dialog.conv-overlay[open] { display: flex; }
 .conv-peer[data-state="thinking"] { background: var(--ln-warn-tint); color: var(--ln-warn-ink); border-color: currentColor; }
 /* The one state that matters at a glance: that device is the one talking. */
 .conv-peer[data-state="speaking"] { background: var(--ln-success-tint); color: var(--ln-success-ink); border-color: currentColor; }
+
+/* Memory page — "Learned from conversations" (agentcore-memory). */
+.mem-learned { list-style: none; margin: 0; padding: 0; }
+.mem-learned__item { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--ln-border); }
+.mem-learned__item:first-child { border-top: 0; }
+.mem-learned__body { flex: 1; min-width: 0; }
+.mem-learned__text { margin: 0; overflow-wrap: anywhere; }
+.mem-learned__meta { margin: 4px 0 0; font-size: 0.85em; color: var(--ln-muted); }

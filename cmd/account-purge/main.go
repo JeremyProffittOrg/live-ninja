@@ -56,6 +56,7 @@ import (
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/agentmemory"
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
 	"github.com/JeremyProffittOrg/live-ninja/internal/observ"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
@@ -128,6 +129,11 @@ type Purger struct {
 	SQS   sqsAPI
 	Store *store.Store
 
+	// Memory purges the actor's AgentCore events and long-term records
+	// (agentcore-memory). nil skips the step; a *agentmemory.Service that is
+	// itself nil (memory off) purges nothing and reports zero.
+	Memory memoryPurger
+
 	Table              string
 	DeliverablesBucket string // env DELIVERABLES_BUCKET ("" -> skip)
 	UserBucket         string // env USER_BUCKET ("" -> skip)
@@ -139,6 +145,11 @@ type Purger struct {
 }
 
 type itemKey struct{ pk, sk string }
+
+// memoryPurger is the agentcore-memory seam this worker needs.
+type memoryPurger interface {
+	PurgeActor(ctx context.Context, userID string) (events, records int, err error)
+}
 
 // Run executes the full purge for one event. Errors from best-effort
 // steps (S3, IoT, email) are logged and do not fail the run; errors that
@@ -224,6 +235,19 @@ func (p *Purger) Run(ctx context.Context, ev Event) error {
 		return fmt.Errorf("account-purge: delete activeuser markers: %w", err)
 	}
 	deleted += len(markerKeys)
+
+	// ---- 5b. AgentCore memory (agentcore-memory): every event in every
+	// session and every long-term record of this actor. Fails the run like
+	// the table steps do, so the async retry finishes what a throttle
+	// interrupted rather than leaving conversation memory behind.
+	if p.Memory != nil {
+		events, records, merr := p.Memory.PurgeActor(ctx, ev.UserID)
+		if merr != nil {
+			return fmt.Errorf("account-purge: agentcore memory: %w", merr)
+		}
+		log.Info("account-purge: agentcore memory purged",
+			slog.Int("events", events), slog.Int("records", records))
+	}
 
 	// ---- 6. the USER# partition itself (PROFILE last is not required —
 	// the whole partition goes in one keys-then-delete pass; a re-run
@@ -555,6 +579,7 @@ func main() {
 		IoT:                iot.NewFromConfig(awsCfg),
 		SQS:                sqs.NewFromConfig(awsCfg),
 		Store:              store.NewWithClient(ddbClient, cfg.TableName),
+		Memory:             agentmemory.NewFromAWSConfig(awsCfg, agentmemory.ConfigFromEnv(), logger),
 		Table:              cfg.TableName,
 		DeliverablesBucket: os.Getenv("DELIVERABLES_BUCKET"),
 		UserBucket:         os.Getenv("USER_BUCKET"),

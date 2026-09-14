@@ -1702,10 +1702,13 @@ workstream `managed-kb-knowledge` stays in the backlog (scope decision below).
   `role` to the mint request so the broker can gate the preload without a user read.
 - `handleTranscript` (`internal/webapp/api_routes.go:823`) already respects
   `privacy.storeTranscripts`; events are only written when transcripts are stored.
+- `scripts/agentmemory-smoke -actor <id>` (2026-09-14): `RetrieveMemoryRecords`/`ListMemoryRecords`
+  honour an actor scope only through `namespacePath`; `namespace` is exact-match. Extraction landed
+  about 90 s after a single CreateEvent.
 
 ### Milestones
 
-- [~] `memory-resource` — `template.yaml`: parameters `AgentCoreMemoryMode` (default `owner`) and
+- [x] `memory-resource` — `template.yaml`: parameters `AgentCoreMemoryMode` (default `owner`) and
   `AgentCoreMonthlyBudgetUsd` (default 25); resource `AgentCoreMemory` (Name `live_ninja_memory`,
   EventExpiryDuration 30, strategies `facts` → `/users/{actorId}/facts/` and `preferences` →
   `/users/{actorId}/preferences/`); env `AGENTCORE_MEMORY_ID`/`AGENTCORE_MEMORY_MODE` on the web,
@@ -1713,30 +1716,30 @@ workstream `managed-kb-knowledge` stays in the backlog (scope decision below).
   Deploy run is green and
   `aws bedrock-agentcore-control get-memory --memory-id $(aws cloudformation describe-stacks --stack-name live-ninja --query "Stacks[0].Outputs[?OutputKey=='AgentCoreMemoryId'].OutputValue" --output text) --query status --output text`
   prints `ACTIVE`.
-- [~] `cost-guard` — `BudgetAgentCore` (`AWS::Budgets::Budget`, $25, services filter, 80%/100%
+- [x] `cost-guard` — `BudgetAgentCore` (`AWS::Budgets::Budget`, $25, services filter, 80%/100%
   email); `store.AddDayMemoryUsage` bumps `dayMemEvents`/`dayMemRetrievals`; `cmd/usage-rollup`
   sums them into `monthMemEvents`/`monthMemRetrievals`. Done when:
   `aws budgets describe-budgets --account-id 759775734231 --query "Budgets[?BudgetName=='live-ninja-agentcore-25'].BudgetName" --output text`
   prints the name and `go test ./cmd/usage-rollup/ ./internal/store/` passes.
-- [ ] `event-writer` — `internal/agentmemory` (new package: SDK wrapper, exchange pairing,
+- [~] `event-writer` — `internal/agentmemory` (new package: SDK wrapper, exchange pairing,
   idempotent client tokens `sessionId#seq`); `handleTranscript` writes one event per exchange when
   the mode admits the caller's role and transcripts are stored; failures are logged and never
   fail the flush. Done when: `go test ./internal/agentmemory/ ./internal/webapp/ -race` passes
   with cases for pairing, mode gating, and a failing client.
-- [ ] `mint-preload` — the web mint request carries `role`; the broker calls
+- [~] `mint-preload` — the web mint request carries `role`; the broker calls
   `RetrieveMemoryRecords` (namespace `/users/{actorId}/`, topK 10, 400 ms deadline) on every mint
   path and the fallback turn, and appends `realtime.RememberedBlock` after BASE KNOWLEDGE;
   timeout or error mints unchanged; `memoryUsageDirective` tells the model the block exists.
   Done when: `go test ./internal/realtime/ ./cmd/realtime-broker/` passes with a timeout case and
   a rendering case.
-- [ ] `memory-tools-cutover` — `memory_search` merges AgentCore records (`remembered[]`) with the
+- [~] `memory-tools-cutover` — `memory_search` merges AgentCore records (`remembered[]`) with the
   entity results; `memory_write`/`plan_upsert` also record an explicit "remember" event;
   `forget` also deletes AgentCore records whose text contains the entity name;
   `GET/DELETE /api/v1/memory/remembered` and the Memory page "Learned from conversations" list;
   Help drawer + Memory page copy updated in the same commit. Done when:
   `go test ./internal/tools/ ./internal/webapp/` passes (including `TestHelpDrawer`) and the
   owner's 10-question smoke set answers 9 of 10 by voice on web and Android.
-- [ ] `purge-and-export` — `cmd/account-purge` deletes the actor's events and records (fails the
+- [~] `purge-and-export` — `cmd/account-purge` deletes the actor's events and records (fails the
   run on error so the async retry re-runs); the account export adds the records. Done when:
   `go test ./cmd/account-purge/ ./internal/webapp/ -run 'Purge|Export'` passes.
 - [ ] `emb-retire` — not before 2026-09-28 and only with the smoke set passing: remove `EMB#`
@@ -1766,6 +1769,40 @@ unchanged.
 ### Execution log
 
 - 2026-09-14 — verified the four facts above; `go get` added `bedrockagentcore v1.48.0`.
+- 2026-09-14 — `memory-resource` + `cost-guard` infrastructure pushed as `84ee4c8`; Deploy run
+  34844298837 `success` (deploy job success). Stack output `AgentCoreMemoryId` =
+  `live_ninja_memory-5H6F7wCQhH`. `aws lambda get-function-configuration --function-name live-ninja-web`
+  → `AGENTCORE_MEMORY_ID=live_ninja_memory-5H6F7wCQhH`, `AGENTCORE_MEMORY_MODE=owner`.
+  `aws budgets describe-budgets` → `live-ninja-agentcore-25`, limit 25.0, Service filter
+  `[Amazon Bedrock AgentCore, Amazon Bedrock]`. The local AWS CLI predates `bedrock-agentcore-control`,
+  so the ACTIVE check ran through the new `scripts/agentmemory-smoke` tool (Go SDK):
+  `memory live_ninja_memory-5H6F7wCQhH status=ACTIVE expiry=30d strategies=2`, strategies `facts`
+  (SEMANTIC, ACTIVE, `/users/{actorId}/facts/`) and `preferences` (USER_PREFERENCE, ACTIVE,
+  `/users/{actorId}/preferences/`).
+- 2026-09-14 — first end-to-end probe (`scripts/agentmemory-smoke -wait 4m`): CreateEvent for a
+  throwaway actor succeeded (`events written: 1`), but 16 retrievals over 4 minutes returned 0
+  records and ListMemoryRecords under the actor namespace returned 0; the actor was purged
+  (`purged: 1 event(s), 0 record(s)`). Extraction latency or namespace-prefix semantics — a second
+  probe with a 9-minute wait, the data kept, and the exact strategy namespaces polled alongside the
+  prefix is recorded below.
+- 2026-09-14 — second probe (`-wait 9m -keep`, actor `smoke-20260914-125024`): records appeared
+  about 90 s after the event under the EXACT strategy namespaces (`facts/`: 2, `preferences/`: 2)
+  while every read scoped with `namespace=/users/<actor>/` stayed at 0 for the full 9 minutes.
+  A third run (`-actor smoke-20260914-125024`) compared the scoping forms: `namespace=` exact → 2
+  records each; `namespace=/users/<actor>/` and without the slash → 0; `namespacePath=/users/<actor>/`
+  and without the slash → all 4 for RetrieveMemoryRecords AND ListMemoryRecords. Verified fact:
+  **`namespace` is exact-match on the wire; `namespacePath` is the actor scope.** The API reference's
+  "prefix" wording is wrong; the developer guide's "exact namespace" is right. `internal/agentmemory`
+  now uses `NamespacePath` for every read (Retrieve, ListRecords, PurgeActor). Also observed:
+  UserPreference records are JSON (`{"context","preference","categories"}`), so
+  `agentmemory.DisplayText` unwraps `preference` for the REMEMBERED block and the Memory page.
+- 2026-09-14 — fourth run through the fixed service path (`scripts/agentmemory-smoke -wait 4m`,
+  actor `smoke-20260914-130231`): `events written: 1`; at +93 s `retrieve: 2 record(s)`
+  (`[0.424] /users/…/facts/ "The user's sister Sarah lives in Austin."`,
+  `[0.402] /users/…/preferences/ "Has a sister named Sarah who lives in Austin"`);
+  `list: 2 record(s)`; `purged: 1 event(s), 2 record(s)`; `RESULT: OK`. The kept probe actor was
+  purged too (`purged smoke-20260914-125024: 1 event(s), 4 record(s)`). Extraction, namespacePath
+  retrieval, listing, DisplayText and purge are all verified against the deployed memory.
 
 ## Standing rules (carried forward — these do not expire)
 

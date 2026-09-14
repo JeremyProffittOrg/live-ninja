@@ -37,6 +37,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	fiberrecover "github.com/gofiber/fiber/v2/middleware/recover"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/agentmemory"
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/codeupdate"
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
@@ -248,6 +249,18 @@ func buildDeps(ctx context.Context, cfg config.App, logger *slog.Logger) (*webap
 		AndroidLatestKey:       os.Getenv("ANDROID_LATEST_KEY"),
 		AndroidAssetLinksKey:   os.Getenv("ANDROID_ASSETLINKS_KEY"),
 		CodeUpdateQueueURL:     os.Getenv("CODE_UPDATE_QUEUE_URL"),
+	}
+	// agentcore-memory: nil when AGENTCORE_MEMORY_ID is unset or the mode is
+	// off; every caller treats nil as "not configured". The counter feeds the
+	// per-user day row usage-rollup sums (plan.md cost-guard).
+	deps.AgentMemory = agentmemory.NewFromAWSConfig(awsCfg, agentmemory.ConfigFromEnv(), logger)
+	deps.AgentMemory.SetCounter(func(ctx context.Context, userID string, events, retrievals int64) {
+		if err := st.AddDayMemoryUsage(ctx, userID, store.DayPeriod(time.Now()), events, retrievals); err != nil {
+			logger.Warn("memory usage counter failed", slog.String("error", err.Error()), slog.String("userId", userID))
+		}
+	})
+	if deps.AgentMemory != nil {
+		logger.Info("agentcore memory enabled", slog.String("mode", string(deps.AgentMemory.Config().Mode)))
 	}
 	// Voice-driven code updates. All three pieces are wired together or not at
 	// all: the ghost client reaches the fleet, the store tracks a request, and

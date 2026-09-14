@@ -36,7 +36,14 @@ type Usage struct {
 	DayTokens    int64  `dynamodbav:"dayTokens,omitempty"`
 	DaySeconds   int64  `dynamodbav:"daySeconds,omitempty"`
 	DayMints     int64  `dynamodbav:"dayMints,omitempty"`
-	UpdatedAt    string `dynamodbav:"updatedAt,omitempty"`
+	// agentcore-memory counters (plan.md cost-guard): AgentCore events
+	// written and tool retrievals, per day; usage-rollup sums them into the
+	// month row so a runaway shows in the owner's own numbers.
+	DayMemEvents       int64  `dynamodbav:"dayMemEvents,omitempty"`
+	DayMemRetrievals   int64  `dynamodbav:"dayMemRetrievals,omitempty"`
+	MonthMemEvents     int64  `dynamodbav:"monthMemEvents,omitempty"`
+	MonthMemRetrievals int64  `dynamodbav:"monthMemRetrievals,omitempty"`
+	UpdatedAt          string `dynamodbav:"updatedAt,omitempty"`
 }
 
 // LogTurn is one USER#<uid>/LOG#<sessionId>#<seq %06d> transcript row
@@ -110,6 +117,16 @@ func (s *Store) AddMonthUsage(ctx context.Context, userID, month string, tokens,
 // realtime broker on every successful ephemeral-token mint).
 func (s *Store) BumpDayMints(ctx context.Context, userID string) error {
 	return s.AddDayUsage(ctx, userID, DayPeriod(time.Now()), 0, 0, 1)
+}
+
+// AddDayMemoryUsage atomically increments today's AgentCore counters
+// (agentcore-memory): events written by the transcript sink and tool
+// retrievals. Zeros are skipped like every other counter here.
+func (s *Store) AddDayMemoryUsage(ctx context.Context, userID, day string, events, retrievals int64) error {
+	return s.addUsage(ctx, userID, day, map[string]int64{
+		"dayMemEvents":     events,
+		"dayMemRetrievals": retrievals,
+	})
 }
 
 func (s *Store) addUsage(ctx context.Context, userID, period string, adds map[string]int64) error {

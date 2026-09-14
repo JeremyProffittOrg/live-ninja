@@ -28,7 +28,7 @@
 // All data-driven markup is built with textContent (never innerHTML) —
 // names/attrs/guide text are user- and model-authored data.
 
-import { apiJSON, authFetch, ApiError } from './toolclient.mjs';
+import { apiJSON, authFetch, ApiError, AuthLostError } from './toolclient.mjs';
 
 const $ = (id) => document.getElementById(id);
 
@@ -750,3 +750,106 @@ $('guideRetry').addEventListener('click', () => loadGuides());
 
 loadEntities();
 loadGuides();
+
+// ---- Learned from conversations (agentcore-memory) ----------------------
+//
+// The records AWS extracted from the user's own conversations, read
+// straight from the server on every visit (no local cache: consolidation
+// rewrites them). Forget is a two-tap confirm on the row itself — no
+// dialog, no browser confirm().
+
+const learnedLoadingEl = $('learnedLoading');
+const learnedEmptyEl = $('learnedEmpty');
+const learnedOffEl = $('learnedOff');
+const learnedErrorEl = $('learnedError');
+const learnedErrorMsgEl = $('learnedErrorMsg');
+const learnedListEl = $('learnedList');
+
+function setLearnedState(state) {
+  learnedLoadingEl.hidden = state !== 'loading';
+  learnedEmptyEl.hidden = state !== 'empty';
+  learnedOffEl.hidden = state !== 'off';
+  learnedErrorEl.hidden = state !== 'error';
+  learnedListEl.hidden = state !== 'list';
+}
+
+async function loadLearned() {
+  setLearnedState('loading');
+  let resp;
+  try {
+    resp = await apiJSON('/api/v1/memory/remembered');
+  } catch (err) {
+    if (err instanceof AuthLostError) return;
+    learnedErrorMsgEl.textContent = apiErrorMessage(err, 'Check your connection and try again.');
+    setLearnedState('error');
+    return;
+  }
+  if (!resp || resp.enabled === false) {
+    setLearnedState('off');
+    return;
+  }
+  const items = Array.isArray(resp.items) ? resp.items : [];
+  if (items.length === 0) {
+    setLearnedState('empty');
+    return;
+  }
+  learnedListEl.textContent = '';
+  for (const item of items) learnedListEl.appendChild(buildLearnedRow(item));
+  setLearnedState('list');
+}
+
+function buildLearnedRow(item) {
+  const li = document.createElement('li');
+  li.className = 'mem-learned__item';
+  li.dataset.id = item.id;
+
+  const body = document.createElement('div');
+  body.className = 'mem-learned__body';
+  const text = document.createElement('p');
+  text.className = 'mem-learned__text';
+  text.textContent = item.text;
+  body.appendChild(text);
+  const meta = document.createElement('p');
+  meta.className = 'mem-learned__meta';
+  const kind = typeof item.namespace === 'string' && item.namespace.includes('/preferences/') ? 'Preference' : 'Fact';
+  const when = item.createdAt ? fmtDate(Date.parse(item.createdAt)) : '';
+  meta.textContent = when ? `${kind} · learned ${when}` : kind;
+  body.appendChild(meta);
+  li.appendChild(body);
+
+  const btn = makeBtn('Forget', `Forget: ${item.text}`);
+  let armed = false;
+  let disarm = null;
+  btn.addEventListener('click', async () => {
+    if (!armed) {
+      armed = true;
+      btn.textContent = 'Tap again to forget';
+      disarm = setTimeout(() => {
+        armed = false;
+        btn.textContent = 'Forget';
+      }, 5000);
+      return;
+    }
+    clearTimeout(disarm);
+    btn.disabled = true;
+    try {
+      await apiJSON(`/api/v1/memory/remembered/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+    } catch (err) {
+      if (err instanceof AuthLostError) return;
+      btn.disabled = false;
+      armed = false;
+      btn.textContent = 'Forget';
+      showToast(apiErrorMessage(err, "Couldn't forget that — try again."), { error: true });
+      return;
+    }
+    li.remove();
+    showToast('Forgotten.');
+    if (!learnedListEl.children.length) setLearnedState('empty');
+  });
+  li.appendChild(btn);
+  return li;
+}
+
+$('learnedRefresh').addEventListener('click', () => loadLearned());
+$('learnedRetry').addEventListener('click', () => loadLearned());
+loadLearned();

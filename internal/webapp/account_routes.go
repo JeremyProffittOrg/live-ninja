@@ -156,6 +156,27 @@ func handleAccountExport(deps *Deps) fiber.Handler {
 			}
 		}
 
+		// agentcore-memory: the long-term records live outside the table, so
+		// the export lists them as synthetic AGENTCORE# items in the same
+		// document. A listing failure is logged, not fatal — the table export
+		// is the part the user is owed.
+		if deps.AgentMemory.Admits(Role(c)) {
+			recs, rerr := deps.AgentMemory.ListRecords(c.Context(), userID, 1000)
+			if rerr != nil {
+				deps.Log.Warn("api: export could not list agentcore records",
+					slog.String("error", rerr.Error()), slog.String("userId", userID))
+			}
+			for _, r := range recs {
+				items = append(items, map[string]any{
+					"pk":        "USER#" + userID,
+					"sk":        "AGENTCORE#" + r.ID,
+					"namespace": r.Namespace,
+					"text":      r.Text,
+					"createdAt": r.CreatedAt.UTC().Format(time.RFC3339),
+				})
+			}
+		}
+
 		now := time.Now().UTC()
 		parts, err := marshalExportParts(userID, now, items)
 		if err != nil {

@@ -89,6 +89,11 @@ The milestones below are kept for reference only; `plan.md` section `agentcore-m
 
 Restart policy for this workstream: every step is a normal push-to-main deploy; a red deploy is fixed and re-pushed (ceiling 3 per milestone, then `[!]`). Feature flag off = full rollback with no data loss because DynamoDB rows are kept until `emb-retire`.
 
+### agentcore-memory follow-ups (deferred on 2026-09-14, not plan items)
+
+- `android-learned-list` — the Android Memory screen lists DynamoDB entities only; the web Memory page gained a "Learned from conversations" list (`GET/DELETE /api/v1/memory/remembered`). Add the same list + Forget to `ui/screens/MemoryScreen.kt` (DTOs in `net/MemoryDtos.kt`). Voice recall already works on Android because the REMEMBERED block is server-side.
+- `record-pruning` — see plan.md `[!]`: needs an owner decision between age-based pruning and accepting growth.
+
 ### managed-kb-knowledge — owner knowledge on a Bedrock Managed Knowledge Base, relay kept as fallback
 
 depends on: `agentcore-memory` shipped, decision 6, and an S3 export job in the `knowledge-plane` repo.

@@ -112,7 +112,7 @@
 <main class="mem-shell" id="main">
   <div class="mem-page-head">
     <h1>Memory</h1>
-    <p class="ln-muted">Everything Live Ninja remembers about your world — people, places, facts, projects, tasks, and plans. Edit anything, or make it forget.</p>
+    <p class="ln-muted">Everything Live Ninja remembers about your world — people, places, facts, projects, tasks, and plans. Edit anything, or make it forget. What it learned on its own while you talked is listed further down.</p>
   </div>
 
   <section class="ln-card" aria-labelledby="memHeading">
@@ -176,6 +176,37 @@
     <div class="mem-more" id="memMoreWrap" hidden>
       <button class="ln-btn ln-btn--ghost" id="memMore" type="button">Load more</button>
     </div>
+  </section>
+
+  <section class="ln-card" aria-labelledby="learnedHeading">
+    <div class="mem-section-head">
+      <h2 id="learnedHeading">Learned from conversations</h2>
+      <button class="ln-btn ln-btn--ghost" id="learnedRefresh" type="button">Refresh</button>
+    </div>
+    <p class="ln-muted">Facts and preferences Live Ninja picked up on its own while you talked. They appear a minute or so after a conversation and are brought into every new one. Forget any of them here.</p>
+
+    <div class="mem-skeleton" id="learnedLoading" role="status" aria-label="Loading what was learned">
+      <div class="mem-skeleton__row"></div>
+      <div class="mem-skeleton__row"></div>
+    </div>
+
+    <div class="mem-state" id="learnedEmpty" hidden>
+      <h3>Nothing learned yet</h3>
+      <p>Have a conversation, and what matters shows up here shortly after.</p>
+    </div>
+
+    <div class="mem-state" id="learnedOff" hidden>
+      <h3>Not switched on for this account yet</h3>
+      <p>Learning from conversations is being rolled out gradually. Everything you ask it to remember still works as before.</p>
+    </div>
+
+    <div class="mem-state mem-state--error" id="learnedError" hidden>
+      <h3>Couldn’t load what was learned</h3>
+      <p id="learnedErrorMsg">Check your connection and try again.</p>
+      <button class="ln-btn ln-btn--ghost" id="learnedRetry" type="button">Retry</button>
+    </div>
+
+    <ul class="mem-learned" id="learnedList" hidden></ul>
   </section>
 
   <section class="ln-card" aria-labelledby="guideHeading">

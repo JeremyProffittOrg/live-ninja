@@ -45,6 +45,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/scheduler"
 	"github.com/gofiber/fiber/v2"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/agentmemory"
 	"github.com/JeremyProffittOrg/live-ninja/internal/memory"
 	"github.com/JeremyProffittOrg/live-ninja/internal/rca"
 	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
@@ -290,6 +291,9 @@ type brokerRequest struct {
 	// (azure-voice-plan.md WS-D M1).
 	ClientVersion string   `json:"clientVersion,omitempty"`
 	Capabilities  []string `json:"capabilities,omitempty"`
+	// Role is the caller's verified role, for the broker's agentcore-memory
+	// rollout gate (REMEMBERED preload, AGENTCORE_MEMORY_MODE=owner).
+	Role string `json:"role,omitempty"`
 }
 
 // brokerResponse mirrors cmd/realtime-broker's Response.
@@ -493,6 +497,7 @@ func handleRealtimeSession(deps *Deps) fiber.Handler {
 		resp, err := invokeRealtimeBroker(c.Context(), deps, brokerRequest{
 			TxID:          TxID(c),
 			UserID:        userID,
+			Role:          Role(c),
 			Surface:       surface,
 			DeviceID:      deviceID,
 			Persona:       persona,
@@ -610,6 +615,7 @@ func buildAPIToolsRegistry(deps *Deps) *tools.Registry {
 		SchedulerGroup:   os.Getenv("SCHEDULER_GROUP"),
 		SchedulerRoleARN: os.Getenv("SCHEDULER_ROLE_ARN"),
 		Reauthorize:      apiReauthorize(deps),
+		AgentMemory:      tools.NewAgentMemoryService(deps.AgentMemory),
 
 		// Voice-driven code updates. Same wiring lesson as the memory seam
 		// below: without these three lines template.yaml can set every env var
@@ -912,6 +918,25 @@ func handleTranscript(deps *Deps) fiber.Handler {
 			}
 		}
 
+		// agentcore-memory (plan.md event-writer): one event per exchange,
+		// only when transcripts are stored (the same privacy switch) and the
+		// rollout mode admits this caller. Best-effort and bounded — a memory
+		// failure or a slow AgentCore never fails or stalls the flush.
+		if storeTranscripts && len(body.Turns) > 0 && deps.AgentMemory.Admits(Role(c)) {
+			turns := make([]agentmemory.Turn, 0, len(body.Turns))
+			for _, t := range body.Turns {
+				turns = append(turns, agentmemory.Turn{Seq: t.Seq, Role: t.Role, Text: t.Text})
+			}
+			mctx, cancel := context.WithTimeout(c.UserContext(), agentMemoryFlushBudget)
+			n, merr := deps.AgentMemory.RecordExchanges(mctx, userID, body.SessionID, turns)
+			cancel()
+			if merr != nil {
+				deps.Log.Warn("api: agentcore memory events failed",
+					slog.String("error", merr.Error()), slog.String("userId", userID),
+					slog.String("sessionId", body.SessionID), slog.Int("written", n))
+			}
+		}
+
 		// ACTIVEUSER marker: lets usage-rollup find today's active users
 		// via a Query on CONFIG (never a table Scan) instead of scanning
 		// every user's USAGE partition.
@@ -946,6 +971,11 @@ func handleTranscript(deps *Deps) fiber.Handler {
 		return c.JSON(fiber.Map{"ok": true, "written": written})
 	}
 }
+
+// agentMemoryFlushBudget bounds the AgentCore event writes one transcript
+// flush may spend; the flush itself has a 30s Lambda ceiling and the
+// client retries the batch (idempotent client tokens) if it is cut short.
+const agentMemoryFlushBudget = 5 * time.Second
 
 // sessionCost is the sanitized client cost estimate forwarded to the
 // topic extractor (zero value = not reported / rejected).
@@ -1049,6 +1079,7 @@ func handleFallbackTurn(deps *Deps, registry *tools.Registry) fiber.Handler {
 				return nil, fmt.Errorf("marshal fallback turn payload: %w", err)
 			}
 			return invokeRealtimeBroker(c.Context(), deps, brokerRequest{
+				Role: Role(c),
 				Mode: "fallback-turn", TxID: TxID(c), UserID: userID, Surface: surface, DeviceID: deviceID,
 				Persona: personaRef, Payload: payload,
 			})
@@ -1191,6 +1222,7 @@ func handleFallbackSTT(deps *Deps) fiber.Handler {
 			return apiInternalError(c, deps, "marshal fallback stt payload", err)
 		}
 		resp, err := invokeRealtimeBroker(c.Context(), deps, brokerRequest{
+			Role: Role(c),
 			Mode: "fallback-stt", TxID: TxID(c), UserID: userID, Surface: surface, DeviceID: deviceID, Payload: payload,
 		})
 		if err != nil {
@@ -1225,6 +1257,7 @@ func handleFallbackTTS(deps *Deps) fiber.Handler {
 			return apiInternalError(c, deps, "marshal fallback tts payload", err)
 		}
 		resp, err := invokeRealtimeBroker(c.Context(), deps, brokerRequest{
+			Role: Role(c),
 			Mode: "fallback-tts", TxID: TxID(c), UserID: userID, Surface: surface, DeviceID: deviceID, Payload: payload,
 		})
 		if err != nil {

@@ -403,6 +403,12 @@ type Deps struct {
 	// not_configured, because the launch happens in that worker, not here.
 	CodeUpdateQueueURL string
 
+	// AgentMemory is the agentcore-memory seam (agentmemory.go in this
+	// package): memory_search also returns the records AWS extracted from
+	// conversations, memory_write/plan_upsert also record the fact, forget
+	// also deletes matching records. nil = not configured (tools unchanged).
+	AgentMemory AgentMemoryService
+
 	Scheduler        SchedulerAPI // set_timer / set_reminder
 	SchedulerGroup   string       // env SCHEDULER_GROUP
 	SchedulerRoleARN string       // env SCHEDULER_ROLE_ARN
