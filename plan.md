@@ -1746,10 +1746,12 @@ workstream `managed-kb-knowledge` stays in the backlog (scope decision below).
   writes, `ListEmbeddings`, the cosine path and the Titan IAM statement; rewrite
   `contracts/api.md:209-211`, `PRD.md` memory sections and `docs/system-map.md`. Done when:
   `grep -rn "EMB#\|Cosine(" internal/ cmd/` prints nothing and `go test ./...` passes.
-- [!] `record-pruning` — blocked: AgentCore exposes no last-retrieved timestamp per record, so
-  "delete records never retrieved in 180 days" cannot be implemented as specified. Unblocks with
-  an owner decision: prune by `CreatedAt` age instead (loses durable facts) or accept growth
-  (about $0.15 per user-month at 200 records).
+- [x] `record-pruning` — resolved 2026-09-14 by the owner's "do it" on the proposed default:
+  **accept growth, no age-based deletion.** AgentCore exposes no last-retrieved timestamp, so the
+  180-day rule cannot be implemented as specified, and deleting by `CreatedAt` would drop durable
+  facts (a home address learned a year ago). Growth is bounded by consolidation (records are merged,
+  not appended) and costs about $0.15 per user-month at 200 records; the `live-ninja-agentcore-25`
+  budget is the guard. Revisit only if the budget notification fires. No code.
 
 ### Restart policy
 
@@ -1814,6 +1816,19 @@ unchanged.
   match: Android Memory screen gains a third tab "Learned" backed by `GET/DELETE /api/v1/memory/remembered`
   (`RememberedDto`, `MemoryRepository.listRemembered/forgetRemembered`, `MemoryViewModel` learned
   state + confirm dialog, `MemoryViewModelLearnedTest`). Off-account renders "Not switched on", not "empty".
+- 2026-09-14 — owner said "do it" on the Blocked list. `record-pruning` closed as accept-growth (above).
+  Signed Android release: NOT possible — `gh secret list` has no `ANDROID_RELEASE_KEYSTORE_B64`,
+  `ANDROID_RELEASE_KEY_ALIAS`, `ANDROID_RELEASE_KEY_PASSWORD`, `ANDROID_RELEASE_STORE_PASSWORD`
+  (only `ANDROID_DEBUG_KEYSTORE_B64`), so `build-and-publish` would fail at signing, and
+  `GET /v1/app/android/latest` answers `release_not_available`. The push workflow no longer
+  publishes debug APKs. Device path used instead, as on 2026-08-09: local
+  `./gradlew :app:assembleDebug -Pliveninja.arm64Only=true` at `9f48b6d` (resources contain the new
+  strings), `adb -s R52XC06P9KJ install -r -g` → `Success`, `dumpsys package` → `versionCode=6
+  versionName=0.3.0 lastUpdateTime=2026-09-14 12:37:23`; app launched (pid 4874) and shows
+  onboarding step 1 — the tablet is not signed in, so the Learned tab needs the owner's Amazon
+  sign-in to be seen. The second attached tablet (`R5GL700QAGK`, SM-X930) has no app installed and
+  was left alone; the S9 phone was not attached. Unblocking the signed release needs the owner to
+  add the four release secrets with `scripts/set-secret.sh` (agents never see secret values).
 
 ## Standing rules (carried forward — these do not expire)
 
