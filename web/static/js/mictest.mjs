@@ -37,6 +37,7 @@ export function createMicTest({ getMicDeviceId = () => null, document: doc = doc
   let openedAt = 0;
   let peak = 0;
   let heard = false;
+  let acquiring = false;
 
   function setStatus(text, { good = false, bad = false } = {}) {
     statusEl.textContent = text;
@@ -95,6 +96,10 @@ export function createMicTest({ getMicDeviceId = () => null, document: doc = doc
   }
 
   async function open() {
+    // A second open (double tap, or the bottom-bar select firing while the
+    // rail button's request is still pending) must not acquire a second
+    // stream that the close handler never sees.
+    if (acquiring) return;
     peak = 0;
     heard = false;
     openedAt = Date.now();
@@ -103,12 +108,25 @@ export function createMicTest({ getMicDeviceId = () => null, document: doc = doc
     setStatus('Requesting microphone…');
     if (typeof dlg.showModal === 'function' && !dlg.open) dlg.showModal();
 
+    let acquired;
+    acquiring = true;
     try {
-      stream = await acquireMicStream({ deviceId: getMicDeviceId() });
+      acquired = await acquireMicStream({ deviceId: getMicDeviceId() });
     } catch (err) {
-      fail(err);
+      acquiring = false;
+      if (dlg.open) fail(err);
       return;
     }
+    acquiring = false;
+    // Closed (Esc/Close) while the permission prompt or device open was
+    // pending: cleanup() ran with no stream to stop, so stop this one here —
+    // otherwise the mic stays live with the dialog gone.
+    if (!dlg.open) {
+      for (const t of acquired.getTracks()) t.stop();
+      return;
+    }
+    cleanup(); // release anything a previous open left running
+    stream = acquired;
 
     const track = stream.getAudioTracks()[0];
     if (deviceEl && track) {

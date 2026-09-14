@@ -188,6 +188,7 @@
     <string name="login_error_network">Can\'t reach Live Ninja right now. Check your connection and try again.</string>
     <string name="login_error_session_expired">Your session ended. Sign in again to continue.</string>
     <string name="login_error_storage_reset">Sign-in data was reset after a storage error — please sign in again.</string>
+    <string name="login_error_no_browser">No web browser is available to open the sign-in page.</string>
 
     <string name="onboarding_step_progress">Step %1$d of %2$d</string>
     <string name="onboarding_back">Back</string>
@@ -463,6 +464,7 @@
     <string name="settings_diagnostics_view">View logs</string>
     <string name="settings_diagnostics_export">Export logs</string>
     <string name="settings_diagnostics_export_empty">No log data to export yet.</string>
+    <string name="settings_diagnostics_export_failed">Couldn\'t export logs. Try again.</string>
     <string name="settings_diagnostics_clear">Clear logs</string>
     <string name="settings_diagnostics_clear_confirm_title">Clear logs?</string>
     <string name="settings_diagnostics_clear_confirm_body">This clears the in-app log buffer. Exported and rotated files already on disk are unaffected.</string>

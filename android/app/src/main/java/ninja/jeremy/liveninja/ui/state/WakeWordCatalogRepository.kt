@@ -4,6 +4,7 @@ import java.io.IOException
 import java.util.Optional
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -97,6 +98,14 @@ class WakeWordCatalogRepository @Inject constructor(
                 true
             }
         } catch (_: IOException) {
+            _lastFetchFailed.value = true
+            false
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // A malformed catalog body (JSONException) or an interceptor failure
+            // used to escape into the calling viewModelScope and crash the app;
+            // it is the same "could not refresh" outcome as a network error.
             _lastFetchFailed.value = true
             false
         }

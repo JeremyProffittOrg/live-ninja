@@ -129,7 +129,10 @@ class HistoryViewModel @Inject constructor(
                 _state.update {
                     it.copy(
                         loadingMore = false,
-                        items = it.items + page.items.mapNotNull { c -> toUi(c, it.topics, it.devices) },
+                        // De-duplicated by id: the list is keyed by id and a row
+                        // straddling two pages would crash LazyColumn.
+                        items = (it.items + page.items.mapNotNull { c -> toUi(c, it.topics, it.devices) })
+                            .distinctBy { row -> row.id },
                         nextCursor = page.nextCursor,
                     )
                 }

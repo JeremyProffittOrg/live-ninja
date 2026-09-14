@@ -26,8 +26,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonPrimitive
 import ninja.jeremy.liveninja.log.LogExporter
 import ninja.jeremy.liveninja.log.LogSink
 import ninja.jeremy.liveninja.net.PersonaInfoDto
@@ -1412,7 +1412,10 @@ class SettingsViewModel @Inject constructor(
     }
 }
 
+// Only scalar metadata is displayable. A nested object/array from another
+// client's metadata used to throw here (`jsonPrimitive` on a non-primitive),
+// which failed the whole device-settings sync rather than one label.
 private fun JsonObject.toStringMap(): Map<String, String> =
     entries.mapNotNull { (key, value) ->
-        value.jsonPrimitive.contentOrNull?.let { key to it }
+        (value as? JsonPrimitive)?.contentOrNull?.let { key to it }
     }.toMap()

@@ -182,6 +182,10 @@ async function loadTopics() {
     topics = raw.map(normalizeTopic).filter(Boolean);
     renderTopicChips();
     renderTopicManager();
+    // loadTopics() and loadConversations() race at init: rows that rendered
+    // before the taxonomy landed resolved every topic id to "—". Re-render
+    // the table that is already on screen so its badges pick up the names.
+    if (!histTableWrapEl.hidden && conversations.length > 0) renderConversations();
   } catch (err) {
     topicChipsNote.textContent = apiErrorMessage(err, "Couldn't load topics — conversations are still listed below.");
     topicChipsNote.hidden = false;
@@ -723,10 +727,18 @@ function buildToolCard(turn) {
 // (list level: one control governs every detail view), default off,
 // remembered in localStorage across visits.
 const showToolCalls = $('showToolCalls');
-showToolCalls.checked = localStorage.getItem(SHOW_TOOLS_KEY) === '1';
+try {
+  showToolCalls.checked = localStorage.getItem(SHOW_TOOLS_KEY) === '1';
+} catch {
+  /* storage blocked (private mode) — default off; the page must still load */
+}
 detailTranscript.classList.toggle('show-tools', showToolCalls.checked);
 showToolCalls.addEventListener('change', () => {
-  localStorage.setItem(SHOW_TOOLS_KEY, showToolCalls.checked ? '1' : '0');
+  try {
+    localStorage.setItem(SHOW_TOOLS_KEY, showToolCalls.checked ? '1' : '0');
+  } catch {
+    /* non-fatal — the toggle still applies for this visit */
+  }
   detailTranscript.classList.toggle('show-tools', showToolCalls.checked);
 });
 
@@ -734,9 +746,17 @@ showToolCalls.addEventListener('change', () => {
 // (system marker, tool audit lines, seq/ts/engine metadata) instead of the
 // merged bubble view. Default off, remembered across visits.
 const showRawTranscript = $('showRawTranscript');
-showRawTranscript.checked = localStorage.getItem(SHOW_RAW_KEY) === '1';
+try {
+  showRawTranscript.checked = localStorage.getItem(SHOW_RAW_KEY) === '1';
+} catch {
+  /* storage blocked (private mode) — default off; the page must still load */
+}
 showRawTranscript.addEventListener('change', () => {
-  localStorage.setItem(SHOW_RAW_KEY, showRawTranscript.checked ? '1' : '0');
+  try {
+    localStorage.setItem(SHOW_RAW_KEY, showRawTranscript.checked ? '1' : '0');
+  } catch {
+    /* non-fatal — the toggle still applies for this visit */
+  }
   if (detailConvId) renderDetailBody();
 });
 

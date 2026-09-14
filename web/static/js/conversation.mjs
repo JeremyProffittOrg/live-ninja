@@ -2259,6 +2259,14 @@ if (settingsDrawer && settingsDrawerBtn && typeof settingsDrawer.showModal === '
   // state, so this doesn't need to wait for a first open.
   initSettingsPanel().catch((err) => {
     console.error('settings panel failed to initialize', err);
+    if (err && err.name === 'AuthLostError') return; // toolclient redirects
+    // Without this the drawer opens with every control inert and no clue
+    // why — the settings document or device registration never loaded.
+    toast("Couldn't load your settings panel — reload the page to try again.", {
+      error: true,
+      txId: err instanceof ApiError ? err.txId : '',
+      detail: (err && (err.message || String(err))) || 'settings panel failed to initialize',
+    });
   });
   // A Settings link elsewhere in the app (nav.html, history.html) can't
   // deep-link into this dialog directly, so it points here with
@@ -2552,7 +2560,7 @@ async function bootstrap() {
   // Voices catalog kept for human-readable labels in banner copy only —
   // the voice quick-switch select no longer exists (voice is
   // persona-embedded; owner shell redesign 2026-07-18 v2).
-  if (voices.status === 'fulfilled' && Array.isArray(voices.value.voices)) {
+  if (voices.status === 'fulfilled' && voices.value && Array.isArray(voices.value.voices)) {
     voiceCatalog = voices.value.voices;
   }
 

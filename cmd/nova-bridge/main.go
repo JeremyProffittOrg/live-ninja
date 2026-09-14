@@ -35,6 +35,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -61,6 +62,14 @@ type server struct {
 	apiBase  string
 	idleRead time.Duration
 	maxSess  time.Duration
+
+	// draining flips on the shutdown signal so /healthz reports 503 and the
+	// ALB stops routing new sessions here; sessions counts the hijacked
+	// WebSocket sessions in flight, which http.Server.Shutdown does not
+	// track (a hijacked conn leaves its bookkeeping), so main can wait for
+	// them before the process exits.
+	draining atomic.Bool
+	sessions sync.WaitGroup
 }
 
 func main() {
@@ -114,17 +123,32 @@ func main() {
 		// manages its own deadlines (server.idleRead / maxSess).
 	}
 
-	// Graceful shutdown on SIGTERM (Fargate task stop) / SIGINT.
+	// Graceful shutdown on SIGTERM (Fargate task stop) / SIGINT. ECS sends
+	// SIGKILL stopTimeout (default 30s) after SIGTERM, so the drain window
+	// stays inside that: Shutdown closes the listener, then main waits for
+	// the in-flight hijacked sessions (which Shutdown does not track) until
+	// they end or the window closes — instead of exiting immediately and
+	// resetting every live conversation.
+	drainWindow := durationEnv("SHUTDOWN_DRAIN_SECONDS", 25*time.Second)
 	idleConns := make(chan struct{})
 	go func() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
 		<-sig
 		log.Info("nova-bridge: shutdown signal received; draining")
-		sctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		srv.draining.Store(true)
+		sctx, cancel := context.WithTimeout(context.Background(), drainWindow)
 		defer cancel()
 		if err := httpSrv.Shutdown(sctx); err != nil {
 			log.Error("nova-bridge: graceful shutdown failed", slog.String("error", err.Error()))
+		}
+		sessionsDone := make(chan struct{})
+		go func() { srv.sessions.Wait(); close(sessionsDone) }()
+		select {
+		case <-sessionsDone:
+			log.Info("nova-bridge: all sessions drained")
+		case <-sctx.Done():
+			log.Warn("nova-bridge: drain window elapsed with sessions still open; exiting")
 		}
 		close(idleConns)
 	}()
@@ -139,6 +163,11 @@ func main() {
 
 func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
+	if s.draining.Load() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("draining"))
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
 }
@@ -148,6 +177,9 @@ func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // follows a successful upgrade so a proxy/hijack failure cannot burn a valid
 // token; a post-upgrade race/replay receives an in-band terminal error.
 func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
+	s.sessions.Add(1)
+	defer s.sessions.Done()
+
 	token := bridgeToken(r)
 	if token == "" {
 		http.Error(w, "missing session token", http.StatusUnauthorized)

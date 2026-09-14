@@ -1,6 +1,8 @@
 package ninja.jeremy.liveninja.ui.onboarding
 
+import android.content.ActivityNotFoundException
 import android.net.Uri
+import android.widget.Toast
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -56,10 +58,20 @@ fun LoginScreen(viewModel: AuthViewModel = hiltViewModel()) {
         viewModel.events.collect { event ->
             when (event) {
                 is AuthEvent.OpenCustomTab -> {
-                    CustomTabsIntent.Builder()
-                        .setShowTitle(true)
-                        .build()
-                        .launchUrl(context, Uri.parse(event.url))
+                    // No browser at all (disabled/uninstalled) throws from
+                    // launchUrl; say so instead of crashing the login screen.
+                    try {
+                        CustomTabsIntent.Builder()
+                            .setShowTitle(true)
+                            .build()
+                            .launchUrl(context, Uri.parse(event.url))
+                    } catch (e: ActivityNotFoundException) {
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.login_error_no_browser),
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
                 }
             }
         }

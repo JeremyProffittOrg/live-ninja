@@ -621,6 +621,12 @@ export class RealtimeSession extends EventTarget {
     let minted;
     try {
       minted = await this.#mint();
+      // close() ran while the mint was in flight (End tapped during
+      // "Connecting…"). The WS transports below would otherwise open a live
+      // socket + hot mic that no caller holds a reference to any more.
+      if (this.#closing) {
+        throw new RealtimeError('closed', 'The voice session was closed before it connected.');
+      }
     } catch (err) {
       this.#abortRtc(rtc);
       // Don't leave a granted mic running if the mint failed.
@@ -659,6 +665,12 @@ export class RealtimeSession extends EventTarget {
     } catch (err) {
       this.#abortRtc(rtc);
       throw err; // getUserMedia errors keep their name for mic.mjs routing
+    }
+    if (this.#closing) {
+      // Same race, one await later: close() ran while the mic settled.
+      this.#abortRtc(rtc);
+      this.#teardown(); // stops the tracks just adopted into #localStream
+      throw new RealtimeError('closed', 'The voice session was closed before it connected.');
     }
 
     if (this.#mode === 'nova-bridge') {
@@ -2076,6 +2088,11 @@ export class RealtimeSession extends EventTarget {
       this.#gain = null;
     }
     this.#remoteStream = null;
+    // Per-item transcript accumulators and the double-final guard only grow
+    // while the session runs; nothing reads them after teardown.
+    this.#assistantText.clear();
+    this.#userText.clear();
+    this.#finalizedItems.clear();
   }
 
   // ---- remote audio path (hidden <audio> + GainNode for barge-in duck) ----

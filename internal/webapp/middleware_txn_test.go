@@ -3,6 +3,7 @@ package webapp
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -146,4 +147,41 @@ func parseJSONLines(t *testing.T, b []byte) []map[string]any {
 		out = append(out, m)
 	}
 	return out
+}
+
+// TestTxnMiddlewareLogsErrorStatus: a handler that RETURNS an error has not
+// reached the app ErrorHandler when the response line is written (Fiber runs
+// it after the middleware chain unwinds), so the line must carry the status
+// that handler will send — fiber.Error's code, else 500 — never the default
+// 200 that the response still holds at that moment.
+func TestTxnMiddlewareLogsErrorStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want float64
+	}{
+		{"fiber error keeps its code", fiber.ErrNotFound, 404},
+		{"plain error is a 500", errors.New("boom"), 500},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logger, buf := newTestLogger()
+			app := fiber.New()
+			app.Use(TxnMiddleware(logger))
+			app.Get("/thing", func(c *fiber.Ctx) error { return tc.err })
+
+			if _, err := app.Test(httptest.NewRequest("GET", "/thing", nil)); err != nil {
+				t.Fatal(err)
+			}
+			for _, l := range parseJSONLines(t, buf.Bytes()) {
+				if l["msg"] != "response" {
+					continue
+				}
+				if status, _ := l["status"].(float64); status != tc.want {
+					t.Fatalf("response status = %v, want %v", l["status"], tc.want)
+				}
+				return
+			}
+			t.Fatalf("no response log line: %s", buf.String())
+		})
+	}
 }

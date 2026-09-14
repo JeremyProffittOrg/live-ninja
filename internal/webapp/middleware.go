@@ -179,10 +179,23 @@ func TxnMiddleware(logger *slog.Logger) fiber.Handler {
 		if surface == "" {
 			surface = surfaceForPath(c.Path())
 		}
+		// An error returned up the chain (fiber.ErrNotFound from the asset
+		// handler, a recovered panic, a wrapped store error) has NOT reached
+		// the app ErrorHandler yet — Fiber invokes it after this middleware
+		// returns — so the response still carries the default 200 here. Log
+		// the status the ErrorHandler will actually send (same mapping as
+		// pages_routes.go ErrorHandler) rather than a 200 that never left.
+		status := c.Response().StatusCode()
+		if err != nil {
+			status = fiber.StatusInternalServerError
+			if fe, ok := err.(*fiber.Error); ok {
+				status = fe.Code
+			}
+		}
 		l.Info("response",
 			slog.String("method", c.Method()),
 			slog.String("path", c.Path()),
-			slog.Int("status", c.Response().StatusCode()),
+			slog.Int("status", status),
 			slog.String("userId", UserID(c)),
 			slog.String("surface", surface),
 			slog.Int("bytes", len(c.Response().Body())),

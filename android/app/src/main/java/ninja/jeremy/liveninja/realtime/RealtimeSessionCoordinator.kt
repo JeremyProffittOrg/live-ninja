@@ -4,6 +4,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import ninja.jeremy.liveninja.log.LNLog
 import ninja.jeremy.liveninja.log.LogCategory
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -128,7 +130,14 @@ class RealtimeSessionCoordinator @Inject constructor(
     @Volatile
     private var transport: RealtimeTransport = webRtcTransport
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // Tool executors and the transport event collector run on this scope. An
+    // uncaught throwable here used to reach the default handler and kill the
+    // process mid-conversation; log it and tell the UI instead.
+    private val uncaught = CoroutineExceptionHandler { _, t ->
+        LNLog.e(LogCategory.REALTIME, TAG, "uncaught error in session scope", t)
+        emit(SessionUiEvent.SessionError("Something went wrong in the voice session."))
+    }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaught)
     private val deviceActionState = DeviceActionSessionState()
     private val lifecycleMutex = Mutex()
 
@@ -243,14 +252,35 @@ class RealtimeSessionCoordinator @Inject constructor(
             stateWatchJob?.cancel()
             stateWatchJob = scope.launch {
                 transport.state.collect { state ->
-                    if (state == TransportState.FAILED && _connected.value) {
+                    if (state != TransportState.FAILED && state != TransportState.CLOSED) return@collect
+                    if (!_connected.value) return@collect
+                    // A transport that failed or was closed by the far end still
+                    // holds the mic, the playback path and the communication
+                    // audio mode until disconnect() runs, and its transcript is
+                    // never finalised (no final:true flush, so no History row).
+                    // Nothing else releases it: the orchestrator only reacts to
+                    // `connected`, and the next start() replaces the transport's
+                    // state without releasing the old session. Release under the
+                    // lifecycle lock first, and flip `connected` last — that flip
+                    // is what resumes the wake engine and lets a new session start.
+                    lifecycleMutex.withLock {
+                        if (!_connected.value) return@withLock
+                        eventsJob?.cancel()
+                        eventsJob = null
+                        try {
+                            transport.disconnect()
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            LNLog.w(LogCategory.REALTIME, TAG, "disconnect after transport $state failed", e)
+                        }
+                        transcriptUploader.finish(costTracker.cost)
                         _connected.value = false
+                    }
+                    if (state == TransportState.FAILED) {
                         _events.tryEmit(
                             SessionUiEvent.SessionError("The voice connection dropped."),
                         )
-                        eventsJob?.cancel()
-                    } else if (state == TransportState.CLOSED) {
-                        _connected.value = false
                     }
                 }
             }

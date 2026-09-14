@@ -150,9 +150,36 @@ func (s *session) Run(ctx context.Context) error {
 	var once sync.Once
 	var runErr error
 	fail := func(err error) {
-		once.Do(func() { runErr = err })
+		once.Do(func() {
+			runErr = err
+			// A fault on either pump (Bedrock stream error, a failed Nova
+			// send) must reach the client as a typed event, not as a bare
+			// socket close it cannot distinguish from a network drop.
+			if err != nil && !isBenignEnd(err) && ctx.Err() == nil {
+				_ = s.client.WriteEvent(voiceengine.Event{
+					Type: voiceengine.TypeError, Code: "nova_stream",
+					Message: "the Nova session ended unexpectedly",
+				})
+			}
+		})
 		cancel()
 	}
+
+	// The client pump blocks in ReadEvent, which only returns when the peer
+	// sends a frame or the idle read deadline fires. Once the session is
+	// over — the Nova pump failed, the stream drained, or the hard session
+	// cap expired — close the client socket so that read returns now instead
+	// of up to idleRead later, with the client hearing nothing meanwhile.
+	go func() {
+		<-ctx.Done()
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			_ = s.client.WriteEvent(voiceengine.Event{
+				Type: voiceengine.TypeError, Code: "session_expired",
+				Message: "the session reached its maximum duration",
+			})
+		}
+		_ = s.client.Close()
+	}()
 
 	wg.Add(2)
 	go func() { defer wg.Done(); fail(s.pumpClientToNova(ctx)) }()

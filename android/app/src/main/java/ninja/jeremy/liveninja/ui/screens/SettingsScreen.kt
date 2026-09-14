@@ -2,6 +2,7 @@
 
 package ninja.jeremy.liveninja.ui.screens
 
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -90,6 +91,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import ninja.jeremy.liveninja.wake.WakeSwitchAction
 import ninja.jeremy.liveninja.wake.WakeSwitchDisplay
@@ -265,7 +267,10 @@ fun SettingsScreen(
                                 moveFocus = { targetIndex ->
                                     sectionScope.launch {
                                         listState.scrollToItem(targetIndex)
-                                        sectionFocusRequesters[targetIndex].requestFocus()
+                                        // The target header is normally attached after the
+                                        // scroll; if it is not, requestFocus() throws rather
+                                        // than no-ops, and this is hardware-keyboard only.
+                                        runCatching { sectionFocusRequesters[targetIndex].requestFocus() }
                                     }
                                 },
                             )
@@ -320,7 +325,15 @@ fun SettingsScreen(
                                     onSetWakeScreenOnWake = viewModel::setWakeScreenOnWake,
                                     onSetKeepScreenOn = viewModel::setKeepScreenOn,
                                     onExempt = {
-                                        batteryLauncher.launch(viewModel.batteryExemptionIntent())
+                                        // Some OEM builds ship no handler for this
+                                        // system prompt; a missing activity must not
+                                        // crash Settings (the switch above is the only
+                                        // way to start listening).
+                                        try {
+                                            batteryLauncher.launch(viewModel.batteryExemptionIntent())
+                                        } catch (e: ActivityNotFoundException) {
+                                            viewModel.refreshBatteryStatus()
+                                        }
                                     },
                                     onRecheck = viewModel::refreshBatteryStatus,
                                     onOpenAppInfo = {
@@ -333,7 +346,11 @@ fun SettingsScreen(
                                                         null,
                                                     ),
                                                 )
-                                        appInfoLauncher.launch(intent)
+                                        try {
+                                            appInfoLauncher.launch(intent)
+                                        } catch (e: ActivityNotFoundException) {
+                                            viewModel.refreshBatteryStatus()
+                                        }
                                     },
                                 )
                             }
@@ -1812,7 +1829,19 @@ private fun DiagnosticsSection(
                 if (!exportingLogs) {
                     exportingLogs = true
                     coroutineScope.launch {
-                        val intent = onExportLogs()
+                        // A zip/FileProvider failure must not leave the button
+                        // spinning forever or take Settings down with it.
+                        val intent = try {
+                            onExportLogs()
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            exportingLogs = false
+                            snackbarHostState.showSnackbar(
+                                context.getString(R.string.settings_diagnostics_export_failed),
+                            )
+                            return@launch
+                        }
                         exportingLogs = false
                         if (intent != null) {
                             context.startActivity(

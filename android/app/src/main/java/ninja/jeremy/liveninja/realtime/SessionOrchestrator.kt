@@ -175,6 +175,16 @@ class SessionOrchestratorCore(
         teardown()
     }
 
+    /**
+     * [stop] on this orchestrator's own scope, for callers whose scope is about
+     * to die — [ninja.jeremy.liveninja.wake.WakeWordService]'s ACTION_STOP calls
+     * stopSelf() in the same breath, and its service scope is cancelled in
+     * onDestroy before a stop launched there can reach the transport.
+     */
+    fun stopAsync() {
+        scope.launch { stop() }
+    }
+
     private fun teardown() {
         effects.abandonAudioFocus()
         effects.releaseWakeLock()
@@ -295,6 +305,9 @@ class SessionOrchestrator @Inject constructor(
 
     /** End the active session (notification "End" action / manual stop). */
     suspend fun stop() = core.stop()
+
+    /** [stop] on the orchestrator's own long-lived scope (survives the caller's). */
+    fun stopAsync() = core.stopAsync()
 
     private companion object {
         const val TAG = "SessionOrchestrator"

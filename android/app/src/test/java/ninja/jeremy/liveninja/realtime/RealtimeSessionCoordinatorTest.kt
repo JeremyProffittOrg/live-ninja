@@ -484,6 +484,42 @@ class RealtimeSessionCoordinatorTest {
     }
 
     @Test
+    fun transportFailed_releasesTransportOnce() = runBlocking {
+        val coord = coordinator()
+        val seen = mutableListOf<SessionUiEvent>()
+        val job = collectInto(coord, seen)
+
+        coord.start()
+        assertEquals(0, transport.disconnects)
+        transport.driveState(TransportState.FAILED)
+
+        // A dropped transport still holds the mic/playback/audio mode until
+        // disconnect() runs; nothing else releases it.
+        awaitUntil("disconnect after FAILED") { transport.disconnects == 1 }
+        awaitUntil("connected=false after FAILED") { !coord.connected.value }
+        // The fake's disconnect() drives CLOSED; that must not release again.
+        delay(100)
+        assertEquals(1, transport.disconnects)
+        job.cancel()
+    }
+
+    @Test
+    fun transportClosedRemotely_releasesTransportWithoutError() = runBlocking {
+        val coord = coordinator()
+        val seen = mutableListOf<SessionUiEvent>()
+        val job = collectInto(coord, seen)
+
+        coord.start()
+        transport.driveState(TransportState.CLOSED)
+
+        awaitUntil("disconnect after remote CLOSED") { transport.disconnects == 1 }
+        awaitUntil("connected=false after CLOSED") { !coord.connected.value }
+        delay(100)
+        assertTrue(seen.none { it is SessionUiEvent.SessionError })
+        job.cancel()
+    }
+
+    @Test
     fun deliberateStop_disconnectsWithoutError() = runBlocking {
         val coord = coordinator()
         val seen = mutableListOf<SessionUiEvent>()

@@ -465,7 +465,19 @@ class NovaBridgeTransport @Inject constructor(
         captureJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 val read = record.read(buffer, 0, buffer.size)
-                if (read <= 0) continue
+                if (read < 0) {
+                    // ERROR_DEAD_OBJECT / ERROR_INVALID_OPERATION are permanent for
+                    // this AudioRecord: `read` returns at once, so looping on it is a
+                    // CPU spin with a silent mic. Fail the session the way a socket
+                    // failure does; the coordinator's disconnect releases the rest.
+                    if (!isActive) break
+                    LNLog.w(LogCategory.AUDIO, TAG, "AudioRecord.read failed ($read); ending session")
+                    if (_state.value == TransportState.CONNECTED) {
+                        _state.value = TransportState.FAILED
+                    }
+                    break
+                }
+                if (read == 0) continue
                 if (!micLive()) continue
                 val ws = webSocket ?: continue
                 val frame = if (read == buffer.size) buffer else buffer.copyOf(read)

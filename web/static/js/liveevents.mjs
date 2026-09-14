@@ -35,6 +35,15 @@ const CREDENTIALS_PATH = '/api/v1/iot/credentials';
 /** Refresh this long before the token expires, so a reconnect never races it. */
 const REFRESH_MARGIN_MS = 60_000;
 
+/**
+ * Reconnect delay: 2 s after the routine hourly close, doubling per
+ * consecutive failure up to a minute. Without the ceiling an unreachable
+ * broker (offline laptop, blocked endpoint) re-fetched a credential and
+ * re-opened a socket every 2 s for as long as the tab lived.
+ */
+const RECONNECT_BASE_MS = 2000;
+const RECONNECT_MAX_MS = 60_000;
+
 /** Presence is a retained message, so a device that joins sees who is already here. */
 const PRESENCE_QOS_OPTS = { retain: true };
 
@@ -447,8 +456,21 @@ export function startLiveEvents({ onChange, onPresence, persona, state } = {}) {
   const peers = new Map();
   let presenceTimer = null;
   let lastPresenceAt = 0;
+  /** Consecutive connect attempts that ended without a CONNACK; reset on open. */
+  let failures = 0;
+  let reconnectTimer = null;
 
   const log = (...args) => console.info('[liveevents]', ...args);
+
+  function scheduleReconnect() {
+    if (stopped || reconnectTimer) return;
+    const ms = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** Math.min(failures, 10));
+    failures += 1;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, ms);
+  }
 
   const lock = createSpeakingLock({
     publish: (payload) => {
@@ -461,7 +483,13 @@ export function startLiveEvents({ onChange, onPresence, persona, state } = {}) {
 
   async function fetchCredentials() {
     const resp = await fetch(CREDENTIALS_PATH, { credentials: 'same-origin' });
-    if (!resp.ok) throw new Error(`credentials ${resp.status}`);
+    if (!resp.ok) {
+      const err = new Error(`credentials ${resp.status}`);
+      // A 4xx is the account's answer (signed out, IoT not configured) and
+      // is final; anything else is the network's and is worth another try.
+      err.permanent = resp.status >= 400 && resp.status < 500;
+      throw err;
+    }
     return resp.json();
   }
 
@@ -505,8 +533,15 @@ export function startLiveEvents({ onChange, onPresence, persona, state } = {}) {
     try {
       creds = await fetchCredentials();
     } catch (err) {
-      log('credentials unavailable; cross-device notifications are off', err.message);
-      return; // not retried: a signed-out or unconfigured account is not a blip
+      if (err && err.permanent) {
+        log('credentials unavailable; cross-device notifications are off', err.message);
+        return; // not retried: a signed-out or unconfigured account is not a blip
+      }
+      // A network error or 5xx on the hourly re-mint used to switch the
+      // feature off for the rest of the page's life; back off and retry.
+      log('credentials unavailable; retrying with backoff', err && err.message);
+      scheduleReconnect();
+      return;
     }
 
     // AWS IoT takes the custom authorizer's name from the query string, and
@@ -525,6 +560,7 @@ export function startLiveEvents({ onChange, onPresence, persona, state } = {}) {
       will: { topic: creds.presenceTopic, payload: '', retain: true },
       onOpen: () => {
         log('connected');
+        failures = 0;
         // One subscription, covering both client-published topics. A narrower
         // filter for the lock would be REFUSED — the authorizer grants
         // `liveninja/user/<uid>/#` as a literal topicfilter resource — and AWS
@@ -542,7 +578,7 @@ export function startLiveEvents({ onChange, onPresence, persona, state } = {}) {
         // hour, so a close is expected. Reconnecting means getting a FRESH
         // credential, never reusing the old one.
         log('closed; reconnecting with a fresh credential');
-        setTimeout(connect, 2000);
+        scheduleReconnect();
       },
     });
     client.connect();
@@ -586,6 +622,8 @@ export function startLiveEvents({ onChange, onPresence, persona, state } = {}) {
     stop() {
       stopped = true;
       clearTimeout(refreshTimer);
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
       clearTimeout(presenceTimer);
       presenceTimer = null;
       if (client) {

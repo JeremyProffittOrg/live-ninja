@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.CleaningServices
@@ -53,6 +54,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import java.text.SimpleDateFormat
 import java.util.Locale
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import ninja.jeremy.liveninja.log.LogCategory
@@ -130,7 +132,17 @@ fun LogViewerScreen(modifier: Modifier = Modifier, onBack: () -> Unit = {}) {
                     if (!exporting) {
                         exporting = true
                         coroutineScope.launch {
-                            val intent = viewModel.exportZip()
+                            // A zip/FileProvider failure must not leave the button
+                            // spinning forever or take the screen down with it.
+                            val intent = try {
+                                viewModel.exportZip()
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                exporting = false
+                                Toast.makeText(context, "Couldn't export logs", Toast.LENGTH_SHORT).show()
+                                return@launch
+                            }
                             exporting = false
                             if (intent != null) {
                                 context.startActivity(Intent.createChooser(intent, "Share Live Ninja logs"))
@@ -155,7 +167,14 @@ fun LogViewerScreen(modifier: Modifier = Modifier, onBack: () -> Unit = {}) {
                 EmptyState(hasAnyEntries = allEntries.isNotEmpty())
             } else {
                 LazyColumn(Modifier.fillMaxSize()) {
-                    items(filtered, key = { it.timestampMs.toString() + it.tag + it.message.hashCode() }) { entry ->
+                    // The index is part of the key: two entries logged in the same
+                    // millisecond with the same tag and text (a tight retry loop does
+                    // exactly that) collide otherwise, and LazyColumn throws on a
+                    // duplicate key.
+                    itemsIndexed(
+                        filtered,
+                        key = { index, entry -> "$index|${entry.timestampMs}|${entry.tag}" },
+                    ) { _, entry ->
                         LogRow(
                             entry = entry,
                             onCopy = {

@@ -267,6 +267,8 @@ export class WakeWordEngine {
     this._swapping = false;
     this._drainPromise = null;
     this._startPromise = null;
+    this._startGeneration = 0; // generation the in-flight _start() belongs to
+    this._stopPromise = null;
     this._melFrames = [];
     this._melPos = 0;
     this._embBuf = [];
@@ -325,9 +327,24 @@ export class WakeWordEngine {
    * engine (callers fall back to click-to-talk).
    */
   start(opts = {}) {
-    if (this._state === 'listening') return Promise.resolve();
-    if (this._state === 'loading' && this._startPromise) return this._startPromise;
-    const promise = this._start(opts);
+    // While a stop() is unwinding, the state still reads 'listening' until its
+    // teardown finishes — a fast OFF → ON must queue behind it, not no-op.
+    if (this._state === 'listening' && !this._stopPromise) return Promise.resolve();
+    // Reuse an in-flight start only while it is still the CURRENT one. After
+    // a stop() bumped the generation, that promise resolves without ever
+    // listening (toggle ON → OFF → ON inside the model load did exactly this:
+    // the toggle read ON with the engine idle).
+    if (
+      this._state === 'loading' &&
+      this._startPromise &&
+      this._startGeneration === this._generation
+    ) {
+      return this._startPromise;
+    }
+    // A stop() may still be unwinding the previous start; run after it so its
+    // teardown cannot strip the audio graph and sessions this start creates.
+    const stopping = this._stopPromise;
+    const promise = stopping ? stopping.then(() => this._start(opts)) : this._start(opts);
     this._startPromise = promise;
     const clear = () => {
       if (this._startPromise === promise) this._startPromise = null;
@@ -345,6 +362,7 @@ export class WakeWordEngine {
     }
 
     const gen = ++this._generation;
+    this._startGeneration = gen;
     this._setState('loading');
     try {
       await this._loadRuntimeAndModels(gen);
@@ -413,7 +431,17 @@ export class WakeWordEngine {
   }
 
   /** Stop listening and release the mic (if the engine opened it). Idempotent. */
-  async stop() {
+  stop() {
+    const promise = this._stop();
+    this._stopPromise = promise;
+    const clear = () => {
+      if (this._stopPromise === promise) this._stopPromise = null;
+    };
+    promise.then(clear, clear);
+    return promise;
+  }
+
+  async _stop() {
     this._generation++;
     const starting = this._startPromise;
     if (starting) {

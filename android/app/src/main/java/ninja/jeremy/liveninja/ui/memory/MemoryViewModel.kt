@@ -150,7 +150,10 @@ class MemoryViewModel @Inject constructor(
                 _state.update {
                     it.copy(
                         entitiesLoadingMore = false,
-                        entities = it.entities + page.items.mapNotNull(::toUi),
+                        // De-duplicated by id: the list is keyed by id and a row
+                        // straddling two pages would crash LazyColumn.
+                        entities = (it.entities + page.items.mapNotNull(::toUi))
+                            .distinctBy { row -> row.id },
                         entitiesCursor = page.nextCursor,
                     )
                 }

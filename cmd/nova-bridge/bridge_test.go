@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -639,4 +640,71 @@ func contains(s []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// closingFakeClient is a fakeClient whose Close unblocks a pending
+// ReadEvent — the shape of the real wsConn, where closing the socket makes
+// the blocked read return. The shared fakeClient keeps Close a no-op because
+// the other tests close hangup themselves.
+type closingFakeClient struct {
+	*fakeClient
+	closeOnce sync.Once
+}
+
+func (c *closingFakeClient) Close() error {
+	c.closeOnce.Do(func() { close(c.hangup) })
+	return nil
+}
+
+// A Bedrock stream fault must reach the client as a typed error and end the
+// session promptly — even though the client is idle and would otherwise
+// keep the pump blocked in ReadEvent until the idle read deadline.
+func TestSessionPump_NovaStreamErrorReachesIdleClientAndEndsSession(t *testing.T) {
+	log := observ.NewLogger(io.Discard, "error")
+
+	client := &closingFakeClient{fakeClient: newFakeClient([]voiceengine.Event{
+		{Type: voiceengine.TypeSessionStart, Config: &voiceengine.Config{}},
+	})}
+	nova := &erroringNova{fakeNova: newFakeNova(nil), err: errors.New("bedrock: stream reset")}
+	sess := newSession(log, client, nil, "sess-err", "web",
+		func(_ context.Context) (novaStream, error) { return nova, nil })
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- sess.Run(context.Background()) }()
+
+	select {
+	case err := <-runDone:
+		if err == nil || err.Error() != "bedrock: stream reset" {
+			t.Fatalf("Run error = %v, want the stream fault", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return after the Nova stream failed (client pump stayed blocked)")
+	}
+
+	var collected []voiceengine.Event
+	for {
+		select {
+		case ev := <-client.out:
+			collected = append(collected, ev)
+			continue
+		default:
+		}
+		break
+	}
+	if !hasErrorCode(collected, "nova_stream") {
+		t.Fatalf("client did not receive the nova_stream error; got %v", collected)
+	}
+}
+
+// erroringNova returns err from Recv once its scripted output is exhausted.
+type erroringNova struct {
+	*fakeNova
+	err error
+}
+
+func (f *erroringNova) Recv(ctx context.Context) ([]byte, error) {
+	if f.idx < len(f.output) {
+		return f.fakeNova.Recv(ctx)
+	}
+	return nil, f.err
 }

@@ -215,6 +215,7 @@ export class MqttClient {
   #reader = new PacketReader();
   #packetId = 1;
   #pingTimer = null;
+  #lastRxAt = 0; // wall clock of the last inbound packet (CONNACK onwards)
   #opts;
 
   constructor(opts) {
@@ -242,6 +243,7 @@ export class MqttClient {
     });
 
     ws.addEventListener('message', (e) => {
+      this.#lastRxAt = Date.now();
       for (const pkt of this.#reader.push(new Uint8Array(e.data))) this.#onPacket(pkt);
     });
 
@@ -275,7 +277,7 @@ export class MqttClient {
       }
       case SUBACK:
       case PINGRESP:
-        break; // nothing to do; absence of PINGRESP is handled by the socket
+        break; // nothing to do; a missing PINGRESP is caught by the ping timer below
       default:
         break; // an unexpected type is not worth tearing a session down for
     }
@@ -297,8 +299,23 @@ export class MqttClient {
     this.#stopPing();
     // Half the keep-alive: the broker disconnects at 1.5x, so pinging at half
     // leaves room for one lost ping without losing the session.
+    //
+    // The same tick also detects a half-open socket. A network change (wifi
+    // → cellular, laptop lid) leaves the WebSocket readyState OPEN with nobody
+    // on the other end: PINGREQs go out, nothing comes back, and the OS can
+    // take many minutes to notice — presence and the speaking lock are dead
+    // the whole time. The broker gives up on us at 1.5x keep-alive; mirror it
+    // and close, which surfaces onClose so the owner reconnects.
+    const deadAfterMs = keepAlive * 1.5 * 1000;
+    this.#lastRxAt = Date.now();
     this.#pingTimer = setInterval(() => {
-      if (this.connected) this.#ws.send(encodePingreq());
+      if (!this.connected) return;
+      if (Date.now() - this.#lastRxAt > deadAfterMs) {
+        this.#stopPing();
+        try { this.#ws.close(); } catch { /* already gone */ }
+        return;
+      }
+      this.#ws.send(encodePingreq());
     }, (keepAlive / 2) * 1000);
   }
 

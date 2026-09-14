@@ -129,7 +129,14 @@ class OpenWakeWordEngine @Inject constructor(
             error("AudioRecord failed to initialize (mic busy or restricted)")
         }
         audioRecord = record
-        record.startRecording()
+        try {
+            record.startRecording()
+        } catch (e: IllegalStateException) {
+            record.release()
+            audioRecord = null
+            closeSessionsQuietly()
+            error("AudioRecord.startRecording failed: ${e.message}")
+        }
         if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
             record.release()
             audioRecord = null

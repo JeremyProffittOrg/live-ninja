@@ -873,7 +873,20 @@ class GeminiLiveTransport @Inject constructor(
         captureJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 val read = record.read(buffer, 0, buffer.size)
-                if (read <= 0) continue
+                if (read < 0) {
+                    // ERROR_DEAD_OBJECT / ERROR_INVALID_OPERATION are permanent for
+                    // this AudioRecord: `read` returns at once, so looping on it is a
+                    // CPU spin with a silent mic. End the session like a socket
+                    // failure would; the coordinator releases the rest.
+                    if (!isActive) break
+                    LNLog.w(LogCategory.AUDIO, TAG, "AudioRecord.read failed ($read); ending session")
+                    if (_state.value == TransportState.CONNECTED) {
+                        releaseSession()
+                        _state.value = TransportState.FAILED
+                    }
+                    break
+                }
+                if (read == 0) continue
                 if (!micLive()) continue
                 // JSON + base64 uplink framing (NOT raw binary like Nova).
                 val b64 = Base64.getEncoder().encodeToString(

@@ -1,6 +1,7 @@
 package ninja.jeremy.liveninja.realtime
 
 import android.os.SystemClock
+import java.io.IOException
 import java.security.SecureRandom
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -96,7 +97,11 @@ class LiveEventsClient @Inject constructor(
     private var reader = MqttCodec.Reader()
     private var creds: IotCredentials? = null
     private var pingJob: Job? = null
+    private var refreshJob: Job? = null
     private var running = false
+
+    /** Consecutive connect attempts that ended without a CONNACK; reset on CONNACK. */
+    private var failures = 0
     private val random = SecureRandom()
 
     private val _changes = MutableStateFlow<Change?>(null)
@@ -168,6 +173,7 @@ class LiveEventsClient @Inject constructor(
     fun stop() {
         running = false
         pingJob?.cancel()
+        refreshJob?.cancel()
         presenceTrailingJob?.cancel()
         // Give the lock back before the socket goes: a holder that just vanishes
         // costs every other device the full 30s expiry before any of them speaks.
@@ -295,8 +301,15 @@ class LiveEventsClient @Inject constructor(
     }
 
     private suspend fun connect() {
-        val c = runCatching { api.iotCredentials() }.getOrElse {
-            // Signed out, offline, or the feature is not configured. This is a
+        val c = runCatching { api.iotCredentials() }.getOrElse { t ->
+            if (t is IOException) {
+                // A network blip on the hourly re-mint used to switch the feature
+                // off for the rest of the process; back off and try again.
+                LNLog.i(LogCategory.NET, TAG, "iot credentials unreachable; retrying with backoff", t)
+                scheduleReconnect()
+                return
+            }
+            // Signed out or the feature is not configured. This is a
             // convenience layer: it goes quiet rather than retrying forever.
             LNLog.i(LogCategory.NET, TAG, "iot credentials unavailable; cross-device events off")
             running = false
@@ -360,6 +373,7 @@ class LiveEventsClient @Inject constructor(
                     ws.close(1000, null)
                     return
                 }
+                failures = 0
                 ws.send(ByteString.of(*MqttCodec.encodeSubscribe(1, listOf(c.topicFilter))))
                 // A fresh connection owes its peers a presence publish immediately,
                 // ahead of any throttle a previous connection left behind.
@@ -494,7 +508,12 @@ class LiveEventsClient @Inject constructor(
     }
 
     private fun scheduleRefresh(c: IotCredentials) {
-        scope.launch {
+        // One timer per live connection. Every CONNACK used to add another,
+        // and each fired once against whatever socket was current at the time
+        // — so each reconnect left one more early close behind it, and the
+        // reconnect cadence tightened for the life of the process.
+        refreshJob?.cancel()
+        refreshJob = scope.launch {
             // Reconnect BEFORE the token expires. Closing routes through the
             // normal reconnect path, so there is one reconnect implementation
             // rather than two.
@@ -505,14 +524,24 @@ class LiveEventsClient @Inject constructor(
 
     private fun scheduleReconnect() {
         if (!running) return
-        scope.launch {
-            delay(2_000)
+        // Tracked as [job] so stop() cancels a pending reconnect; otherwise a
+        // stop()/start() pair inside the 2 s window opened a second socket
+        // alongside the first.
+        // 2 s after the routine hourly close, doubling per consecutive failure
+        // up to a minute, so an unreachable broker is not re-minted against
+        // every 2 s for the life of the process.
+        val delayMs = minOf(RECONNECT_MAX_MS, RECONNECT_BASE_MS shl minOf(failures, 10))
+        failures += 1
+        job = scope.launch {
+            delay(delayMs)
             if (running) connect()
         }
     }
 
     private companion object {
         const val TAG = "LiveEventsClient"
+        const val RECONNECT_BASE_MS = 2_000L
+        const val RECONNECT_MAX_MS = 60_000L
 
         /** §1.3: at most one presence publish per second, trailing guaranteed. */
         const val PRESENCE_MIN_INTERVAL_MS = 1_000L

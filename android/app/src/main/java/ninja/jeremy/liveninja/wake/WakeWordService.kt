@@ -127,11 +127,16 @@ class WakeWordService : Service() {
         when (intent?.action) {
             ACTION_MUTE -> prefs.muted = true
             ACTION_UNMUTE -> prefs.muted = false
-            ACTION_END_SESSION -> scope.launch { runCatching { sessionOrchestrator.stop() } }
+            ACTION_END_SESSION -> sessionOrchestrator.stopAsync()
             ACTION_STOP -> {
                 prefs.serviceEnabled = false
                 WakeWatchdogWorker.cancel(applicationContext)
-                scope.launch { runCatching { sessionOrchestrator.stop() } }
+                // Not on [scope]: stopSelf() below reaches onDestroy, which cancels
+                // [scope] — a stop launched there could be cancelled while waiting
+                // on the coordinator's lifecycle lock, leaving a live session
+                // (mic, playback, wakelock) with no owner. The orchestrator's own
+                // scope outlives this service.
+                sessionOrchestrator.stopAsync()
                 stopEngineBlocking()
                 stopSelf()
                 return START_NOT_STICKY
@@ -217,6 +222,11 @@ class WakeWordService : Service() {
 
     override fun onDestroy() {
         isRunning = false
+        // The session lives in the orchestrator, but this service is its only
+        // foreground context and its only "End" surface. Destroyed with a
+        // session live (OEM task kill, user disabling listening) it would keep
+        // the mic, playback and wakelock with nothing left that can stop them.
+        if (sessionOrchestrator.sessionActive.value) sessionOrchestrator.stopAsync()
         stopEngineBlocking()
         powerStateReceiver?.let { unregisterReceiver(it) }
         thermalListener?.let { powerManager.removeThermalStatusListener(it) }
@@ -643,9 +653,18 @@ class WakeWordService : Service() {
 
         /** Stop listening entirely and clear the enabled flag. */
         fun stop(context: Context) {
-            context.startService(
-                Intent(context, WakeWordService::class.java).setAction(ACTION_STOP),
-            )
+            try {
+                context.startService(
+                    Intent(context, WakeWordService::class.java).setAction(ACTION_STOP),
+                )
+            } catch (e: IllegalStateException) {
+                // Background start restriction (API 26+): only reachable when no
+                // instance is running and the app is not foreground, i.e. there
+                // is nothing to stop. The device-tool path calls this from a
+                // coroutine with no exception handler, so a throw here would be
+                // a process crash rather than a no-op.
+                LNLog.w(LogCategory.WAKE, TAG, "stop request refused; service not running in background", e)
+            }
         }
     }
 }

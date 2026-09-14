@@ -969,7 +969,7 @@ async function wwInit() {
 
   // Honest capability gate: only reveal the training form when the
   // server says openwakeword can actually train (EngineInfo.trainable).
-  const engines = Array.isArray(resp.engines) ? resp.engines : [];
+  const engines = resp && Array.isArray(resp.engines) ? resp.engines : [];
   const oww = engines.find((e) => e && e.id === 'openwakeword');
   const trainable = oww ? !!oww.trainable : true; // absent list = legacy OK
   wwStudio.hidden = !trainable;
@@ -1368,7 +1368,7 @@ async function loadGeminiVoices() {
   let rows = [];
   try {
     const resp = await apiJSON('/api/v1/realtime/voices');
-    rows = Array.isArray(resp.geminiVoices) ? resp.geminiVoices : [];
+    rows = resp && Array.isArray(resp.geminiVoices) ? resp.geminiVoices : [];
   } catch {
     /* catalog fetch failed — keep the SSR "Persona default" option; the
        stored value still round-trips via syncGeminiVoiceValue below */

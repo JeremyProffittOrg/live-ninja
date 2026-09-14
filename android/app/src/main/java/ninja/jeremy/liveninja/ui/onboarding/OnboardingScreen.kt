@@ -2,6 +2,7 @@ package ninja.jeremy.liveninja.ui.onboarding
 
 import android.Manifest
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
@@ -211,22 +212,31 @@ fun OnboardingScreen(
                         oemBucket = viewModel.oemBucket,
                         onRequestRole = {
                             val roleIntent = viewModel.assistantRoleRequestIntent()
-                            if (roleIntent != null) {
+                            // A null intent, or one no activity handles on this OEM,
+                            // both mean: guided settings walkthrough + isRoleHeld
+                            // polling instead. Never a crash mid-onboarding.
+                            val launched = roleIntent != null && try {
                                 roleLauncher.launch(roleIntent)
-                            } else {
-                                // OEM blocks the role dialog — guided settings
-                                // walkthrough + isRoleHeld polling instead.
-                                viewModel.openAssistantSettings(context)
+                                true
+                            } catch (e: ActivityNotFoundException) {
+                                false
                             }
+                            if (!launched) viewModel.openAssistantSettings(context)
                         },
                         onOpenSettings = { viewModel.openAssistantSettings(context) },
                         onRequestOverlay = {
-                            overlayLauncher.launch(
-                                Intent(
-                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                    Uri.parse("package:${context.packageName}"),
-                                ),
-                            )
+                            try {
+                                overlayLauncher.launch(
+                                    Intent(
+                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                        Uri.parse("package:${context.packageName}"),
+                                    ),
+                                )
+                            } catch (e: ActivityNotFoundException) {
+                                // No overlay-permission screen on this device: the
+                                // bubble is optional, so just re-read the status.
+                                viewModel.onOverlayReturned()
+                            }
                         },
                         onNext = viewModel::next,
                         onSkip = viewModel::onRoleSkipped,
@@ -234,7 +244,16 @@ fun OnboardingScreen(
 
                     OnboardingStep.BATTERY -> BatteryStep(
                         ignored = state.batteryOptimizationIgnored,
-                        onExempt = { batteryLauncher.launch(viewModel.batteryExemptionIntent()) },
+                        onExempt = {
+                            // Some OEM builds ship no handler for this system prompt;
+                            // the step can still be skipped, so a missing activity
+                            // must not crash the wizard.
+                            try {
+                                batteryLauncher.launch(viewModel.batteryExemptionIntent())
+                            } catch (e: ActivityNotFoundException) {
+                                viewModel.refreshStatuses()
+                            }
+                        },
                         onNext = viewModel::next,
                     )
 

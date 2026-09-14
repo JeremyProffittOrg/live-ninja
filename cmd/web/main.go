@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -34,6 +35,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/gofiber/fiber/v2"
+	fiberrecover "github.com/gofiber/fiber/v2/middleware/recover"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/codeupdate"
@@ -81,6 +83,11 @@ func main() {
 		DisableStartupMessage: true,
 		ErrorHandler:          webapp.ErrorHandler(),
 		Views:                 renderer,
+		// Fiber's default is 4 MiB, which cut the fallback STT upload
+		// (handleFallbackSTT reads a larger multipart body) off with a bare
+		// 413 before the handler ran. API Gateway's HTTP API payload cap is
+		// 10 MiB, so nothing larger can arrive anyway.
+		BodyLimit: 10 << 20,
 	})
 
 	// TxnMiddleware runs first: it assigns each request its transaction id,
@@ -88,6 +95,24 @@ func main() {
 	// verbose request/response log pair (with txId, redacted auth headers).
 	// It supersedes the old single-line request logger.
 	app.Use(webapp.TxnMiddleware(logger))
+	// fasthttp does no panic recovery of its own ("any panic will take down
+	// the entire server" — fasthttp/server.go), and under the Lambda Web
+	// Adapter a dead process is a 502 for THIS request plus a cold start for
+	// the next one on the container. Recover here, inside TxnMiddleware so
+	// the response log line still lands, and route the panic to the app
+	// ErrorHandler as a 500 with its stack in the txId-tagged log.
+	app.Use(fiberrecover.New(fiberrecover.Config{
+		EnableStackTrace: true,
+		StackTraceHandler: func(c *fiber.Ctx, e any) {
+			logger.Error("handler panic recovered",
+				slog.String("txId", webapp.TxID(c)),
+				slog.String("method", c.Method()),
+				slog.String("path", c.Path()),
+				slog.Any("panic", e),
+				slog.String("stack", string(debug.Stack())),
+			)
+		},
+	}))
 	app.Use(webapp.SecurityHeaders(assets))
 	// X-LN-Server on every response + X-LN-Client parsing/EMF/below-min
 	// 426 gate (contracts/headers.md, plan.md M7 "Versioning/compat") —

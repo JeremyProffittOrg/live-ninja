@@ -442,6 +442,12 @@ export class MicController extends EventTarget {
     try {
       await session.connect({ stream: streamPromise });
     } catch (err) {
+      // end() ran while this connect was in flight (End tapped during
+      // "Connecting…"), so the session is already closed — and a NEWER
+      // session may have been started since. Its rejection must not null
+      // that session or flip the page into `error` over a call the user
+      // ended on purpose.
+      if (this.#session !== session) return;
       this.#session = null;
       // getUserMedia failures surface out of connect() now — route them to
       // the mic-specific error copy, everything else to connection errors.
@@ -462,6 +468,7 @@ export class MicController extends EventTarget {
     }
     // sessionready listener flips to live-listening; belt-and-braces here in
     // case the event fired before the listener attached.
+    if (this.#session !== session) return; // ended (or replaced) mid-connect
     if (this.#state === MicState.CONNECTING) this.#setState(MicState.LISTENING);
   }
 
@@ -534,6 +541,7 @@ export class MicController extends EventTarget {
     });
     on('connectionlost', (e) => {
       // Spec §2.5: transcript preserved; retry mints a fresh session.
+      if (this.#session !== session) return; // a stale session must not clobber the live one
       this.#session = null;
       this.#fail({
         code: 'connection_lost',

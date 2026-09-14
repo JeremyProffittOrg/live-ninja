@@ -17,6 +17,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import ninja.jeremy.liveninja.log.LNLog
+import ninja.jeremy.liveninja.log.LogCategory
 import ninja.jeremy.liveninja.ui.state.AccountActions
 import ninja.jeremy.liveninja.ui.state.SignInLauncher
 
@@ -44,10 +46,16 @@ class AuthUiBridge @Inject constructor(
     override fun beginSignIn(activity: Activity) {
         scope.launch {
             val url = authRepository.beginLogin()
-            CustomTabsIntent.Builder()
-                .setShowTitle(true)
-                .build()
-                .launchUrl(activity, Uri.parse(url))
+            try {
+                CustomTabsIntent.Builder()
+                    .setShowTitle(true)
+                    .build()
+                    .launchUrl(activity, Uri.parse(url))
+            } catch (e: android.content.ActivityNotFoundException) {
+                // No browser on the device: an uncaught throw here takes the
+                // whole process down instead of leaving the user signed out.
+                LNLog.e(LogCategory.AUTH, TAG, "no activity can open the sign-in URL", e)
+            }
         }
     }
 
@@ -57,6 +65,10 @@ class AuthUiBridge @Inject constructor(
 
     override suspend fun signOutEverywhere() {
         authRepository.logoutAll()
+    }
+
+    private companion object {
+        const val TAG = "AuthUiBridge"
     }
 }
 

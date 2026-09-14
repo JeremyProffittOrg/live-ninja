@@ -5,7 +5,9 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.Optional
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -316,6 +318,19 @@ class ConversationViewModel @Inject constructor(
             try {
                 controller.start()
                 // LISTENING + ticker are driven by the connected collector.
+            } catch (e: CancellationException) {
+                // Superseded by a newer startSession() (startJob?.cancel() above,
+                // e.g. "New conversation" tapped while still connecting): the
+                // newer attempt already owns the state, so reporting this one as
+                // SESSION_FAILED would flash an error card over its CONNECTING.
+                if (!isActive) throw e
+                _state.update {
+                    it.copy(
+                        micState = MicUiState.ERROR,
+                        error = ConversationError.SESSION_FAILED,
+                        errorDetail = e.message,
+                    )
+                }
             } catch (e: Exception) {
                 _state.update {
                     it.copy(
