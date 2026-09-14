@@ -75,9 +75,9 @@ today's layer costs cents, so this is a capability change, not a saving.
 5. **Retention:** `eventExpiryDuration` (proposed 30 days) and the long-term record pruning rule (proposed: delete records never retrieved in 180 days).
 6. **Knowledge corpus export:** whether the `knowledge-plane` repo may gain a nightly S3 export (compact text + source metadata) that a Managed Knowledge Base ingests. Without it, `managed-kb-knowledge` cannot start.
 
-### agentcore-memory — per-user memory on Amazon Bedrock AgentCore Memory (no Runtime, no Gateway)
+### agentcore-memory — PROMOTED to plan.md on 2026-09-14 (owner took the proposed defaults)
 
-depends on: decisions 1–5 above.
+The milestones below are kept for reference only; `plan.md` section `agentcore-memory` is the source of truth.
 
 - [ ] `memory-resource` — `template.yaml` gains one `AWS::BedrockAgentCore::Memory` (or a custom resource if CloudFormation coverage is missing on the day) in us-east-1 with `SemanticMemoryStrategy` + `UserPreferenceMemoryStrategy`, namespaces `/users/{actorId}/facts/` and `/users/{actorId}/preferences/`, `eventExpiryDuration` per decision 5; IAM on the web and broker roles limited to `bedrock-agentcore:CreateEvent`, `RetrieveMemoryRecords`, `ListMemoryRecords`, `ListSessions`, `ListEvents`, `DeleteEvent`, `DeleteMemoryRecord`, `BatchDeleteMemoryRecords` on that one memory ARN, with `bedrock-agentcore:namespacePath` conditions. Done when: `gh run watch` on the deploy is green and `aws bedrock-agentcore-control get-memory --memory-id <id> --query status` prints `ACTIVE`.
 - [ ] `cost-guard` — one AWS Budgets monthly cost budget (amount per decision 4) filtered to the `Amazon Bedrock AgentCore` and `Amazon Bedrock` services, notification to the owner's email at 80% and 100% (Budgets, not CloudWatch alarms — house rule); `cmd/usage-rollup` writes `memEvents`/`memRetrievals` per user-month. Done when: `aws budgets describe-budgets --account-id 759775734231` lists the budget and `go test ./cmd/usage-rollup/` passes with a case for the new counters.

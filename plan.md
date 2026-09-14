@@ -3,6 +3,14 @@
 > **On the `alexa-version` branch only:** migration work to Azure is governed by
 > [azure-migration-plan.md](azure-migration-plan.md), not by this file. This file continues to govern
 > the AWS product work (§7.4 wake-word training is still mid-flight). The two do not overlap.
+>
+> **Adding Azure voice engines is governed by [azure-voice-plan.md](azure-voice-plan.md)** (written
+> 2026-08-24, ships to `main`). It adds four client-direct engines — `gpt-live-azure`,
+> `gpt-live-azure-mini`, `azure-voice-live`, `azure-voice-live-lite` — with no container and no
+> always-on bridge. It is deliberately independent of the full migration above: it ships on AWS
+> today, and nothing it creates has to be undone for that migration to proceed.
+
+**Live workstream (2026-09-14): `agentcore-memory`** — see the section of that name near the end of this file.
 
 Consolidated **2026-07-31**. Single source of truth for **active work**.
 Deliberately-deferred future items live in [backlog.md](backlog.md) — those are **not** scheduled and
@@ -1643,6 +1651,121 @@ with no improvement in loudest non-target — then stop and report rather than k
 - **`R.string` for "Always listening"** still says "without touching the **tablet**" on a phone.
 - `okay-joshua`'s `recommendedThreshold` of 0.754 predates the fix (55 negatives) — junk until
   retrained.
+
+## agentcore-memory — per-user memory on Amazon Bedrock AgentCore Memory `[~]` (promoted 2026-09-14)
+
+Promoted from `backlog.md` (section `agentcore-knowledge`) on the owner's instruction
+"take these defaults and implement". Research and pricing:
+[docs/agentcore-knowledge-research.md](docs/agentcore-knowledge-research.md). The sibling
+workstream `managed-kb-knowledge` stays in the backlog (scope decision below).
+
+### Locked decisions (user-confirmed 2026-09-14; do not revisit)
+
+1. **Scope: memory only.** `managed-kb-knowledge` is not started; the SQS relay to the home
+   knowledge store is untouched.
+2. **Extraction: AWS built-in strategies** (`SemanticMemoryStrategy` + `UserPreferenceMemoryStrategy`),
+   which use cross-region inference inside the US. No override strategy, no execution role.
+3. **Event granularity: one event per exchange** (a user turn and the assistant turn that answers
+   it). Unpaired turns are one-message events. The transcript sink's batch is the unit of work.
+4. **Budget ceiling: $25 per month** on a dedicated AWS Budgets budget filtered to the Bedrock and
+   AgentCore services, emailing the owner at 80% and 100%. Budgets, never CloudWatch alarms.
+5. **Retention: `eventExpiryDuration` 30 days.** Long-term record pruning ("never retrieved in
+   180 days") is `[!]` — the API exposes no last-retrieved time, so it cannot be implemented as
+   stated; growth is bounded at about $0.15 per user-month at 200 records (see research §4).
+6. **Rollout mode: owner first.** `AGENTCORE_MEMORY_MODE=owner` (stack parameter
+   `AgentCoreMemoryMode`, allowed `off|owner|all`) gates every write and read by the caller's
+   verified role. Flipping to `all` is a parameter change, not a code change. This replaces the
+   backlog's "per-user flag on the user row" with something that needs no new UI.
+7. **DynamoDB `ENT#`/`EMB#` stay during dual running.** `emb-retire` waits two weeks with the
+   owner smoke set passing (see `emb-retire` below). The Memory page keeps editing `ENT#` rows and
+   gains a read-only "Learned from conversations" list with Forget.
+
+### Verified facts (each confirmed by command on 2026-09-14)
+
+- `aws cloudformation describe-type --type RESOURCE --type-name AWS::BedrockAgentCore::Memory`
+  → `LIVE`, `FULLY_MUTABLE`; required `Name` (pattern `^[a-zA-Z][a-zA-Z0-9_]{0,47}$`) and
+  `EventExpiryDuration` (3–365); `MemoryStrategies[].SemanticMemoryStrategy{Name,Namespaces}`;
+  namespaces match `^[a-zA-Z0-9\-_/]*(\{(actorId|sessionId|memoryStrategyId)\}…)*$`;
+  `MemoryId`/`MemoryArn` are read-only outputs; `Tags` supported.
+- `go get github.com/aws/aws-sdk-go-v2/service/bedrockagentcore@latest` → v1.48.0 on the pinned
+  aws-sdk-go-v2 v1.42.1; exposes CreateEvent, RetrieveMemoryRecords, ListMemoryRecords,
+  ListSessions, ListEvents, DeleteEvent, DeleteMemoryRecord, BatchDeleteMemoryRecords.
+- `gh variable get AWS_DEPLOY_ROLE_ARN` → role `gha-deploy`; `aws iam list-attached-role-policies`
+  → `PowerUserAccess` (covers `bedrock-agentcore:*` and `budgets:*`).
+- `aws ce get-dimension-values --dimension SERVICE --search-string Agent` → no AgentCore service
+  name in this account yet (no usage). The budget filter uses `Amazon Bedrock AgentCore` from the
+  AWS pricing page; **unverified until the first invoice line appears** — check
+  `aws ce get-dimension-values … --search-string Agent` after the first day of events.
+- `template.yaml:2921-2966` already carries `Budget20`/`Budget50` on `user:Project$live-ninja`;
+  `samconfig.toml:14` sets stack `tags = "Project=live-ninja …"` (propagated to every taggable resource), so the new memory is inside them too.
+- Broker `Request` (`cmd/realtime-broker/main.go:66`) has no role field; the web function adds
+  `role` to the mint request so the broker can gate the preload without a user read.
+- `handleTranscript` (`internal/webapp/api_routes.go:823`) already respects
+  `privacy.storeTranscripts`; events are only written when transcripts are stored.
+
+### Milestones
+
+- [~] `memory-resource` — `template.yaml`: parameters `AgentCoreMemoryMode` (default `owner`) and
+  `AgentCoreMonthlyBudgetUsd` (default 25); resource `AgentCoreMemory` (Name `live_ninja_memory`,
+  EventExpiryDuration 30, strategies `facts` → `/users/{actorId}/facts/` and `preferences` →
+  `/users/{actorId}/preferences/`); env `AGENTCORE_MEMORY_ID`/`AGENTCORE_MEMORY_MODE` on the web,
+  broker and account-purge functions; IAM per function on the one memory ARN. Done when: the
+  Deploy run is green and
+  `aws bedrock-agentcore-control get-memory --memory-id $(aws cloudformation describe-stacks --stack-name live-ninja --query "Stacks[0].Outputs[?OutputKey=='AgentCoreMemoryId'].OutputValue" --output text) --query status --output text`
+  prints `ACTIVE`.
+- [~] `cost-guard` — `BudgetAgentCore` (`AWS::Budgets::Budget`, $25, services filter, 80%/100%
+  email); `store.AddDayMemoryUsage` bumps `dayMemEvents`/`dayMemRetrievals`; `cmd/usage-rollup`
+  sums them into `monthMemEvents`/`monthMemRetrievals`. Done when:
+  `aws budgets describe-budgets --account-id 759775734231 --query "Budgets[?BudgetName=='live-ninja-agentcore-25'].BudgetName" --output text`
+  prints the name and `go test ./cmd/usage-rollup/ ./internal/store/` passes.
+- [ ] `event-writer` — `internal/agentmemory` (new package: SDK wrapper, exchange pairing,
+  idempotent client tokens `sessionId#seq`); `handleTranscript` writes one event per exchange when
+  the mode admits the caller's role and transcripts are stored; failures are logged and never
+  fail the flush. Done when: `go test ./internal/agentmemory/ ./internal/webapp/ -race` passes
+  with cases for pairing, mode gating, and a failing client.
+- [ ] `mint-preload` — the web mint request carries `role`; the broker calls
+  `RetrieveMemoryRecords` (namespace `/users/{actorId}/`, topK 10, 400 ms deadline) on every mint
+  path and the fallback turn, and appends `realtime.RememberedBlock` after BASE KNOWLEDGE;
+  timeout or error mints unchanged; `memoryUsageDirective` tells the model the block exists.
+  Done when: `go test ./internal/realtime/ ./cmd/realtime-broker/` passes with a timeout case and
+  a rendering case.
+- [ ] `memory-tools-cutover` — `memory_search` merges AgentCore records (`remembered[]`) with the
+  entity results; `memory_write`/`plan_upsert` also record an explicit "remember" event;
+  `forget` also deletes AgentCore records whose text contains the entity name;
+  `GET/DELETE /api/v1/memory/remembered` and the Memory page "Learned from conversations" list;
+  Help drawer + Memory page copy updated in the same commit. Done when:
+  `go test ./internal/tools/ ./internal/webapp/` passes (including `TestHelpDrawer`) and the
+  owner's 10-question smoke set answers 9 of 10 by voice on web and Android.
+- [ ] `purge-and-export` — `cmd/account-purge` deletes the actor's events and records (fails the
+  run on error so the async retry re-runs); the account export adds the records. Done when:
+  `go test ./cmd/account-purge/ ./internal/webapp/ -run 'Purge|Export'` passes.
+- [ ] `emb-retire` — not before 2026-09-28 and only with the smoke set passing: remove `EMB#`
+  writes, `ListEmbeddings`, the cosine path and the Titan IAM statement; rewrite
+  `contracts/api.md:209-211`, `PRD.md` memory sections and `docs/system-map.md`. Done when:
+  `grep -rn "EMB#\|Cosine(" internal/ cmd/` prints nothing and `go test ./...` passes.
+- [!] `record-pruning` — blocked: AgentCore exposes no last-retrieved timestamp per record, so
+  "delete records never retrieved in 180 days" cannot be implemented as specified. Unblocks with
+  an owner decision: prune by `CreatedAt` age instead (loses durable facts) or accept growth
+  (about $0.15 per user-month at 200 records).
+
+### Restart policy
+
+Every milestone is a push-to-main deploy. A red Deploy run is fixed and re-pushed, ceiling 3
+attempts per milestone, then the milestone is marked `[!]` with the verbatim failure and the run
+moves on. `AgentCoreMemoryMode=off` is the rollback: no reads, no writes, DynamoDB memory
+unchanged.
+
+### Stop conditions (only these)
+
+- The `live-ninja-agentcore-25` budget notification fires.
+- `RetrieveMemoryRecords` p50 above 800 ms from the broker for a full day (`REMEMBERED` block
+  then stays off via `AgentCoreMemoryMode=off` until the owner decides).
+- CloudFormation rejects `AWS::BedrockAgentCore::Memory` on the day (the describe-type check
+  above says it will not).
+
+### Execution log
+
+- 2026-09-14 — verified the four facts above; `go get` added `bedrockagentcore v1.48.0`.
 
 ## Standing rules (carried forward — these do not expire)
 

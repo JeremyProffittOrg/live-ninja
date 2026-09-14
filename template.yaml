@@ -228,6 +228,21 @@ Parameters:
       M17: minimum minutes between analyses of the same failure signature
       (plan.md locked default 60).
 
+  # agentcore-memory (plan.md): who gets Amazon Bedrock AgentCore Memory.
+  #   off   - nothing is written or read (rollback position; DynamoDB memory unchanged)
+  #   owner - only callers whose verified role is owner (the rollout position)
+  #   all   - every account
+  AgentCoreMemoryMode:
+    Type: String
+    Default: owner
+    AllowedValues: [off, owner, all]
+    Description: Rollout gate for AgentCore Memory writes and reads (off | owner | all).
+  # Monthly ceiling for the Bedrock + AgentCore budget (locked decision 4, 2026-09-14).
+  AgentCoreMonthlyBudgetUsd:
+    Type: Number
+    Default: 25
+    Description: USD per month at which the live-ninja-agentcore budget emails the owner.
+
 Globals:
   Function:
     Runtime: provided.al2023
@@ -387,6 +402,11 @@ Resources:
           # Either unset leaves both tools reporting not_configured.
           KNOWLEDGE_QUERY_QUEUE_URL: !Sub "https://sqs.${AWS::Region}.amazonaws.com/${AWS::AccountId}/${KnowledgeQueryRequestQueueName}"
           KNOWLEDGE_RESULTS_TABLE: !Ref KnowledgeQueryResultsTableName
+          # agentcore-memory: the transcript sink writes one event per exchange
+          # and the memory tools read long-term records (internal/agentmemory).
+          # Mode off disables both without a code change.
+          AGENTCORE_MEMORY_ID: !GetAtt AgentCoreMemory.MemoryId
+          AGENTCORE_MEMORY_MODE: !Ref AgentCoreMemoryMode
       Events:
         CatchAll:
           Type: HttpApi
@@ -618,6 +638,20 @@ Resources:
             # Query over each user's own EMB# partition - internal/memory).
             # Scoped to the single embedding model id; no other Bedrock models
             # or InvokeModel* actions are granted.
+            # ---- agentcore-memory: events in, long-term records out, plus the
+            # record deletes behind `forget` and the Memory page. Scoped to the
+            # one memory this stack owns.
+        - Sid: AgentCoreMemoryReadWrite
+          Effect: Allow
+          Action:
+          - bedrock-agentcore:CreateEvent
+          - bedrock-agentcore:RetrieveMemoryRecords
+          - bedrock-agentcore:ListMemoryRecords
+          - bedrock-agentcore:GetMemoryRecord
+          - bedrock-agentcore:DeleteMemoryRecord
+          - bedrock-agentcore:BatchDeleteMemoryRecords
+          Resource:
+          - !GetAtt AgentCoreMemory.MemoryArn
         - Sid: BedrockEmbedModel
           Effect: Allow
           Action:
@@ -747,6 +781,10 @@ Resources:
           OPENAI_REALTIME_MODEL: !Ref OpenAIRealtimeModel
           # M13: Gemini Live model for gemini-flash-live-pinned devices.
           GEMINI_LIVE_MODEL: !Ref GeminiLiveModel
+          # agentcore-memory: one RetrieveMemoryRecords per mint (400 ms budget)
+          # renders the REMEMBERED block after BASE KNOWLEDGE.
+          AGENTCORE_MEMORY_ID: !GetAtt AgentCoreMemory.MemoryId
+          AGENTCORE_MEMORY_MODE: !Ref AgentCoreMemoryMode
           # M7 cost/quota: hourly-burn auto-suspend owner alert (enqueued to
           # the email queue; cmd/email-dispatch sends via SES) + LOG# ledger
           # TTL override (days; code default is 30).
@@ -796,6 +834,12 @@ Resources:
           - dynamodb:UpdateItem
           Resource:
           - !GetAtt Table.Arn
+        - Sid: AgentCoreMemoryRetrieve
+          Effect: Allow
+          Action:
+          - bedrock-agentcore:RetrieveMemoryRecords
+          Resource:
+          - !GetAtt AgentCoreMemory.MemoryArn
         - Sid: OpenAiKeyParam
           Effect: Allow
           Action:
@@ -1381,6 +1425,11 @@ Resources:
           USER_BUCKET: !Ref UserBucket
           WAKEWORDS_BUCKET: !Ref WakewordsBucket
           EMAIL_QUEUE_URL: !Ref EmailQueue
+          # agentcore-memory: the actor's events and long-term records are
+          # deleted with the DynamoDB partition (fails the run on error so the
+          # async retry re-runs, same posture as the table purge).
+          AGENTCORE_MEMORY_ID: !GetAtt AgentCoreMemory.MemoryId
+          AGENTCORE_MEMORY_MODE: !Ref AgentCoreMemoryMode
       Policies:
       - Version: "2012-10-17"
         Statement:
@@ -1395,6 +1444,16 @@ Resources:
           Resource:
           - !GetAtt Table.Arn
           - !Sub "${Table.Arn}/index/*"
+        - Sid: AgentCoreMemoryPurge
+          Effect: Allow
+          Action:
+          - bedrock-agentcore:ListSessions
+          - bedrock-agentcore:ListEvents
+          - bedrock-agentcore:DeleteEvent
+          - bedrock-agentcore:ListMemoryRecords
+          - bedrock-agentcore:BatchDeleteMemoryRecords
+          Resource:
+          - !GetAtt AgentCoreMemory.MemoryArn
         - Sid: PurgeDeliverablesPrefix
           Effect: Allow
           Action:
@@ -2918,6 +2977,68 @@ Resources:
   # (internal/observ) so SEARCH expressions are used for them — they match
   # whatever dimension values appear without hardcoding Surface/Tool/Kind
   # value lists.
+  # ------------------------------------------------------------------
+  # agentcore-memory (plan.md, promoted 2026-09-14): per-user long-term
+  # memory. Raw conversation events expire after 30 days; the two built-in
+  # strategies extract facts and preferences asynchronously into
+  # per-actor namespaces. No execution role: built-in strategies run on
+  # AWS-managed models (locked decision 2). Name is create-only.
+  # ------------------------------------------------------------------
+  AgentCoreMemory:
+    Type: AWS::BedrockAgentCore::Memory
+    Properties:
+      Name: live_ninja_memory
+      Description: Live Ninja per-user memory (events per exchange; facts + preferences extracted)
+      EventExpiryDuration: 30
+      MemoryStrategies:
+      - SemanticMemoryStrategy:
+          Name: facts
+          Description: Lasting facts about the user, their people, places, projects and plans
+          Namespaces:
+          - /users/{actorId}/facts/
+      - UserPreferenceMemoryStrategy:
+          Name: preferences
+          Description: Standing preferences the user states in conversation
+          Namespaces:
+          - /users/{actorId}/preferences/
+      Tags:
+        Project: live-ninja
+
+  # Cost guard for the memory (locked decision 4). Budgets, never CloudWatch
+  # alarms. The AgentCore service name comes from the AWS pricing page and is
+  # unverified until the first invoice line appears (plan.md verified facts).
+  BudgetAgentCore:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: live-ninja-agentcore-25
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref AgentCoreMonthlyBudgetUsd
+          Unit: USD
+        CostFilters:
+          Service:
+          - Amazon Bedrock AgentCore
+          - Amazon Bedrock
+      NotificationsWithSubscribers:
+      - Notification:
+          NotificationType: ACTUAL
+          ComparisonOperator: GREATER_THAN
+          Threshold: 80
+          ThresholdType: PERCENTAGE
+        Subscribers:
+        - SubscriptionType: EMAIL
+          Address: proffitt.jeremy@gmail.com
+      - Notification:
+          NotificationType: ACTUAL
+          ComparisonOperator: GREATER_THAN
+          Threshold: 100
+          ThresholdType: PERCENTAGE
+        Subscribers:
+        - SubscriptionType: EMAIL
+          Address: proffitt.jeremy@gmail.com
+
   Budget20:
     Type: AWS::Budgets::Budget
     Properties:
@@ -2988,6 +3109,9 @@ Resources:
           Address: proffitt.jeremy@gmail.com
 
 Outputs:
+  AgentCoreMemoryId:
+    Description: agentcore-memory - the memory id (plan.md memory-resource definition of done)
+    Value: !GetAtt AgentCoreMemory.MemoryId
   HttpApiEndpoint:
     Description: HTTP API invoke URL (origin behind CloudFront).
     Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
