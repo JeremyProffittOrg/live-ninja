@@ -11,6 +11,14 @@
 # org.webrtc may be renamed or stripped.
 -keep class org.webrtc.** { *; }
 -dontwarn org.webrtc.**
+# Since WebRTC M12x the .so bootstraps its JNI bindings through org.jni_zero.JniInit (looked
+# up by name from JNI_OnLoad, not referenced from any Java code R8 can trace). Without this
+# keep the release build strips it, System.loadLibrary throws ClassNotFoundException
+# "org.jni_zero.JniInit" inside PeerConnectionFactory.initialize, and libwebrtc then aborts
+# the process with SIGTRAP the first time a live session starts (seen on 0.3.0 (6),
+# 2026-09-15, Galaxy S9 phone).
+-keep class org.jni_zero.** { *; }
+-dontwarn org.jni_zero.**
 
 # ---- ONNX Runtime (com.microsoft.onnxruntime, wake-word inference) ----
 # Same story: the bundled libonnxruntime.so / libonnxruntime4j_jni.so JNI bridge resolves

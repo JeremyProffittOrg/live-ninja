@@ -1841,6 +1841,24 @@ unchanged.
   `liveninja-0.3.0-6-ea8a6e66…7238e.apk`, publishedAt 2026-09-15T06:08:24Z; the downloaded APK's
   signer matches the new fingerprint. Tablet `R52XC06P9KJ`: debug build uninstalled (not signed
   in, nothing lost), signed release installed.
+- 2026-09-15 — owner: "when I tried live-ninja on the test phone, it failed … troubleshoot, reinstall
+  as needed." S9 phone `4633424442303098` on the signed 0.3.0 (6): `logcat -b crash` shows two
+  `SIGTRAP` aborts in `libjingle_peerconnection_so.so` at 02:31:26 and 02:31:36, each preceded by
+  `java.lang.ClassNotFoundException: org.jni_zero.JniInit` thrown from `System.loadLibrary` inside
+  `PeerConnectionFactory.initialize` (`WebRtcTransport.kt:435`, i.e. the first live session).
+  Cause: webrtc-sdk 144.7559.09 bootstraps JNI through `org.jni_zero.JniInit`, resolved by name
+  from native code; `proguard-rules.pro` only kept `org.webrtc.**`, so R8 stripped `org.jni_zero.*`
+  from the minified release (debug builds are not minified, which is why 0.2.2 worked here). The
+  tablet did not crash only because no live session had been started on its release build.
+  Fix: `-keep class org.jni_zero.** { *; }` + `-dontwarn`; version bumped to 0.3.1 (7) because
+  `build-and-publish` refuses a versionCode ≤ the current stable 6. Local `assembleRelease` at
+  the fix: `mapping.txt` keeps `org.jni_zero.JniInit -> org.jni_zero.JniInit`; `adb install -r -g`
+  → `Success`, `versionCode=7 versionName=0.3.1`; mic tap started a session — logcat shows
+  `NativeLibrary: Loading native library: jingle_peerconnection_so` → `PeerConnectionFactory:
+  onSignalingThreadReady` → `WebRtcAudioRecordExternal: startRecording`, UI "Listening 0:09",
+  crash buffer empty, then `am force-stop`. Tablet `R52XC06P9KJ` left alone (held by another
+  session for CAPS QA at the time); it still carries the crashing 0.3.0 (6) until its updater
+  picks up 0.3.1. A stray `workflow_dispatch` on the pre-fix sha (run 34937834008) was cancelled.
 
 ## Standing rules (carried forward — these do not expire)
 
