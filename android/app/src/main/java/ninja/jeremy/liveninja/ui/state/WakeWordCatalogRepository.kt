@@ -232,6 +232,26 @@ class WakeWordCatalogRepository @Inject constructor(
                 description = "Bundled model · works offline, no training needed",
                 engines = listOf("openwakeword"),
             ),
+            // The other openWakeWord v0.5.1 public heads (ModelManager.BUILTIN_ASSETS): same
+            // pre-trained, wide-margin calibre as hey_jarvis, shipped in the apk since 0.3.5.
+            WakeWordOption(
+                id = "alexa",
+                label = "“Alexa”",
+                description = "Bundled model · works offline, no training needed",
+                engines = listOf("openwakeword"),
+            ),
+            WakeWordOption(
+                id = "hey-mycroft",
+                label = "“Hey Mycroft”",
+                description = "Bundled model · works offline, no training needed",
+                engines = listOf("openwakeword"),
+            ),
+            WakeWordOption(
+                id = "hey-rhasspy",
+                label = "“Hey Rhasspy”",
+                description = "Bundled model · works offline, no training needed",
+                engines = listOf("openwakeword"),
+            ),
             WakeWordOption(
                 id = "hey-live-ninja",
                 label = "“Hey Live Ninja”",

@@ -101,6 +101,24 @@ class ModelManager @Inject constructor(
         const val ASSET_DEFAULT_HEAD = "wakeword/hey_jarvis_v0.1.onnx"
         const val DEFAULT_ASSET_WAKE_WORD_ID = "hey-jarvis"
 
+        /**
+         * Every phrase head that ships inside the apk (openWakeWord v0.5.1 public models,
+         * https://github.com/dscripka/openWakeWord/releases/tag/v0.5.1 — the same release the
+         * bundled hey_jarvis came from). Owner 2026-09-15: "add the openwake word ones, leave
+         * picovoice out" — these are the pre-trained, high-margin detectors; the custom-trained
+         * phrases score far closer to the threshold. Keyed by catalog id; the server catalog
+         * lists the same ids as builtins so its manifest route answers 404 builtin_model.
+         */
+        val BUILTIN_ASSETS: Map<String, String> = mapOf(
+            DEFAULT_ASSET_WAKE_WORD_ID to ASSET_DEFAULT_HEAD,
+            "alexa" to "wakeword/alexa_v0.1.onnx",
+            "hey-mycroft" to "wakeword/hey_mycroft_v0.1.onnx",
+            "hey-rhasspy" to "wakeword/hey_rhasspy_v0.1.onnx",
+        )
+
+        /** Asset path for a bundled phrase id, or null when the id is not shipped in the apk. */
+        fun builtinAssetPath(wakeWordId: String): String? = BUILTIN_ASSETS[wakeWordId]
+
         /** Manifest `format` tags this client's runtimes understand (additive contract). */
         const val FORMAT_OWW_ONNX_ANDROID_V1 = "oww-onnx-android-v1"
         const val FORMAT_PPN_ANDROID_V1 = "ppn-android-v1"
@@ -118,7 +136,7 @@ class ModelManager @Inject constructor(
     private val baseDir = File(context.filesDir, "wakeword")
     private val syncMutex = Mutex()
 
-    private val _headModel = MutableStateFlow(loadActive(WakePreferences.ENGINE_OPENWAKEWORD)
+    private val _headModel = MutableStateFlow(loadActiveRef(WakePreferences.ENGINE_OPENWAKEWORD)
         ?: WakeModelRef.Asset(DEFAULT_ASSET_WAKE_WORD_ID, ASSET_DEFAULT_HEAD))
 
     /**
@@ -146,9 +164,15 @@ class ModelManager @Inject constructor(
         syncMutex.withLock {
             // Builtins ship in the apk. Asking the server for one earns a by-design 404, so
             // short-circuit before the network rather than mistaking that for a failure.
-            if (wakeWordId == DEFAULT_ASSET_WAKE_WORD_ID) {
-                val ref = WakeModelRef.Asset(wakeWordId, ASSET_DEFAULT_HEAD)
-                if (engine == WakePreferences.ENGINE_OPENWAKEWORD) _headModel.value = ref
+            val assetPath = builtinAssetPath(wakeWordId)
+            if (assetPath != null) {
+                val ref = WakeModelRef.Asset(wakeWordId, assetPath)
+                if (engine == WakePreferences.ENGINE_OPENWAKEWORD) {
+                    _headModel.value = ref
+                    // Remember the choice: the state file used to track only DOWNLOADED
+                    // models, so a bundled pick was forgotten at the next process start.
+                    storeActiveAsset(engine, ref)
+                }
                 LNLog.i(LogCategory.WAKE, TAG, "wake model active: $wakeWordId (builtin asset)")
                 return@withLock ModelSyncResult.Builtin(ref)
             }
@@ -309,31 +333,63 @@ class ModelManager @Inject constructor(
 
     private fun stateFile(engine: String) = File(baseDir, "active_$engine.json")
 
-    private fun loadActive(engine: String): WakeModelRef.Downloaded? {
+    /** The last downloaded model for [engine], if the state file names one that still exists. */
+    private fun loadActive(engine: String): WakeModelRef.Downloaded? =
+        loadActiveRef(engine) as? WakeModelRef.Downloaded
+
+    /**
+     * Whatever the user last activated for [engine] — a downloaded model or a bundled asset —
+     * so the head loaded at process start is the selection, not always hey_jarvis.
+     */
+    private fun loadActiveRef(engine: String): WakeModelRef? {
         val f = stateFile(engine)
         if (!f.exists()) return null
         return try {
             val json = JSONObject(f.readText())
-            val file = File(json.getString("file"))
-            if (!file.exists()) null
-            else WakeModelRef.Downloaded(
-                wakeWordId = json.getString("id"),
-                file = file,
-                sha256 = json.getString("sha256"),
-            )
+            if (json.optString("kind") == "asset") {
+                val id = json.getString("id")
+                val asset = json.getString("asset")
+                // Only trust an asset the current apk actually ships.
+                if (builtinAssetPath(id) == asset) WakeModelRef.Asset(id, asset) else null
+            } else {
+                val file = File(json.getString("file"))
+                if (!file.exists()) null
+                else WakeModelRef.Downloaded(
+                    wakeWordId = json.getString("id"),
+                    file = file,
+                    sha256 = json.getString("sha256"),
+                )
+            }
         } catch (e: Exception) {
             LNLog.w(LogCategory.WAKE, TAG, "corrupt active-model state for $engine; falling back", e)
             null
         }
     }
 
+    private fun storeActiveAsset(engine: String, ref: WakeModelRef.Asset) {
+        writeState(
+            engine,
+            JSONObject()
+                .put("kind", "asset")
+                .put("id", ref.wakeWordId)
+                .put("asset", ref.assetPath),
+        )
+    }
+
     private fun storeActive(engine: String, ref: WakeModelRef.Downloaded, format: String) {
+        writeState(
+            engine,
+            JSONObject()
+                .put("kind", "downloaded")
+                .put("id", ref.wakeWordId)
+                .put("sha256", ref.sha256)
+                .put("format", format)
+                .put("file", ref.file.absolutePath),
+        )
+    }
+
+    private fun writeState(engine: String, json: JSONObject) {
         baseDir.mkdirs()
-        val json = JSONObject()
-            .put("id", ref.wakeWordId)
-            .put("sha256", ref.sha256)
-            .put("format", format)
-            .put("file", ref.file.absolutePath)
         val tmp = File(baseDir, "active_$engine.json.tmp")
         tmp.writeText(json.toString())
         if (!tmp.renameTo(stateFile(engine))) {

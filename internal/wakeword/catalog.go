@@ -77,6 +77,14 @@ var builtinEntries = []CatalogEntry{
 	// manifest route resolves the bare "hey-live-ninja" settings id to the
 	// trained item via slug match — see Model()).
 	{ID: "hey-jarvis", Phrase: "hey jarvis", Engine: "openwakeword", Source: "builtin", Status: store.WakewordStatusReady, Platforms: []string{"web", "android"}},
+	// The other openWakeWord v0.5.1 public heads. The Android apk bundles them (0.3.5,
+	// ModelManager.BUILTIN_ASSETS); the web bundles only hey_jarvis, so they are
+	// android-only here and the web's static catalog marks modelAvailable.web=false.
+	// Listed as builtins so training can't shadow them and the manifest route answers
+	// 404 builtin_model instead of pretending there is something to download.
+	{ID: "alexa", Phrase: "alexa", Engine: "openwakeword", Source: "builtin", Status: store.WakewordStatusReady, Platforms: []string{"android"}},
+	{ID: "hey-mycroft", Phrase: "hey mycroft", Engine: "openwakeword", Source: "builtin", Status: store.WakewordStatusReady, Platforms: []string{"android"}},
+	{ID: "hey-rhasspy", Phrase: "hey rhasspy", Engine: "openwakeword", Source: "builtin", Status: store.WakewordStatusReady, Platforms: []string{"android"}},
 	{ID: "wn9_hiesp", Phrase: "hi esp", Engine: "wakenet", Source: "builtin", Status: store.WakewordStatusReady, Platforms: []string{"esp32"}},
 	{ID: "wn9_hilexin", Phrase: "hi lexin", Engine: "wakenet", Source: "builtin", Status: store.WakewordStatusReady, Platforms: []string{"esp32"}},
 	{ID: "wn9_alexa", Phrase: "alexa", Engine: "wakenet", Source: "builtin", Status: store.WakewordStatusReady, Platforms: []string{"esp32"}},

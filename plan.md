@@ -1973,6 +1973,29 @@ unchanged.
   Shipped as `a4d8f2b`: push run 35009321210 `success`; dispatch run 35009325283 `success` in all
   three jobs; `GET /v1/app/android/latest` → versionName 0.3.4, versionCode 10, publishedAt
   2026-09-15T18:50:49Z. The phone already runs the same sha (local signed build).
+- 2026-09-15 — owner: "wifi is done" then "add those wake words / models as options I can choose
+  from" and "add the openwake word ones, leave picovoice out". Phone: Wi-Fi back (`wifi_on` 1,
+  WIFI VALIDATED, `ping live.jeremy.ninja` 33 ms); the 14:44–14:53 logcat shows the phrase firing
+  8× more with `session start failed` each time (Wi-Fi was off), and `stopped` at 14:53:29 with
+  no session = the owner's own off tap. 0.3.5 (11) bundles openWakeWord v0.5.1's other public
+  heads as apk assets — `alexa_v0.1.onnx` (sha256 6ff566a0…bae3e, 854 246 B), `hey_mycroft_v0.1.onnx`
+  (c2a311e8…b1f18, 857 691 B), `hey_rhasspy_v0.1.onnx` (5a9b3ed3…d0f6ea, 204 081 B); the freshly
+  fetched `hey_jarvis_v0.1.onnx` matched the bundled one byte-for-byte (94a13cfe…0d2cb), so the
+  source release is the right one. `timer`/`weather` are not wake phrases and were left out.
+  `ModelManager.BUILTIN_ASSETS` maps id→asset (`builtinAssetPath`, `ModelManagerBuiltinsTest`);
+  the builtin sync branch now persists the pick (`kind=asset` in `active_openwakeword.json`,
+  `loadActiveRef`) so a bundled choice survives a process restart — before, only the last DOWNLOAD
+  was remembered. Android `BUILT_IN` lists the three as "Bundled model"; `internal/wakeword/
+  catalog.go` lists them as builtins with `Platforms: ["android"]` (the web bundles only hey_jarvis
+  and owns builtins from `web/static/wakewords/catalog.json`, where they carry
+  `modelAvailable.web=false`, `android=true`; hey-jarvis's stale `android=false` fixed).
+  `go test ./internal/wakeword/` ok; Android `testDebugUnitTest` tests=350 failures+errors=0;
+  release APK carries all six `assets/wakeword/*.onnx` (+1.9 MB). Phone on 0.3.5: picker shows
+  “Alexa”/“Hey Mycroft”/“Hey Rhasspy”; pick Alexa → `wake model active: alexa (builtin asset)` +
+  `hot-swapped head model -> alexa` 51 ms later; `am force-stop` + relaunch → `started
+  (model=alexa)` (persisted); switched back → `hot-swapped head model -> hey-live-ninja-47df2e`.
+  Phone left on hey live ninja, listening ON. Not measured: on-device scores for the three new
+  heads (no test clips for those phrases; upstream reports them at the same calibre as hey_jarvis).
 
 ## Standing rules (carried forward — these do not expire)
 

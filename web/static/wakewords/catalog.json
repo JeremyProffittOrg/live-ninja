@@ -14,7 +14,28 @@
       "phrase": "Hey Jarvis",
       "default": false,
       "engines": ["openwakeword"],
-      "modelAvailable": { "web": true, "android": false, "esp32": false }
+      "modelAvailable": { "web": true, "android": true, "esp32": false }
+    },
+    {
+      "id": "alexa",
+      "phrase": "Alexa",
+      "default": false,
+      "engines": ["openwakeword"],
+      "modelAvailable": { "web": false, "android": true, "esp32": false }
+    },
+    {
+      "id": "hey-mycroft",
+      "phrase": "Hey Mycroft",
+      "default": false,
+      "engines": ["openwakeword"],
+      "modelAvailable": { "web": false, "android": true, "esp32": false }
+    },
+    {
+      "id": "hey-rhasspy",
+      "phrase": "Hey Rhasspy",
+      "default": false,
+      "engines": ["openwakeword"],
+      "modelAvailable": { "web": false, "android": true, "esp32": false }
     },
     {
       "id": "ok-ninja",
