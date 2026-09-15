@@ -1944,6 +1944,32 @@ unchanged.
   Shipped as `0ed7260`: push run 35005822724 `success`; dispatch run 35005826848 `success` in all
   three jobs; `GET /v1/app/android/latest` → versionName 0.3.3, versionCode 9, publishedAt
   2026-09-15T18:18:39Z. The phone already runs the same sha (local signed build).
+- 2026-09-15 — owner: "wake word is not working, is there a tried and true list of wake word
+  models … which have high accuracy" and "I need an enable/disable feature in live ninja as well,
+  in the upper left above settings". Phone logcat 14:17–14:31 on 0.3.3 answers the first with
+  data: `hey-live-ninja-47df2e` fired 6× (`wake detected … score=0.748 / 0.962 / 0.947 / 0.903 /
+  0.800 / 0.577 thr=0.50`), each starting a session; near-misses at 0.385–0.484 were attempts
+  that fell just under the 0.50 threshold. The one real failure: 14:31:40 `engine start failed:
+  Microphone capture blocked (background start restriction)` ~70 ms after a session ended (its
+  AudioRecord still releasing), then a flat `ENGINE_RETRY_MS` 60 s wait — recovered 14:32:40
+  `started (model=hey-live-ninja-47df2e)`. So "not working" = one deaf minute after that
+  conversation, plus the phone's Wi-Fi being OFF (`settings get global wifi_on` → 0, app toasts
+  "No network connection", History/Memory/Files "Couldn't load"), which blocks the session the
+  wake word starts. 0.3.4 (10): `engineRetryDelayMs` (1 s, 3 s, 10 s, then the 60 s ceiling;
+  `WakeStartDecisionTest`) replaces the flat wait in both CONTINUOUS and DUTY_CYCLE loops;
+  `ui/ListeningEdgeTab.kt` adds a 48 dp always-listening on/off tab at the top-left edge directly
+  above the settings tab (`SettingsEdgeBar` gains `topOffset`; History/Memory/Files title rows get
+  the `SETTINGS_TAB_SIZE` gutter and a 2-tab-tall band — the gear alone already clipped "History").
+  Verified on the phone: tab tap → `run mode -> CONTINUOUS` / `started (model=hey-live-ninja-47df2e)`
+  / services=2; tap → `stopped` / services=0; screenshots of Conversation, History, Memory, Files
+  clean; local `testDebugUnitTest` tests=347 failures+errors=0. Phone left with listening ON.
+  Model accuracy answer (not built, owner to decide): the bundled openWakeWord `hey_jarvis_v0.1`
+  is the only measured high-margin model here (`WakePhraseDiscriminationTest`: 0.998 on-phrase,
+  ≤0.135 near-miss); the custom-trained phrases score 0.58–0.96 on-phrase with near-misses up to
+  0.48. openWakeWord's other public v0.1 models (alexa, hey_mycroft, hey_rhasspy, timer, weather)
+  are the same calibre as hey_jarvis and could be bundled like it; Porcupine (Picovoice) built-in
+  keywords are the strongest option but need a Picovoice AccessKey and the `-Pliveninja.porcupine`
+  build (engine already in `src/porcupine/`).
 
 ## Standing rules (carried forward — these do not expire)
 

@@ -288,6 +288,10 @@
 
     <!-- ===== M30 settings drawer / accordion ===== -->
     <string name="settings_edge_open">Open settings</string>
+    <!-- Always-listening tab above the settings tab (ui/ListeningEdgeTab.kt). -->
+    <string name="listening_tab_on">Always listening is on. Tap to turn it off.</string>
+    <string name="listening_tab_off">Always listening is off. Tap to turn it on.</string>
+    <string name="listening_tab_paused">Listening is paused. Tap to resume.</string>
     <string name="settings_edge_close">Close settings</string>
     <string name="settings_accordion_expanded">Expanded</string>
     <string name="settings_accordion_collapsed">Collapsed</string>

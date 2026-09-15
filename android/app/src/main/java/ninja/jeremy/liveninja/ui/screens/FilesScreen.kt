@@ -64,6 +64,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import ninja.jeremy.liveninja.R
+import ninja.jeremy.liveninja.ui.SETTINGS_TAB_SIZE
 import ninja.jeremy.liveninja.ui.files.DeliverableUi
 import ninja.jeremy.liveninja.ui.files.FilesEvent
 import ninja.jeremy.liveninja.ui.files.FilesNotice
@@ -198,7 +199,10 @@ private fun HeaderBar(loading: Boolean, onRefresh: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 16.dp, end = 4.dp),
+            // Two edge tabs (always-listening + settings) stack in the upper-left corner;
+            // keep the title clear of them and let the header band cover their height.
+            .heightIn(min = SETTINGS_TAB_SIZE * 2)
+            .padding(start = SETTINGS_TAB_SIZE + 16.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(

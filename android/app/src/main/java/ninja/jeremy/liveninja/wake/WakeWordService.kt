@@ -289,8 +289,10 @@ class WakeWordService : Service() {
                     }
                     Mode.CONTINUOUS -> {
                         updateNotification()
+                        var failures = 0
                         while (true) {
                             if (startEngineReportingFailure()) {
+                                failures = 0
                                 updateNotification()
                                 // Supervise: if the capture loop dies (mic stolen by another
                                 // app, read error), clean up and restart it.
@@ -299,7 +301,9 @@ class WakeWordService : Service() {
                                 stopEngine()
                             } else {
                                 updateNotification()
-                                delay(ENGINE_RETRY_MS) // mic blocked/busy — retry
+                                // mic blocked/busy — quick retries first (a session's mic is
+                                // often still being released), then the 60 s ceiling.
+                                delay(engineRetryDelayMs(++failures, ENGINE_RETRY_MS))
                             }
                         }
                     }
@@ -309,15 +313,17 @@ class WakeWordService : Service() {
                         val active = posture.value.takeIf { it != PowerPosture.CONTINUOUS }
                             ?: PowerPosture.DUTY_THERMAL
                         updateNotification()
+                        var failures = 0
                         while (true) {
                             if (startEngineReportingFailure()) {
+                                failures = 0
                                 updateNotification()
                                 delay(active.listenMs)
                                 stopEngine()
                                 delay(active.pauseMs)
                             } else {
                                 updateNotification()
-                                delay(ENGINE_RETRY_MS)
+                                delay(engineRetryDelayMs(++failures, ENGINE_RETRY_MS))
                             }
                         }
                     }

@@ -31,6 +31,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -75,6 +76,8 @@ internal fun BoxScope.SettingsEdgeBar(
     edge: SettingsEdge,
     onClick: () -> Unit,
     focusRequester: FocusRequester,
+    /** Extra space above the tab; the opener passes [SETTINGS_TAB_SIZE] to sit under [ListeningEdgeTab]. */
+    topOffset: Dp = 0.dp,
 ) {
     val opening = edge == SettingsEdge.OPEN
     val accessibleLabel = stringResource(
@@ -105,6 +108,7 @@ internal fun BoxScope.SettingsEdgeBar(
             // size(), so the inset pushes the 48dp square down rather than
             // eating into it.
             .windowInsetsPadding(WindowInsets.statusBars)
+            .padding(top = topOffset)
             .size(SETTINGS_TAB_SIZE)
             .focusRequester(focusRequester)
             .zIndex(2f)

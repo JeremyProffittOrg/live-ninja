@@ -230,8 +230,11 @@ fun LiveNinjaRoot(assistTriggers: SharedFlow<AssistTrigger> = MutableSharedFlow(
         }
 
         if (!settingsOpen) {
+            // Always-listening on/off, upper-left, directly above the settings tab.
+            ListeningEdgeTab()
             SettingsEdgeBar(
                 edge = SettingsEdge.OPEN,
+                topOffset = SETTINGS_TAB_SIZE,
                 onClick = {
                     expandedSettingsSection = settingsSectionOnOpen(
                         current = expandedSettingsSection,

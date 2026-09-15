@@ -70,6 +70,7 @@ import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Locale
 import ninja.jeremy.liveninja.R
+import ninja.jeremy.liveninja.ui.SETTINGS_TAB_SIZE
 import ninja.jeremy.liveninja.ui.history.ConversationUi
 import ninja.jeremy.liveninja.ui.history.HistoryViewModel
 import ninja.jeremy.liveninja.ui.history.TopicUi
@@ -143,7 +144,10 @@ private fun HeaderBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 16.dp, end = 4.dp),
+            // Two edge tabs (always-listening + settings) stack in the upper-left corner;
+            // keep the title clear of them and let the header band cover their height.
+            .heightIn(min = SETTINGS_TAB_SIZE * 2)
+            .padding(start = SETTINGS_TAB_SIZE + 16.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(

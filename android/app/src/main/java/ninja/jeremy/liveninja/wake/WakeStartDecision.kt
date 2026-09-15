@@ -69,3 +69,20 @@ fun shouldResumeWakeService(
     alreadyRunning: Boolean,
     micGranted: Boolean,
 ): Boolean = serviceEnabled && !alreadyRunning && micGranted
+
+/**
+ * How long the service waits before the next engine start after [consecutiveFailures]
+ * failed starts in a row (1 = the first failure just happened).
+ *
+ * The common failure is transient: the engine restarts ~70 ms after a live session ends,
+ * while the session's own AudioRecord is still being released, and `startRecording` reports
+ * not-recording. A flat 60 s wait turned that into a minute of deafness right after every
+ * such conversation (S9 phone, 2026-09-15 14:31:40 → 14:32:40). Retry quickly first; fall
+ * back to [ceilingMs] once it looks like the mic is genuinely unavailable.
+ */
+fun engineRetryDelayMs(consecutiveFailures: Int, ceilingMs: Long): Long = when {
+    consecutiveFailures <= 1 -> 1_000L
+    consecutiveFailures == 2 -> 3_000L
+    consecutiveFailures == 3 -> 10_000L
+    else -> ceilingMs
+}

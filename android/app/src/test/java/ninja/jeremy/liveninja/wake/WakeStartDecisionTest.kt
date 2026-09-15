@@ -15,6 +15,15 @@ import org.junit.Test
  */
 class WakeStartDecisionTest {
 
+    @Test
+    fun `engine restart backs off quickly before settling on the ceiling`() {
+        assertEquals(1_000L, engineRetryDelayMs(consecutiveFailures = 1, ceilingMs = 60_000L))
+        assertEquals(3_000L, engineRetryDelayMs(consecutiveFailures = 2, ceilingMs = 60_000L))
+        assertEquals(10_000L, engineRetryDelayMs(consecutiveFailures = 3, ceilingMs = 60_000L))
+        assertEquals(60_000L, engineRetryDelayMs(consecutiveFailures = 4, ceilingMs = 60_000L))
+        assertEquals(60_000L, engineRetryDelayMs(consecutiveFailures = 40, ceilingMs = 60_000L))
+    }
+
     /**
      * The important one. `onStartCommand` returns START_STICKY on the happy path, so an OEM
      * task-kill has Android recreate the service with a **null intent**. That used to be

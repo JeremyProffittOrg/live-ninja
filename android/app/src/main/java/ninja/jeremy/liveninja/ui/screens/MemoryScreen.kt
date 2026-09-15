@@ -59,6 +59,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import ninja.jeremy.liveninja.R
+import ninja.jeremy.liveninja.ui.SETTINGS_TAB_SIZE
 import ninja.jeremy.liveninja.ui.memory.EntityType
 import ninja.jeremy.liveninja.ui.memory.EntityUi
 import ninja.jeremy.liveninja.ui.memory.GuideUi
@@ -104,7 +105,10 @@ fun MemoryScreen(modifier: Modifier = Modifier) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 16.dp, end = 4.dp),
+                    // Two edge tabs (always-listening + settings) stack in the upper-left
+                    // corner; keep the title clear and let the band cover their height.
+                    .heightIn(min = SETTINGS_TAB_SIZE * 2)
+                    .padding(start = SETTINGS_TAB_SIZE + 16.dp, end = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(

@@ -30,8 +30,8 @@ android {
         // callsUrl off the wire and declares azure-direct in X-LN-Capabilities.
         // It matches the broker's azureMinimums["android"] entry, so this
         // client qualifies by version as well as by capability.
-        versionCode = 9
-        versionName = "0.3.3"
+        versionCode = 10
+        versionName = "0.3.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Debug-only, opt-in slim filter (see the `arm64Only` comment above). Release's own
