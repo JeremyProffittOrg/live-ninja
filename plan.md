@@ -1859,6 +1859,15 @@ unchanged.
   crash buffer empty, then `am force-stop`. Tablet `R52XC06P9KJ` left alone (held by another
   session for CAPS QA at the time); it still carries the crashing 0.3.0 (6) until its updater
   picks up 0.3.1. A stray `workflow_dispatch` on the pre-fix sha (run 34937834008) was cancelled.
+  Fix committed as `5c56775`; first dispatch (run 34937881150) failed in `JVM unit tests` on
+  `RealtimeSessionCoordinatorTest > duplicateCompletedRelativeVolumeCall_reusesResultOnlyWithinSession`
+  (`AssertionError at RealtimeSessionCoordinatorTest.kt:149` = the 3 s wall-clock `awaitUntil`
+  timeout) while the push run of the same sha passed — a timing flake, not the fix. Second
+  dispatch (run 34938497245) `success` in all three jobs: `GET /v1/app/android/latest` →
+  versionName 0.3.1, versionCode 7, publishedAt 2026-09-15T06:51:11Z,
+  `liveninja-0.3.1-7-b9f469f5…6e93dc.apk`. `9159b9f` widens `awaitUntil` to 15 s (poll returns
+  as soon as the predicate holds, so only the failure path gets longer); local run of the class:
+  `tests="22" failures="0"`.
 
 ## Standing rules (carried forward — these do not expire)
 
