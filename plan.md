@@ -1878,6 +1878,15 @@ unchanged.
   still only cancelled because its body takes the same mutex). Local: full `testDebugUnitTest`
   `tests=340 failures+errors=0`, coordinator class rerun 3× green. Not re-published: 0.3.1 (7)
   stays the stable pointer; this rides the next Android release.
+- 2026-09-15 — owner: "tell go-caps-99 you're taking control of the phone, and install the latest
+  version, and troubleshoot any issues." The device go-caps-99 held is the tablet
+  `R52XC06P9KJ` (the S9 phone already ran 0.3.1), so that is what was taken. Published APK
+  downloaded from `/v1/app/android/latest` (sha256 `b9f469f5…6e93dc` matches the filename; its
+  dex contains `Lorg/jni_zero/JniInit;`), `adb install -r -g` → `Success`, `versionCode=7
+  versionName=0.3.1`. Launch clean (pid 27526, crash buffer empty), onboarding step 1 → step 2 is
+  the Amazon sign-in wall, which needs the owner's account, so the live-session path is verified
+  only on the phone. CAPS (`io.github.jeremyproffitt.gocaps`, mid Update Now) was left running and
+  restored to the foreground; tablet released back to go-caps-99.
 
 ## Standing rules (carried forward — these do not expire)
 
