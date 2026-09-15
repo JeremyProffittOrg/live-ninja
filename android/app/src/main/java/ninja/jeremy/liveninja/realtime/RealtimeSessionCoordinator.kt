@@ -7,6 +7,7 @@ import ninja.jeremy.liveninja.log.LogCategory
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -234,7 +235,14 @@ class RealtimeSessionCoordinator @Inject constructor(
             transport.prime(session)
 
             emittedChars.clear()
-            eventsJob?.cancel()
+            // Join, not just cancel: a cancelled collector stays subscribed to
+            // transport.events until it actually unwinds, and a hot emission in
+            // that window lands in the dying subscriber's buffer and is never
+            // replayed to the collector launched below — the new session's first
+            // event would simply vanish. onTransportEvent is synchronous and the
+            // only lifecycle-mutex users run in their own launched coroutines,
+            // so joining under the lock cannot deadlock.
+            eventsJob?.cancelAndJoin()
             eventsJob = scope.launch { transport.events.collect(::onTransportEvent) }
             try {
                 transport.connect(credential, endpointUrl)
@@ -265,7 +273,7 @@ class RealtimeSessionCoordinator @Inject constructor(
                     // is what resumes the wake engine and lets a new session start.
                     lifecycleMutex.withLock {
                         if (!_connected.value) return@withLock
-                        eventsJob?.cancel()
+                        eventsJob?.cancelAndJoin()
                         eventsJob = null
                         try {
                             transport.disconnect()
@@ -292,7 +300,10 @@ class RealtimeSessionCoordinator @Inject constructor(
             // Stop watching first so a deliberate teardown never reads as an error.
             stateWatchJob?.cancel()
             stateWatchJob = null
-            eventsJob?.cancel()
+            // Joined so the subscriber is gone before stop() returns (see start()).
+            // stateWatchJob is only cancelled: its body takes lifecycleMutex, which
+            // this block already holds.
+            eventsJob?.cancelAndJoin()
             eventsJob = null
             _connected.value = false
             deviceActionState.advanceGeneration()

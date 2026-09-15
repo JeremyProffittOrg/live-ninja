@@ -1867,7 +1867,17 @@ unchanged.
   versionName 0.3.1, versionCode 7, publishedAt 2026-09-15T06:51:11Z,
   `liveninja-0.3.1-7-b9f469f5…6e93dc.apk`. `9159b9f` widens `awaitUntil` to 15 s (poll returns
   as soon as the predicate holds, so only the failure path gets longer); local run of the class:
-  `tests="22" failures="0"`.
+  `tests="22" failures="0"`. The push run of `9159b9f` (34938612573) failed the SAME test at the
+  15 s bound ("timed out waiting: same call id executes again in the next session"), so it is a
+  real ordering race, not runner speed: `stop()` only `cancel()`ed `eventsJob`, and a cancelled
+  collector stays subscribed to `transport.events` until it unwinds — the next session's first
+  emission lands in the dying subscriber's buffer and is never replayed to the collector the new
+  `start()` launches. Fix: `eventsJob?.cancelAndJoin()` in `stop()`, `start()` and the transport
+  state watcher (safe under `lifecycleMutex`: `onTransportEvent` is synchronous and the
+  device-tool `stop()/start()` callers run in their own launched coroutines; `stateWatchJob` is
+  still only cancelled because its body takes the same mutex). Local: full `testDebugUnitTest`
+  `tests=340 failures+errors=0`, coordinator class rerun 3× green. Not re-published: 0.3.1 (7)
+  stays the stable pointer; this rides the next Android release.
 
 ## Standing rules (carried forward — these do not expire)
 
