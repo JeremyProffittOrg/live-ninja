@@ -1941,6 +1941,9 @@ unchanged.
   47 ms later; pick hey live ninja → `wake model active: … (openwakeword, cached)` then
   `hot-swapped head model -> hey-live-ninja-47df2e` 32 ms later; crash buffer empty; local
   `testDebugUnitTest` tests=346 failures+errors=0. Phone left on hey live ninja, listening on.
+  Shipped as `0ed7260`: push run 35005822724 `success`; dispatch run 35005826848 `success` in all
+  three jobs; `GET /v1/app/android/latest` → versionName 0.3.3, versionCode 9, publishedAt
+  2026-09-15T18:18:39Z. The phone already runs the same sha (local signed build).
 
 ## Standing rules (carried forward — these do not expire)
 
