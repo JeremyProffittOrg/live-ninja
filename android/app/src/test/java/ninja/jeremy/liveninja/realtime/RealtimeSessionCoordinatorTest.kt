@@ -140,9 +140,14 @@ class RealtimeSessionCoordinatorTest {
         coord.events.collect { sink.add(it) }
     }
 
+    // Wall-clock bound, not a virtual-time one: the coordinator hands server events to real
+    // dispatcher threads, and on a shared CI runner the first mockk/coroutine warm-up alone
+    // can eat most of a short budget (run 34937881150 timed out at 3 s on a sha whose push
+    // run had passed). Polling returns the instant the predicate holds, so a generous bound
+    // costs nothing on the passing path and only stretches a genuine failure.
     private suspend fun awaitUntil(message: String, predicate: () -> Boolean) {
         try {
-            withTimeout(3_000) {
+            withTimeout(15_000) {
                 while (!predicate()) delay(10)
             }
         } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
