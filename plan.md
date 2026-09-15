@@ -1970,6 +1970,9 @@ unchanged.
   are the same calibre as hey_jarvis and could be bundled like it; Porcupine (Picovoice) built-in
   keywords are the strongest option but need a Picovoice AccessKey and the `-Pliveninja.porcupine`
   build (engine already in `src/porcupine/`).
+  Shipped as `a4d8f2b`: push run 35009321210 `success`; dispatch run 35009325283 `success` in all
+  three jobs; `GET /v1/app/android/latest` → versionName 0.3.4, versionCode 10, publishedAt
+  2026-09-15T18:50:49Z. The phone already runs the same sha (local signed build).
 
 ## Standing rules (carried forward — these do not expire)
 
