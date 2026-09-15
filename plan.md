@@ -1917,6 +1917,10 @@ unchanged.
   model IS the selection. `WakeCaptionTest` (6) guards it; local `testDebugUnitTest` tests=346
   failures+errors=0. Not verifiable on the phone yet — it was unplugged after 03:49 and there is no
   updater, so the owner installs 0.3.2 from the release email link or plugs the phone back in.
+  Shipped as `59ef325`: push run 34977374109 (unit + instrumented) `success`; dispatch run
+  34977378506 `success` in all three jobs; `GET /v1/app/android/latest` → versionName 0.3.2,
+  versionCode 8, publishedAt 2026-09-15T13:55:59Z, `liveninja-0.3.2-8-302821f8…b0a6d.apk`. A local
+  signed copy of the same sha is staged for `adb install -r -g` the moment the phone reappears.
 
 ## Standing rules (carried forward — these do not expire)
 
