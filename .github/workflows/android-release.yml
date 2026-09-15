@@ -228,8 +228,18 @@ jobs:
           fi
           "$APKSIGNER" verify "$APK_PATH"
 
-          CERT_DIGEST="$("$APKSIGNER" verify --print-certs "$APK_PATH" |
-            sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1)"
+          # Certificate digests are public material (they become assetlinks.json), so
+          # the print-certs output can be logged; it also shows which apksigner build
+          # produced it. The signer line's prefix varies across build-tools releases
+          # ("Signer #1 certificate SHA-256 digest:" on 35.x; a rotation-aware label
+          # on newer ones — the 2026-09-15 run found no "Signer #1" line at all), so
+          # match the digest itself, not the label in front of it.
+          echo "apksigner: $APKSIGNER"
+          CERTS="$("$APKSIGNER" verify --print-certs "$APK_PATH")"
+          printf '%s\n' "$CERTS"
+          CERT_DIGEST="$(printf '%s\n' "$CERTS" |
+            grep -m1 -oE 'certificate SHA-256 digest: *[0-9A-Fa-f]{64}' |
+            grep -oE '[0-9A-Fa-f]{64}' || true)"
           if [ "${#CERT_DIGEST}" -ne 64 ]; then
             echo "::error::Could not derive the signing certificate SHA-256 digest"
             exit 1
