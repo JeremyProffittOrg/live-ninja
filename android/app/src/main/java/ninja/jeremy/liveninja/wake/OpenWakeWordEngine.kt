@@ -17,9 +17,11 @@ import ninja.jeremy.liveninja.log.LogCategory
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.nio.FloatBuffer
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -100,6 +102,17 @@ class OpenWakeWordEngine @Inject constructor(
     @Volatile
     private var activeModelRef: WakeModelRef? = null
 
+    /**
+     * A verified head model waiting to be applied by the capture thread. The swap used to be
+     * a collector launched on [scope] — the same single-thread executor the capture loop
+     * blocks in `AudioRecord.read` on — so it could never run while capturing, and a newly
+     * downloaded phrase only took effect at the next engine restart (2026-09-15: Settings
+     * showed "hey live ninja" active while the detector was still matching hey-jarvis). The
+     * collector now runs on Dispatchers.Default and only parks the ref here; the capture loop
+     * applies it between chunks, which keeps every ONNX session on one thread.
+     */
+    private val pendingHead = AtomicReference<WakeModelRef?>(null)
+
     override suspend fun start(): Unit = lifecycleMutex.withLock {
         if (isRunning) return
         cleanupLocked() // release any leftovers from a capture loop that died uncleanly
@@ -148,9 +161,10 @@ class OpenWakeWordEngine @Inject constructor(
 
         isRunning = true
         captureJob = scope.launch { captureLoop(record) }
-        swapJob = scope.launch {
+        pendingHead.set(null)
+        swapJob = CoroutineScope(Dispatchers.Default).launch {
             modelManager.headModel.collect { ref ->
-                if (ref != activeModelRef) swapHead(ref)
+                if (ref != activeModelRef) pendingHead.set(ref)
             }
         }
         LNLog.i(LogCategory.WAKE, TAG, "started (model=${modelManager.headModel.value.wakeWordId})")
@@ -205,6 +219,9 @@ class OpenWakeWordEngine @Inject constructor(
                 offset += n
             }
             if (!isRunning) return
+
+            // Apply a downloaded phrase on this thread, between chunks (see pendingHead).
+            pendingHead.getAndSet(null)?.let { ref -> if (ref != activeModelRef) swapHead(ref) }
 
             val now = SystemClock.elapsedRealtime()
             if (now < refractoryUntil) continue

@@ -1921,6 +1921,26 @@ unchanged.
   34977378506 `success` in all three jobs; `GET /v1/app/android/latest` → versionName 0.3.2,
   versionCode 8, publishedAt 2026-09-15T13:55:59Z, `liveninja-0.3.2-8-302821f8…b0a6d.apk`. A local
   signed copy of the same sha is staged for `adb install -r -g` the moment the phone reappears.
+- 2026-09-15 — phone reattached: 0.3.2 (8) installed (`adb install -r -g` → `Success`). Idle screen
+  read "Always listening is off, so “Hey Jarvis” won't wake Live Ninja yet." + Turn-on button; tap →
+  `ServiceRecord{… .wake.WakeWordService} isForeground=true`, `run mode -> CONTINUOUS`,
+  `OpenWakeWordEngine: started (model=hey-jarvis)`, caption → "Or just say “Hey Jarvis” / Always
+  listening is on". Settings → Wake word → picked "hey live ninja · Trained · ready to use" →
+  `wake model active: hey-live-ninja-47df2e sha=f1f219b2cf95`, server override for the phone →
+  `hey-live-ninja-47df2e` (updatedAt 18:00:49Z), caption → "Or just say “hey live ninja”". BUT no
+  `hot-swapped head model` line: two more pre-existing bugs, both fixed in 0.3.3 (9):
+  (1) `OpenWakeWordEngine.swapJob` was launched on the engine's single-thread capture executor,
+  which the capture loop blocks in `AudioRecord.read` — the collector could never run while
+  capturing, so a new phrase only took effect at the next engine restart. Now the collector runs on
+  `Dispatchers.Default` and parks the ref in `pendingHead`; the capture loop applies it between
+  chunks (ONNX sessions stay single-threaded). (2) `ModelManager.sync`'s "bytes already on disk"
+  branch returned without publishing `headModel` (the persisted active record only tracks the last
+  DOWNLOAD), so switching to the builtin and back left the engine on hey-jarvis silently; it now
+  publishes and logs `(openwakeword, cached)`. Verified on the phone with 0.3.3: relaunch →
+  `started (model=hey-live-ninja-47df2e)`; pick hey jarvis → `hot-swapped head model -> hey-jarvis`
+  47 ms later; pick hey live ninja → `wake model active: … (openwakeword, cached)` then
+  `hot-swapped head model -> hey-live-ninja-47df2e` 32 ms later; crash buffer empty; local
+  `testDebugUnitTest` tests=346 failures+errors=0. Phone left on hey live ninja, listening on.
 
 ## Standing rules (carried forward — these do not expire)
 

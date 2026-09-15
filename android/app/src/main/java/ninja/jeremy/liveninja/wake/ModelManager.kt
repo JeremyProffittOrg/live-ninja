@@ -186,11 +186,19 @@ class ModelManager @Inject constructor(
                 return@withLock ModelSyncResult.UnsupportedFormat(manifest.engine, manifest.format)
             }
 
-            // Already have these exact bytes active? Nothing to do.
+            // Already have these exact bytes on disk? Skip the download — but still publish
+            // the ref. The persisted "active" record only tracks the last DOWNLOADED model,
+            // so after a switch to the builtin (hey-jarvis) and back, this branch used to
+            // return without touching headModel: Settings said "hey live ninja", the engine
+            // kept matching hey-jarvis, and nothing was logged (2026-09-15, S9 phone).
             val active = loadActive(engine)
             if (active is WakeModelRef.Downloaded &&
                 active.sha256 == manifest.sha256 && active.file.exists()
             ) {
+                if (engine == WakePreferences.ENGINE_OPENWAKEWORD && _headModel.value != active) {
+                    _headModel.value = active
+                    LNLog.i(LogCategory.WAKE, TAG, "wake model active: $wakeWordId sha=${manifest.sha256.take(12)} ($engine, cached)")
+                }
                 return@withLock ModelSyncResult.Active(active)
             }
 
