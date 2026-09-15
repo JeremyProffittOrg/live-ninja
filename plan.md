@@ -1829,6 +1829,18 @@ unchanged.
   sign-in to be seen. The second attached tablet (`R5GL700QAGK`, SM-X930) has no app installed and
   was left alone; the S9 phone was not attached. Unblocking the signed release needs the owner to
   add the four release secrets with `scripts/set-secret.sh` (agents never see secret values).
+- 2026-09-15 — owner: "generate new release keys and add them to .env", then "set the keys".
+  New PKCS12 keystore `C:/dev/live-ninja-keys/release-2026-09-15.keystore` (alias
+  `liveninja-release-2026`, signer SHA-256 `3d6c8b91…b39d`); `.env` (git-ignored) carries the four
+  `LIVENINJA_RELEASE_*` vars; local `assembleRelease` verified against the fingerprint. The four
+  GitHub secrets were set with `scripts/set-secret.sh --file` (values never in chat). First
+  dispatch failed in every job: the SDK setup action's default `tools` package no longer exists
+  (`c33592c` pins `packages: platform-tools`); second dispatch failed in publish: the digest parse
+  depended on apksigner's `Signer #1` label (`3bdf62f` matches the digest itself). Third dispatch
+  (run 34935277613) `success`: `GET /v1/app/android/latest` → versionName 0.3.0, versionCode 6,
+  `liveninja-0.3.0-6-ea8a6e66…7238e.apk`, publishedAt 2026-09-15T06:08:24Z; the downloaded APK's
+  signer matches the new fingerprint. Tablet `R52XC06P9KJ`: debug build uninstalled (not signed
+  in, nothing lost), signed release installed.
 
 ## Standing rules (carried forward — these do not expire)
 
