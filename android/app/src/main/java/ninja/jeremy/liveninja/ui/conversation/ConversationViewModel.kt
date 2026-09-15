@@ -20,12 +20,15 @@ import ninja.jeremy.liveninja.realtime.NudgeMerge
 import ninja.jeremy.liveninja.realtime.SessionCost
 import ninja.jeremy.liveninja.realtime.TranscriptStore
 import ninja.jeremy.liveninja.wake.ModelManager
+import ninja.jeremy.liveninja.wake.WakePreferences
+import ninja.jeremy.liveninja.wake.WakeWordService
 import ninja.jeremy.liveninja.ui.overlay.LiveOverlayController
 import ninja.jeremy.liveninja.ui.overlay.OverlayMicState
 import ninja.jeremy.liveninja.ui.state.RealtimeSessionController
 import ninja.jeremy.liveninja.ui.state.SessionUiEvent
 import ninja.jeremy.liveninja.ui.state.SettingsStore
 import ninja.jeremy.liveninja.ui.state.TranscriptRole
+import ninja.jeremy.liveninja.ui.state.WakeWordCatalogRepository
 
 /**
  * Conversation-screen mic state machine — mirrors the web client's
@@ -58,10 +61,14 @@ data class ConversationUiState(
     val sessionSeconds: Int = 0,
     val error: ConversationError? = null,
     val errorDetail: String? = null,
-    /** Wake phrase label for the idle caption ("Listening for …"). */
+    /** Human label of the phrase the loaded head model can match (see [wakeCaption]). */
     val wakePhraseLabel: String = "Hey Jarvis",
     /** Catalog id the user selected in Settings (may have no model on this device yet). */
     val selectedWakeWordId: String = "",
+    /** Human label of [selectedWakeWordId], from the catalog when it knows the id. */
+    val selectedWakePhraseLabel: String = "Hey Live Ninja",
+    /** True while a WakeWordService instance is alive — the only state in which a caption may claim to be listening. */
+    val wakeRunning: Boolean = false,
     /** Catalog id of the head model actually loaded — what the detector can match. */
     val activeWakeWordId: String = "",
     /**
@@ -188,6 +195,8 @@ class ConversationViewModel @Inject constructor(
     private val transcriptStore: TranscriptStore,
     private val modelManager: ModelManager,
     private val liveEvents: LiveEventsClient,
+    private val wakePrefs: WakePreferences,
+    private val wakeCatalog: WakeWordCatalogRepository,
 ) : ViewModel() {
 
     private val sessionController: RealtimeSessionController? = sessionControllerOpt.orElse(null)
@@ -219,9 +228,28 @@ class ConversationViewModel @Inject constructor(
                 // is how the home screen ended up promising "Hey Live Ninja" on a
                 // build that only bundles hey_jarvis (WS-5 M21.3).
                 _state.update {
-                    it.copy(selectedWakeWordId = doc.wakeWord, micEagerness = doc.micEagerness)
+                    it.copy(
+                        selectedWakeWordId = doc.wakeWord,
+                        selectedWakePhraseLabel = wakeLabelFor(doc.wakeWord),
+                        micEagerness = doc.micEagerness,
+                    )
                 }
             }
+        }
+        // The caption may only claim to be listening while a service instance is alive
+        // (2026-09-15: a fresh install said "Or just say Hey Jarvis" with nothing running).
+        viewModelScope.launch {
+            WakeWordService.runningFlow.collect { running ->
+                _state.update { it.copy(wakeRunning = running) }
+            }
+        }
+        // Converge the loaded head model on the selection once per activity. Before this,
+        // a sync only ran from a Settings pick or a service start, so a phone that finished
+        // onboarding with Hey Live Ninja selected kept the bundled hey-jarvis asset loaded —
+        // and the caption honestly reported the wrong phrase. No-op when signed out/offline
+        // (ModelSyncResult.NoAuth/Failed keep the previous model per contract).
+        viewModelScope.launch {
+            modelManager.sync(wakePrefs.wakeWordId, wakePrefs.wakeEngine)
         }
         // The wake caption follows the loaded head model (WS-5 M21.3): ModelManager
         // emits on every verified swap, so the hint changes the moment a newly
@@ -779,10 +807,9 @@ class ConversationViewModel @Inject constructor(
         tickerJob = null
     }
 
+    /** Catalog label when known, else the id title-cased minus any trained-model suffix. */
     private fun wakeLabelFor(id: String): String =
-        id.split('-').joinToString(" ") { part ->
-            part.replaceFirstChar { c -> c.uppercaseChar() }
-        }
+        wakePhraseLabel(id, wakeCatalog.optionFor(id)?.label)
 
     override fun onCleared() {
         overlay.hide()

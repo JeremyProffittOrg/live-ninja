@@ -73,6 +73,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import ninja.jeremy.liveninja.R
 import ninja.jeremy.liveninja.realtime.badgeText
 import ninja.jeremy.liveninja.ui.SETTINGS_TAB_SIZE
+import ninja.jeremy.liveninja.ui.conversation.WakeCaptionKind
+import ninja.jeremy.liveninja.ui.conversation.wakeCaption
 import ninja.jeremy.liveninja.wake.WakeWordService
 import ninja.jeremy.liveninja.ui.conversation.ConversationError
 import ninja.jeremy.liveninja.ui.conversation.ConversationUiState
@@ -508,6 +510,17 @@ private fun IdleHero(
 ) {
     val context = LocalContext.current
     val wakeRunning by WakeWordService.runningFlow.collectAsStateWithLifecycle()
+    // "Turn on always listening" from the idle screen: same start path as the Settings
+    // switch (a foreground activity may always start the microphone FGS).
+    val wakeMicLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> if (granted) WakeWordService.start(context) }
+    fun startAlwaysListening() {
+        val granted = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) WakeWordService.start(context) else wakeMicLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    }
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -583,13 +596,53 @@ private fun IdleHero(
                     textAlign = TextAlign.Center,
                     modifier = Modifier.padding(top = 20.dp),
                 )
-                Text(
-                    stringResource(R.string.conversation_idle_wake_caption, state.wakePhraseLabel),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(top = 8.dp),
+                // Honest wake caption (ui/conversation/WakeCaption.kt, guarded by
+                // WakeCaptionTest): name a phrase only while something is listening for it.
+                val caption = wakeCaption(
+                    selectedId = state.selectedWakeWordId,
+                    activeId = state.activeWakeWordId,
+                    serviceRunning = wakeRunning,
+                    labelFor = { id ->
+                        if (id == state.activeWakeWordId) state.wakePhraseLabel else state.selectedWakePhraseLabel
+                    },
                 )
+                when (caption.kind) {
+                    WakeCaptionKind.LISTENING -> Text(
+                        stringResource(R.string.conversation_idle_wake_caption, caption.activeLabel),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+
+                    WakeCaptionKind.MODEL_PENDING -> Text(
+                        stringResource(
+                            R.string.conversation_wake_model_pending,
+                            caption.activeLabel,
+                            caption.selectedLabel,
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+
+                    WakeCaptionKind.OFF -> {
+                        Text(
+                            stringResource(R.string.conversation_wake_off_caption, caption.selectedLabel),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                        Button(
+                            onClick = { startAlwaysListening() },
+                            modifier = Modifier
+                                .padding(top = 8.dp)
+                                .heightIn(min = 48.dp),
+                        ) { Text(stringResource(R.string.conversation_wake_turn_on)) }
+                    }
+                }
                 Text(
                     stringResource(R.string.conversation_idle_privacy_caption),
                     style = MaterialTheme.typography.bodySmall,

@@ -29,6 +29,8 @@ import ninja.jeremy.liveninja.ui.state.SettingsStore
 import ninja.jeremy.liveninja.ui.state.SignInLauncher
 import ninja.jeremy.liveninja.ui.state.WakeWordCatalogRepository
 import ninja.jeremy.liveninja.ui.state.WakeWordOption
+import ninja.jeremy.liveninja.wake.WakePreferences
+import ninja.jeremy.liveninja.wake.WakeWordService
 
 /** Ordered wizard steps (mockups/android/01..04 + battery + wake-word pick). */
 enum class OnboardingStep {
@@ -69,6 +71,7 @@ class OnboardingViewModel @Inject constructor(
     private val catalog: WakeWordCatalogRepository,
     private val signInLauncher: Optional<SignInLauncher>,
     private val assistantRole: AssistantRoleController,
+    private val wakePrefs: WakePreferences,
 ) : ViewModel() {
 
     private var rolePollJob: Job? = null
@@ -265,9 +268,26 @@ class OnboardingViewModel @Inject constructor(
 
     fun selectWakeWord(id: String) = _state.update { it.copy(selectedWakeWordId = id) }
 
+    /**
+     * Last step done. The pick has to reach the wake stack, not just the settings document:
+     * before 2026-09-15 this wrote `settingsStore` only, so `WakePreferences.wakeWordId`
+     * (what the service actually listens for) kept its default, no model sync ran, and the
+     * service itself was never started — the wizard walked the user through mic, notification
+     * and battery permissions for always-listening and then left it off. Starting the service
+     * here is what those steps were for; it syncs the selected model on start, and the
+     * Settings switch remains the way to turn it off.
+     */
     fun finish() {
-        settingsStore.setWakeWord(_state.value.selectedWakeWordId)
+        val id = _state.value.selectedWakeWordId
+        settingsStore.setWakeWord(id)
+        wakePrefs.wakeWordId = id
         onboardingStore.markCompleted()
+        val micGranted = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        // Without the mic grant the service would only degrade to its tap-to-resume
+        // notification; the conversation screen offers "Turn on always listening" instead.
+        if (micGranted) WakeWordService.start(context)
     }
 
     private fun isAssistantRoleHeld(): Boolean = assistantRole.refresh()

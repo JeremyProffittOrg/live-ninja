@@ -1887,6 +1887,36 @@ unchanged.
   the Amazon sign-in wall, which needs the owner's account, so the live-session path is verified
   only on the phone. CAPS (`io.github.jeremyproffitt.gocaps`, mid Update Now) was left running and
   restored to the foreground; tablet released back to go-caps-99.
+- 2026-09-15 — owner: "wake word is not working, I tried hey jarvis and hey live ninja … wherever
+  you put the wake word, it has to be the one programmed, I had it set for hey live ninja and on the
+  front and in the config, it said hey jarvis." Phone `4633424442303098` on 0.3.1 (7), fresh install
+  (firstInstallTime 02:28:44, so every local pref was reset): `dumpsys activity services` →
+  `(nothing)`, no `WakeWordService`/`OpenWakeWordEngine` line in the whole logcat window — the wake
+  service never ran on this install, so no phrase could fire. `WakePreferences.serviceEnabled`
+  defaults false and only the Settings switch set it; onboarding's last step (`OnboardingViewModel.
+  finish`) wrote the pick to `SettingsStore` only — no `WakePreferences.wakeWordId` write, no model
+  sync, no service start — after walking the user through mic/notification/battery steps FOR
+  always-listening. The home caption follows the loaded head model (WS-5 M21.3), and nothing had ever
+  synced, so it said "Hey Jarvis" (the bundled asset) regardless of the selection. Logcat 03:24:33
+  `no trained model for "hey-ninja" (server 404/409)` then 03:24:38 `wake model active: hey-jarvis
+  (builtin asset)`: the owner tried Hey Ninja (an untrained catalog entry — still open server-side),
+  then Hey Jarvis, which the phone wrote to its device override (`deviceOverrides.25da7919…wakeWord
+  = hey-jarvis`, updatedAt 07:24:36Z). Server side is fine: `hey-live-ninja-47df2e` is `ready` for
+  `web, android` under the owner's `USER#82417102…`, `s3://live-ninja-wakewords-759775734231/
+  wakewords/hey-live-ninja-47df2e/android/manifest.json` exists, and `Model()` resolves the bare
+  `hey-live-ninja` id by slug. No in-app updater exists (grep `android/latest` in android/: none).
+  Fix (0.3.2 (8)): `OnboardingViewModel.finish` writes `wakePrefs.wakeWordId`, and starts
+  `WakeWordService` when RECORD_AUDIO is granted (the service syncs the model on start);
+  `ConversationViewModel` runs one `modelManager.sync(prefs.wakeWordId)` per activity, mirrors
+  `WakeWordService.runningFlow`, and labels ids from the catalog (`wakePhraseLabel` strips the
+  trained `-47df2e` suffix — the old `wakeLabelFor` would have shown "Hey Live Ninja 47df2e");
+  the idle screen's caption is now `ui/conversation/WakeCaption.kt`: OFF → "Always listening is
+  off, so “X” won't wake Live Ninja yet." + a "Turn on always listening" button (same start path as
+  the Settings switch, mic permission requested if missing); MODEL_PENDING → "Listening for “A”
+  until the “S” model finishes downloading."; LISTENING → "Or just say “X”" only when the loaded
+  model IS the selection. `WakeCaptionTest` (6) guards it; local `testDebugUnitTest` tests=346
+  failures+errors=0. Not verifiable on the phone yet — it was unplugged after 03:49 and there is no
+  updater, so the owner installs 0.3.2 from the release email link or plugs the phone back in.
 
 ## Standing rules (carried forward — these do not expire)
 

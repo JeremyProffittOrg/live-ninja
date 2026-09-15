@@ -53,6 +53,11 @@
     <string name="conversation_warning_dismiss">Dismiss warning</string>
     <string name="conversation_tap_to_talk">Tap to talk</string>
     <string name="conversation_idle_wake_caption">Or just say “%1$s”</string>
+    <!-- Idle-screen wake caption states (ui/conversation/WakeCaption.kt). A phrase is only
+         advertised while the wake service is running AND its model is the loaded one. -->
+    <string name="conversation_wake_off_caption">Always listening is off, so “%1$s” won\'t wake Live Ninja yet.</string>
+    <string name="conversation_wake_turn_on">Turn on always listening</string>
+    <string name="conversation_wake_model_pending">Listening for “%1$s” until the “%2$s” model finishes downloading.</string>
     <!-- In-app stop-listening control. The wake FGS notification carries a Stop action, but it
          is PRIORITY_LOW/CATEGORY_SERVICE and is not visible at all while the app is open, so
          the only in-app off switch used to be buried in Settings. -->
