@@ -1996,6 +1996,11 @@ unchanged.
   (model=alexa)` (persisted); switched back → `hot-swapped head model -> hey-live-ninja-47df2e`.
   Phone left on hey live ninja, listening ON. Not measured: on-device scores for the three new
   heads (no test clips for those phrases; upstream reports them at the same calibre as hey_jarvis).
+  Shipped as `b30b985`: Deploy run 35013400387 `success` (live `/static/wakewords/catalog.json`
+  now lists alexa / hey-mycroft / hey-rhasspy with android=true); Android push run 35013400410
+  `success`; dispatch run 35013405170 `success` in all three jobs; `GET /v1/app/android/latest` →
+  versionName 0.3.5, versionCode 11, publishedAt 2026-09-15T19:32:03Z. The phone already runs the
+  same sha (local signed build).
 
 ## Standing rules (carried forward — these do not expire)
 
