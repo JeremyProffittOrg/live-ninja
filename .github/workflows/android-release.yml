@@ -38,6 +38,13 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The action's default is "tools platform-tools"; the legacy `tools`
+          # package left the SDK repository (runner image change seen
+          # 2026-09-15: `sdkmanager tools` -> "Failed to find package", exit 1),
+          # which failed every job. Gradle fetches the platforms/build-tools it
+          # needs itself, so platform-tools is all this step must install.
+          packages: platform-tools
 
       - name: Gradle unit tests
         working-directory: android
@@ -75,6 +82,13 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The action's default is "tools platform-tools"; the legacy `tools`
+          # package left the SDK repository (runner image change seen
+          # 2026-09-15: `sdkmanager tools` -> "Failed to find package", exit 1),
+          # which failed every job. Gradle fetches the platforms/build-tools it
+          # needs itself, so platform-tools is all this step must install.
+          packages: platform-tools
 
       # api-level/target/arch match this app's compileSdk=35/targetSdk=35 and the local
       # reference AVD `liveninja-test` (~/.android/avd/liveninja-test.avd: target=android-35,
@@ -131,6 +145,13 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The action's default is "tools platform-tools"; the legacy `tools`
+          # package left the SDK repository (runner image change seen
+          # 2026-09-15: `sdkmanager tools` -> "Failed to find package", exit 1),
+          # which failed every job. Gradle fetches the platforms/build-tools it
+          # needs itself, so platform-tools is all this step must install.
+          packages: platform-tools
 
       # Fail before touching the filesystem when the owner-managed signing inputs have
       # not been configured. Only names are reported; values are never printed.
