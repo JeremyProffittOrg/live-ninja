@@ -121,12 +121,12 @@ fun LiveNinjaRoot(assistTriggers: SharedFlow<AssistTrigger> = MutableSharedFlow(
         OnboardingScreen(onFinished = authViewModel::onOnboardingFinished)
         return
     }
-    StartupPermissionGate()
     AppUpdateHost()
     if (authState !is AuthState.SignedIn) {
         LoginScreen(viewModel = authViewModel)
         return
     }
+    StartupPermissionGate()
 
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
