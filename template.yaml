@@ -230,11 +230,11 @@ Parameters:
 
   # agentcore-memory (plan.md): who gets Amazon Bedrock AgentCore Memory.
   #   off   - nothing is written or read (rollback position; DynamoDB memory unchanged)
-  #   owner - only callers whose verified role is owner (the rollout position)
-  #   all   - every account
+  #   owner - only callers whose verified role is owner
+  #   all   - every account (the serving position as of 2026-09-19)
   AgentCoreMemoryMode:
     Type: String
-    Default: owner
+    Default: all
     AllowedValues: [off, owner, all]
     Description: Rollout gate for AgentCore Memory writes and reads (off | owner | all).
   # Monthly ceiling for the Bedrock + AgentCore budget (locked decision 4, 2026-09-14).

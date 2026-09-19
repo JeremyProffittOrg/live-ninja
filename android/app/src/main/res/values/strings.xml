@@ -180,8 +180,8 @@
     <string name="memory_learned_when">learned %1$s</string>
     <string name="memory_learned_empty_title">Nothing learned yet</string>
     <string name="memory_learned_empty_body">Have a conversation, and what matters shows up here shortly after.</string>
-    <string name="memory_learned_off_title">Not switched on for this account yet</string>
-    <string name="memory_learned_off_body">Learning from conversations is being rolled out gradually. Everything you ask it to remember still works as before.</string>
+    <string name="memory_learned_off_title">Not switched on for this account</string>
+    <string name="memory_learned_off_body">Learning from conversations is off for this account. Everything you ask it to remember still works as before.</string>
     <string name="memory_learned_error_title">Couldn\'t load what was learned</string>
     <string name="memory_learned_forget_confirm_title">Forget this?</string>
     <string name="memory_learned_forget_confirm_body">“%1$s” will no longer be brought into your conversations. This can\'t be undone.</string>

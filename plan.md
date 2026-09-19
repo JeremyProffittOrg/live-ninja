@@ -33,13 +33,22 @@ Archived (history preserved in full, banners at the top of each):
 
 Voice preview is wired: Settings (Android) and the persona editor (web) call
 `POST /api/v1/fallback/tts` and play the MP3. Cedar/Marin map onto ash/coral
-because those two realtime voices are not on `gpt-4o-mini-tts`. Android 0.3.6
-(12). Tab5 `30:ED:A0:E3:01:1E` is Live Ninja again on COM13 — boot, WiFi,
-pairing refresh, idle verified; IoT provisioning is still the empty hook.
+because those two realtime voices are not on `gpt-4o-mini-tts`. The operator
+is testing the website in Claude Code on this PC.
 
-**Still owner-gated from earlier sections:** `agentcore-memory` 10-question
-smoke, wake-training ceiling (three options in §7.4), Azure Voice Live Entra
-app, IoT authorizer signing keypair.
+Android 0.3.9 (15) is published: in-app APK updater, landing Download-and-install,
+launch permission prompts. Galaxy S9 `4633424442303098` is on that build.
+Tab5 `30:ED:A0:E3:01:1E` is Live Ninja on COM13 — boot, WiFi ImpossibleGirl
+192.168.1.121, pairing refresh, idle verified; IoT provisioning is still the
+empty hook. `stop_listening` ends the live session and leaves wake armed.
+
+AgentCore Memory serving mode is switching from `owner` to `all` (parameter
+change; DynamoDB `ENT#`/`EMB#` stay until `emb-retire`).
+
+**Still owner-gated:** `agentcore-memory` 10-question voice smoke, wake-training
+ceiling (three options in §7.4), Azure Voice Live Entra app `ln-voicelive-client`,
+IoT authorizer signing keypair. `emb-retire` not before 2026-09-28 and only
+with the smoke set passing.
 
 ## Where things actually stand (2026-08-08)
 
@@ -1684,10 +1693,12 @@ workstream `managed-kb-knowledge` stays in the backlog (scope decision below).
 5. **Retention: `eventExpiryDuration` 30 days.** Long-term record pruning ("never retrieved in
    180 days") is `[!]` — the API exposes no last-retrieved time, so it cannot be implemented as
    stated; growth is bounded at about $0.15 per user-month at 200 records (see research §4).
-6. **Rollout mode: owner first.** `AGENTCORE_MEMORY_MODE=owner` (stack parameter
+6. **Rollout mode: owner first, then all.** `AGENTCORE_MEMORY_MODE` (stack parameter
    `AgentCoreMemoryMode`, allowed `off|owner|all`) gates every write and read by the caller's
    verified role. Flipping to `all` is a parameter change, not a code change. This replaces the
    backlog's "per-user flag on the user row" with something that needs no new UI.
+   **Switched to `all` 2026-09-19** (owner: "do the memory core switch"). Rollback remains
+   `AgentCoreMemoryMode=off`.
 7. **DynamoDB `ENT#`/`EMB#` stay during dual running.** `emb-retire` waits two weeks with the
    owner smoke set passing (see `emb-retire` below). The Memory page keeps editing `ENT#` rows and
    gains a read-only "Learned from conversations" list with Forget.
@@ -1824,6 +1835,10 @@ unchanged.
   test commands; `memory-tools-cutover` stays `[~]` until the owner runs the 10-question voice smoke
   set on web and Android (the code and Help copy are live; only the owner can speak the questions).
   `emb-retire` not before 2026-09-28.
+- 2026-09-19 — owner: "do the memory core switch". Serving gate flipped `owner` → `all`
+  (`template.yaml` default and `deploy.yml` `--parameter-overrides AgentCoreMemoryMode=all`).
+  Dual-running DynamoDB `ENT#`/`EMB#` unchanged. Help Memory copy now says learned facts
+  apply to every signed-in account. Smoke set and `emb-retire` still gated as above.
 - 2026-09-14 — `android-learned-list` (was a backlog follow-up) built the same day so both clients
   match: Android Memory screen gains a third tab "Learned" backed by `GET/DELETE /api/v1/memory/remembered`
   (`RememberedDto`, `MemoryRepository.listRemembered/forgetRemembered`, `MemoryViewModel` learned

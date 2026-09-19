@@ -89,8 +89,8 @@ type Request struct {
 	ClientVersion string `json:"clientVersion,omitempty"`
 	// Role is the caller's verified role ("owner" | "member"), forwarded by
 	// the web function. The agentcore-memory rollout gate
-	// (AGENTCORE_MEMORY_MODE=owner) decides the REMEMBERED preload from it,
-	// so no user read is needed at mint.
+	// (AGENTCORE_MEMORY_MODE, currently all) decides the REMEMBERED preload
+	// from it, so no user read is needed at mint.
 	Role string `json:"role,omitempty"`
 	// Capabilities is the set of session-bootstrap modes the calling client
 	// understands (e.g. "azure-direct", "voice-live-direct"). A client that

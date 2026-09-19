@@ -437,6 +437,7 @@ jobs:
               NovaBridgeDesiredCount=${{ steps.nova.outputs.desired }} \
               NovaBridgeImageReady=${{ steps.nova.outputs.imageReady }} \
               NovaBridgeEnable=false \
+              AgentCoreMemoryMode=all \
               GhostCommandFunctionArn=${{ vars.GHOST_COMMAND_FUNCTION_ARN || 'arn:aws:lambda:us-east-1:759775734231:function:ghost-cli-command' }}
 
       # Oversized static binaries (ORT WASM ~11 MB, wake-word ONNX models) can't

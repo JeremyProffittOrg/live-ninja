@@ -292,7 +292,7 @@ type brokerRequest struct {
 	ClientVersion string   `json:"clientVersion,omitempty"`
 	Capabilities  []string `json:"capabilities,omitempty"`
 	// Role is the caller's verified role, for the broker's agentcore-memory
-	// rollout gate (REMEMBERED preload, AGENTCORE_MEMORY_MODE=owner).
+	// rollout gate (REMEMBERED preload, AGENTCORE_MEMORY_MODE).
 	Role string `json:"role,omitempty"`
 }
 
