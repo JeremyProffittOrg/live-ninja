@@ -99,6 +99,7 @@ static SemaphoreHandle_t s_mx;
 static volatile ln_app_state_t s_state = LN_STATE_BOOT;
 static int64_t s_state_since_us;
 static bool s_resp_done_pending;   /* response.done seen, waiting for drain */
+static bool s_stop_after_speak;    /* stop_listening: idle after this reply */
 static esp_timer_handle_t s_tick;
 static int s_err_cd_last = -1;     /* last "Auto-retry in N s" value shown */
 
@@ -250,6 +251,7 @@ static void session_begin_listening(bool from_barge_in)
         }
     }
     s_resp_done_pending = false;
+    s_stop_after_speak = false;
     ln_ui_user_transcript("", true);
     if (!from_barge_in) {
         ln_ui_assistant_transcript("", true);
@@ -364,7 +366,11 @@ static void on_rt_event(void *arg, esp_event_base_t base, int32_t id,
         }
         break;
     case LN_RT_EVENT_RESPONSE_DONE:
-        s_resp_done_pending = true; /* tick moves to Idle once drained */
+        s_resp_done_pending = true; /* tick moves to Idle/Listening once drained */
+        break;
+    case LN_RT_EVENT_STOP_LISTENING:
+        s_stop_after_speak = true;
+        ESP_LOGI(TAG, "stop_listening — idle after this reply");
         break;
     case LN_RT_EVENT_DISCONNECTED:
         if (in_session(s_state)) {
@@ -679,6 +685,9 @@ static void tick_cb(void *arg)
         } else if (s_resp_done_pending && elapsed > 500 * 1000) {
             /* text/tool-only response — nothing to play */
             s_resp_done_pending = false;
+            if (s_stop_after_speak) {
+                s_stop_after_speak = false;
+            }
             set_state(LN_STATE_IDLE);
         } else if (elapsed > LN_CTRL_THINK_TIMEOUT_US) {
             ESP_LOGW(TAG, "thinking timed out");
@@ -688,11 +697,17 @@ static void tick_cb(void *arg)
     case LN_STATE_SPEAKING:
         if (s_resp_done_pending && !ln_audio_is_playing()) {
             s_resp_done_pending = false;
-            /* Owner 2026-07-19: a finished answer must NOT end the
-             * conversation — return to Listening for the follow-up turn
-             * (session stays up); the 25 s listen timeout of silence is
-             * what sends the exchange back to Idle, not the response. */
-            set_state(LN_STATE_LISTENING);
+            if (s_stop_after_speak) {
+                s_stop_after_speak = false;
+                ESP_LOGI(TAG, "stop_listening reply done; back to idle");
+                set_state(LN_STATE_IDLE);
+            } else {
+                /* Owner 2026-07-19: a finished answer must NOT end the
+                 * conversation — return to Listening for the follow-up turn
+                 * (session stays up); the 25 s listen timeout of silence is
+                 * what sends the exchange back to Idle, not the response. */
+                set_state(LN_STATE_LISTENING);
+            }
         }
         break;
     case LN_STATE_LISTENING:

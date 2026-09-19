@@ -16,7 +16,7 @@ import org.json.JSONObject
  * Kept as a pure mapping so the decision is unit-tested without a live session.
  */
 enum class DeviceSessionTool {
-    /** Stop the wake service and end the live session. */
+    /** End the live session and wait for the wake word. */
     STOP_LISTENING,
 
     /** End this session and immediately begin a fresh one, so History gets a separate row. */
@@ -51,8 +51,9 @@ enum class DeviceSessionTool {
 fun deviceToolOutput(tool: DeviceSessionTool, callId: String): String {
     val spoken = when (tool) {
         DeviceSessionTool.STOP_LISTENING ->
-            "Listening will stop as soon as you finish this reply. Say it briefly, and tell " +
-                "the user they can start listening again from the app."
+            "The live conversation will end as soon as you finish this reply. Say it briefly, " +
+                "and tell the user to say the wake word when they want to talk again. " +
+                "Do not say always-listening is off."
 
         DeviceSessionTool.START_NEW_CONVERSATION ->
             "A fresh conversation will start as soon as you finish this reply. Acknowledge " +

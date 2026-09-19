@@ -71,6 +71,9 @@ typedef enum {
     LN_RT_EVENT_RECONNECTING,
     /** Session ended (requested stop, or reconnect budget exhausted). No payload. */
     LN_RT_EVENT_DISCONNECTED,
+    /** The user asked to stop listening. Ctrl should return to idle after
+     *  the current spoken reply drains; wake-word listening stays armed. */
+    LN_RT_EVENT_STOP_LISTENING,
     /** An error occurred. Payload: ln_rt_error_info_t. fatal=true means the
      *  client gave up (auth/quota rejection or reconnect exhaustion) and ctrl
      *  must decide what to do (re-auth, cooldown, show Error state). */

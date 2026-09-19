@@ -24,7 +24,6 @@ import ninja.jeremy.liveninja.ui.state.RealtimeSessionController
 import ninja.jeremy.liveninja.ui.state.SessionUiEvent
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
-import ninja.jeremy.liveninja.wake.WakeWordService
 import ninja.jeremy.liveninja.ui.state.TranscriptRole
 import org.json.JSONObject
 
@@ -109,7 +108,7 @@ internal class DeviceActionSessionState {
  */
 @Singleton
 class RealtimeSessionCoordinator @Inject constructor(
-    @ApplicationContext private val appContext: Context,
+    @ApplicationContext @Suppress("UnusedPrivateProperty") private val appContext: Context,
     @OpenAiRealtimeTransport private val webRtcTransport: RealtimeTransport,
     @NovaSonicTransport private val novaBridgeTransport: RealtimeTransport,
     @GeminiTransport private val geminiLiveTransport: RealtimeTransport,
@@ -509,10 +508,9 @@ class RealtimeSessionCoordinator @Inject constructor(
     private suspend fun runDeviceAction(action: DeviceSessionTool) {
         when (action) {
             DeviceSessionTool.STOP_LISTENING -> {
-                // stop() ends the live session too, and clears the persisted
-                // serviceEnabled intent so a sticky restart cannot resurrect it.
+                // End the live session only. Always-listening stays armed so
+                // the next wake word starts a new conversation.
                 runCatching { stop() }
-                WakeWordService.stop(appContext)
             }
 
             DeviceSessionTool.START_NEW_CONVERSATION -> {

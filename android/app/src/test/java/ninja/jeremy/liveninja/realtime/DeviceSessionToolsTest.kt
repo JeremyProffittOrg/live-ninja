@@ -2,6 +2,7 @@ package ninja.jeremy.liveninja.realtime
 
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -46,6 +47,9 @@ class DeviceSessionToolsTest {
         assertEquals("call-123", json.getString("callId"))
         assertTrue(json.getBoolean("ok"))
         assertTrue(json.getJSONObject("output").getBoolean("acknowledged"))
+        val instruction = json.getJSONObject("output").getString("instruction")
+        assertTrue(instruction.contains("wake word"))
+        assertFalse(instruction.contains("from the app"))
     }
 
     /**

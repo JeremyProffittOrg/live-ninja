@@ -186,6 +186,8 @@ func TestHelpDrawerCoversTheAppsCapabilities(t *testing.T) {
 		"each device can have a different wake phrase",
 		"each device can run a different persona",
 		"hear a short sample",
+		"stop listening",
+		"waits for the wake word",
 	} {
 		assert.Containsf(t, help, want,
 			"help panel must say that %q", want)

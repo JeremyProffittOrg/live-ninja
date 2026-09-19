@@ -79,8 +79,12 @@ var GroupOrder = []string{GroupGeneral, GroupPDLC, GroupESP32, GroupFun}
 // every engine's manifest but were never named here, so the model rarely
 // reached for them (tool-parity-plan.md P3). See gemini_mint_test.go /
 // persona_tool_coverage_test.go for the coverage test that now guards this.
-const lifecycleToolInstructions = "stop_listening when the user asks you to stop listening, to close or quit the app, " +
-	"or says they are done for now, and start_new_conversation when they want to start " +
+const stopListeningToolInstructions = "stop_listening when the user says stop listening, Jarvis stop listening, " +
+	"that's all, or they are done talking for now — that ends the live conversation and " +
+	"waits for the wake word; always-listening stays on, "
+
+const lifecycleToolInstructions = stopListeningToolInstructions +
+	"and start_new_conversation when they want to start " +
 	"over or move to an unrelated subject with a clean slate (both act on the user's own " +
 	"device; neither deletes anything), "
 
@@ -168,7 +172,7 @@ func InstructionsForSurface(persona Persona, surface string) string {
 	case "web":
 		return strings.Replace(persona.Instructions, allLocal, lifecycleToolInstructions, 1)
 	case "m5stack", "device":
-		return strings.Replace(persona.Instructions, allLocal, "", 1)
+		return strings.Replace(persona.Instructions, allLocal, stopListeningToolInstructions, 1)
 	default:
 		return persona.Instructions
 	}

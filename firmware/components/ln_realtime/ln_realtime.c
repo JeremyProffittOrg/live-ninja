@@ -466,6 +466,48 @@ static void handle_audio_delta(const char *b64)
     }
 }
 
+static bool name_is_stop_listening(const char *name)
+{
+    return name != NULL && strcmp(name, "stop_listening") == 0;
+}
+
+static void ack_stop_listening_openai(const char *call_id)
+{
+    int n;
+
+    if (call_id == NULL || call_id[0] == '\0' || s_tool_buf == NULL) {
+        return;
+    }
+    n = snprintf(s_tool_buf, LN_RT_TOOL_BUF_SZ,
+                 "{\"type\":\"conversation.item.create\",\"item\":{"
+                 "\"type\":\"function_call_output\",\"call_id\":\"%s\","
+                 "\"output\":\"{\\\"tool\\\":\\\"stop_listening\\\","
+                 "\\\"callId\\\":\\\"%s\\\",\\\"ok\\\":true,"
+                 "\\\"output\\\":{\\\"acknowledged\\\":true,"
+                 "\\\"instruction\\\":\\\"The live conversation will end as soon as you finish this reply. Be brief and tell the user to say the wake word when they want to talk again.\\\"}}\"}}",
+                 call_id, call_id);
+    if (n <= 0 || n >= LN_RT_TOOL_BUF_SZ) {
+        ESP_LOGE(TAG, "stop_listening ack overflow");
+        return;
+    }
+    if (ws_send_str(s_tool_buf) != ESP_OK) {
+        ESP_LOGW(TAG, "stop_listening function_call_output send failed");
+        return;
+    }
+    (void)ws_send_str("{\"type\":\"response.create\"}");
+    post_evt(LN_RT_EVENT_STOP_LISTENING);
+}
+
+static void handle_openai_function_call(const cJSON *root)
+{
+    const cJSON *name = cJSON_GetObjectItemCaseSensitive(root, "name");
+    const cJSON *cid = cJSON_GetObjectItemCaseSensitive(root, "call_id");
+    if (cJSON_IsString(name) && name_is_stop_listening(name->valuestring) &&
+        cJSON_IsString(cid)) {
+        ack_stop_listening_openai(cid->valuestring);
+    }
+}
+
 static void handle_server_error(const cJSON *root)
 {
     const cJSON *e = cJSON_GetObjectItemCaseSensitive(root, "error");
@@ -536,6 +578,8 @@ static void handle_msg(const cJSON *root)
             s_session_ready_posted = true;
             post_evt(LN_RT_EVENT_SESSION_READY);
         }
+    } else if (strcmp(type, "response.function_call_arguments.done") == 0) {
+        handle_openai_function_call(root);
     } else if (strcmp(type, "error") == 0) {
         handle_server_error(root);
     }
@@ -581,6 +625,7 @@ static void gemini_refuse_tool_calls(const cJSON *calls)
     cJSON *tr = cJSON_AddObjectToObject(frame, "toolResponse");
     cJSON *arr = (tr != NULL) ? cJSON_AddArrayToObject(tr, "functionResponses") : NULL;
     int n = 0;
+    bool stop_listening = false;
     const cJSON *call = NULL;
     cJSON_ArrayForEach(call, calls) {
         const cJSON *id = cJSON_GetObjectItemCaseSensitive(call, "id");
@@ -599,8 +644,16 @@ static void gemini_refuse_tool_calls(const cJSON *calls)
         cJSON *resp = cJSON_AddObjectToObject(fr, "response");
         cJSON *result = (resp != NULL) ? cJSON_AddObjectToObject(resp, "result") : NULL;
         if (result != NULL) {
-            cJSON_AddStringToObject(result, "error",
-                                    "tool execution is not available on this device");
+            if (cJSON_IsString(name) && name_is_stop_listening(name->valuestring)) {
+                stop_listening = true;
+                cJSON_AddBoolToObject(result, "ok", true);
+                cJSON_AddBoolToObject(result, "acknowledged", true);
+                cJSON_AddStringToObject(result, "instruction",
+                                        "The live conversation will end as soon as you finish this reply. Be brief and tell the user to say the wake word when they want to talk again.");
+            } else {
+                cJSON_AddStringToObject(result, "error",
+                                        "tool execution is not available on this device");
+            }
         }
         cJSON_AddItemToArray(arr, fr);
         n++;
@@ -609,9 +662,12 @@ static void gemini_refuse_tool_calls(const cJSON *calls)
         if (s_tool_buf != NULL &&
             cJSON_PrintPreallocated(frame, s_tool_buf, LN_RT_TOOL_BUF_SZ, 0)) {
             if (ws_send_str(s_tool_buf) != ESP_OK) {
-                ESP_LOGW(TAG, "toolResponse refusal send failed");
+                ESP_LOGW(TAG, "toolResponse send failed");
             }
-            ESP_LOGW(TAG, "refused %d tool call(s) — no on-device tool router", n);
+            if (stop_listening) {
+                post_evt(LN_RT_EVENT_STOP_LISTENING);
+            }
+            ESP_LOGW(TAG, "handled %d tool call(s) (stop_listening=%d)", n, (int)stop_listening);
         } else {
             ESP_LOGE(TAG, "toolResponse refusal frame exceeds %d B — dropped",
                      LN_RT_TOOL_BUF_SZ);

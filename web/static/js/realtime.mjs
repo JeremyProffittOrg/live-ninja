@@ -128,7 +128,7 @@ const WEB_DEVICE_TOOLS = new Set(['stop_listening', 'start_new_conversation']);
 function webDeviceToolResult(tool, callId) {
   const instruction =
     tool === 'stop_listening'
-      ? 'Listening will stop as soon as you finish this reply. Be brief and tell the user they can restart it from the page.'
+      ? 'The live conversation will end as soon as you finish this reply. Be brief and tell the user to say the wake word when they want to talk again. Do not say always-listening is off.'
       : 'A fresh conversation will start as soon as you finish this reply. Acknowledge briefly and do not summarize the old conversation.';
   return {
     tool,

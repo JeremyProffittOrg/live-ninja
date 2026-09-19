@@ -123,8 +123,7 @@ class RealtimeSessionCoordinatorTest {
             quotaWarning = null,
         )
         return RealtimeSessionCoordinator(
-            // Only used to stop the wake service for the device-local stop_listening
-            // tool, which this suite does not exercise.
+            // Application context is unused for stop_listening (wake stays armed).
             mockk<android.content.Context>(relaxed = true),
             transport, novaTransport, geminiTransport, sessionApi, toolRouter, deviceVolumeTool,
             deviceCameraTool,

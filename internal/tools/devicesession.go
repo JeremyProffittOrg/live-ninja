@@ -21,12 +21,12 @@ import "context"
 func stopListeningDefinition() *Definition {
 	return &Definition{
 		Name: "stop_listening",
-		Description: "Stop always-on wake-word listening on the user's device and end any " +
-			"live conversation. Use when the user asks to stop listening, to close or quit " +
-			"the app, to 'stop', or says they are done talking for now. The user restarts " +
-			"listening from the app, so say so briefly rather than promising to resume.",
+		Description: "End the live conversation and go back to waiting for the wake word. " +
+			"Always-on wake-word listening stays armed. Use when the user says stop listening, " +
+			"Jarvis stop listening, that's all, or they are done talking for now. Tell them " +
+			"briefly to say the wake word when they want to talk again — do not turn always-listening off.",
 		DeviceLocal: true,
-		Surfaces:    []string{"web", "android"},
+		Surfaces:    []string{"web", "android", "device"},
 		Handler:     handleDeviceLocalOnly,
 	}
 }

@@ -686,10 +686,8 @@ function attachTranscriptRendering(session) {
   });
   const deferredDeviceAction = createDeferredDeviceActionGate((action) => {
     if (action === 'stop_listening') {
-      if (wakeToggle) {
-        wakeToggle.checked = false;
-        wakeToggle.dispatchEvent(new Event('change'));
-      }
+      // End the live session only. Always-listening stays armed so the
+      // next wake word starts a new conversation.
       mic.end();
     } else if (action === 'start_new_conversation') {
       session.addEventListener('closed', () => void mic.start(), { once: true });
