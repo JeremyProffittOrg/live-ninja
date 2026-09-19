@@ -3,6 +3,8 @@
 // cosmetic "Redirecting to Amazon…" swap on the LWA links (the page
 // navigates away immediately after; this is not a real loading state).
 
+import { mountAndroidAppCard } from './android-app.mjs';
+
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 function scrollToId(id, block) {
@@ -22,6 +24,8 @@ for (const btn of document.querySelectorAll("[data-scroll-to]")) {
     scrollToId(btn.getAttribute("data-scroll-to"), btn.getAttribute("data-scroll-block"));
   });
 }
+
+mountAndroidAppCard('androidAppCard');
 
 for (const link of document.querySelectorAll("[data-lwa-cta]")) {
   link.addEventListener("click", () => {

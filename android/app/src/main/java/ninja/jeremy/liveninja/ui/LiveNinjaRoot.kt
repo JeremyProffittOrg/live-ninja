@@ -3,6 +3,7 @@ package ninja.jeremy.liveninja.ui
 import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
@@ -13,9 +14,12 @@ import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Psychology
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
@@ -52,6 +56,8 @@ import ninja.jeremy.liveninja.auth.AuthState
 import ninja.jeremy.liveninja.ui.onboarding.AuthViewModel
 import ninja.jeremy.liveninja.ui.onboarding.LoginScreen
 import ninja.jeremy.liveninja.ui.onboarding.OnboardingScreen
+import ninja.jeremy.liveninja.update.AppUpdateState
+import ninja.jeremy.liveninja.update.AppUpdateViewModel
 import ninja.jeremy.liveninja.ui.screens.ConversationScreen
 import ninja.jeremy.liveninja.ui.screens.FilesScreen
 import ninja.jeremy.liveninja.ui.screens.HistoryScreen
@@ -115,6 +121,8 @@ fun LiveNinjaRoot(assistTriggers: SharedFlow<AssistTrigger> = MutableSharedFlow(
         OnboardingScreen(onFinished = authViewModel::onOnboardingFinished)
         return
     }
+    StartupPermissionGate()
+    AppUpdateHost()
     if (authState !is AuthState.SignedIn) {
         LoginScreen(viewModel = authViewModel)
         return
@@ -258,5 +266,65 @@ fun LiveNinjaRoot(assistTriggers: SharedFlow<AssistTrigger> = MutableSharedFlow(
                 navController.navigate(ROUTE_LOG_VIEWER)
             },
         )
+    }
+}
+
+@Composable
+private fun AppUpdateHost(viewModel: AppUpdateViewModel = hiltViewModel()) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { viewModel.check() }
+    when (val s = state) {
+        is AppUpdateState.Available -> AlertDialog(
+            onDismissRequest = viewModel::dismiss,
+            title = { Text(stringResource(R.string.update_available_title)) },
+            text = {
+                Text(
+                    stringResource(
+                        R.string.update_available_body,
+                        s.versionName,
+                        s.versionCode.toString(),
+                    ),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = viewModel::startInstall) {
+                    Text(stringResource(R.string.update_now))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::dismiss) {
+                    Text(stringResource(R.string.update_later))
+                }
+            },
+        )
+        is AppUpdateState.Downloading -> AlertDialog(
+            onDismissRequest = {},
+            title = { Text(stringResource(R.string.update_downloading_title)) },
+            text = {
+                val total = s.totalBytes.coerceAtLeast(1L)
+                LinearProgressIndicator(
+                    progress = { (s.receivedBytes.toFloat() / total).coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {},
+        )
+        AppUpdateState.Installing -> AlertDialog(
+            onDismissRequest = {},
+            title = { Text(stringResource(R.string.update_installing_title)) },
+            text = { Text(stringResource(R.string.update_installing_body)) },
+            confirmButton = {},
+        )
+        is AppUpdateState.Failed -> AlertDialog(
+            onDismissRequest = viewModel::dismiss,
+            title = { Text(stringResource(R.string.update_failed_title)) },
+            text = { Text(s.message) },
+            confirmButton = {
+                TextButton(onClick = viewModel::dismiss) {
+                    Text(stringResource(R.string.update_later))
+                }
+            },
+        )
+        AppUpdateState.Idle -> Unit
     }
 }

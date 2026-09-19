@@ -28,6 +28,8 @@
 // names are user/model-authored data.
 
 import { apiJSON, authFetch, ApiError } from './toolclient.mjs';
+import { mountAndroidAppCard } from './android-app.mjs';
+mountAndroidAppCard('androidAppCard');
 
 const $ = (id) => document.getElementById(id);
 

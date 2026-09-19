@@ -531,4 +531,22 @@
     <string name="settings_mic_specific_on_host">Specific microphone on this host</string>
     <string name="settings_device_renamed">Device name saved.</string>
     <string name="settings_device_rename_failed">Couldn’t save the device name.</string>
+
+    <string name="update_available_title">Update available</string>
+    <string name="update_available_body">Live Ninja %1$s (%2$s) is ready on the website. Install it to keep this phone current.</string>
+    <string name="update_now">Update</string>
+    <string name="update_later">Later</string>
+    <string name="update_downloading_title">Downloading update</string>
+    <string name="update_installing_title">Installing update</string>
+    <string name="update_installing_body">Android will ask you to confirm the install.</string>
+    <string name="update_failed_title">Couldn’t update</string>
+
+    <string name="perm_continue">Continue</string>
+    <string name="perm_later">Later</string>
+    <string name="perm_battery_title">Keep listening in the background</string>
+    <string name="perm_battery_body">Android will pause Live Ninja unless you allow it to ignore battery optimizations. This is how always-listening survives overnight.</string>
+    <string name="perm_overlay_title">Show over other apps</string>
+    <string name="perm_overlay_body">Needed for the floating conversation bubble when you leave the app mid-call.</string>
+    <string name="perm_install_title">Install app updates</string>
+    <string name="perm_install_body">Allow Live Ninja to install the APK published on this website, so the phone can update itself.</string>
 </resources>

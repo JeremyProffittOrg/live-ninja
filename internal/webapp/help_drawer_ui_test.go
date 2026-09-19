@@ -188,6 +188,8 @@ func TestHelpDrawerCoversTheAppsCapabilities(t *testing.T) {
 		"hear a short sample",
 		"stop listening",
 		"waits for the wake word",
+		"Get the Android app",
+		"update itself",
 	} {
 		assert.Containsf(t, help, want,
 			"help panel must say that %q", want)

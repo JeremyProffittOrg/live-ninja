@@ -39,6 +39,8 @@
          requested via Settings.ACTION_MANAGE_OVERLAY_PERMISSION in onboarding;
          LiveOverlayController no-ops without the user grant. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Sideload updates from the published APK on live.jeremy.ninja. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- Camera tools are optional capability: camera-less tablets may still
          install and use every non-camera feature; the tools report unavailable. -->
@@ -175,6 +177,14 @@
         <!-- Restart the wake service after reboot / app update when enabled. Only the system
              can send these protected broadcasts, so exported is safe and required for
              delivery on all OEMs. -->
+        <receiver
+            android:name=".update.UpdateInstallReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="ninja.jeremy.liveninja.UPDATE_INSTALL" />
+            </intent-filter>
+        </receiver>
+
         <receiver
             android:name=".wake.WakeBootReceiver"
             android:exported="true">
