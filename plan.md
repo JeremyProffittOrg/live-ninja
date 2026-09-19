@@ -29,6 +29,18 @@ Archived (history preserved in full, banners at the top of each):
 
 ---
 
+## Where things actually stand (2026-09-19)
+
+Voice preview is wired: Settings (Android) and the persona editor (web) call
+`POST /api/v1/fallback/tts` and play the MP3. Cedar/Marin map onto ash/coral
+because those two realtime voices are not on `gpt-4o-mini-tts`. Android 0.3.6
+(12). Tab5 `30:ED:A0:E3:01:1E` is Live Ninja again on COM13 — boot, WiFi,
+pairing refresh, idle verified; IoT provisioning is still the empty hook.
+
+**Still owner-gated from earlier sections:** `agentcore-memory` 10-question
+smoke, wake-training ceiling (three options in §7.4), Azure Voice Live Entra
+app, IoT authorizer signing keypair.
+
 ## Where things actually stand (2026-08-08)
 
 **§7.4 has STOPPED at its own ceiling and needs an owner decision** — three consecutive training

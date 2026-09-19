@@ -1,5 +1,6 @@
 package ninja.jeremy.liveninja.net
 
+import okhttp3.ResponseBody
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
@@ -8,6 +9,7 @@ import retrofit2.http.POST
 import retrofit2.http.PUT
 import retrofit2.http.Path
 import retrofit2.http.Query
+import retrofit2.http.Streaming
 import kotlinx.serialization.json.JsonObject
 
 /**
@@ -168,6 +170,14 @@ interface LiveNinjaApi {
      */
     @GET("api/v1/realtime/voices")
     suspend fun listVoices(): VoiceCatalogResponse
+
+    /**
+     * Short TTS sample for the Settings voice preview. Returns MP3 bytes
+     * (`audio/mpeg`); cedar/marin are mapped server-side onto speech voices.
+     */
+    @POST("api/v1/fallback/tts")
+    @Streaming
+    suspend fun previewVoice(@Body body: VoicePreviewRequest): ResponseBody
 
     /**
      * Persona catalog backing the Settings picker. IDs only — the server

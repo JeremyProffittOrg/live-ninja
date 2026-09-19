@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
@@ -152,12 +153,26 @@ func (c *FallbackClient) Transcribe(ctx context.Context, audio []byte, filename,
 	return out.Text, nil
 }
 
+// SpeechVoice maps a realtime voice id onto one /v1/audio/speech accepts.
+// cedar and marin are realtime-tuned and are not offered by gpt-4o-mini-tts;
+// the rest of SupportedVoices pass through.
+func SpeechVoice(voice string) string {
+	switch strings.ToLower(strings.TrimSpace(voice)) {
+	case "":
+		return DefaultTTSVoice
+	case "cedar":
+		return "ash"
+	case "marin":
+		return "coral"
+	default:
+		return voice
+	}
+}
+
 // Speak runs the TTS leg: text -> gpt-4o-mini-tts -> MP3 bytes
 // (audio/mpeg). An empty voice uses DefaultTTSVoice.
 func (c *FallbackClient) Speak(ctx context.Context, text, voice string) ([]byte, error) {
-	if voice == "" {
-		voice = DefaultTTSVoice
-	}
+	voice = SpeechVoice(voice)
 	body, err := json.Marshal(map[string]any{
 		"model":           fallbackTTSModel,
 		"input":           text,

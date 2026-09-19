@@ -185,6 +185,7 @@ func TestHelpDrawerCoversTheAppsCapabilities(t *testing.T) {
 	for _, want := range []string{
 		"each device can have a different wake phrase",
 		"each device can run a different persona",
+		"hear a short sample",
 	} {
 		assert.Containsf(t, help, want,
 			"help panel must say that %q", want)

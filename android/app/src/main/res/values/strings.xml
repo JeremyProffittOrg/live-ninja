@@ -360,7 +360,7 @@
     <string name="settings_custom_instructions_counter">%1$d / %2$d characters</string>
     <string name="settings_voice_label">Voice</string>
     <string name="settings_voice_default_badge">Default</string>
-    <string name="settings_voice_preview_unavailable">Voice previews aren\'t available yet — they arrive with the voice preview service.</string>
+    <string name="settings_voice_preview_unavailable">Couldn\'t play that voice — check your connection and try again.</string>
     <string name="settings_turn_detection_label">Turn taking</string>
     <string name="settings_turn_semantic">Natural (semantic)</string>
     <string name="settings_turn_semantic_desc">Waits until you finish a thought — recommended</string>

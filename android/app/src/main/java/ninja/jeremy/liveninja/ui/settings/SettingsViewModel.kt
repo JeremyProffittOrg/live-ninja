@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
@@ -12,6 +13,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.File
 import java.util.Optional
 import javax.inject.Inject
 import kotlinx.coroutines.async
@@ -32,6 +34,7 @@ import ninja.jeremy.liveninja.log.LogExporter
 import ninja.jeremy.liveninja.log.LogSink
 import ninja.jeremy.liveninja.net.PersonaInfoDto
 import ninja.jeremy.liveninja.net.LiveNinjaApi
+import ninja.jeremy.liveninja.net.VoicePreviewRequest
 import ninja.jeremy.liveninja.net.WakeWordCreateRequest
 import ninja.jeremy.liveninja.ui.state.AccountActions
 import ninja.jeremy.liveninja.ui.state.DiagnosticsConfig
@@ -155,6 +158,8 @@ data class SettingsUiState(
     val sectionDocuments: Map<SettingsSection, SettingsDocument> = emptyMap(),
     val devices: List<SettingsHostUi> = emptyList(),
     val settingsSyncing: Boolean = false,
+    /** Voice id currently playing a Settings preview sample; null when idle. */
+    val previewingVoice: String? = null,
 ) {
     val customPhraseValid: Boolean
         get() = SettingsViewModel.isValidWakePhrase(customPhrase)
@@ -240,6 +245,8 @@ class SettingsViewModel @Inject constructor(
 
     private val _notices = MutableSharedFlow<SettingsNotice>(extraBufferCapacity = 4)
     val notices: SharedFlow<SettingsNotice> = _notices
+    private var previewPlayer: MediaPlayer? = null
+    private var previewJob: Job? = null
 
     private var modelSyncJob: Job? = null
     private var pollJob: Job? = null
@@ -1067,10 +1074,75 @@ class SettingsViewModel @Inject constructor(
     fun setVoice(voice: String) =
         editPortableSection(SettingsSection.PERSONA) { it.put("voice", voice) }
 
-    fun onVoicePreviewRequested() {
-        // No bundled samples ship with the app and the backend TTS preview
-        // endpoint doesn't exist yet — surface the designed "unavailable" notice.
-        _notices.tryEmit(SettingsNotice.VOICE_PREVIEW_UNAVAILABLE)
+    fun onVoicePreviewRequested(voice: String) {
+        if (voice == _state.value.previewingVoice) {
+            stopVoicePreview()
+            return
+        }
+        previewJob?.cancel()
+        stopVoicePreview()
+        previewJob = viewModelScope.launch {
+            _state.update { it.copy(previewingVoice = voice) }
+            try {
+                val body = api.previewVoice(
+                    VoicePreviewRequest(text = PREVIEW_SAMPLE, voice = voice),
+                )
+                playPreviewBytes(body.bytes())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                stopVoicePreview()
+                _notices.tryEmit(SettingsNotice.VOICE_PREVIEW_UNAVAILABLE)
+            }
+        }
+    }
+
+    private fun playPreviewBytes(bytes: ByteArray) {
+        val dir = context.cacheDir ?: run {
+            stopVoicePreview()
+            _notices.tryEmit(SettingsNotice.VOICE_PREVIEW_UNAVAILABLE)
+            return
+        }
+        val file = File(dir, "voice-preview.mp3")
+        val player = runCatching {
+            file.writeBytes(bytes)
+            MediaPlayer()
+        }.getOrElse {
+            stopVoicePreview()
+            _notices.tryEmit(SettingsNotice.VOICE_PREVIEW_UNAVAILABLE)
+            return
+        }
+        previewPlayer = player
+        player.setOnCompletionListener { stopVoicePreview() }
+        player.setOnErrorListener { _, _, _ ->
+            stopVoicePreview()
+            _notices.tryEmit(SettingsNotice.VOICE_PREVIEW_UNAVAILABLE)
+            true
+        }
+        try {
+            player.setDataSource(file.absolutePath)
+            player.prepare()
+            player.start()
+        } catch (_: Exception) {
+            stopVoicePreview()
+            _notices.tryEmit(SettingsNotice.VOICE_PREVIEW_UNAVAILABLE)
+        }
+    }
+
+    private fun stopVoicePreview() {
+        previewJob?.cancel()
+        previewJob = null
+        previewPlayer?.setOnCompletionListener(null)
+        previewPlayer?.setOnErrorListener(null)
+        runCatching { previewPlayer?.stop() }
+        runCatching { previewPlayer?.release() }
+        previewPlayer = null
+        _state.update { it.copy(previewingVoice = null) }
+    }
+
+    override fun onCleared() {
+        stopVoicePreview()
+        super.onCleared()
     }
 
     fun setTurnDetection(value: String) =
@@ -1357,6 +1429,9 @@ class SettingsViewModel @Inject constructor(
 
     companion object {
         const val CUSTOM_INSTRUCTIONS_MAX = 4000
+
+        /** Fixed sample line for Settings voice preview (docs/web-ui-spec.md). */
+        const val PREVIEW_SAMPLE = "Hi, I'm Live Ninja. This is how I sound."
 
         /** Engine value whose selection reveals the Gemini voice picker (M13). */
         const val GEMINI_ENGINE = "gemini-flash-live"

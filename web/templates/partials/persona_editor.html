@@ -46,6 +46,12 @@
     gap: var(--ln-sp-3);
     margin-top: 20px;
   }
+  .pe__voice-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .pe__voice-row .ln-select { flex: 1 1 auto; min-width: 0; }
 </style>
 <dialog class="pe" id="personaEditor" aria-labelledby="personaEditorTitle" aria-describedby="personaEditorSubtitle">
   <h2 class="pe__title" id="personaEditorTitle">Edit persona</h2>
@@ -86,8 +92,11 @@
            personaPrefs[personaId]. */}}
     <div class="ln-field">
       <label for="peVoice">Voice</label>
-      <select class="ln-select" id="peVoice" aria-describedby="peVoiceHint"></select>
-      <p class="ln-hint" id="peVoiceHint">This persona speaks with this voice, starting with your next conversation.</p>
+      <div class="pe__voice-row">
+        <select class="ln-select" id="peVoice" aria-describedby="peVoiceHint"></select>
+        <button type="button" class="set-voice-preview" id="peVoicePreview" aria-label="Preview this voice" title="Preview this voice">▶</button>
+      </div>
+      <p class="ln-hint" id="peVoiceHint">Tap play to hear a short sample. This persona speaks with this voice, starting with your next conversation.</p>
     </div>
     <div class="ln-field">
       <label for="peAccent">Accent</label>

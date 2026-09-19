@@ -27,7 +27,7 @@
 // (detail: {personaId, voice, accent}) so conversation.mjs refreshes its
 // select labels, and pings the ln.settings.version cross-tab channel.
 
-import { apiJSON, ApiError } from './toolclient.mjs';
+import { apiJSON, authFetch, ApiError } from './toolclient.mjs';
 import {
   ensureCurrentDeviceRegistered,
   sectionSettings,
@@ -37,6 +37,8 @@ import {
 const SETTINGS_PATH = '/api/v1/settings?effective=true';
 const VOICES_PATH = '/api/v1/realtime/voices';
 const PERSONAS_PATH = '/api/v1/personas';
+const TTS_PATH = '/api/v1/fallback/tts';
+const PREVIEW_SAMPLE = "Hi, I'm Live Ninja. This is how I sound.";
 const SETTINGS_PING_KEY = 'ln.settings.version';
 
 const $ = (id) => document.getElementById(id);
@@ -46,6 +48,70 @@ const $ = (id) => document.getElementById(id);
 // showModal().
 let isOpen = false;
 let wired = false;
+let previewAudio = null;
+let previewUrl = null;
+
+function stopVoicePreview() {
+  if (previewAudio) {
+    previewAudio.pause();
+    previewAudio.removeAttribute('src');
+    previewAudio.load();
+    previewAudio = null;
+  }
+  if (previewUrl) {
+    URL.revokeObjectURL(previewUrl);
+    previewUrl = null;
+  }
+  const btn = $('peVoicePreview');
+  if (btn) {
+    btn.classList.remove('is-playing');
+    btn.setAttribute('aria-label', 'Preview this voice');
+  }
+}
+
+async function previewSelectedVoice() {
+  const sel = $('peVoice');
+  const btn = $('peVoicePreview');
+  const voice = sel && sel.value;
+  if (!voice || !btn) return;
+  if (btn.classList.contains('is-playing')) {
+    stopVoicePreview();
+    return;
+  }
+  stopVoicePreview();
+  btn.disabled = true;
+  setError('');
+  try {
+    const resp = await authFetch(TTS_PATH, {
+      method: 'POST',
+      json: { text: PREVIEW_SAMPLE, voice },
+    });
+    if (!resp.ok) {
+      const parsed = await resp.json().catch(() => null);
+      throw new ApiError(resp.status, parsed, "Couldn't play this voice — try again.");
+    }
+    const blob = await resp.blob();
+    previewUrl = URL.createObjectURL(blob);
+    previewAudio = new Audio(previewUrl);
+    previewAudio.addEventListener('ended', stopVoicePreview);
+    previewAudio.addEventListener('error', () => {
+      stopVoicePreview();
+      setError("Couldn't play this voice — try again.");
+    });
+    btn.classList.add('is-playing');
+    btn.setAttribute('aria-label', 'Stop voice preview');
+    await previewAudio.play();
+  } catch (err) {
+    stopVoicePreview();
+    if (err && err.name === 'AuthLostError') return;
+    setError(
+      (err instanceof ApiError && typeof err.message === 'string' && err.message) ||
+        "Couldn't play this voice — try again.",
+    );
+  } finally {
+    btn.disabled = false;
+  }
+}
 
 function setError(msg) {
   const el = $('personaEditorError');
@@ -190,8 +256,11 @@ export async function openPersonaEditor(personaId) {
     wired = true;
     $('personaEditorCancel').addEventListener('click', () => dlg.close());
     dlg.addEventListener('close', () => {
+      stopVoicePreview();
       isOpen = false;
     });
+    $('peVoicePreview').addEventListener('click', () => void previewSelectedVoice());
+    $('peVoice').addEventListener('change', stopVoicePreview);
     const instr = $('peInstructions');
     instr.addEventListener('input', () => {
       $('peInstrCount').textContent = `${instr.value.length} / 4000`;

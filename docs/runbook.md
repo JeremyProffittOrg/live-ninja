@@ -114,12 +114,13 @@ delete the device row first; it contains the evidence needed to identify the Thi
 
 ## 6. Device (Tab5) ops
 
-- Bench device: COM58, MAC `30:ED:A0:E3:01:1E` (fleet registry `c:\dev\fleet\esp32.md`).
-- Flash recipe (git-bash breaks `export.bat`): a `.bat` with `set "MSYSTEM="` →
-  `set IDF_PYTHON_ENV_PATH=%USERPROFILE%\.espressif\python_env\idf5.4_py3.13_env` →
-  `call C:\esp\esp-idf-v5.4.4\export.bat` → `idf.py -p COM58 flash`.
-- Serial console: python/pyserial COM58 115200 — open only after esptool's reset releases
-  the port.
+- Bench device: COM13, MAC `30:ED:A0:E3:01:1E` (fleet registry `c:\dev\fleet\esp32.md`).
+- Flash recipe (git-bash breaks `export.bat`): `scripts\idf.bat -p COM13 flash`
+  (unsets MSYSTEM, sets `IDF_PYTHON_ENV_PATH` to the 5.4 Python 3.13 env, then
+  `call C:\esp\esp-idf-v5.4.4\export.bat`).
+- Serial console: python/pyserial COM13 115200 with DTR/RTS de-asserted — open only
+  after esptool's reset releases the port. Asserting DTR/RTS on this native-USB
+  port reboots the chip (`CHIP_USB_UART_RESET`).
 - Pairing security: RFC 8628 user code shown on the LCD/portal; 5 wrong browser entries
   invalidate the pairing and the device restarts with a fresh code.
 

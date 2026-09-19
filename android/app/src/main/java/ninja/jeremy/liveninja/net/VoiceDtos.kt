@@ -36,3 +36,10 @@ data class VoiceCatalogResponse(
     val accents: List<AccentInfoDto> = emptyList(),
     val geminiVoices: List<VoiceInfoDto> = emptyList(),
 )
+
+/** POST /api/v1/fallback/tts body — reused for the Settings voice preview. */
+@Serializable
+data class VoicePreviewRequest(
+    val text: String,
+    val voice: String,
+)

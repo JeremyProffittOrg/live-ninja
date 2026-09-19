@@ -34,6 +34,7 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.filled.PlayCircleOutline
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.WarningAmber
@@ -359,6 +360,7 @@ fun SettingsScreen(
                                 personaSystemInstructions = sectionDoc.personaSystemInstructions,
                                 personaPresets = state.personaPresets,
                                 displayVoice = sectionDoc.displayVoice,
+                                previewingVoice = state.previewingVoice,
                                 onSetPersona = viewModel::setPersona,
                                 onSetCustomInstructions = viewModel::setCustomInstructions,
                                 onSetVoice = viewModel::setVoice,
@@ -1114,10 +1116,11 @@ private fun PersonaSection(
     personaSystemInstructions: String?,
     personaPresets: List<PersonaPreset>,
     displayVoice: String,
+    previewingVoice: String?,
     onSetPersona: (String) -> Unit,
     onSetCustomInstructions: (String) -> Unit,
     onSetVoice: (String) -> Unit,
-    onVoicePreviewRequested: () -> Unit,
+    onVoicePreviewRequested: (String) -> Unit,
 ) {
     // Persona select (IDs only; server resolves instructions).
     var personaExpanded by remember { mutableStateOf(false) }
@@ -1240,23 +1243,23 @@ private fun PersonaSection(
                     )
                 }
                 Spacer(Modifier.weight(1f))
-                // Preview: rendered in the disabled style but still
-                // focusable/tappable so it explains itself when touched
-                // (tooltip-equivalent that TalkBack users can reach).
-                // Becomes a real player once bundled samples/backend TTS
-                // preview exist (no samples ship today).
+                val playing = previewingVoice == voice
                 IconButton(
-                    onClick = onVoicePreviewRequested,
+                    onClick = { onVoicePreviewRequested(voice) },
                     modifier = Modifier
                         .size(48.dp)
-                        .alpha(0.38f)
                         .semantics {
-                            contentDescription =
-                                "Preview voice $voiceLabel. Not available yet — " +
-                                    "previews arrive with the backend voice preview service."
+                            contentDescription = if (playing) {
+                                "Stop $voiceLabel voice preview"
+                            } else {
+                                "Preview $voiceLabel voice"
+                            }
                         },
                 ) {
-                    Icon(Icons.Filled.PlayCircleOutline, contentDescription = null)
+                    Icon(
+                        if (playing) Icons.Filled.Stop else Icons.Filled.PlayCircleOutline,
+                        contentDescription = null,
+                    )
                 }
             }
         }
