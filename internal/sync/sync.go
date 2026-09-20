@@ -262,7 +262,7 @@ func BuildDesired(doc map[string]any, deviceID string, version int64) map[string
 	doc = store.EffectiveSettings(doc, deviceID)
 	desired := map[string]any{
 		"settingsVersion": version,
-		"wakeWord":        stringField(doc, "wakeWord", "hey-live-ninja"),
+		"wakeWord":        stringField(doc, "wakeWord", "hey-jarvis"),
 		// Locked M6 decision: the ESP32 catalog is builtin WakeNet models
 		// only for now (custom oWW-on-ESP conversion is honestly flagged
 		// unsupported), so the engine pushed to an M5Stack is always

@@ -280,6 +280,9 @@ func wakewordError(c *fiber.Ctx, deps *Deps, op string, err error) error {
 	case errors.Is(err, wakeword.ErrPlatformUnsupported):
 		return errorJSON(c, fiber.StatusNotFound, "unsupported_platform",
 			"custom wake words are not available on esp32 yet — the device selects among built-in WakeNet models")
+	case errors.Is(err, wakeword.ErrCustomTrainingDisabled):
+		return errorJSON(c, fiber.StatusForbidden, "custom_training_disabled",
+			"custom wake training is off — pick a bundled pre-trained phrase")
 	case errors.Is(err, wakeword.ErrEngineUnavailable):
 		return errorJSON(c, fiber.StatusBadRequest, "engine_unavailable", "only the openwakeword engine supports custom training on this server")
 	case errors.Is(err, wakeword.ErrTrainingInProgress):

@@ -25,8 +25,8 @@
     },
     "wakeWord": {
       "type": "string",
-      "description": "ID of the active wake-word catalog entry (FR-K02). Always a combobox selection over the shared catalog + the user's own trained models — never a free-typed phrase. Resolves via GET /v1/wakeword catalog and the per-user WAKE# items; the actual model asset is fetched via contracts/wakeword-manifest.md.",
-      "default": "hey-live-ninja",
+      "description": "ID of the active wake-word catalog entry (FR-K02). Combobox over bundled pre-trained phrases only (custom training is off). Never a free-typed phrase.",
+      "default": "hey-jarvis",
       "minLength": 1
     },
     "wakeEngine": {

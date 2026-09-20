@@ -386,7 +386,7 @@ func TestSettingsSectionCurrentAllEffectiveAndConflict(t *testing.T) {
 	resp, canonical := deviceSettingsRequest(t, app, http.MethodGet,
 		"/api/v1/settings", testDeviceOne, "", nil)
 	require.Equal(t, http.StatusOK, resp.StatusCode, canonical)
-	assert.Equal(t, "hey-live-ninja", canonical["wakeWord"], "current-only set must not change defaults")
+	assert.Equal(t, "hey-jarvis", canonical["wakeWord"], "current-only set must not change defaults")
 
 	applyAll := map[string]any{
 		"version": 2, "operation": "set",

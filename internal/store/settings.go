@@ -79,7 +79,7 @@ var reservedItemAttrs = []string{"pk", "sk", "ttl", "gsi1pk", "gsi1sk", "gsi2pk"
 func DefaultSettings() map[string]any {
 	return map[string]any{
 		"version":     1,
-		"wakeWord":    "hey-live-ninja",
+		"wakeWord":    "hey-jarvis",
 		"wakeEngine":  "openwakeword",
 		"sensitivity": 0.5,
 		"persona":     map[string]any{"presetId": "default", "systemInstructions": nil},

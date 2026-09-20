@@ -1,18 +1,11 @@
 {
   "version": 1,
-  "comment": "Built-in wake-phrase catalog (M3). Serves the settings wakeWord combobox (contracts/settings.schema.json#/properties/wakeWord, docs/web-ui-spec.md §3.3/§4) so the control is populated, never free-typed. User-trained phrases and the CloudFront-regenerated catalog pipeline arrive in M6; until then this static file is the whole catalog. `engines` lists which wake engines can serve the phrase today; `modelAvailable.web` marks whether a browser (openWakeWord ONNX) model for the phrase is bundled under /static/models yet.",
+  "comment": "Pre-trained wake-phrase catalog only. Custom training is off (plan.md §7.4 option 3, owner 2026-09-20). Entries must have a bundled model for the listed platforms. hey-jarvis is the default.",
   "wakewords": [
-    {
-      "id": "hey-live-ninja",
-      "phrase": "Hey Live Ninja",
-      "default": true,
-      "engines": ["openwakeword", "wakenet"],
-      "modelAvailable": { "web": false, "android": false, "esp32": false }
-    },
     {
       "id": "hey-jarvis",
       "phrase": "Hey Jarvis",
-      "default": false,
+      "default": true,
       "engines": ["openwakeword"],
       "modelAvailable": { "web": true, "android": true, "esp32": false }
     },
@@ -36,20 +29,6 @@
       "default": false,
       "engines": ["openwakeword"],
       "modelAvailable": { "web": false, "android": true, "esp32": false }
-    },
-    {
-      "id": "ok-ninja",
-      "phrase": "OK Ninja",
-      "default": false,
-      "engines": ["openwakeword", "wakenet"],
-      "modelAvailable": { "web": false, "android": false, "esp32": false }
-    },
-    {
-      "id": "ninja",
-      "phrase": "Ninja",
-      "default": false,
-      "engines": ["openwakeword", "wakenet"],
-      "modelAvailable": { "web": false, "android": false, "esp32": false }
     }
   ]
 }

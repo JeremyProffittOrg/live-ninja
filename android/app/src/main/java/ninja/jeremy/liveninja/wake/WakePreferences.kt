@@ -90,7 +90,7 @@ class WakePreferences @Inject constructor(@ApplicationContext context: Context) 
     companion object {
         const val ENGINE_OPENWAKEWORD = "openwakeword"
         const val ENGINE_PORCUPINE = "porcupine"
-        const val DEFAULT_WAKE_WORD_ID = "hey-live-ninja"
+        const val DEFAULT_WAKE_WORD_ID = "hey-jarvis"
 
         private const val KEY_SERVICE_ENABLED = "serviceEnabled"
         private const val KEY_MUTED = "muted"

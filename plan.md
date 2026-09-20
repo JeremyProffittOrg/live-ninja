@@ -45,11 +45,13 @@ empty hook. `stop_listening` ends the live session and leaves wake armed.
 AgentCore Memory serving mode is `all` (8600b05). DynamoDB `ENT#`/`EMB#` stay
 until `emb-retire`.
 
-**Still owner-gated:** `agentcore-memory` 10-question voice smoke, wake-training
-ceiling (three options in §7.4), Azure Voice Live Entra Grant 2 (Application
-Developer at directory level; Grant 1 Graph permission is done), IoT authorizer
-signing keypair. `emb-retire` not before 2026-09-28 and only with the smoke set
-passing.
+**Still owner-gated:** Azure Voice Live A4 (create `ln-voicelive` resource +
+`ln-voicelive-client`; Grant 1+2 Graph are done), IoT authorizer signing
+keypair. `emb-retire` not before 2026-09-28.
+
+Closed 2026-09-20 by operator: Amazon/voice preview; agentcore-memory 10-question
+voice smoke (pass). Wake: owner picked bundled pre-trained phrases only
+(§7.4 option 3) — custom training is off; default `hey-jarvis`.
 
 ## Where things actually stand (2026-08-08)
 
@@ -1570,14 +1572,8 @@ harness, never on the manifest.**
   diversity** (240 synthetic positives from one TTS checkpoint, ~89 negative phrases) rather than
   anything left to tune in the recipe, and that is not a knob — it is a different training budget.
 
-  **Unblocked by an owner decision between:**
-  1. **Spend the budget.** `N_POSITIVE`/`N_NEGATIVE_TTS` several times up (the job uses ~4 min of an
-     18-minute deadline), more TTS checkpoints/voices, and real adversarial negative audio rather
-     than only TTS. Largest change, best chance of actually clearing the bar.
-  2. **Restrict custom phrases to two words.** The two-word phrases are close (`hey-automatica`
-     0.857–0.943 target, 4/68 hot) and the three-word one is not. This is a product limit that
-     matches what the pipeline can currently deliver.
-  3. **Ship builtins only** for wake, and drop custom training until (1) is funded.
+  **Owner 2026-09-20: option 3 — bundled pre-trained phrases only.** Custom training is off.
+  Default `hey-jarvis`. The other two options are not taken.
 
   **Nothing has been promoted.** All four rounds trained to scratch `wwId`s, so the phone still
   serves r0 — which is the model that fires on 39/60 non-targets, i.e. the owner's original
@@ -1756,13 +1752,14 @@ workstream `managed-kb-knowledge` stays in the backlog (scope decision below).
   timeout or error mints unchanged; `memoryUsageDirective` tells the model the block exists.
   Done when: `go test ./internal/realtime/ ./cmd/realtime-broker/` passes with a timeout case and
   a rendering case.
-- [~] `memory-tools-cutover` — `memory_search` merges AgentCore records (`remembered[]`) with the
+- [x] `memory-tools-cutover` — `memory_search` merges AgentCore records (`remembered[]`) with the
   entity results; `memory_write`/`plan_upsert` also record an explicit "remember" event;
   `forget` also deletes AgentCore records whose text contains the entity name;
   `GET/DELETE /api/v1/memory/remembered` and the Memory page "Learned from conversations" list;
   Help drawer + Memory page copy updated in the same commit. Done when:
   `go test ./internal/tools/ ./internal/webapp/` passes (including `TestHelpDrawer`) and the
   owner's 10-question smoke set answers 9 of 10 by voice on web and Android.
+  **Owner 2026-09-20: smoke complete and successful.**
 - [x] `purge-and-export` — `cmd/account-purge` deletes the actor's events and records (fails the
   run on error so the async retry re-runs); the account export adds the records. Done when:
   `go test ./cmd/account-purge/ ./internal/webapp/ -run 'Purge|Export'` passes.
@@ -1836,6 +1833,9 @@ unchanged.
   test commands; `memory-tools-cutover` stays `[~]` until the owner runs the 10-question voice smoke
   set on web and Android (the code and Help copy are live; only the owner can speak the questions).
   `emb-retire` not before 2026-09-28.
+- 2026-09-20 — owner: 10-question voice smoke complete and successful. `memory-tools-cutover` `[x]`.
+  Owner: use pre-trained wake words out of the box (§7.4 option 3). Custom training off;
+  catalog default `hey-jarvis`.
 - 2026-09-19 — owner: "do the memory core switch". Serving gate flipped `owner` → `all`
   (`template.yaml` default and `deploy.yml` `--parameter-overrides AgentCoreMemoryMode=all`).
   Dual-running DynamoDB `ENT#`/`EMB#` unchanged. Help Memory copy now says learned facts

@@ -472,8 +472,15 @@ async function loadWakeCatalog() {
     const resp = await fetch('/static/wakewords/catalog.json', { credentials: 'same-origin' });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
-    wakeCatalog = Array.isArray(data.wakewords) ? data.wakewords : [];
+    wakeCatalog = (Array.isArray(data.wakewords) ? data.wakewords : []).filter(
+      (w) => w && w.modelAvailable && w.modelAvailable.web,
+    );
     if (wakeCatalog.length === 0) throw new Error('empty catalog');
+    const def = wakeCatalog.find((w) => w.default) || wakeCatalog[0];
+    if (def && !wakeCatalog.some((w) => w.id === doc.wakeWord)) {
+      doc.wakeWord = def.id;
+      markChanged('wakeWord');
+    }
     syncWakeWordDisplay();
   } catch {
     wakeCatalogFailed = true;
@@ -958,24 +965,23 @@ wwPhraseInput.addEventListener('input', () => wwSetError(''));
 // source=="custom" entries become the user's status chips; builtins stay
 // sourced from the static combobox catalog per contracts/api.md.
 async function wwInit() {
+  wwStudio.hidden = true;
+  $('wakeWordHint').textContent =
+    'Pick a bundled pre-trained phrase. Custom wake training is off.';
   let resp;
   try {
     resp = await apiJSON('/api/v1/wakewords');
   } catch {
-    $('wakeWordHint').textContent =
-      'Pick from the built-in phrases. Training your own phrase arrives with the wake-word studio.';
     return;
   }
 
-  // Honest capability gate: only reveal the training form when the
-  // server says openwakeword can actually train (EngineInfo.trainable).
   const engines = resp && Array.isArray(resp.engines) ? resp.engines : [];
   const oww = engines.find((e) => e && e.id === 'openwakeword');
-  const trainable = oww ? !!oww.trainable : true; // absent list = legacy OK
-  wwStudio.hidden = !trainable;
-  if (!trainable) {
+  const trainable = oww ? !!oww.trainable : false;
+  if (trainable) {
+    wwStudio.hidden = false;
     $('wakeWordHint').textContent =
-      'Pick from the built-in phrases. Custom phrase training is unavailable right now.';
+      'Pick a built-in phrase, or train your own below.';
   }
 
   const list = Array.isArray(resp.entries) ? resp.entries

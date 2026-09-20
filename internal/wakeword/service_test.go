@@ -249,6 +249,9 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
+	prev := customTrainingEnabled
+	customTrainingEnabled = true
+	t.Cleanup(func() { customTrainingEnabled = prev })
 	env := &testEnv{
 		store: newFakeStore(),
 		s3:    newFakeS3(),

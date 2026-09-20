@@ -55,10 +55,29 @@ type Catalog struct {
 // engines is the fixed engine-availability list. Porcupine training
 // needs a Picovoice account (external dependency — documented deferral);
 // WakeNet models are Espressif-curated, never trained here.
+// customTrainingEnabled is false in production (owner 2026-09-20: bundled
+// pre-trained phrases only). Tests that exercise Create set it true.
+var customTrainingEnabled = false
+
 var engines = []EngineInfo{
-	{ID: "openwakeword", Trainable: true},
+	{ID: "openwakeword", Trainable: false, Reason: "custom training is off; pick a bundled pre-trained phrase"},
 	{ID: "porcupine", Trainable: false, Reason: "requires a Picovoice account (not configured)"},
 	{ID: "wakenet", Trainable: false, Reason: "curated built-in ESP-SR models only"},
+}
+
+func engineInfos() []EngineInfo {
+	out := make([]EngineInfo, len(engines))
+	copy(out, engines)
+	for i := range out {
+		if out[i].ID != "openwakeword" {
+			continue
+		}
+		out[i].Trainable = customTrainingEnabled
+		if customTrainingEnabled {
+			out[i].Reason = ""
+		}
+	}
+	return out
 }
 
 // builtinEntries: the shipped default model plus the curated flashable

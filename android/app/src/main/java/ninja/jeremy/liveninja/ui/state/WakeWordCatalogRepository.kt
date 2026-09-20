@@ -62,10 +62,10 @@ class WakeWordCatalogRepository @Inject constructor(
      * the control is never empty.
      */
     suspend fun refresh() = withContext(Dispatchers.IO) {
-        val token = tokenProvider.orElse(null)?.accessToken()
-        if (token != null && fetchInto(AUTHED_CATALOG_URL, token)) return@withContext
-        fetchInto(STATIC_CATALOG_URL, token = null)
-        Unit
+        // Owner 2026-09-20: bundled pre-trained phrases only. Do not merge
+        // user-trained catalog entries into the picker.
+        _options.value = BUILT_IN
+        _lastFetchFailed.value = false
     }
 
     /** Fetch + merge one catalog source. Returns true when options were updated. */
@@ -223,17 +223,12 @@ class WakeWordCatalogRepository @Inject constructor(
          * no model backs it — that is exactly the WS-5 M21.3 defect.
          */
         val BUILT_IN = listOf(
-            // The bundled asset really is openWakeWord's public "hey jarvis" v0.1
-            // (ModelManager.ASSET_DEFAULT_HEAD). It is listed first and honestly,
-            // because it is the only phrase that works out of the box.
             WakeWordOption(
                 id = "hey-jarvis",
                 label = "“Hey Jarvis”",
                 description = "Bundled model · works offline, no training needed",
                 engines = listOf("openwakeword"),
             ),
-            // The other openWakeWord v0.5.1 public heads (ModelManager.BUILTIN_ASSETS): same
-            // pre-trained, wide-margin calibre as hey_jarvis, shipped in the apk since 0.3.5.
             WakeWordOption(
                 id = "alexa",
                 label = "“Alexa”",
@@ -250,36 +245,6 @@ class WakeWordCatalogRepository @Inject constructor(
                 id = "hey-rhasspy",
                 label = "“Hey Rhasspy”",
                 description = "Bundled model · works offline, no training needed",
-                engines = listOf("openwakeword"),
-            ),
-            WakeWordOption(
-                id = "hey-live-ninja",
-                label = "“Hey Live Ninja”",
-                description = "Platform default · needs a trained model synced to this device",
-                engines = listOf("openwakeword"),
-            ),
-            WakeWordOption(
-                id = "hey-ninja",
-                label = "“Hey Ninja”",
-                description = "Casual short form · English (US)",
-                engines = listOf("openwakeword"),
-            ),
-            WakeWordOption(
-                id = "ninja-go",
-                label = "“Ninja Go”",
-                description = "Two-syllable, low false-trigger rate",
-                engines = listOf("openwakeword"),
-            ),
-            WakeWordOption(
-                id = "hey-assistant-pro",
-                label = "“Hey Assistant Pro”",
-                description = "Formal · English (US)",
-                engines = listOf("openwakeword"),
-            ),
-            WakeWordOption(
-                id = "okay-dojo",
-                label = "“Okay Dojo”",
-                description = "Themed alternate · English (US)",
                 engines = listOf("openwakeword"),
             ),
         )

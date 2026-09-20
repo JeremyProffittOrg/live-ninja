@@ -48,7 +48,7 @@ func TestEffectiveSettingsAndSectionMutations(t *testing.T) {
 	require.NoError(t, ApplySettingsSection(doc, SettingsSectionWakeWord, nil,
 		[]string{"dev-1"}, false, true, now.Add(time.Minute)))
 	assert.True(t, DeviceSectionInherited(doc, "dev-1", SettingsSectionWakeWord))
-	assert.Equal(t, "hey-live-ninja", EffectiveSettings(doc, "dev-1")["wakeWord"])
+	assert.Equal(t, "hey-jarvis", EffectiveSettings(doc, "dev-1")["wakeWord"])
 
 	require.NoError(t, ApplySettingsSection(doc, SettingsSectionVoiceEngine, map[string]any{
 		"voiceEngine": map[string]any{"default": "openai-realtime-mini", "devices": map[string]any{}},

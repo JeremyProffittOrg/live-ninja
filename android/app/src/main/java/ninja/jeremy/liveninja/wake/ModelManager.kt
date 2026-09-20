@@ -164,6 +164,11 @@ class ModelManager @Inject constructor(
         syncMutex.withLock {
             // Builtins ship in the apk. Asking the server for one earns a by-design 404, so
             // short-circuit before the network rather than mistaking that for a failure.
+            val wakeWordId = if (builtinAssetPath(wakeWordId) != null) {
+                wakeWordId
+            } else {
+                DEFAULT_ASSET_WAKE_WORD_ID
+            }
             val assetPath = builtinAssetPath(wakeWordId)
             if (assetPath != null) {
                 val ref = WakeModelRef.Asset(wakeWordId, assetPath)

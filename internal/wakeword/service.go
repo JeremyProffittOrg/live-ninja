@@ -47,6 +47,9 @@ var (
 	// ErrPlatformUnsupported: custom models have no esp32 variant yet
 	// (honest capability flag, → 404 on the model endpoint).
 	ErrPlatformUnsupported = errors.New("wakeword: no model for that platform")
+	// ErrCustomTrainingDisabled: owner 2026-09-20 — ship bundled pre-trained
+	// phrases only (plan.md §7.4 option 3).
+	ErrCustomTrainingDisabled = errors.New("wakeword: custom training is off")
 )
 
 // ValidationError carries the human-readable phrase-validation message
@@ -294,6 +297,9 @@ func NewFromAWS(awsCfg aws.Config, cfg Config, st Store, log *slog.Logger, userE
 // training slot, and submits the AWS Batch training job. Returns the
 // stored (pending) item.
 func (s *Service) Create(ctx context.Context, userID, phrase, engine string) (*store.Wakeword, error) {
+	if !customTrainingEnabled {
+		return nil, ErrCustomTrainingDisabled
+	}
 	if engine == "" {
 		engine = "openwakeword"
 	}
@@ -508,7 +514,7 @@ func (s *Service) Catalog(ctx context.Context, userID string) (*Catalog, error) 
 		entries = append(entries, entryFromItem(w))
 	}
 	cat := &Catalog{
-		Engines:              engines,
+		Engines:              engineInfos(),
 		Entries:              entries,
 		Esp32CustomSupported: false,
 	}
@@ -785,6 +791,9 @@ func (s *Service) readManifest(ctx context.Context, wwID, platform string) (*sto
 // pending item whose Batch job died is lazily finalized to failed
 // first, so it becomes retryable in the same call.
 func (s *Service) Retry(ctx context.Context, userID, id string) (*store.Wakeword, error) {
+	if !customTrainingEnabled {
+		return nil, ErrCustomTrainingDisabled
+	}
 	if BuiltinEntry(id) != nil {
 		return nil, ErrBuiltinModel
 	}
