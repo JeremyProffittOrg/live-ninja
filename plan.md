@@ -29,12 +29,12 @@ Archived (history preserved in full, banners at the top of each):
 
 ---
 
-## Where things actually stand (2026-09-19)
+## Where things actually stand (2026-09-20)
 
-Voice preview is wired: Settings (Android) and the persona editor (web) call
-`POST /api/v1/fallback/tts` and play the MP3. Cedar/Marin map onto ash/coral
-because those two realtime voices are not on `gpt-4o-mini-tts`. The operator
-is testing the website in Claude Code on this PC.
+Voice preview is verified on this PC: QA Amazon account
+`proffitt.jeremy+qa@gmail.com` is on `CONFIG/ALLOW#`, Playwright is signed in
+on `/conversation`, and play with accent works (`5deb377`, British+echo 200
+audio/mpeg). Operator closed this blocker 2026-09-20.
 
 Android 0.3.9 (15) is published: in-app APK updater, landing Download-and-install,
 launch permission prompts. Galaxy S9 `4633424442303098` is on that build.
@@ -42,13 +42,14 @@ Tab5 `30:ED:A0:E3:01:1E` is Live Ninja on COM13 — boot, WiFi ImpossibleGirl
 192.168.1.121, pairing refresh, idle verified; IoT provisioning is still the
 empty hook. `stop_listening` ends the live session and leaves wake armed.
 
-AgentCore Memory serving mode is switching from `owner` to `all` (parameter
-change; DynamoDB `ENT#`/`EMB#` stay until `emb-retire`).
+AgentCore Memory serving mode is `all` (8600b05). DynamoDB `ENT#`/`EMB#` stay
+until `emb-retire`.
 
 **Still owner-gated:** `agentcore-memory` 10-question voice smoke, wake-training
-ceiling (three options in §7.4), Azure Voice Live Entra app `ln-voicelive-client`,
-IoT authorizer signing keypair. `emb-retire` not before 2026-09-28 and only
-with the smoke set passing.
+ceiling (three options in §7.4), Azure Voice Live Entra Grant 2 (Application
+Developer at directory level; Grant 1 Graph permission is done), IoT authorizer
+signing keypair. `emb-retire` not before 2026-09-28 and only with the smoke set
+passing.
 
 ## Where things actually stand (2026-08-08)
 
