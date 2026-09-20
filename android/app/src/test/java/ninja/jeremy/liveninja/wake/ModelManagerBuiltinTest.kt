@@ -67,18 +67,25 @@ class ModelManagerBuiltinTest {
     }
 
     /**
-     * Signed out is still NoAuth for a non-builtin phrase — the builtin short-circuit must sit
-     * ABOVE the token check without swallowing it for everything else.
+     * Owner 2026-09-20: custom training is off. A phrase that is not bundled
+     * must fall back to the packaged hey-jarvis head, not sit on NoAuth.
      */
     @Test
-    fun `a non-builtin phrase while signed out is still reported as signed out`() = runTest {
+    fun `a non-builtin phrase falls back to the packaged hey-jarvis head`() = runTest {
+        val http = mockk<OkHttpClient>()
         val manager = ModelManager(
             context = contextWithFilesDir(),
-            http = mockk(),
+            http = http,
             tokenProvider = Optional.empty(),
         )
 
-        assertEquals(ModelSyncResult.NoAuth, manager.sync("hey-assistant-pro"))
+        val result = manager.sync("hey-assistant-pro")
+        assertTrue("expected Builtin, got $result", result is ModelSyncResult.Builtin)
+        assertEquals(
+            ModelManager.DEFAULT_ASSET_WAKE_WORD_ID,
+            (result as ModelSyncResult.Builtin).ref.wakeWordId,
+        )
+        verify(exactly = 0) { http.newCall(any()) }
     }
 
     private fun contextWithFilesDir(): Context {
