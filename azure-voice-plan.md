@@ -430,9 +430,9 @@ WS-D M1–M3 needs it.
       `ln-voicelive` in `ln-voicelive-rg` **Succeeded 2026-09-20** (kind AIServices, sku S0,
       custom subdomain `ln-voicelive`). Entra app `ln-voicelive-client` appId
       `be6bce90-e5e8-469b-b84a-745266717ca1`. Roles `Cognitive Services User` and `Foundry User`
-      scoped to that resource only (DoD list is two rows, same resource id). Client secret is
-      **not** created by the agent — operator types it via `scripts\set-secret.bat`
-      `AZURE_VOICELIVE_CLIENT_SECRET` and `AZURE_VOICELIVE_CLIENT_ID`.
+      scoped to that resource only (DoD list is two rows, same resource id). Client secret
+      created 2026-09-20 by `scripts/set-voicelive-client-secret.ps1` into GitHub Actions
+      secrets `AZURE_VOICELIVE_CLIENT_SECRET` and `AZURE_VOICELIVE_CLIENT_ID` (never printed).
 
       **[!] BLOCKED 2026-08-24 — stop condition 1. This machine's only Azure identity cannot create
       an Entra app registration.** It is the service principal `azure-owner-deployer`
