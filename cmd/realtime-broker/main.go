@@ -115,8 +115,9 @@ type sttPayload struct {
 }
 
 type ttsPayload struct {
-	Text  string `json:"text"`
-	Voice string `json:"voice,omitempty"`
+	Text   string `json:"text"`
+	Voice  string `json:"voice,omitempty"`
+	Accent string `json:"accent,omitempty"`
 }
 
 // extractTopicsPayload is the "extract-topics" mode payload: the flattened
@@ -209,7 +210,7 @@ type fallbackAPI interface {
 	TurnForSurface(ctx context.Context, personaID, surface, text, extraSystem string) (string, error)
 	TurnWithToolsForSurface(ctx context.Context, personaID, surface string, messages []realtime.ChatMessage, extraSystem string) (*realtime.TurnResult, error)
 	Transcribe(ctx context.Context, audio []byte, filename, contentType string) (string, error)
-	Speak(ctx context.Context, text, voice string) ([]byte, error)
+	Speak(ctx context.Context, text, voice, accent string) ([]byte, error)
 	ExtractTopics(ctx context.Context, transcript string, existing []realtime.TopicOption) (*realtime.ExtractResult, error)
 }
 
@@ -797,7 +798,7 @@ func (b *broker) handleFallbackTTS(ctx context.Context, l *slog.Logger, req Requ
 		return resp
 	}
 
-	audio, err := b.fallback.Speak(ctx, p.Text, p.Voice)
+	audio, err := b.fallback.Speak(ctx, p.Text, p.Voice, p.Accent)
 	if err != nil {
 		return b.fallbackError(l, req, "tts", err)
 	}

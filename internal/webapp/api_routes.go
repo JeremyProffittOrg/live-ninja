@@ -1245,14 +1245,15 @@ func handleFallbackTTS(deps *Deps) fiber.Handler {
 		}
 
 		var body struct {
-			Text  string `json:"text"`
-			Voice string `json:"voice,omitempty"`
+			Text   string `json:"text"`
+			Voice  string `json:"voice,omitempty"`
+			Accent string `json:"accent,omitempty"`
 		}
 		if err := c.BodyParser(&body); err != nil || strings.TrimSpace(body.Text) == "" {
 			return apiBadRequest(c, "text is required")
 		}
 
-		payload, err := json.Marshal(map[string]any{"text": body.Text, "voice": body.Voice})
+		payload, err := json.Marshal(map[string]any{"text": body.Text, "voice": body.Voice, "accent": body.Accent})
 		if err != nil {
 			return apiInternalError(c, deps, "marshal fallback tts payload", err)
 		}

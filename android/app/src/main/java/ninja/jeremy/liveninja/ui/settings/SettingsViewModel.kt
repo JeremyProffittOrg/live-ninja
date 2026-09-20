@@ -1074,6 +1074,16 @@ class SettingsViewModel @Inject constructor(
     fun setVoice(voice: String) =
         editPortableSection(SettingsSection.PERSONA) { it.put("voice", voice) }
 
+    /** Accent for the voice sample: personaPrefs[persona].accent, else top-level voiceAccent. */
+    private fun previewAccent(): String {
+        val doc = settingsStore.document.value
+        val prefs = doc.raw.optJSONObject("personaPrefs")?.optJSONObject(doc.personaPresetId)
+        if (prefs != null && prefs.has("accent")) {
+            return prefs.optString("accent")
+        }
+        return doc.raw.optString("voiceAccent", "")
+    }
+
     fun onVoicePreviewRequested(voice: String) {
         if (voice == _state.value.previewingVoice) {
             stopVoicePreview()
@@ -1085,7 +1095,11 @@ class SettingsViewModel @Inject constructor(
             _state.update { it.copy(previewingVoice = voice) }
             try {
                 val body = api.previewVoice(
-                    VoicePreviewRequest(text = PREVIEW_SAMPLE, voice = voice),
+                    VoicePreviewRequest(
+                        text = PREVIEW_SAMPLE,
+                        voice = voice,
+                        accent = previewAccent(),
+                    ),
                 )
                 playPreviewBytes(body.bytes())
             } catch (e: CancellationException) {

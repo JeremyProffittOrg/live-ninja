@@ -170,15 +170,20 @@ func SpeechVoice(voice string) string {
 }
 
 // Speak runs the TTS leg: text -> gpt-4o-mini-tts -> MP3 bytes
-// (audio/mpeg). An empty voice uses DefaultTTSVoice.
-func (c *FallbackClient) Speak(ctx context.Context, text, voice string) ([]byte, error) {
+// (audio/mpeg). An empty voice uses DefaultTTSVoice. Accent is the
+// persona accent id (irish, british, …); empty or unknown is omitted.
+func (c *FallbackClient) Speak(ctx context.Context, text, voice, accent string) ([]byte, error) {
 	voice = SpeechVoice(voice)
-	body, err := json.Marshal(map[string]any{
+	req := map[string]any{
 		"model":           fallbackTTSModel,
 		"input":           text,
 		"voice":           voice,
 		"response_format": "mp3",
-	})
+	}
+	if instr := TTSInstructions(accent); instr != "" {
+		req["instructions"] = instr
+	}
+	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("realtime: marshal tts request: %w", err)
 	}

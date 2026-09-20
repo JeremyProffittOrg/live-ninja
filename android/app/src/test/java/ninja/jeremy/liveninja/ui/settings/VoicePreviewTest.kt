@@ -69,6 +69,7 @@ class VoicePreviewTest {
                 VoicePreviewRequest(
                     text = SettingsViewModel.PREVIEW_SAMPLE,
                     voice = "cedar",
+                    accent = "",
                 ),
             )
         }

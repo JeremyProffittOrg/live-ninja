@@ -134,8 +134,18 @@ var accentDirectives = map[string]string{
 // (forward-compat: an unrecognized stored value mints without an accent
 // rather than failing).
 func AccentDirective(accentID string) string {
-	if d, ok := accentDirectives[accentID]; ok {
+	if d := TTSInstructions(accentID); d != "" {
 		return "\n\n" + d
+	}
+	return ""
+}
+
+// TTSInstructions is the accent sentence for gpt-4o-mini-tts `instructions`,
+// or "" for none/""/unknown. Voice preview and fallback TTS use this so a
+// selected accent is audible in the sample, not only in a live session.
+func TTSInstructions(accentID string) string {
+	if d, ok := accentDirectives[accentID]; ok {
+		return d
 	}
 	return ""
 }

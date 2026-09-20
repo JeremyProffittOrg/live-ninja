@@ -71,8 +71,10 @@ function stopVoicePreview() {
 
 async function previewSelectedVoice() {
   const sel = $('peVoice');
+  const accentSel = $('peAccent');
   const btn = $('peVoicePreview');
   const voice = sel && sel.value;
+  const accent = accentSel && accentSel.value && accentSel.value !== 'none' ? accentSel.value : '';
   if (!voice || !btn) return;
   if (btn.classList.contains('is-playing')) {
     stopVoicePreview();
@@ -84,7 +86,7 @@ async function previewSelectedVoice() {
   try {
     const resp = await authFetch(TTS_PATH, {
       method: 'POST',
-      json: { text: PREVIEW_SAMPLE, voice },
+      json: { text: PREVIEW_SAMPLE, voice, accent },
     });
     if (!resp.ok) {
       const parsed = await resp.json().catch(() => null);
@@ -261,6 +263,7 @@ export async function openPersonaEditor(personaId) {
     });
     $('peVoicePreview').addEventListener('click', () => void previewSelectedVoice());
     $('peVoice').addEventListener('change', stopVoicePreview);
+    $('peAccent').addEventListener('change', stopVoicePreview);
     const instr = $('peInstructions');
     instr.addEventListener('input', () => {
       $('peInstrCount').textContent = `${instr.value.length} / 4000`;

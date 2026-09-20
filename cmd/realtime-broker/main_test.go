@@ -73,7 +73,7 @@ func (f *fakeFallback) Transcribe(context.Context, []byte, string, string) (stri
 	return "", errors.New("not scripted")
 }
 
-func (f *fakeFallback) Speak(context.Context, string, string) ([]byte, error) {
+func (f *fakeFallback) Speak(context.Context, string, string, string) ([]byte, error) {
 	return nil, errors.New("not scripted")
 }
 

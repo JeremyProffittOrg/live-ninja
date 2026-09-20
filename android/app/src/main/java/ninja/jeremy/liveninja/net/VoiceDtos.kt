@@ -42,4 +42,5 @@ data class VoiceCatalogResponse(
 data class VoicePreviewRequest(
     val text: String,
     val voice: String,
+    val accent: String = "",
 )
