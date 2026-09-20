@@ -223,6 +223,9 @@ func (r *authRoutes) callback(c *fiber.Ctx) error {
 	user, err := auth.Authorize(ctx, r.deps.Store, profile)
 	if err != nil {
 		if errors.Is(err, auth.ErrNotAllowed) {
+			r.deps.Log.Info("callback: not allowed",
+				"amazonUserId", profile.UserID,
+				"email", profile.Email)
 			return htmlMessage(c, fiber.StatusForbidden, "Access restricted",
 				"This Live Ninja instance is private. Your Amazon account is not on the access list.")
 		}
@@ -321,6 +324,9 @@ func (r *authRoutes) completeAppHandoff(c *fiber.Ctx, st *store.OAuthState, prof
 	user, err := auth.Authorize(ctx, r.deps.Store, profile)
 	if err != nil {
 		if errors.Is(err, auth.ErrNotAllowed) {
+			r.deps.Log.Info("app handoff: not allowed",
+				"amazonUserId", profile.UserID,
+				"email", profile.Email)
 			return htmlMessage(c, fiber.StatusForbidden, "Access restricted",
 				"This Live Ninja instance is private. Your Amazon account is not on the access list.")
 		}
@@ -762,6 +768,9 @@ func (r *authRoutes) completeDeviceBind(c *fiber.Ctx, nonce string, profile *aut
 	// here too so a not-allowed account is turned away before the code form.
 	if _, err := auth.Authorize(ctx, r.deps.Store, profile); err != nil {
 		if errors.Is(err, auth.ErrNotAllowed) {
+			r.deps.Log.Info("device bind: not allowed",
+				"amazonUserId", profile.UserID,
+				"email", profile.Email)
 			return htmlMessage(c, fiber.StatusForbidden, "Access restricted",
 				"This Live Ninja instance is private. Your Amazon account is not on the access list.")
 		}
