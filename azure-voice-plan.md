@@ -426,15 +426,13 @@ WS-D M1–M3 needs it.
       DoD: `az cognitiveservices account deployment list -n ln-aoai-eastus2 -g ln-azure-openai-rg
       --query "[].name" -o tsv` prints both deployment names.
 
-- [!] **A4. Create the Voice Live resource and its service principal.** Foundry resource
-      `ln-voicelive` in `ln-voicelive-rg`, with a custom subdomain (the
-      `<resource>.services.ai.azure.com` host in A5 needs one). Then an Entra app registration
-      `ln-voicelive-client` with a client secret, granted `Cognitive Services User` **and**
-      `Foundry User` (A7) scoped to `ln-voicelive` **and nothing else**. No model deployment step —
-      Voice Live models are fully managed (A6).
-      DoD: `az role assignment list --assignee <appId> --all --query "[].scope" -o tsv` prints **only**
-      the `ln-voicelive` resource id, twice, and nothing else. Any other scope in that output is a
-      failure of locked decision 2's isolation and must be removed before proceeding.
+- [~] **A4. Create the Voice Live resource and its service principal.** Foundry resource
+      `ln-voicelive` in `ln-voicelive-rg` **Succeeded 2026-09-20** (kind AIServices, sku S0,
+      custom subdomain `ln-voicelive`). Entra app `ln-voicelive-client` appId
+      `be6bce90-e5e8-469b-b84a-745266717ca1`. Roles `Cognitive Services User` and `Foundry User`
+      scoped to that resource only (DoD list is two rows, same resource id). Client secret is
+      **not** created by the agent — operator types it via `scripts\set-secret.bat`
+      `AZURE_VOICELIVE_CLIENT_SECRET` and `AZURE_VOICELIVE_CLIENT_ID`.
 
       **[!] BLOCKED 2026-08-24 — stop condition 1. This machine's only Azure identity cannot create
       an Entra app registration.** It is the service principal `azure-owner-deployer`
