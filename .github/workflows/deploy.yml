@@ -313,6 +313,7 @@ jobs:
           AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
           AZURE_VOICELIVE_CLIENT_ID: ${{ secrets.AZURE_VOICELIVE_CLIENT_ID }}
           AZURE_VOICELIVE_CLIENT_SECRET: ${{ secrets.AZURE_VOICELIVE_CLIENT_SECRET }}
+          IOT_AUTHORIZER_SIGNING_PRIVATE_KEY: ${{ secrets.IOT_AUTHORIZER_SIGNING_PRIVATE_KEY }}
         run: |
           set -eu
 
@@ -362,6 +363,18 @@ jobs:
           if [ -n "${AZURE_VOICELIVE_CLIENT_SECRET:-}" ]; then
             aws ssm put-parameter               --name "/live-ninja/prod/azure/voicelive_client_secret"               --type SecureString               --value "$AZURE_VOICELIVE_CLIENT_SECRET"               --overwrite >/dev/null
             echo "azure/voicelive_client_secret synced"
+          fi
+
+          # IoT authorizer signing (plan.md M1.5). The private half is synced
+          # so the web function can return tokenSignature. The public half is
+          # NOT passed to the stack: SigningDisabled on live-ninja-iot cannot
+          # be flipped in place, and enabling it before every client sends the
+          # signature would drop those connections.
+          if [ -n "${IOT_AUTHORIZER_SIGNING_PRIVATE_KEY:-}" ]; then
+            aws ssm put-parameter               --name "/live-ninja/prod/iot/authorizer_signing_private_key"               --type SecureString               --value "$IOT_AUTHORIZER_SIGNING_PRIVATE_KEY"               --overwrite >/dev/null
+            echo "iot/authorizer_signing_private_key synced"
+          else
+            echo "IOT_AUTHORIZER_SIGNING_PRIVATE_KEY not set; credentials omit tokenSignature"
           fi
 
           # cred_pepper is generated once by the workflow and never rotated here;

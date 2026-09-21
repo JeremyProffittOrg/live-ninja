@@ -1,7 +1,14 @@
 package webapp
 
 import (
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -15,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
+	"github.com/JeremyProffittOrg/live-ninja/internal/config"
 	"github.com/JeremyProffittOrg/live-ninja/internal/testutil"
 )
 
@@ -66,13 +74,19 @@ func TestIoTCredentialsRouteIsAuthenticated(t *testing.T) {
 // control-plane lookup, which is the same escape hatch internal/sync uses.
 func iotCredentials(t *testing.T, deviceID string) map[string]any {
 	t.Helper()
+	return iotCredentialsWithSecrets(t, deviceID, nil)
+}
+
+func iotCredentialsWithSecrets(t *testing.T, deviceID string, secrets *config.Loader) map[string]any {
+	t.Helper()
 	t.Setenv("IOT_DATA_ENDPOINT", "a1b2c3-ats.iot.us-east-1.amazonaws.com")
 
 	fakeKMS, err := testutil.NewFakeKMS()
 	require.NoError(t, err)
 	deps := &Deps{
-		Signer: auth.NewSignerWithClient(fakeKMS, "arn:aws:kms:us-east-1:1:key/test-key"),
-		Log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Signer:  auth.NewSignerWithClient(fakeKMS, "arn:aws:kms:us-east-1:1:key/test-key"),
+		Secrets: secrets,
+		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
 	app := fiber.New()
@@ -161,4 +175,36 @@ func TestIoTAuthorizerNameMatchesTheTemplate(t *testing.T) {
 	tmpl := readRepoFile(t, "template.yaml")
 	require.Contains(t, tmpl, "AuthorizerName: "+iotAuthorizerName,
 		"the name the client sends must match the deployed authorizer")
+}
+
+func TestIoTCredentialsSignsTheTokenAndKeepsSigningOff(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	pemBytes := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
+	})
+	t.Setenv(config.EnvOverrideIoTAuthorizerSigningPrivateKey, string(pemBytes))
+
+	body := iotCredentialsWithSecrets(t, "dev-tab-s9", config.NewLoaderWithClient(nil))
+	assert.Equal(t, false, body["signingRequired"],
+		"signing stays off until a new authorizer exists; flipping the old one drops clients")
+	sigB64, _ := body["tokenSignature"].(string)
+	require.NotEmpty(t, sigB64)
+	sig, err := base64.StdEncoding.DecodeString(sigB64)
+	require.NoError(t, err)
+	token, _ := body["token"].(string)
+	require.NotEmpty(t, token)
+	sum := sha256.Sum256([]byte(token))
+	require.NoError(t, rsa.VerifyPKCS1v15(&key.PublicKey, crypto.SHA256, sum[:], sig))
+	assert.NotContains(t, sigB64, "PRIVATE")
+}
+
+func TestIoTCredentialsOmitsABadSigningKey(t *testing.T) {
+	t.Setenv(config.EnvOverrideIoTAuthorizerSigningPrivateKey, "not-a-pem")
+	body := iotCredentialsWithSecrets(t, "dev-tab-s9", config.NewLoaderWithClient(nil))
+	_, present := body["tokenSignature"]
+	assert.False(t, present)
+	assert.Equal(t, false, body["signingRequired"])
+	assert.NotEmpty(t, body["token"])
 }

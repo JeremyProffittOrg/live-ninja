@@ -26,6 +26,17 @@ data class IotCredentials(
     val actorDeviceId: String = "",
     /** Narrow, short-lived MQTT credential (goes in the CONNECT user-name field). */
     val token: String = "",
+    /**
+     * Base64 RSA-SHA256 signature of [token]. Present once the server holds
+     * the signing key. Stays off the socket until [signingRequired] is true.
+     */
+    val tokenSignature: String = "",
+    /**
+     * When true, the connect URL must carry `x-amz-customauthorizer-signature`.
+     * False while the deployed authorizer has signing disabled. AWS IoT does
+     * not allow that flag to be flipped on an existing authorizer.
+     */
+    val signingRequired: Boolean = false,
     val expiresInSeconds: Int = 900,
     /** Everything this user may subscribe to, supplied so the filter lives in one place. */
     val topicFilter: String = "",

@@ -450,6 +450,7 @@ Resources:
           - ssm:GetParameters
           Resource:
           - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/lwa/*"
+          - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/iot/authorizer_signing_private_key"
         - Sid: SsmSecureStringDecrypt
           Effect: Allow
           Action:

@@ -22,6 +22,7 @@ import ninja.jeremy.liveninja.log.LNLog
 import ninja.jeremy.liveninja.log.LogCategory
 import ninja.jeremy.liveninja.net.IotCredentials
 import ninja.jeremy.liveninja.net.LiveNinjaApi
+import ninja.jeremy.liveninja.net.iotSocketUrl
 import ninja.jeremy.liveninja.ui.settings.SettingsViewModel
 import ninja.jeremy.liveninja.ui.state.SettingsStore
 import okhttp3.OkHttpClient
@@ -328,7 +329,7 @@ class LiveEventsClient @Inject constructor(
 
         // AWS IoT takes the authorizer name from the query string and the token
         // from the MQTT CONNECT user-name field.
-        val url = "wss://${c.endpoint}/mqtt?x-amz-customauthorizer-name=${c.authorizerName}"
+        val url = iotSocketUrl(c.endpoint, c.authorizerName, c.tokenSignature, c.signingRequired)
         val request = Request.Builder()
             .url(url)
             // The subprotocol AWS IoT requires on the handshake.

@@ -441,6 +441,22 @@ export function createEventRouter({ peers = new Map(), lock = null, onChange, on
  *           publishPresence: () => void, claimSpeakingTurn: () => Promise<boolean>,
  *           releaseSpeakingTurn: () => void}}
  */
+/**
+ * WebSocket URL for the AWS IoT custom authorizer.
+ * The token stays in the MQTT CONNECT user-name field. The signature query
+ * parameter is added only when the server sets signingRequired. The deployed
+ * authorizer has signing disabled, and AWS does not allow that flag to be
+ * flipped on the existing authorizer.
+ */
+export function iotSocketUrl(creds) {
+  const name = encodeURIComponent((creds && creds.authorizerName) || '');
+  let url = `wss://${creds.endpoint}/mqtt?x-amz-customauthorizer-name=${name}`;
+  if (creds && creds.signingRequired && creds.tokenSignature) {
+    url += `&x-amz-customauthorizer-signature=${encodeURIComponent(creds.tokenSignature)}`;
+  }
+  return url;
+}
+
 export function startLiveEvents({ onChange, onPresence, persona, state } = {}) {
   let client = null;
   let refreshTimer = null;
@@ -547,7 +563,7 @@ export function startLiveEvents({ onChange, onPresence, persona, state } = {}) {
     // AWS IoT takes the custom authorizer's name from the query string, and
     // the token itself from the MQTT CONNECT user-name field (a browser cannot
     // set WebSocket handshake headers, so this is the only route).
-    const url = `wss://${creds.endpoint}/mqtt?x-amz-customauthorizer-name=${encodeURIComponent(creds.authorizerName)}`;
+    const url = iotSocketUrl(creds);
     presenceTopic = creds.presenceTopic;
 
     client = new MqttClient({

@@ -618,7 +618,7 @@ This workstream is what makes locked decision 3 safe. R7 is the defect it closes
       DoD: `cd /c/dev/live-ninja && go test ./cmd/realtime-broker/ -run Session` passes, with a test
       asserting `callsUrl` is present and correct on an `openai-direct` response.
 
-- [~] **D3. Contract and CSP.** Update `/c/dev/live-ninja/contracts/api.md` for
+- [x] **D3. Contract and CSP.** Update `/c/dev/live-ninja/contracts/api.md` for
       `GET /v1/realtime/session`'s two new response shapes (`azure-direct`, `voice-live-direct`) and
       the new `callsUrl` field. Add `https://ln-aoai-eastus2.openai.azure.com` and
       `wss://ln-voicelive.services.ai.azure.com` to the `connect-src` allowlist at
@@ -685,6 +685,9 @@ This workstream is what makes locked decision 3 safe. R7 is the defect it closes
       DoD: `adb -s 4633424442303098 shell pm list packages | grep ninja.jeremy.liveninja` prints the
       package, the app launches and the process stays alive, and one spoken turn completes on
       `gpt-live-azure` with a transcript written to the store.
+      Measured 2026-09-21 12:19 EDT: model `SM-G965U`, `versionName=0.3.11`,
+      `versionCode=17`, `pidof` `13735` after a launcher start. The spoken turn
+      is still open. It needs the operator at the phone.
       A failure here is recorded and reported — it is **not** a stop condition; finish everything
       else.
 
@@ -707,7 +710,7 @@ This workstream is what makes locked decision 3 safe. R7 is the defect it closes
       server-side (`## The token problem`). Do not write copy implying otherwise.
       DoD: `cd /c/dev/live-ninja && go test ./internal/webapp/ -run TestHelpDrawer` passes.
 
-- [ ] **F3. Update `docs/voice-engines.md`.** It currently documents three engines and says "three
+- [x] **F3. Update `docs/voice-engines.md`.** It currently documents three engines and says "three
       realtime speech-to-speech backends" — it will be eight across five providers. Add the new rows
       to the engine table, the client support matrix, and the cost/tradeoff section, and paste
       `## The token problem, stated honestly` in verbatim. Keep `agents.md` and `CLAUDE.md`
@@ -1221,3 +1224,12 @@ actually returned. Written as it happens, not reconstructed at the end.
   `live-ninja-web` so the corrected code default (0.2.0) is what production uses.
   **WS-E M4's remaining half is unchanged:** pinning the S9 to `gpt-live-azure` and speaking a turn
   still needs WS-F M2's picker and a human at the phone.
+
+- **2026-09-21 — F3 and the IoT token signature are the agent slice.** S9 measured
+  `SM-G965U`, `versionName=0.3.11`, `versionCode=17`, `pidof` `13735` at 12:19 EDT.
+  Spoken turns (F1, E4) stay open. `docs/voice-engines.md` now lists eight engines.
+  `GET /api/v1/iot/credentials` returns `tokenSignature` when
+  `/live-ninja/prod/iot/authorizer_signing_private_key` is readable, and always
+  returns `signingRequired: false`. AWS IoT does not allow `SigningDisabled` to
+  be updated on `live-ninja-iot`, so the public key is not passed to the stack.
+  Status mail #47 SES `010001a0c4c596e4-73e45d81-2e7f-480f-83b5-4ff2f6d121cd-000000`.

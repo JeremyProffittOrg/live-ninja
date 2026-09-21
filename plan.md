@@ -45,10 +45,13 @@ empty hook. `stop_listening` ends the live session and leaves wake armed.
 AgentCore Memory serving mode is `all` (8600b05). DynamoDB `ENT#`/`EMB#` stay
 until `emb-retire`.
 
-**Still owner-gated:** none. Voice Live Entra mint (C1) and `voice-live-direct`
-bootstrap (C2) are in the broker as of 2026-09-21. Picker and web/Android
-transports (E1/E3/F2) are next. IoT authorizer signing is stored in GitHub but
-not wired into mint yet. `emb-retire` not before 2026-09-28.
+**Still owner-gated:** spoken smokes only. E1, E3, and F2 shipped before
+2026-09-21 (HEAD was `4b23ab3`; the S9 is on 0.3.11 / versionCode 17). F3 and
+the IoT `tokenSignature` mint are the agent work in flight. F1 (four web
+turns) and the E4 spoken turn on `gpt-live-azure` need the operator at a
+microphone. IoT signing stays disabled: AWS does not allow `SigningDisabled`
+to be flipped on the existing authorizer `live-ninja-iot`. `emb-retire` not
+before 2026-09-28.
 
 Closed 2026-09-20 by operator: Amazon/voice preview; agentcore-memory 10-question
 voice smoke (pass). Wake: owner picked bundled pre-trained phrases only
@@ -935,6 +938,12 @@ explicitly in the template with `RetentionInDays: 7`.
   commit (`scripts/set-secret.sh` is the only sanctioned path). **Unblocked by:** the owner
   generating a keypair, storing the private half via `set-secret.sh`, and passing the public half
   as the stack parameter; the token mint then returns `{token, tokenSignature}`.
+  **Correction 2026-09-21:** AWS IoT does not allow `SigningDisabled` to be
+  updated on an existing authorizer. Turning signing on is a new authorizer,
+  not a parameter change on `live-ninja-iot`. Do that only after web, Android,
+  and Tab5 all send `x-amz-customauthorizer-signature`. Until then the mint may
+  return `tokenSignature` with `signingRequired: false`, and clients must leave
+  the signature off the socket.
   **Risk while off:** anyone who knows the endpoint can trigger the authorizer Lambda. AWS: *"if
   you leave signing enabled, you can prevent excessive triggering of your Lambda by unrecognized
   clients."* Bounded by the 5s timeout and the function's tiny cost; not a data-exposure risk,

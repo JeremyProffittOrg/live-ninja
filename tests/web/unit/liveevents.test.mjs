@@ -17,6 +17,7 @@ import {
   PRESENCE_STATES,
   createEventRouter,
   createSpeakingLock,
+  iotSocketUrl,
   lockWinner,
   presenceStateFor,
 } from '../../../web/static/js/liveevents.mjs';
@@ -331,4 +332,25 @@ test('abandon frees a held lock and stays quiet when there is nothing to free', 
   assert.equal(published.length, 2);
   assert.equal(published[1], '', 'a holder that stops still frees its turn');
   assert.equal(lock.holding(), false);
+});
+
+test('the IoT signature stays off the socket until signing is required', () => {
+  const creds = {
+    endpoint: 'example.iot.us-east-1.amazonaws.com',
+    authorizerName: 'live-ninja-iot',
+    tokenSignature: 'abc+def/ghi=',
+    signingRequired: false,
+  };
+  const off = iotSocketUrl(creds);
+  assert.equal(
+    off,
+    'wss://example.iot.us-east-1.amazonaws.com/mqtt?x-amz-customauthorizer-name=live-ninja-iot',
+  );
+  assert.equal(off.includes('signature'), false);
+
+  const on = iotSocketUrl({ ...creds, signingRequired: true });
+  assert.equal(
+    on,
+    'wss://example.iot.us-east-1.amazonaws.com/mqtt?x-amz-customauthorizer-name=live-ninja-iot&x-amz-customauthorizer-signature=abc%2Bdef%2Fghi%3D',
+  );
 });

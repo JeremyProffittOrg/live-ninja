@@ -1,16 +1,27 @@
 # Voice engines (FR-VE-01..04)
 
-Live Ninja speaks to three realtime speech-to-speech backends. Which one a given
-session uses is decided **per device** by a stored pin, resolved server-side at
-session bootstrap. The engines have fundamentally different network shapes,
-and that difference is the whole reason this document exists.
+Live Ninja speaks through eight realtime speech-to-speech engines across five
+providers (OpenAI, Amazon, Google, Azure OpenAI, Azure AI Voice Live). Which
+one a given session uses is decided **per device** by a stored pin, resolved
+server-side at session bootstrap. The engines have fundamentally different
+network shapes, and that difference is the whole reason this document exists.
 
-| Engine pin value      | Backend                         | Media path                         | Where audio is relayed |
-|-----------------------|---------------------------------|------------------------------------|------------------------|
-| `openai-realtime`     | OpenAI Realtime (`gpt-realtime`)| **Client-direct** WSS to OpenAI    | Nowhere — client ⇄ OpenAI |
-| `openai-realtime-mini`| OpenAI Realtime mini (`gpt-realtime-mini`) | **Client-direct** WSS to OpenAI | Nowhere — client ⇄ OpenAI |
-| `nova-sonic`          | Amazon Bedrock **Nova Sonic** (`amazon.nova-sonic-v1:0`, `us-east-1`) | **Backend-bridged** WSS to our Nova bridge | client ⇄ Nova bridge ⇄ Bedrock |
-| `gemini-flash-live`   | Google **Gemini Live API** (`gemini-3.1-flash-live-preview`, native audio; M13) | **Client-direct** WSS to Google | Nowhere — client ⇄ Google |
+| Engine pin value | Backend | Media path | Where audio is relayed |
+|------------------|---------|------------|------------------------|
+| `openai-realtime` | OpenAI Realtime (`gpt-realtime`) | **Client-direct** WebRTC to OpenAI | Nowhere — client ⇄ OpenAI |
+| `openai-realtime-mini` | OpenAI Realtime mini (`gpt-realtime-mini`) | **Client-direct** WebRTC to OpenAI | Nowhere — client ⇄ OpenAI |
+| `nova-sonic` | Amazon Bedrock **Nova Sonic** (`amazon.nova-sonic-v1:0`, `us-east-1`) | **Backend-bridged** WSS to our Nova bridge | client ⇄ Nova bridge ⇄ Bedrock |
+| `gemini-flash-live` | Google **Gemini Live API** (`gemini-3.1-flash-live-preview`, native audio) | **Client-direct** WSS to Google | Nowhere — client ⇄ Google |
+| `gpt-live-azure` | Azure OpenAI Realtime, deployment `gpt-realtime-2-1` | **Client-direct** WebRTC to Azure | Nowhere — client ⇄ Azure |
+| `gpt-live-azure-mini` | Azure OpenAI Realtime, deployment `gpt-realtime-2-1-mini` | **Client-direct** WebRTC to Azure | Nowhere — client ⇄ Azure |
+| `azure-voice-live` | Azure AI Voice Live, public preview, no SLA. Model is `AZURE_VOICELIVE_MODEL` (default `gpt-4o-mini-realtime-preview`) | **Client-direct** WSS to Azure | Nowhere — client ⇄ Azure |
+| `azure-voice-live-lite` | Same Voice Live credential and the same model env as `azure-voice-live` today. Preview, no SLA | **Client-direct** WSS to Azure | Nowhere — client ⇄ Azure |
+
+`openai-realtime` is the platform default. Choosing `gpt-live-azure` is a
+provider and data-residency decision, not a cost saving: its audio rates match
+`gpt-realtime`. The two Voice Live rows are preview, have no SLA, and their
+session configuration is **not** enforced server-side. See
+[The token problem, stated honestly](#the-token-problem-stated-honestly).
 
 `openai-realtime` is the platform default (`settings.schema.json#/properties/voiceEngine/default`).
 The mini pin uses its own fixed minter rather than inheriting `OPENAI_REALTIME_MODEL`, so its
@@ -70,7 +81,7 @@ The realtime broker resolves the engine for this session as:
 engine = voiceEngine.devices[deviceId]  ??  voiceEngine.default
 ```
 
-and returns **one of three shapes**:
+and returns **one of five shapes**:
 
 **OpenAI-direct** (default) — the client opens a WSS straight to OpenAI:
 
@@ -133,6 +144,46 @@ same-session renewal contract before it can be enabled. The field names are
 deliberately outside the `wsUrl`/`bridgeUrl` family: legacy clients detect Nova
 by field *presence*, so the Gemini shape must never trip that heuristic.
 
+**Azure-direct** (`gpt-live-azure` and `gpt-live-azure-mini`) — the same WebRTC
+path as OpenAI, with `callsUrl` pointing at the Azure `/calls` host:
+
+```jsonc
+{
+  "mode": "azure-direct",
+  "callsUrl": "https://ln-aoai-eastus2.openai.azure.com/openai/v1/realtime/calls",
+  "clientSecret": { "value": "ek_…", "expiresAt": "…" },
+  "model": "gpt-realtime-2-1",
+  "voice": "cedar",
+  "sessionId": "…"
+}
+```
+
+`cedar` is accepted on that Azure deployment, so the OpenAI voice catalog is
+reused. The client posts SDP to `callsUrl` with `Authorization: Bearer ek_…`.
+
+**Voice-live-direct** (`azure-voice-live` and `azure-voice-live-lite`) — the
+client opens a control WSS with an Entra bearer token and sends the
+server-authored `sessionConfig` inside `rtc.call.sdp.create`. The field names
+are not `wsUrl` or `bridgeUrl`:
+
+```jsonc
+{
+  "mode": "voice-live-direct",
+  "engine": "azure-voice-live",
+  "model": "gpt-4o-mini-realtime-preview",
+  "voiceLiveEndpoint": "wss://ln-voicelive.services.ai.azure.com/voice-live/realtime/calls?api-version=2026-01-01-preview&model=gpt-4o-mini-realtime-preview",
+  "accessToken": { "value": "…", "expiresAt": "…" },
+  "sessionConfig": { /* the session object the client must send; not enforced */ },
+  "voice": "cedar",
+  "sessionId": "…"
+}
+```
+
+The Voice Live credential is a resource-scoped Entra token. It is not bound to
+one session and it is not bound to the server's config. The cost badge is
+suppressed for these two models because no published rate row exists
+(`rates_missing`). Do not invent a number.
+
 The bridge token is **single-use, scoped to that one `sessionId`, and bound to
 the exact server-generated session config**. WebSocket
 upgrade requests can't reliably carry a `Bearer` header across every client
@@ -191,11 +242,13 @@ payloads).
 
 ## Client support matrix
 
-| Surface   | OpenAI-direct | Nova-bridge | Gemini-direct | Notes |
-|-----------|:-------------:|:-----------:|:-------------:|-------|
-| Web (`realtime.mjs`)        | ✅ | ✅ | ⚠️ per-surface until verified | Triple path: WebRTC/WSS to OpenAI, WSS to the bridge, or WSS to Google. |
-| Android (`RealtimeTransport`)| ✅ | ✅ | ⚠️ per-surface until verified | Same triple path. |
-| M5Stack Tab5 (`ln_realtime`) | ✅ | ❌ **out of scope** | ⚠️ **HIL-unverified** | Its historical Nova branch predates the required signed-config handshake; the surface is backlog-only. |
+| Surface | openai-realtime | openai-realtime-mini | nova-sonic | gemini-flash-live | gpt-live-azure | gpt-live-azure-mini | azure-voice-live | azure-voice-live-lite | Notes |
+|---------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|-------|
+| Web (`realtime.mjs`) | yes | yes | yes | yes | yes | yes | yes | yes | WebRTC for the OpenAI and Azure OpenAI pins. WSS for Gemini and Voice Live. WSS to the bridge for Nova. |
+| Android (`RealtimeTransport`) | yes | yes | yes | yes | yes | yes | yes | yes | Same paths. A spoken turn on the Galaxy S9 is still unverified. |
+| M5Stack Tab5 (`ln_realtime`) | yes | no | no | no | no | no | no | no | OpenAI-direct only. Azure engines are out of scope on this surface. |
+
+Both Voice Live pins share one broker model (`AZURE_VOICELIVE_MODEL`). The rate table names `azure-realtime` and `phi4-mm-realtime` as `rates_missing`. The broker does not select `phi4-mm-realtime` for the lite pin yet.
 
 ### M5Stack firmware (`firmware/components/ln_realtime`)
 
@@ -288,6 +341,38 @@ and that is the honest tradeoff to weigh:
 devices on the default OpenAI path unless you specifically want Nova's voice or
 provider; reserve `nova-sonic` for devices where you deliberately want Bedrock in
 the loop and the usage is steady enough to amortize the bridge.
+
+- **`gpt-live-azure`:** same list audio rates as `gpt-realtime` (32.00 in / 64.00 out per 1M). No standing infrastructure. The deployment name on the wire is `gpt-realtime-2-1`.
+- **`gpt-live-azure-mini`:** audio 10.00 in / 20.00 out per 1M. Deployment name `gpt-realtime-2-1-mini`.
+- **`azure-voice-live` and `azure-voice-live-lite`:** no fixed monthly cost. No published per-token rate is stored, so the cost badge is suppressed. Preview, no SLA. The session config is not enforced server-side.
+
+## The token problem, stated honestly
+
+This section exists so no later reader mistakes the Voice Live engines for the same security shape as
+the OpenAI, Azure-OpenAI, or Gemini engines. Put it in `docs/voice-engines.md` verbatim (WS-F M3).
+
+| Engine | Credential the client holds | Bound to one session? | Bound to the server's config? | Expiry |
+|---|---|---|---|---|
+| `openai-realtime` / `-mini` | OpenAI `ek_…` | yes | **yes** — model, voice, instructions, tools fixed at mint | 60 s |
+| `gemini-flash-live` | Gemini single-use token | yes (single-use) | **yes** — constrained at mint | short |
+| `gpt-live-azure` / `-mini` | Azure `ek_…` | yes | **yes** — same `client_secrets` contract | 60 s |
+| `azure-voice-live` / `-lite` | Entra bearer, resource-scoped | **no** | **no** — client sends `session` in `rtc.call.sdp.create` | ~60–90 min (Entra minimum; not shortenable) |
+
+What that means concretely for the two Voice Live engines, and what the mitigation actually is:
+
+- **A leaked token can open unlimited sessions** on that resource until it expires. Mitigation: the
+  resource is Voice-Live-only and carries its own Azure budget with actual + forecast alerts
+  (WS-A M5). It cannot reach the Azure OpenAI resource, Cosmos, storage, or anything else.
+- **The persona instructions leave the server.** On every other engine the raw instruction text never
+  reaches the client (the anti-injection rule in `/c/dev/live-ninja/internal/realtime/personas.go`).
+  On Voice Live WebRTC the client *is* the thing that sends `session.instructions`, so the broker can
+  author that config but cannot enforce it. The Help drawer and `docs/voice-engines.md` must say so
+  (WS-F M2, WS-F M3). Do not write copy that implies the config is enforced.
+- **The 60-second TTL story does not apply.** Clients fail closed at `expiresAt` exactly as they do
+  on Gemini, but the window is minutes-to-hours rather than seconds.
+
+If Microsoft ships a Voice Live `client_secrets`-equivalent, WS-G M1 replaces this whole shape and
+both bullets above disappear. That is the single item to watch.
 
 ---
 

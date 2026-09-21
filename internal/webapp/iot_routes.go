@@ -26,6 +26,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
+	"github.com/JeremyProffittOrg/live-ninja/internal/config"
 	lnsync "github.com/JeremyProffittOrg/live-ninja/internal/sync"
 )
 
@@ -74,7 +75,10 @@ func handleIoTCredentials(deps *Deps) fiber.Handler {
 			return errorJSON(c, fiber.StatusInternalServerError, "internal", "could not mint a token")
 		}
 
-		return c.JSON(fiber.Map{
+		// Signing stays off on the wire. AWS IoT does not allow SigningDisabled
+		// to be changed on an existing authorizer, so tokenSignature is minted
+		// for the next authorizer and is not sent until signingRequired is true.
+		body := fiber.Map{
 			"endpoint":       endpoint,
 			"authorizerName": iotAuthorizerName,
 			// The MQTT client id. It lands inside the IoT policy's Connect
@@ -103,9 +107,39 @@ func handleIoTCredentials(deps *Deps) fiber.Handler {
 			// this exact literal, so if a client concatenated its own copy the
 			// two would drift and every claim would be refused — silently, as a
 			// closed connection the client reconnects into.
-			"speakingTopic": lnsync.SpeakingTopic(userID),
-		})
+			"speakingTopic":   lnsync.SpeakingTopic(userID),
+			"signingRequired": false,
+		}
+		if sig := iotTokenSignature(c, deps, token); sig != "" {
+			body["tokenSignature"] = sig
+		}
+		return c.JSON(body)
 	}
+}
+
+// iotTokenSignature signs token with the SSM private key. A missing or
+// unreadable key returns "" and the credential response still succeeds:
+// the deployed authorizer has signing disabled, so a signature is optional.
+// The key and the token are never logged.
+func iotTokenSignature(c *fiber.Ctx, deps *Deps, token string) string {
+	if deps.Secrets == nil {
+		return ""
+	}
+	pemKey, err := deps.Secrets.Get(c.Context(),
+		config.ParamIoTAuthorizerSigningPrivateKey,
+		config.EnvOverrideIoTAuthorizerSigningPrivateKey)
+	if err != nil || strings.TrimSpace(pemKey) == "" {
+		if err != nil {
+			deps.Log.Warn("api: iot signing key unavailable", slog.String("error", err.Error()))
+		}
+		return ""
+	}
+	sig, err := auth.SignIoTToken(pemKey, token)
+	if err != nil {
+		deps.Log.Warn("api: iot token signature failed", slog.String("error", err.Error()))
+		return ""
+	}
+	return sig
 }
 
 // iotClientID derives a stable, ARN-safe MQTT client id. Two connections

@@ -38,6 +38,11 @@ const (
 	ParamAzureOpenAIAPIKey     = "/live-ninja/prod/azure/openai_api_key"
 	ParamVoiceLiveClientID     = "/live-ninja/prod/azure/voicelive_client_id"
 	ParamVoiceLiveClientSecret = "/live-ninja/prod/azure/voicelive_client_secret"
+	// IoT custom-authorizer signing key (plan.md §6 M1.5). The private half
+	// signs the MQTT token. The public half stays out of this process: AWS
+	// IoT holds it, and only after a new authorizer is created. SigningDisabled
+	// on the existing authorizer cannot be flipped in place.
+	ParamIoTAuthorizerSigningPrivateKey = "/live-ninja/prod/iot/authorizer_signing_private_key"
 )
 
 // Local-dev environment variable overrides for each SSM parameter above.
@@ -45,14 +50,15 @@ const (
 // this lets a developer run any function against `go run` without AWS
 // credentials or a deployed stack.
 const (
-	EnvOverrideOpenAIAPIKey          = "OPENAI_API_KEY"
-	EnvOverrideGeminiAPIKey          = "GEMINI_API_KEY"
-	EnvOverrideLWAClientID           = "LWA_CLIENT_ID"
-	EnvOverrideLWAClientSecret       = "LWA_CLIENT_SECRET"
-	EnvOverrideDeviceCredPepper      = "DEVICE_CRED_PEPPER"
-	EnvOverrideAzureOpenAIAPIKey     = "AZURE_OPENAI_API_KEY"
-	EnvOverrideVoiceLiveClientID     = "AZURE_VOICELIVE_CLIENT_ID"
-	EnvOverrideVoiceLiveClientSecret = "AZURE_VOICELIVE_CLIENT_SECRET"
+	EnvOverrideOpenAIAPIKey                   = "OPENAI_API_KEY"
+	EnvOverrideGeminiAPIKey                   = "GEMINI_API_KEY"
+	EnvOverrideLWAClientID                    = "LWA_CLIENT_ID"
+	EnvOverrideLWAClientSecret                = "LWA_CLIENT_SECRET"
+	EnvOverrideDeviceCredPepper               = "DEVICE_CRED_PEPPER"
+	EnvOverrideAzureOpenAIAPIKey              = "AZURE_OPENAI_API_KEY"
+	EnvOverrideVoiceLiveClientID              = "AZURE_VOICELIVE_CLIENT_ID"
+	EnvOverrideVoiceLiveClientSecret          = "AZURE_VOICELIVE_CLIENT_SECRET"
+	EnvOverrideIoTAuthorizerSigningPrivateKey = "IOT_AUTHORIZER_SIGNING_PRIVATE_KEY"
 )
 
 // cacheTTL is how long a resolved SSM parameter value is kept in memory
