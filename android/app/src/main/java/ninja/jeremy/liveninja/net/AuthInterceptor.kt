@@ -34,10 +34,9 @@ object ClientId {
      * build can never be given one — it would POST it to the compiled-in
      * OpenAI host.
      *
-     * `voice-live-direct` is deliberately absent: that transport is not
-     * written. Do not add a mode here before its branch ships.
+     * `voice-live-direct` is declared now that [ninja.jeremy.liveninja.realtime.VoiceLiveTransport] ships.
      */
-    const val CAPABILITIES: String = "azure-direct"
+    const val CAPABILITIES: String = "azure-direct,voice-live-direct"
 }
 
 /**

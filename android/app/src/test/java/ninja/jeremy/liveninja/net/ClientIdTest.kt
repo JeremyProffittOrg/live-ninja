@@ -47,8 +47,8 @@ class ClientIdTest {
             "azure-direct must be declared or the broker will never route this client to Azure",
             ClientId.CAPABILITIES.contains("azure-direct"),
         )
-        assertFalse(
-            "voice-live-direct is not implemented in this build",
+        assertTrue(
+            "voice-live-direct must be declared now that VoiceLiveTransport ships",
             ClientId.CAPABILITIES.contains("voice-live-direct"),
         )
     }

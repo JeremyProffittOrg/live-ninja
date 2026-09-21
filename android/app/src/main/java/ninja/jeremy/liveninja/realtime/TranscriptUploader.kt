@@ -209,11 +209,13 @@ class TranscriptUploader internal constructor(
         const val ENGINE_OPENAI = "gpt-realtime"
         const val ENGINE_NOVA = "nova-sonic"
         const val ENGINE_GEMINI = "gemini-flash-live"
+        const val ENGINE_VOICE_LIVE = "azure-voice-live"
 
         /** Map a [RealtimeSession.mode] to the engine label the backend stores on each turn. */
         fun engineForMode(mode: String): String = when (mode) {
             RealtimeSession.MODE_NOVA_BRIDGE -> ENGINE_NOVA
             RealtimeSession.MODE_GEMINI_DIRECT -> ENGINE_GEMINI
+            RealtimeSession.MODE_VOICE_LIVE_DIRECT -> ENGINE_VOICE_LIVE
             else -> ENGINE_OPENAI
         }
     }

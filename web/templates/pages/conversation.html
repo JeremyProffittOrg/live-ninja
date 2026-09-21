@@ -745,14 +745,14 @@
             <input type="radio" name="voiceEngine" value="azure-voice-live">
             <span class="ln-choice__body">
               <span class="ln-choice__title">Azure Voice Live</span>
-              <span class="ln-choice__desc">Microsoft Voice Live on its own Azure resource. On the website it uses a short-lived token. The phone falls back to the default engine until the next app update.</span>
+              <span class="ln-choice__desc">Microsoft Voice Live on its own Azure resource, with a short-lived token. Runs from this browser and from the Android app.</span>
             </span>
           </label>
           <label class="ln-choice">
             <input type="radio" name="voiceEngine" value="azure-voice-live-lite">
             <span class="ln-choice__body">
               <span class="ln-choice__title">Azure Voice Live Lite</span>
-              <span class="ln-choice__desc">The cheaper Voice Live pin. Same isolation as Azure Voice Live. The phone falls back until the next app update.</span>
+              <span class="ln-choice__desc">The cheaper Voice Live pin. Same isolation as Azure Voice Live.</span>
             </span>
           </label>
         </div>
@@ -1358,8 +1358,8 @@
             provider or data-residency reasons, not to save money, as the full Azure model costs
             about the same as the OpenAI one.
             <em>Azure Voice Live</em> and <em>Azure Voice Live Lite</em> talk to Microsoft Voice Live
-            on a separate Azure resource with a short-lived token. They work in this browser today;
-            the Android app falls back to the default engine until the next app update.
+            on a separate Azure resource with a short-lived token. They run from this browser and
+            from the Android app.
             If an engine is briefly unavailable, the conversation
             falls back to the default and tells you so rather than failing.</dd>
           <dt>Turn detection</dt>

@@ -23,6 +23,11 @@ annotation class NovaSonicTransport
 @Retention(AnnotationRetention.BINARY)
 annotation class GeminiTransport
 
+/** Azure Voice Live WSS+WebRTC transport. */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class VoiceLiveRealtimeTransport
+
 /** Hilt bindings for the realtime package (owned by the WebRTC workstream). */
 @Module
 @InstallIn(SingletonComponent::class)
@@ -45,6 +50,11 @@ abstract class RealtimeModule {
     @Singleton
     @GeminiTransport
     abstract fun bindGeminiTransport(impl: GeminiLiveTransport): RealtimeTransport
+
+    @Binds
+    @Singleton
+    @VoiceLiveRealtimeTransport
+    abstract fun bindVoiceLiveTransport(impl: VoiceLiveTransport): RealtimeTransport
 
     /**
      * Fills the UI layer's `@BindsOptionalOf` seam (ui/state/UiSeams.kt) —

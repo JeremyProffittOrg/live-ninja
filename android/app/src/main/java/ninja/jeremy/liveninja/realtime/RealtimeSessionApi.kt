@@ -63,6 +63,8 @@ data class RealtimeSession(
      * field presence (gemini-plan.md §3.4).
      */
     val geminiEndpoint: String? = null,
+    /** Voice Live WSS host (voice-live-direct only). Not named wsUrl. */
+    val voiceLiveEndpoint: String? = null,
     /** Single-use Gemini ephemeral token (gemini-direct only). */
     val accessToken: GeminiAccessToken? = null,
     /**
@@ -92,6 +94,7 @@ data class RealtimeSession(
         const val MODE_AZURE_DIRECT = "azure-direct"
         const val MODE_NOVA_BRIDGE = "nova-bridge"
         const val MODE_GEMINI_DIRECT = "gemini-direct"
+        const val MODE_VOICE_LIVE_DIRECT = "voice-live-direct"
     }
 }
 
@@ -179,6 +182,7 @@ class RealtimeSessionApi @Inject constructor(
             val value = secret?.optString("value").orEmpty()
             val wsUrl = json.optString("wsUrl").ifEmpty { null }
             val geminiEndpoint = json.optString("geminiEndpoint").ifEmpty { null }
+            val voiceLiveEndpoint = json.optString("voiceLiveEndpoint").ifEmpty { null }
             val accessToken = json.optJSONObject("accessToken")?.let { tok ->
                 GeminiAccessToken(
                     value = tok.optString("value"),
@@ -212,6 +216,19 @@ class RealtimeSessionApi @Inject constructor(
                     }
                 }
 
+                RealtimeSession.MODE_VOICE_LIVE_DIRECT -> {
+                    if (voiceLiveEndpoint == null || accessToken == null ||
+                        accessToken.value.isEmpty() || sessionConfig == null
+                    ) {
+                        throw RealtimeSessionException(
+                            kind = "invalid_response",
+                            message = "Voice Live session response is missing " +
+                                "voiceLiveEndpoint/accessToken.value/sessionConfig.",
+                            httpCode = httpCode,
+                        )
+                    }
+                }
+
                 else -> if (value.isEmpty()) {
                     throw RealtimeSessionException(
                         kind = "invalid_response",
@@ -239,6 +256,7 @@ class RealtimeSessionApi @Inject constructor(
                 wsUrl = wsUrl,
                 bridgeToken = json.optString("token").ifEmpty { null },
                 geminiEndpoint = geminiEndpoint,
+                voiceLiveEndpoint = voiceLiveEndpoint,
                 accessToken = accessToken,
                 sessionConfig = sessionConfig,
                 rates = RealtimeRates.from(json.optJSONObject("rates")),

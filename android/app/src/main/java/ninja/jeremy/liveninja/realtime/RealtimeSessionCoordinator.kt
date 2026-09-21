@@ -112,6 +112,7 @@ class RealtimeSessionCoordinator @Inject constructor(
     @OpenAiRealtimeTransport private val webRtcTransport: RealtimeTransport,
     @NovaSonicTransport private val novaBridgeTransport: RealtimeTransport,
     @GeminiTransport private val geminiLiveTransport: RealtimeTransport,
+    @VoiceLiveRealtimeTransport private val voiceLiveTransport: RealtimeTransport,
     private val sessionApi: RealtimeSessionApi,
     private val toolRouter: ToolCallRouter,
     private val deviceVolumeTool: DeviceVolumeToolExecutor,
@@ -221,6 +222,12 @@ class RealtimeSessionCoordinator @Inject constructor(
                     webRtcTransport.abortPrepare()
                     transport = geminiLiveTransport
                     session.accessToken?.value.orEmpty() to session.geminiEndpoint.orEmpty()
+                }
+
+                RealtimeSession.MODE_VOICE_LIVE_DIRECT -> {
+                    webRtcTransport.abortPrepare()
+                    transport = voiceLiveTransport
+                    session.accessToken?.value.orEmpty() to session.voiceLiveEndpoint.orEmpty()
                 }
 
                 else -> {

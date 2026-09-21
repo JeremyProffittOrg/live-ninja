@@ -215,4 +215,27 @@ class RealtimeSessionParseTest {
         val session = RealtimeSessionApi.parseSession(body, 200, null)
         assertEquals("https://api.openai.com/v1/realtime/calls", session.callsUrl)
     }
+
+    @Test
+    fun voiceLiveDirect_readsEndpointAndAccessToken() {
+        val body = JSONObject(
+            """
+            {
+              "mode": "voice-live-direct",
+              "accessToken": {"value": "entra-token", "expiresAt": "2026-09-21T12:00:00Z"},
+              "voiceLiveEndpoint": "wss://ln-voicelive.services.ai.azure.com/voice-live/realtime/calls",
+              "sessionConfig": {"type": "realtime"},
+              "model": "gpt-4o-mini-realtime-preview",
+              "sessionId": "rs-vl-1"
+            }
+            """.trimIndent(),
+        )
+        val session = RealtimeSessionApi.parseSession(body, 200, null)
+        assertEquals(RealtimeSession.MODE_VOICE_LIVE_DIRECT, session.mode)
+        assertEquals("entra-token", session.accessToken?.value)
+        assertEquals(
+            "wss://ln-voicelive.services.ai.azure.com/voice-live/realtime/calls",
+            session.voiceLiveEndpoint,
+        )
+    }
 }

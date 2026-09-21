@@ -108,6 +108,7 @@ class RealtimeSessionCoordinatorTest {
     // session below is openai-direct, so the coordinator selects [transport].
     private val novaTransport = FakeTransport()
     private val geminiTransport = FakeTransport()
+    private val voiceLiveTransport = FakeTransport()
     private val sessionApi = mockk<RealtimeSessionApi>()
     private val toolRouter = mockk<ToolCallRouter>()
     private val deviceVolumeTool = mockk<DeviceVolumeToolExecutor>()
@@ -125,7 +126,7 @@ class RealtimeSessionCoordinatorTest {
         return RealtimeSessionCoordinator(
             // Application context is unused for stop_listening (wake stays armed).
             mockk<android.content.Context>(relaxed = true),
-            transport, novaTransport, geminiTransport, sessionApi, toolRouter, deviceVolumeTool,
+            transport, novaTransport, geminiTransport, voiceLiveTransport, sessionApi, toolRouter, deviceVolumeTool,
             deviceCameraTool,
             TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())),
         )
@@ -289,7 +290,7 @@ class RealtimeSessionCoordinatorTest {
         )
         val coord = RealtimeSessionCoordinator(
             mockk<android.content.Context>(relaxed = true),
-            transport, novaTransport, geminiTransport, sessionApi, toolRouter, deviceVolumeTool,
+            transport, novaTransport, geminiTransport, voiceLiveTransport, sessionApi, toolRouter, deviceVolumeTool,
             deviceCameraTool,
             TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())),
         )
@@ -336,7 +337,7 @@ class RealtimeSessionCoordinatorTest {
         val transcriptSink = CapturingTranscriptSink()
         val coord = RealtimeSessionCoordinator(
             mockk<android.content.Context>(relaxed = true),
-            transport, novaTransport, geminiTransport, sessionApi, toolRouter, deviceVolumeTool,
+            transport, novaTransport, geminiTransport, voiceLiveTransport, sessionApi, toolRouter, deviceVolumeTool,
             deviceCameraTool,
             TranscriptStore(), TranscriptUploader(transcriptSink, this),
         )
@@ -411,7 +412,7 @@ class RealtimeSessionCoordinatorTest {
         )
         val coord = RealtimeSessionCoordinator(
             mockk<android.content.Context>(relaxed = true),
-            transport, novaTransport, geminiTransport, sessionApi, toolRouter, deviceVolumeTool,
+            transport, novaTransport, geminiTransport, voiceLiveTransport, sessionApi, toolRouter, deviceVolumeTool,
             deviceCameraTool,
             TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())),
         )
@@ -432,7 +433,7 @@ class RealtimeSessionCoordinatorTest {
         coEvery { sessionApi.fetchSession() } throws IOException("session mint failed")
         val coord = RealtimeSessionCoordinator(
             mockk<android.content.Context>(relaxed = true),
-            transport, novaTransport, geminiTransport, sessionApi, toolRouter, deviceVolumeTool,
+            transport, novaTransport, geminiTransport, voiceLiveTransport, sessionApi, toolRouter, deviceVolumeTool,
             deviceCameraTool,
             TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())),
         )

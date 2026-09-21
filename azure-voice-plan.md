@@ -660,7 +660,7 @@ This workstream is what makes locked decision 3 safe. R7 is the defect it closes
       is what reaches `connect()` — **and** a case asserting a response with no `callsUrl` still
       reaches OpenAI's.
 
-- [ ] **E3. Android: `VoiceLiveTransport.kt`.** New `RealtimeTransport` implementation beside
+- [x] **E3. Android: `VoiceLiveTransport.kt`.** New `RealtimeTransport` implementation beside
       `GeminiLiveTransport.kt`, which is the closest structural precedent (both are WSS + a
       server-authored first frame). Same control-channel handshake as E1.
       DoD: `cd /c/dev/live-ninja/android && ./gradlew :app:testDebugUnitTest` passes.

@@ -80,9 +80,9 @@ import org.webrtc.audio.JavaAudioDeviceModule
  * the assistant is audible when [EchoGuardPolicy] says to.
  */
 @Singleton
-class WebRtcTransport @Inject constructor(
+open class WebRtcTransport @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val httpClient: OkHttpClient,
+    protected val httpClient: OkHttpClient,
     private val echoGuard: EchoGuardPolicy,
 ) : RealtimeTransport {
 
@@ -249,7 +249,7 @@ class WebRtcTransport @Inject constructor(
         pc.addTrack(micTrack, listOf("liveninja"))
 
         // Client-created events channel; OpenAI attaches to the same label.
-        val dc = pc.createDataChannel("oai-events", DataChannel.Init())
+        val dc = pc.createDataChannel(eventsChannelLabel, DataChannel.Init())
             ?: throw IOException("createDataChannel returned null")
         dataChannel = dc
         dc.registerObserver(DcObserver(dc))
@@ -294,7 +294,9 @@ class WebRtcTransport @Inject constructor(
         }
     }
 
-    private suspend fun postSdpOffer(callsUrl: String, token: String, sdp: String): String =
+    protected open val eventsChannelLabel: String = "oai-events"
+
+    protected open suspend fun postSdpOffer(callsUrl: String, token: String, sdp: String): String =
         withContext(Dispatchers.IO) {
             val request = Request.Builder()
                 .url(callsUrl)
@@ -529,7 +531,7 @@ class WebRtcTransport @Inject constructor(
         am.mode = previousAudioMode
     }
 
-    private fun releaseSession() {
+    protected open fun releaseSession() {
         fadeJob?.cancel()
         fadeJob = null
         assistantSpeaking = false
