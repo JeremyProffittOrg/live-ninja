@@ -741,6 +741,20 @@
               <span class="ln-choice__desc">The cheaper Azure model — roughly a third the audio cost of the full one, with slightly less nuance. Also runs directly from your device.</span>
             </span>
           </label>
+          <label class="ln-choice">
+            <input type="radio" name="voiceEngine" value="azure-voice-live">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Azure Voice Live</span>
+              <span class="ln-choice__desc">Microsoft Voice Live on its own Azure resource. On the website it uses a short-lived token. The phone falls back to the default engine until the next app update.</span>
+            </span>
+          </label>
+          <label class="ln-choice">
+            <input type="radio" name="voiceEngine" value="azure-voice-live-lite">
+            <span class="ln-choice__body">
+              <span class="ln-choice__title">Azure Voice Live Lite</span>
+              <span class="ln-choice__desc">The cheaper Voice Live pin. Same isolation as Azure Voice Live. The phone falls back until the next app update.</span>
+            </span>
+          </label>
         </div>
         <p class="ln-hint">All engines share the same tools, memory, and transcripts — only cost, latency, and voice quality differ.</p>
       </fieldset>
@@ -1342,7 +1356,11 @@
             <em>Azure OpenAI Realtime</em> and <em>Azure OpenAI Realtime Mini</em> are the same
             models and voices served from Microsoft Azure rather than OpenAI — pick them for
             provider or data-residency reasons, not to save money, as the full Azure model costs
-            about the same as the OpenAI one. If an engine is briefly unavailable, the conversation
+            about the same as the OpenAI one.
+            <em>Azure Voice Live</em> and <em>Azure Voice Live Lite</em> talk to Microsoft Voice Live
+            on a separate Azure resource with a short-lived token. They work in this browser today;
+            the Android app falls back to the default engine until the next app update.
+            If an engine is briefly unavailable, the conversation
             falls back to the default and tells you so rather than failing.</dd>
           <dt>Turn detection</dt>
           <dd>How it decides you've finished speaking. <em>Semantic VAD</em> judges from meaning and is the recommended setting; <em>Server VAD</em> simply waits for a fixed silence gap. Mic pickup sensitivity and how long it keeps listening after a reply live here too. The <em>Audio</em> picker in the bottom bar changes mic pickup without opening Settings, and the Android app has the same Low/Med/High control above its conversation.</dd>

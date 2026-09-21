@@ -632,7 +632,7 @@ This workstream is what makes locked decision 3 safe. R7 is the defect it closes
 
 ### WS-E — Clients (depends on WS-D M2)
 
-- [~] **E1. Web: honour `callsUrl`, add the Voice Live transport.** In
+- [x] **E1. Web: honour `callsUrl`, add the Voice Live transport.** In
       `/c/dev/live-ninja/web/static/js/realtime.mjs`: read `callsUrl` from the mint response,
       falling back to `OPENAI_CALLS_URL` (`:98`) when absent, so an older server keeps working. The
       `azure-direct` mode then reuses the **existing** WebRTC path unchanged — same SDP POST, same
@@ -701,7 +701,7 @@ This workstream is what makes locked decision 3 safe. R7 is the defect it closes
       the observed first-audio latency, and the cost badge value for each. **Nothing below this line
       is done until this passes.**
 
-- [ ] **F2. Settings picker and Help drawer** — mandatory in the same commit (R13). The picker gains
+- [x] **F2. Settings picker and Help drawer** — mandatory in the same commit (R13). The picker gains
       four rows; the Help drawer gains an entry per engine. Copy must state, for the two Voice Live
       rows: preview status, no SLA, and that the session configuration is **not** enforced
       server-side (`## The token problem`). Do not write copy implying otherwise.

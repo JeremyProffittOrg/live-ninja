@@ -23,14 +23,13 @@ func TestWebClientDeclaresAzureCapability(t *testing.T) {
 	require.Contains(t, js, "azure-direct",
 		"the web client must name azure-direct, or the broker will never route it to Azure")
 
-	// The capability list must not claim a transport this build has not
-	// written. Declaring voice-live-direct without the branch that handles it
-	// would make the broker hand over an Entra token the client cannot use.
 	capIdx := strings.Index(js, "const CLIENT_CAPABILITIES")
 	require.GreaterOrEqual(t, capIdx, 0, "CLIENT_CAPABILITIES must be a named constant")
 	line := js[capIdx : capIdx+strings.Index(js[capIdx:], "\n")]
-	assert.NotContains(t, line, "voice-live-direct",
-		"voice-live-direct is not implemented in this build; declaring it would hand over an unusable credential")
+	assert.Contains(t, line, "voice-live-direct",
+		"the web client must declare voice-live-direct now that the transport exists")
+	assert.Contains(t, js, "#connectVoiceLive",
+		"declaring voice-live-direct requires the transport that consumes the Entra token")
 }
 
 // TestWebClientHonoursServerCallsURL guards the other half: the SDP host must
@@ -101,7 +100,10 @@ func TestShippedAndroidVersionClearsTheMinimum(t *testing.T) {
 // Live pins are deliberately excluded: they have no minter until their Entra
 // credential exists, so offering them would give the user an option that
 // always silently falls back to the default.
-var azurePickerEngines = []string{"gpt-live-azure", "gpt-live-azure-mini"}
+var azurePickerEngines = []string{
+	"gpt-live-azure", "gpt-live-azure-mini",
+	"azure-voice-live", "azure-voice-live-lite",
+}
 
 // TestAzureEnginesAreSelectableInThePicker closes the gap that made every
 // earlier picker milestone vacuous: TestHelpDrawer and the page-render tests
@@ -113,12 +115,6 @@ func TestAzureEnginesAreSelectableInThePicker(t *testing.T) {
 	for _, engine := range azurePickerEngines {
 		assert.Containsf(t, page, `name="voiceEngine" value="`+engine+`"`,
 			"%s is accepted by the settings schema and routed by the broker, but no radio offers it", engine)
-	}
-
-	// The Voice Live pins must NOT appear until they have a minter.
-	for _, engine := range []string{"azure-voice-live", "azure-voice-live-lite"} {
-		assert.NotContainsf(t, page, `name="voiceEngine" value="`+engine+`"`,
-			"%s has no minter; offering it gives the user a choice that always falls back", engine)
 	}
 }
 
@@ -144,4 +140,6 @@ func TestHelpDrawerDocumentsTheAzureEngines(t *testing.T) {
 	assert.Truef(t,
 		strings.Contains(lower, "data-residency") || strings.Contains(lower, "data residency"),
 		"the Help copy must say WHY to pick Azure (provider/data residency), not imply it is cheaper")
+	assert.Contains(t, drawer, "Azure Voice Live",
+		"the Help drawer must name Azure Voice Live now that it is in the picker")
 }

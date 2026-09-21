@@ -557,3 +557,14 @@ func TestAzureRealtimeOriginIsInTheCSP(t *testing.T) {
 	assert.Contains(t, pageCSP[connectAt:connectAt+end], "https://api.openai.com",
 		"adding Azure must not displace the OpenAI origin")
 }
+
+func TestVoiceLiveOriginIsInTheCSP(t *testing.T) {
+	const origin = "wss://ln-voicelive.services.ai.azure.com"
+	assert.Contains(t, pageCSP, origin, "the Voice Live WSS host must be an allowed connect-src")
+	connectAt := strings.Index(pageCSP, "connect-src")
+	require.GreaterOrEqual(t, connectAt, 0)
+	end := strings.Index(pageCSP[connectAt:], ";")
+	require.Greater(t, end, 0)
+	assert.Contains(t, pageCSP[connectAt:connectAt+end], origin,
+		"the origin must be inside the connect-src directive")
+}

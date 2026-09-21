@@ -103,8 +103,7 @@ const OPENAI_CALLS_URL = 'https://api.openai.com/v1/realtime/calls';
 // api.openai.com, which is the compiled-in host below.
 //
 // Do NOT add a mode here before the branch that implements it ships.
-// 'voice-live-direct' is deliberately absent: that transport is not written.
-const CLIENT_CAPABILITIES = 'azure-direct';
+const CLIENT_CAPABILITIES = 'azure-direct,voice-live-direct';
 const DC_OPEN_TIMEOUT_MS = 10_000;
 // Trickle-less ICE wait cap. Host/srflx candidates land well inside this;
 // the old 2s cap added up to 1.5s of dead air to every connect (owner:
@@ -276,6 +275,16 @@ async function mintOnce(sessionPath) {
   if (mode === 'nova-bridge') {
     if (!body || !body.wsUrl || !body.sessionConfig) {
       throw new RealtimeError('mint_failed', 'The voice service returned an invalid Nova session.');
+    }
+  } else if (mode === 'voice-live-direct') {
+    if (
+      !body ||
+      !body.voiceLiveEndpoint ||
+      !body.accessToken ||
+      !body.accessToken.value ||
+      !body.sessionConfig
+    ) {
+      throw new RealtimeError('mint_failed', 'The voice service returned an invalid Voice Live session.');
     }
   } else if (mode === 'gemini-direct') {
     // gemini-plan.md §3.4: the endpoint, the URL token, and the exact
@@ -458,6 +467,7 @@ export class RealtimeSession extends EventTarget {
 
   // ---- M13 Gemini Live state (only populated in mode==='gemini-direct') --
   #geminiWs = null;
+  #vlWs = null;
   #geminiMinted = null; // {endpoint, token, expiresAtMs, sessionConfig}
   #geminiResumeHandle = ''; // latest sessionResumptionUpdate handle
   #geminiCanResume = false; // current state is safe to resume without rollback
@@ -599,7 +609,7 @@ export class RealtimeSession extends EventTarget {
    * `connectTiming` and a console.debug line.
    */
   async connect({ stream = null, micDeviceId = null } = {}) {
-    if (this.#pc || this.#novaWs || this.#geminiWs) {
+    if (this.#pc || this.#novaWs || this.#geminiWs || this.#vlWs) {
       throw new RealtimeError('already_connected', 'Session is already connected.');
     }
     this.#closing = false;
@@ -681,6 +691,10 @@ export class RealtimeSession extends EventTarget {
       this.#abortRtc(rtc); // Gemini is WS+PCM too — the speculative pc is unused
       await this.#connectGemini(minted);
       this.#finishTiming(t0, bootstrapMs, 0, 0);
+    } else if (this.#mode === 'voice-live-direct') {
+      this.#abortRtc(rtc);
+      const iceMs = await this.#connectVoiceLive(minted);
+      this.#finishTiming(t0, bootstrapMs, iceMs, 0);
     } else {
       await this.#connectOpenAI(minted, rtc, t0, bootstrapMs);
     }
@@ -1261,6 +1275,111 @@ export class RealtimeSession extends EventTarget {
       this.#captureCtx.close().catch(() => {});
       this.#captureCtx = null;
     }
+  }
+
+  // ---- voice-live-direct: WSS signaling + WebRTC (azure-voice-plan.md E1) --
+  async #connectVoiceLive(minted) {
+    const token = minted.accessToken && minted.accessToken.value;
+    const endpoint = minted.voiceLiveEndpoint;
+    if (!token || !endpoint) {
+      throw new RealtimeError('mint_failed', 'The voice service returned an invalid Voice Live session.');
+    }
+    const pc = new RTCPeerConnection();
+    this.#pc = pc;
+    pc.ontrack = (e) => {
+      this.#remoteStream = (e.streams && e.streams[0]) || new MediaStream([e.track]);
+      this.#attachRemoteAudio();
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'failed') this.#handleDrop('ice');
+    };
+    const dc = pc.createDataChannel('voice-live-events');
+    this.#dc = dc;
+    dc.onmessage = (e) => this.#onDcMessage(e);
+    dc.onclose = () => {
+      this.#dcOpen = false;
+      this.#handleDrop('datachannel');
+    };
+    for (const track of (this.#localStream || new MediaStream()).getAudioTracks()) {
+      pc.addTrack(track, this.#localStream);
+    }
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    const iceStart = performance.now();
+    await waitForIceGathering(pc, ICE_GATHER_TIMEOUT_MS);
+    const iceMs = performance.now() - iceStart;
+
+    const u = new URL(endpoint);
+    u.searchParams.set('Authorization', 'Bearer ' + token);
+    const ws = await new Promise((resolve, reject) => {
+      const sock = new WebSocket(u.toString());
+      const timer = setTimeout(() => {
+        try { sock.close(); } catch { /* ignore */ }
+        reject(new RealtimeError('sdp_failed', 'Connection to Azure Voice Live timed out.'));
+      }, DC_OPEN_TIMEOUT_MS);
+      sock.onopen = () => {
+        clearTimeout(timer);
+        resolve(sock);
+      };
+      sock.onerror = () => {
+        clearTimeout(timer);
+        reject(new RealtimeError('sdp_failed', 'Could not open Azure Voice Live.'));
+      };
+    });
+    this.#vlWs = ws;
+    const answer = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new RealtimeError('sdp_failed', 'Azure Voice Live did not return an SDP answer.'));
+      }, DC_OPEN_TIMEOUT_MS);
+      ws.onmessage = (ev) => {
+        let msg;
+        try {
+          msg = JSON.parse(ev.data);
+        } catch {
+          return;
+        }
+        const t = msg && msg.type;
+        if (t === 'rtc.call.sdp.created' || t === 'session.created' || (msg.sdp_answer && !msg.type)) {
+          clearTimeout(timer);
+          resolve(msg.sdp_answer || msg.sdp || (msg.session && msg.session.sdp_answer) || '');
+        } else if (t === 'error') {
+          clearTimeout(timer);
+          reject(new RealtimeError('sdp_failed', msg.message || 'Azure Voice Live rejected the session.'));
+        }
+      };
+      ws.onclose = () => {
+        clearTimeout(timer);
+        reject(new RealtimeError('sdp_failed', 'Azure Voice Live closed before the session started.'));
+      };
+      ws.send(JSON.stringify({
+        type: 'rtc.call.sdp.create',
+        sdp_offer: pc.localDescription.sdp,
+        session: minted.sessionConfig,
+      }));
+    });
+    if (!answer) {
+      throw new RealtimeError('sdp_failed', 'Azure Voice Live returned an empty SDP answer.');
+    }
+    await pc.setRemoteDescription({ type: 'answer', sdp: answer });
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new RealtimeError('sdp_failed', 'Voice Live data channel timed out.')),
+        DC_OPEN_TIMEOUT_MS,
+      );
+      dc.onopen = () => {
+        clearTimeout(timer);
+        this.#dcOpen = true;
+        resolve();
+      };
+    });
+    this.#connected = true;
+    this.#emit('sessionready', {
+      sessionId: this.#sessionId,
+      model: this.#model,
+      voice: this.#voice,
+      engine: this.#engine,
+    });
+    return iceMs;
   }
 
   // ---- gemini-direct: WSS + JSON/base64 PCM to Gemini Live (M13) ----------
@@ -2020,6 +2139,18 @@ export class RealtimeSession extends EventTarget {
         /* already closed */
       }
       this.#novaWs = null;
+    }
+    if (this.#vlWs) {
+      this.#vlWs.onopen = null;
+      this.#vlWs.onmessage = null;
+      this.#vlWs.onerror = null;
+      this.#vlWs.onclose = null;
+      try {
+        this.#vlWs.close();
+      } catch {
+        /* already closed */
+      }
+      this.#vlWs = null;
     }
 
     // Gemini cleanup (no-ops in other modes) — the shared capture/playback
