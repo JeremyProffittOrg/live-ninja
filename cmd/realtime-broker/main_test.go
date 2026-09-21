@@ -438,3 +438,81 @@ func TestAzurePinRoutesToTheAzureMinter(t *testing.T) {
 		assert.Equal(t, 0, azure.calls, "an old client must never reach the Azure minter")
 	})
 }
+
+type fakeEntra struct {
+	tok   realtime.EntraToken
+	err   error
+	calls int
+}
+
+func (f *fakeEntra) Token(context.Context, string) (realtime.EntraToken, error) {
+	f.calls++
+	return f.tok, f.err
+}
+
+func TestVoiceLiveDirectShapeHasNoWsUrl(t *testing.T) {
+	ddb := testutil.NewFakeDynamo()
+	seedEnginePin(t, ddb, "u1", string(voiceengine.EngineAzureVoiceLive))
+	entra := &fakeEntra{tok: realtime.EntraToken{
+		Value:     "entra-token-value",
+		ExpiresAt: time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC),
+	}}
+	openai := &fakeRealtimeMint{
+		result: &realtime.MintResult{
+			ClientSecret: realtime.ClientSecret{Value: "ek_openai", ExpiresAt: "2026-08-24T20:00:00Z"},
+			Model:        "gpt-realtime",
+			Voice:        "cedar",
+		},
+	}
+	b := newGeminiTestBroker(ddb, nil)
+	b.minter = openai
+	b.entraToken = entra
+	b.voiceLiveHost = "wss://ln-voicelive.services.ai.azure.com"
+	b.voiceLiveModel = "gpt-4o-mini-realtime-preview"
+
+	resp, err := b.Handle(context.Background(), Request{
+		UserID: "u1", Surface: "web",
+		Capabilities: []string{"voice-live-direct"},
+	})
+	require.NoError(t, err)
+	require.Empty(t, resp.Error)
+	assert.Equal(t, "voice-live-direct", resp.Mode)
+	assert.Equal(t, string(voiceengine.EngineAzureVoiceLive), resp.Engine)
+	assert.Contains(t, resp.VoiceLiveEndpoint, "wss://ln-voicelive.services.ai.azure.com/voice-live/realtime/calls")
+	assert.NotNil(t, resp.AccessToken)
+	assert.Equal(t, "entra-token-value", resp.AccessToken.Value)
+	assert.Equal(t, 1, entra.calls)
+	assert.Equal(t, 0, openai.calls)
+
+	raw, err := json.Marshal(resp)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), `"wsUrl"`)
+	assert.NotContains(t, string(raw), `"bridgeUrl"`)
+	assert.Contains(t, string(raw), `"voiceLiveEndpoint"`)
+}
+
+func TestVoiceLiveUnconfiguredCascadesToOpenAI(t *testing.T) {
+	ddb := testutil.NewFakeDynamo()
+	seedEnginePin(t, ddb, "u1", string(voiceengine.EngineAzureVoiceLive))
+	openai := &fakeRealtimeMint{
+		result: &realtime.MintResult{
+			ClientSecret: realtime.ClientSecret{Value: "ek_openai", ExpiresAt: "2026-08-24T20:00:00Z"},
+			Model:        "gpt-realtime",
+			Voice:        "cedar",
+		},
+	}
+	b := newGeminiTestBroker(ddb, nil)
+	b.minter = openai
+	b.entraToken = nil
+
+	resp, err := b.Handle(context.Background(), Request{
+		UserID: "u1", Surface: "web",
+		Capabilities: []string{"voice-live-direct"},
+	})
+	require.NoError(t, err)
+	require.Empty(t, resp.Error)
+	assert.Equal(t, "openai-direct", resp.Mode)
+	assert.Equal(t, string(voiceengine.EngineOpenAIRealtime), resp.Engine)
+	assert.Equal(t, 1, openai.calls)
+	assert.Contains(t, resp.QuotaWarning, "Azure Voice Live is unavailable")
+}

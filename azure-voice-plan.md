@@ -566,7 +566,7 @@ WS-D M1–M3 needs it.
 
 ### WS-C — Voice Live token exchange (depends on A4, A6)
 
-- [ ] **C1. Entra client-credentials token client.** New
+- [x] **C1. Entra client-credentials token client.** New
       `/c/dev/live-ninja/internal/realtime/entra_token.go`: `POST
       https://login.microsoftonline.com/d0695ba8-1211-4da6-81a4-05427c842a2a/oauth2/v2.0/token` with
       `grant_type=client_credentials`, `scope=https://ai.azure.com/.default` (A7), client id and
@@ -578,7 +578,7 @@ WS-D M1–M3 needs it.
       that a cached unexpired token is reused and one asserting the token never appears in the
       error path.
 
-- [ ] **C2. The Voice Live bootstrap response.** `handleVoiceLiveDirect` returns
+- [x] **C2. The Voice Live bootstrap response.** `handleVoiceLiveDirect` returns
       `mode: "voice-live-direct"` with `voiceLiveEndpoint`
       (`wss://ln-voicelive.services.ai.azure.com/voice-live/realtime/calls?api-version=2026-01-01-preview&model=<model>`
       — A5), `accessToken: {value, expiresAt}` carrying the **observed** `exp` from the token, and

@@ -102,6 +102,18 @@ Parameters:
     Type: String
     Default: gpt-realtime-2-1-mini
     Description: Azure DEPLOYMENT name for the gpt-live-azure-mini engine.
+  AzureVoiceLiveHost:
+    Type: String
+    Default: wss://ln-voicelive.services.ai.azure.com
+    Description: Voice Live WSS host (identifier, not a secret).
+  AzureVoiceLiveTenant:
+    Type: String
+    Default: d0695ba8-1211-4da6-81a4-05427c842a2a
+    Description: Entra tenant id for the Voice Live client-credentials grant.
+  AzureVoiceLiveModel:
+    Type: String
+    Default: gpt-4o-mini-realtime-preview
+    Description: Voice Live model id on the ln-voicelive resource.
   OpenAIMonthlyBudgetUsd:
     Type: Number
     Default: 100
@@ -809,6 +821,9 @@ Resources:
           AZURE_OPENAI_ENDPOINT: !Ref AzureOpenAIEndpoint
           AZURE_OPENAI_DEPLOYMENT: !Ref AzureOpenAIDeployment
           AZURE_OPENAI_MINI_DEPLOYMENT: !Ref AzureOpenAIMiniDeployment
+          AZURE_VOICELIVE_HOST: !Ref AzureVoiceLiveHost
+          AZURE_VOICELIVE_TENANT: !Ref AzureVoiceLiveTenant
+          AZURE_VOICELIVE_MODEL: !Ref AzureVoiceLiveModel
       Policies:
       - Version: "2012-10-17"
         Statement:

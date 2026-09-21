@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -162,6 +163,9 @@ type Response struct {
 	CallsURL      string          `json:"callsUrl,omitempty"`
 	Voice         string          `json:"voice,omitempty"`
 	SessionConfig json.RawMessage `json:"sessionConfig,omitempty"`
+	// VoiceLiveEndpoint is the WSS URL for mode voice-live-direct. Named
+	// so it cannot be mistaken for Nova's wsUrl (azure-voice-plan.md C2).
+	VoiceLiveEndpoint string `json:"voiceLiveEndpoint,omitempty"`
 	ToolManifest  json.RawMessage `json:"toolManifest,omitempty"`
 	SessionID     string          `json:"sessionId,omitempty"`
 	// Nova-bridge success fields (Mode == "nova-bridge" only): the WSS URL
@@ -263,6 +267,15 @@ type broker struct {
 	// gemini-flash-live-pinned devices (M13). An interface so tests can fake
 	// the Google leg; *realtime.GeminiMinter is the production implementation.
 	geminiMint geminiMintAPI
+	// entraToken exchanges the Voice Live client secret for an Entra bearer
+	// token (azure-voice-plan.md C1). nil when not configured.
+	entraToken entraTokener
+	voiceLiveHost  string
+	voiceLiveModel string
+}
+
+type entraTokener interface {
+	Token(ctx context.Context, scope string) (realtime.EntraToken, error)
 }
 
 // geminiMintAPI is the GeminiMinter surface the broker dispatches to.
@@ -416,6 +429,21 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 	// covers web, Android and anything added later, and the broker is the only
 	// place that knows which engines are actually configured. A pinned engine is
 	// a preference, not a constraint worth failing the user over.
+	if engine.IsVoiceLive() {
+		resp := b.handleVoiceLiveDirect(ctx, l, req, sessionID, warnings, engine)
+		if resp.Error == "" || b.minter == nil {
+			return resp
+		}
+		l.Warn("realtime-broker: pinned engine could not mint; falling back",
+			slog.String("engine", string(engine)),
+			slog.String("error", resp.Error),
+			slog.String("sessionId", sessionID))
+		observ.EmitMetric(metricsNamespace, "EngineFallback", 1, "Count",
+			map[string]string{"Surface": req.Surface, "From": string(engine)})
+		warnings = append(warnings, "Azure Voice Live is unavailable right now; using the default voice engine for this conversation.")
+		engine = voiceengine.EngineOpenAIRealtime
+	}
+
 	if engine == voiceengine.EngineGeminiFlashLive {
 		resp := b.handleGeminiDirect(ctx, l, req, sessionID, warnings)
 		// Nothing to fall back TO if the default engine is not configured — return
@@ -549,6 +577,96 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 		Voice:         res.Voice,
 		SessionConfig: res.SessionConfig,
 		ToolManifest:  res.ToolManifest,
+		SessionID:     sessionID,
+		QuotaWarning:  strings.Join(warnings, ","),
+	}
+}
+
+func (b *broker) handleVoiceLiveDirect(ctx context.Context, l *slog.Logger, req Request, sessionID string, warnings []string, engine voiceengine.Engine) Response {
+	if b.entraToken == nil {
+		l.Error("realtime-broker: voice live pinned but entra token client unavailable",
+			slog.String("sessionId", sessionID))
+		observ.EmitMetric(metricsNamespace, "MintErrors", 1, "Count",
+			map[string]string{"Surface": req.Surface, "Engine": string(engine)})
+		return Response{Error: "voicelive_unavailable", Code: http.StatusBadGateway,
+			Message: "Azure Voice Live is not configured; use the fallback cascade."}
+	}
+	sv := realtime.ResolveSessionVoiceForDevice(ctx, b.settings, b.table, req.UserID, req.DeviceID, req.Persona, req.VoiceOverride)
+	accentDirective := realtime.AccentDirective(sv.AccentID)
+	baseKnowledge := realtime.BuildBaseKnowledge(
+		store.LoadProfileForDevice(ctx, b.settings, b.table, req.UserID, req.DeviceID), time.Now()) +
+		b.rememberedBlock(ctx, l, req)
+	guideSuffix := ""
+	if guides, gerr := realtime.LoadEnabledGuides(ctx, b.ddb, b.table, req.UserID); gerr != nil {
+		l.Warn("realtime-broker: guide load failed; minting without guides",
+			slog.String("error", gerr.Error()))
+	} else {
+		guideSuffix = realtime.GuideInstructions(guides)
+	}
+	persona := realtime.ResolvePersona(req.Persona)
+	instructions := realtime.InstructionsForSurface(persona, req.Surface) + realtime.SessionDirectives + baseKnowledge + accentDirective + guideSuffix
+
+	start := time.Now()
+	tok, err := b.entraToken.Token(ctx, realtime.VoiceLiveScope)
+	observ.EmitMetric(metricsNamespace, "EphemeralTokenMintLatency",
+		float64(time.Since(start).Milliseconds()), "Milliseconds",
+		map[string]string{"Surface": req.Surface, "Engine": string(engine)})
+	if err != nil {
+		l.Error("realtime-broker: voice live entra token failed",
+			slog.String("error", err.Error()),
+			slog.String("sessionId", sessionID))
+		observ.EmitMetric(metricsNamespace, "MintErrors", 1, "Count",
+			map[string]string{"Surface": req.Surface, "Engine": string(engine)})
+		return Response{Error: "mint_failed", Code: http.StatusBadGateway,
+			Message: "Could not mint an Azure Voice Live token; use the fallback cascade."}
+	}
+
+	model := b.voiceLiveModel
+	if model == "" {
+		model = "gpt-4o-mini-realtime-preview"
+	}
+	host := strings.TrimSuffix(b.voiceLiveHost, "/")
+	if host == "" {
+		host = "wss://ln-voicelive.services.ai.azure.com"
+	}
+	if !strings.HasPrefix(host, "wss://") && !strings.HasPrefix(host, "https://") {
+		host = "wss://" + host
+	}
+	endpoint := host + "/voice-live/realtime/calls?api-version=2026-01-01-preview&model=" + url.QueryEscape(model)
+
+	sessionCfg, err := json.Marshal(map[string]any{
+		"type":         "realtime",
+		"model":        model,
+		"voice":        sv.Voice,
+		"instructions": instructions,
+	})
+	if err != nil {
+		return internalError("session config marshal failed")
+	}
+
+	if err := b.gate.RecordMint(ctx, req.UserID, sessionID, req.Surface, engine); err != nil {
+		l.Warn("realtime-broker: voice live mint bookkeeping failed", slog.String("error", err.Error()),
+			slog.String("sessionId", sessionID))
+	}
+	observ.EmitMetric(metricsNamespace, "SessionsBrokered", 1, "Count",
+		map[string]string{"Surface": req.Surface, "Engine": string(engine)})
+	l.Info("realtime-broker: voice live session minted",
+		slog.String("sessionId", sessionID),
+		slog.String("engine", string(engine)),
+		slog.String("model", model),
+		slog.Time("tokenExpiresAt", tok.ExpiresAt))
+
+	return Response{
+		Mode:              "voice-live-direct",
+		Engine:            string(engine),
+		Model:             model,
+		Voice:             sv.Voice,
+		VoiceLiveEndpoint: endpoint,
+		AccessToken: &realtime.GeminiAccessToken{
+			Value:     tok.Value,
+			ExpiresAt: tok.ExpiresAt.UTC().Format(time.RFC3339),
+		},
+		SessionConfig: sessionCfg,
 		SessionID:     sessionID,
 		QuotaWarning:  strings.Join(warnings, ","),
 	}
@@ -990,6 +1108,9 @@ func main() {
 		azureMinter:     newAzureMinterFromEnv(loader, os.Getenv("AZURE_OPENAI_DEPLOYMENT")),
 		azureMiniMinter: newAzureMinterFromEnv(loader, os.Getenv("AZURE_OPENAI_MINI_DEPLOYMENT")),
 		geminiMint:      realtime.NewGeminiMinter(loader, realtime.GeminiLiveModelFromEnv()),
+		entraToken:      newEntraTokenFromEnv(loader),
+		voiceLiveHost:   os.Getenv("AZURE_VOICELIVE_HOST"),
+		voiceLiveModel:  os.Getenv("AZURE_VOICELIVE_MODEL"),
 		fallback:        realtime.NewFallbackClient(loader),
 		ddb:             ddb,
 		table:           appCfg.TableName,
@@ -1132,6 +1253,13 @@ func clientSupportsAzure(req Request, engine voiceengine.Engine) bool {
 // AZURE_OPENAI_ENDPOINT is the resource's OpenAI host — the value of
 // properties.endpoints["OpenAI Realtime API"], not properties.endpoint, which
 // on a kind=AIServices resource is the cognitiveservices.azure.com form.
+func newEntraTokenFromEnv(loader *config.Loader) entraTokener {
+	if loader == nil {
+		return nil
+	}
+	return realtime.NewEntraTokenClient(loader, os.Getenv("AZURE_VOICELIVE_TENANT"))
+}
+
 func newAzureMinterFromEnv(loader *config.Loader, deployment string) realtimeMintAPI {
 	endpoint := strings.TrimSpace(os.Getenv("AZURE_OPENAI_ENDPOINT"))
 	if endpoint == "" || strings.TrimSpace(deployment) == "" {

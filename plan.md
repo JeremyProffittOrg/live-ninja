@@ -45,11 +45,10 @@ empty hook. `stop_listening` ends the live session and leaves wake armed.
 AgentCore Memory serving mode is `all` (8600b05). DynamoDB `ENT#`/`EMB#` stay
 until `emb-retire`.
 
-**Still owner-gated:** none for Voice Live credentials. `AZURE_VOICELIVE_CLIENT_ID`
-and `AZURE_VOICELIVE_CLIENT_SECRET` are in GitHub Actions secrets (script
-`scripts/set-voicelive-client-secret.ps1`, 2026-09-20). Next deploy syncs them
-to SSM. IoT authorizer signing is stored in GitHub but not wired into mint yet.
-`emb-retire` not before 2026-09-28.
+**Still owner-gated:** none. Voice Live Entra mint (C1) and `voice-live-direct`
+bootstrap (C2) are in the broker as of 2026-09-21. Picker and web/Android
+transports (E1/E3/F2) are next. IoT authorizer signing is stored in GitHub but
+not wired into mint yet. `emb-retire` not before 2026-09-28.
 
 Closed 2026-09-20 by operator: Amazon/voice preview; agentcore-memory 10-question
 voice smoke (pass). Wake: owner picked bundled pre-trained phrases only
