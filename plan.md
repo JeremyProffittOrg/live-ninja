@@ -29,6 +29,77 @@ Archived (history preserved in full, banners at the top of each):
 
 ---
 
+## Where things actually stand (2026-09-22)
+
+The live plan is [ship-remaining](#ship-remaining--push-the-rest-to-production) below.
+Operator decision this day: bypass the spoken smoke tests and push the remaining
+shippable work. F1 and the E4 spoken turn are not gates. They are not run.
+
+HEAD `e6f52fea7590fcc2c3eee7512c617fdacc99bc35` is deployed. Deploy run
+`35625518495` succeeded. `docs/voice-engines.md` lists eight engines.
+`GET /api/v1/iot/credentials` returns `tokenSignature` when the signing key is
+in SSM, and `signingRequired` is false. Galaxy S9 `4633424442303098` is
+`SM-G965U` on versionName `0.3.11`, versionCode `17`.
+
+`emb-retire` is not before 2026-09-28. G1–G6 in `azure-voice-plan.md` stay
+backlog. Do not flip `SigningDisabled` on authorizer `live-ninja-iot`.
+
+## ship-remaining — push the rest to production
+
+### Locked decisions (user-confirmed 2026-09-22; do not revisit)
+
+Recorded from the operator message "update plan.md and let's bypass the smoke
+tests and make the plan about pushing everything out."
+
+1. Spoken smoke tests are bypassed. Do not wait for a microphone. Do not run
+   F1 (one spoken turn on each of `gpt-live-azure`, `gpt-live-azure-mini`,
+   `azure-voice-live`, `azure-voice-live-lite`) or the E4 spoken turn on the
+   Galaxy S9. Mark both bypassed. Ship without them.
+2. The work is to push the remaining shippable items to production on `main`.
+   A push is the deploy.
+3. `emb-retire` stays not before 2026-09-28. The 2026-09-20 memory smoke
+   already passed. That date is not a spoken-smoke gate and this bypass does
+   not move it.
+4. Do not flip `SigningDisabled` on the existing authorizer `live-ninja-iot`.
+   AWS IoT does not allow that update. Tab5 stays on that authorizer. A signed
+   authorizer, if built, is a new authorizer used by web and Android only.
+5. G1–G6 stay backlog. Do not pull them into this workstream.
+
+### Verified facts
+
+- `git log -1` on 2026-09-22: `e6f52fe` "Document the eight voice engines and mint IoT token signatures." `main` matches `origin/main`.
+- `gh run view 35625518495` conclusion `success`. Jobs test, changes, deploy, and web-quality succeeded. The deploy log printed `iot/authorizer_signing_private_key synced`.
+- `adb -s 4633424442303098 shell getprop ro.product.model` printed `SM-G965U`. `dumpsys package ninja.jeremy.liveninja` showed `versionName=0.3.11` and `versionCode=17`. `pidof` printed `13735` after a launcher start on 2026-09-21 12:19 EDT.
+- `internal/webapp/iot_routes.go` returns `signingRequired: false`. `tokenSignature` is added only when `config.ParamIoTAuthorizerSigningPrivateKey` is readable. Web and Android add `x-amz-customauthorizer-signature` only when `signingRequired` is true.
+- `cmd/realtime-broker/main.go` has `handleAzureDirect` and `handleVoiceLiveDirect`. Both Voice Live pins use `AZURE_VOICELIVE_MODEL`, default `gpt-4o-mini-realtime-preview`.
+- Azure OpenAI accepts `cedar`. `SupportedAzureRealtimeVoices` (the 35-voice list, default `ava`) is not in the tree.
+- Authorizer name in `template.yaml` is `live-ninja-iot` with `SigningDisabled: true` while the public-key parameter is empty.
+
+### Milestones
+
+- [ ] `voice-catalog` — add `SupportedAzureRealtimeVoices` for the `azure-realtime-native` voices, default `ava`, on `GET /api/v1/realtime/voices`, beside `SupportedGeminiVoices`. `gpt-live-azure` keeps `SupportedVoices` and `cedar`. Do not invent voice names. If the published list cannot be quoted from Microsoft docs, mark this `[!]` and name the page that is missing. Done when: `go test ./internal/realtime/ -run "Voice|Catalog"` passes, and a test asserts every shipped engine's default voice is in that engine's catalog. depends on: none
+- [ ] `broker-route-close` — the four Azure engines already route in `cmd/realtime-broker/main.go`. Run the existing broker tests and mark B6 done in `azure-voice-plan.md` only if they pass. Done when: `go test ./cmd/realtime-broker/ -count=1` passes. depends on: none
+- [x] `install-close` — E4's release build stays `0.3.11`. No debug APK was installed over it. The spoken turn is bypassed. Rechecked 2026-09-22: `adb -s 4633424442303098 shell getprop ro.product.model` printed `SM-G965U`, and `dumpsys package ninja.jeremy.liveninja` showed `versionName=0.3.11` and `versionCode=17`. depends on: none
+- [x] `smoke-bypass` — F1 is not executed. The sentence that nothing below F1 is done until F1 passes is removed. `azure-voice-plan.md` F1 says bypassed on 2026-09-22. depends on: none
+- [ ] `iot-signed-authorizer` — optional ship of signing for web and Android. Create a new IoT authorizer with signing enabled. Do not change `live-ninja-iot`. Point web and Android at the new authorizer and set `signingRequired` true for those clients only. Tab5 keeps calling `live-ninja-iot` with no signature. Done when: `aws iot describe-authorizer --authorizer-name live-ninja-iot` still shows signing disabled, the new authorizer exists and is active, and `go test ./internal/webapp/ -run IoT` passes. depends on: none
+- [ ] `android-signature-release` — publish an Android build that sends the signature when `signingRequired` is true. The installed `0.3.11` ignores the field. Done when: `https://live.jeremy.ninja/v1/app/android/latest` shows a versionCode greater than 17, and `adb -s 4633424442303098 shell dumpsys package ninja.jeremy.liveninja` shows that versionName. depends on: `iot-signed-authorizer`
+
+### Restart policy
+
+Each code milestone is one push to `main`. A red Deploy run is fixed and re-pushed. Ceiling 3 attempts for that milestone, then mark it `[!]` with the run id and continue. Do not retry a deterministic failure unchanged.
+
+### Stop conditions (only these)
+
+- The operator says to stop the push.
+- A milestone would delete or update `SigningDisabled` on `live-ninja-iot`.
+- A milestone would start `emb-retire` before 2026-09-28.
+- A milestone would pull G1–G6 into this workstream.
+- The Azure voice list cannot be quoted, so `voice-catalog` is `[!]` instead of a guessed list.
+
+### Execution log
+
+- 2026-09-22 — operator bypassed the spoken smokes and set this workstream as the live plan. No product code in that change.
+
 ## Where things actually stand (2026-09-20)
 
 Voice preview is verified on this PC: QA Amazon account
@@ -45,13 +116,9 @@ empty hook. `stop_listening` ends the live session and leaves wake armed.
 AgentCore Memory serving mode is `all` (8600b05). DynamoDB `ENT#`/`EMB#` stay
 until `emb-retire`.
 
-**Still owner-gated:** spoken smokes only. E1, E3, and F2 shipped before
-2026-09-21 (HEAD was `4b23ab3`; the S9 is on 0.3.11 / versionCode 17). F3 and
-the IoT `tokenSignature` mint are the agent work in flight. F1 (four web
-turns) and the E4 spoken turn on `gpt-live-azure` need the operator at a
-microphone. IoT signing stays disabled: AWS does not allow `SigningDisabled`
-to be flipped on the existing authorizer `live-ninja-iot`. `emb-retire` not
-before 2026-09-28.
+Spoken smokes were the remaining owner gate on this date. On 2026-09-22 the
+operator bypassed them. See `ship-remaining` above. `emb-retire` was already
+not before 2026-09-28.
 
 Closed 2026-09-20 by operator: Amazon/voice preview; agentcore-memory 10-question
 voice smoke (pass). Wake: owner picked bundled pre-trained phrases only

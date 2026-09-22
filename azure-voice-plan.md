@@ -13,6 +13,10 @@ unchanged by that migration later. Nothing here has to be undone for the migrati
 
 **Status markers:** `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked.
 
+**2026-09-22:** the operator bypassed the spoken smoke tests and moved the live
+work to `ship-remaining` in [plan.md](plan.md). F1 is not a gate. The E4 spoken
+turn is not a gate. Do not wait on a microphone. G1–G6 stay backlog.
+
 ---
 
 ## Locked decisions (user-confirmed 2026-08-24; do not revisit)
@@ -665,7 +669,7 @@ This workstream is what makes locked decision 3 safe. R7 is the defect it closes
       server-authored first frame). Same control-channel handshake as E1.
       DoD: `cd /c/dev/live-ninja/android && ./gradlew :app:testDebugUnitTest` passes.
 
-- [~] **E4. Build and install on the Galaxy S9 phone** (locked decision 5). The target serial is
+- [x] **E4. Build and install on the Galaxy S9 phone** (locked decision 5). The target serial is
       fixed: `4633424442303098` (`SM-G965U`, SDK 29). **Three devices are attached to this machine**,
       so a bare `adb shell` fails with "more than one device" — every command below targets `-s`
       explicitly. Confirm the phone is the device being reached before installing:
@@ -675,34 +679,26 @@ This workstream is what makes locked decision 3 safe. R7 is the defect it closes
       ./gradlew :app:assembleDebug
       adb -s 4633424442303098 install -r app/build/outputs/apk/debug/app-debug.apk
       ```
-      Then pin that device to `gpt-live-azure` in Settings and run one real spoken turn.
+      The spoken turn was bypassed by the operator on 2026-09-22. Do not run it.
       **Git Bash hazard:** `adb shell` commands containing an absolute path get MSYS path-mangled
       (`/data` becomes `C:/Program Files/Git/data`). Prefix those with `MSYS_NO_PATHCONV=1` and quote
       the whole remote command.
       **SDK 29 is the point of this device.** It sits exactly on the app's `minSdk` floor, so it is
       the first place to look if the new transports work on a tablet and not here — check
       `logcat -b crash` before assuming the engine is at fault.
-      DoD: `adb -s 4633424442303098 shell pm list packages | grep ninja.jeremy.liveninja` prints the
-      package, the app launches and the process stays alive, and one spoken turn completes on
-      `gpt-live-azure` with a transcript written to the store.
+      DoD: the release build is installed and the process stays alive. The spoken
+      turn is bypassed (2026-09-22).
       Measured 2026-09-21 12:19 EDT: model `SM-G965U`, `versionName=0.3.11`,
-      `versionCode=17`, `pidof` `13735` after a launcher start. The spoken turn
-      is still open. It needs the operator at the phone.
-      A failure here is recorded and reported — it is **not** a stop condition; finish everything
-      else.
+      `versionCode=17`, `pidof` `13735` after a launcher start.
 
 ---
 
 ### WS-F — Ship the engines (the gate)
 
-- [ ] **F1. Live end-to-end smoke on every new engine.** Depends on all of WS-B, WS-C, WS-D, WS-E.
-      For each of the four pins: set it as the account default, start a session on web, speak one
-      turn, confirm audio out, confirm the transcript reached
-      `POST /api/v1/transcript`, confirm one tool call round-trips, and confirm barge-in interrupts
-      playback.
-      DoD: four sessions, four transcripts in the store, and the Execution log records the model id,
-      the observed first-audio latency, and the cost badge value for each. **Nothing below this line
-      is done until this passes.**
+- [x] **F1. Live end-to-end smoke on every new engine.** Bypassed 2026-09-22 by
+      the operator. Not run. It does not gate later work. The original steps were:
+      for each of the four pins, speak one turn on the web and record the transcript,
+      a tool call, and barge-in. Do not run them.
 
 - [x] **F2. Settings picker and Help drawer** — mandatory in the same commit (R13). The picker gains
       four rows; the Help drawer gains an entry per engine. Copy must state, for the two Voice Live
