@@ -589,11 +589,14 @@ func handleListVoices() fiber.Handler {
 		// accent-directive catalog backing the settings Accent picker.
 		// `geminiVoices` rides along the same way (additive, M13): the
 		// spike-validated Gemini Live catalog backing the gemini-flash-live
-		// engine's voice picker.
+		// engine's voice picker. `azureRealtimeVoices` is the same kind of
+		// additive field: the azure-realtime-native catalog. gpt-live-azure
+		// still reads `voices` (SupportedVoices, default cedar).
 		return c.JSON(fiber.Map{
-			"voices":       realtime.SupportedVoices,
-			"accents":      realtime.SupportedAccents,
-			"geminiVoices": realtime.SupportedGeminiVoices,
+			"voices":              realtime.SupportedVoices,
+			"accents":             realtime.SupportedAccents,
+			"geminiVoices":        realtime.SupportedGeminiVoices,
+			"azureRealtimeVoices": realtime.SupportedAzureRealtimeVoices,
 		})
 	}
 }

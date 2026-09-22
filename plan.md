@@ -35,13 +35,13 @@ The job of this file is to push the remaining shippable work to production on `m
 
 Definition of done: `go test ./internal/realtime/ -run "Voice|Catalog"` passes, and a test asserts every shipped engine's default voice is in that engine's catalog.
 
-- [ ] `voice-catalog` — add `SupportedAzureRealtimeVoices` for the `azure-realtime-native` voices, default `ava`, on `GET /api/v1/realtime/voices`, beside `SupportedGeminiVoices`. `gpt-live-azure` keeps `SupportedVoices` and `cedar`. Do not invent voice names. If the published list cannot be quoted from Microsoft docs, mark this `[!]` and name the page that is missing. Update Help in the same commit if the picker gains a new list. depends on: none
+- [x] `voice-catalog` — add `SupportedAzureRealtimeVoices` for the `azure-realtime-native` voices, default `ava`, on `GET /api/v1/realtime/voices`, beside `SupportedGeminiVoices`. `gpt-live-azure` keeps `SupportedVoices` and `cedar`. Do not invent voice names. If the published list cannot be quoted from Microsoft docs, mark this `[!]` and name the page that is missing. Update Help in the same commit if the picker gains a new list. depends on: none
 
 ### broker-route-close — prove the four Azure routes
 
 Definition of done: `go test ./cmd/realtime-broker/ -count=1` passes.
 
-- [ ] `broker-route-close` — the four Azure engines already route in `cmd/realtime-broker/main.go`. Run the broker tests. If they pass, record that in the execution log. If they fail, fix the failure and re-push. depends on: none
+- [x] `broker-route-close` — the four Azure engines already route in `cmd/realtime-broker/main.go`. Run the broker tests. If they pass, record that in the execution log. If they fail, fix the failure and re-push. depends on: none
 
 ### iot-signed-authorizer — new authorizer for web and Android
 
@@ -77,3 +77,5 @@ Each code milestone is one push to `main`. A red Deploy run is fixed and re-push
 
 - 2026-09-22 — spoken smokes bypassed. Commit `88c808f`. Deploy `35716826005` success.
 - 2026-09-22 — completed history moved to `completed/plan-2026-09-22.md`. This file is only the unfinished build.
+- 2026-09-22 — `broker-route-close` passed. Command: `go test ./cmd/realtime-broker/ -count=1`. Output: `ok  	github.com/JeremyProffittOrg/live-ninja/cmd/realtime-broker	0.578s`. Exit 0. No handler change.
+- 2026-09-22 — `voice-catalog` quoted 34 ids from https://learn.microsoft.com/en-us/azure/ai-services/speech-service/voice-live-how-to section "Supported voices". Older notes said 35. That count was one high. Default `ava`. No picker, so Help was not changed. `gpt-live-azure` stays on `SupportedVoices` / `cedar`. `go test ./internal/realtime/ -run "Voice|Catalog" -count=1` ok. `go test ./internal/webapp/ -run TestHelpDrawer -count=1` ok. `go test ./... -count=1` exit 0.

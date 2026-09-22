@@ -6,9 +6,10 @@ import kotlinx.serialization.Serializable
  * Wire DTOs for `GET /api/v1/realtime/voices` (internal/webapp/
  * settings_routes.go handleListVoices): the static voice catalogs backing the
  * Settings pickers. The response is additive — `voices` is the OpenAI
- * Realtime set, `accents` the accent-directive catalog, and `geminiVoices`
+ * Realtime set, `accents` the accent-directive catalog, `geminiVoices`
  * (M13) the spike-validated Gemini Live prebuilt-HD set shown when the
- * engine selection is `gemini-flash-live`.
+ * engine selection is `gemini-flash-live`, and `azureRealtimeVoices` the
+ * azure-realtime-native catalog. No settings picker reads that field.
  */
 
 /** One selectable voice (internal/realtime/catalog.go VoiceInfo). */
@@ -35,6 +36,7 @@ data class VoiceCatalogResponse(
     val voices: List<VoiceInfoDto> = emptyList(),
     val accents: List<AccentInfoDto> = emptyList(),
     val geminiVoices: List<VoiceInfoDto> = emptyList(),
+    val azureRealtimeVoices: List<VoiceInfoDto> = emptyList(),
 )
 
 /** POST /api/v1/fallback/tts body — reused for the Settings voice preview. */

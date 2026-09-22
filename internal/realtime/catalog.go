@@ -86,6 +86,50 @@ var SupportedGeminiVoices = []VoiceInfo{
 	{ID: "Sulafat", Name: "Sulafat", Description: "Warm", Gender: "female"},
 }
 
+// SupportedAzureRealtimeVoices is the azure-realtime-native voice catalog.
+// Every id is quoted from Microsoft Learn "How to use the Voice Live API",
+// section "azure-realtime model" / "Supported voices", opened 2026-09-22:
+// https://learn.microsoft.com/en-us/azure/ai-services/speech-service/voice-live-how-to
+// The default is ava. gpt-live-azure keeps SupportedVoices and cedar; this
+// list is not that catalog. Served as azureRealtimeVoices on
+// GET /api/v1/realtime/voices. That table has 34 rows; do not add a name.
+var SupportedAzureRealtimeVoices = []VoiceInfo{
+	{ID: "aarti", Name: "Aarti", Description: "Warm, rich Indian-accented English female voice with a dark, inviting tone. Best for premium support, guided learning, and trusted brand experiences.", Gender: "female"},
+	{ID: "alvaro", Name: "Alvaro", Description: "Confident, animated Spanish male voice with strong presence. Best for sales, promotions, and assertive service communication.", Gender: "male"},
+	{ID: "andrew", Name: "Andrew", Description: "Textured, relaxed, trustworthy US male voice designed for low-pressure chat.", Gender: "male"},
+	{ID: "antonio", Name: "Antonio", Description: "Bright, upbeat Brazilian Portuguese male voice with strong enthusiasm. Best for campaigns, product intros, and energetic customer engagement.", Gender: "male"},
+	{ID: "ava", Name: "Ava", Description: "Bright, confident, high-energy US voice. Best for product demos, customer support, and polished branded experiences — default", Gender: "neutral", Default: true},
+	{ID: "clara", Name: "Clara", Description: "Clear, versatile Canadian voice with broad usability. Best for general-purpose assistants, education, and customer support.", Gender: "neutral"},
+	{ID: "dalia", Name: "Dalia", Description: "Bright, upbeat Mexican Spanish female voice with warm energy. Best for retail, customer engagement, and lively assistant experiences.", Gender: "female"},
+	{ID: "denise", Name: "Denise", Description: "Bright, engaging French female voice that keeps attention high. Best for lively customer engagement and onboarding.", Gender: "female"},
+	{ID: "diego", Name: "Diego", Description: "Animated, upbeat Italian male voice full of energy. Best for lively conversations, promotions, and entertainment-focused experiences.", Gender: "male"},
+	{ID: "diya", Name: "Diya", Description: "Crisp, clear bilingual Hindi and Indian-accented English female voice. Best for troubleshooting, issue resolution, and multilingual support.", Gender: "female"},
+	{ID: "elsa", Name: "Elsa", Description: "Confident, crisp Italian female voice with clear delivery. Best for service guidance, explainers, and professional support.", Gender: "female"},
+	{ID: "emma", Name: "Emma", Description: "Warm, conversational, mid-pitch US female voice with a dynamic conversational style. Best for routine service help, onboarding, and fast-moving support flows.", Gender: "female"},
+	{ID: "florian", Name: "Florian", Description: "Warm, cheerful German male voice with strong clarity and versatility. Best for explainers, education, and approachable support.", Gender: "male"},
+	{ID: "francisca", Name: "Francisca", Description: "Cheerful, crisp Brazilian Portuguese female voice with positive clarity. Best for support, onboarding, and service messaging.", Gender: "female"},
+	{ID: "hyunsu", Name: "Hyunsu", Description: "Rich, resonant Korean male voice with steady professionalism. Best for formal guidance, explainers, and trusted information delivery.", Gender: "male"},
+	{ID: "jorge", Name: "Jorge", Description: "Deep, confident Mexican Spanish male voice with authority and assurance. Best for announcements, logistics, and trust-focused support.", Gender: "male"},
+	{ID: "keita", Name: "Keita", Description: "Casual, engaging Japanese male voice with a relaxed but lively feel. Best for chat-based assistants and informal service interactions.", Gender: "male"},
+	{ID: "liam", Name: "Liam", Description: "Young Canadian male voice with an enthusiastic, articulate delivery. Best for tech content, tutorials, and educational products.", Gender: "male"},
+	{ID: "meera", Name: "Meera", Description: "Calm, warm bilingual Hindi and Indian-accented English female voice with a soothing presence. Best for wellness, care, hospitality, and reflective guidance.", Gender: "female"},
+	{ID: "nanami", Name: "Nanami", Description: "Bright, cheerful Japanese female voice with an uplifting tone. Best for welcome messages, retail, and friendly lifestyle experiences.", Gender: "female"},
+	{ID: "natasha", Name: "Natasha", Description: "Clear, versatile Australian female voice that adapts easily across use cases. Best for general assistants, support, and instructional content.", Gender: "female"},
+	{ID: "niwat", Name: "Niwat", Description: "Confident Thai male voice with smooth, measured professionalism. Best for corporate presentations, podcasts, and formal service messaging.", Gender: "male"},
+	{ID: "premwadee", Name: "Premwadee", Description: "Young Thai female voice with a formal, professional tone. Best for announcements, training, and structured communication.", Gender: "female"},
+	{ID: "rayn", Name: "Rayn", Description: "Straightforward British male voice with an efficient, neutral style. Best for transactional support, enterprise tools, and service updates.", Gender: "male"},
+	{ID: "remy", Name: "Remy", Description: "Cheerful French male voice with an uplifting, conversational tone. Best for chat, retail, and light branded storytelling.", Gender: "male"},
+	{ID: "seraphina", Name: "Seraphina", Description: "Casually charming German female voice with a relaxed, engaging style. Best for audiobooks, casual chat, and lifestyle content.", Gender: "female"},
+	{ID: "sonia", Name: "Sonia", Description: "Gentle, soft British female voice with a calm, soothing presence. Best for premium support, wellness, and thoughtful onboarding.", Gender: "female"},
+	{ID: "sunhi", Name: "Sunhi", Description: "Calm, soothing Korean female voice with dark warmth and measured pacing. Best for wellness, hospitality, and reassuring guidance.", Gender: "female"},
+	{ID: "sylvie", Name: "Sylvie", Description: "Calm, soothing Canadian French female voice with steady professionalism. Best for announcements, support, and trusted public-facing communication.", Gender: "female"},
+	{ID: "thierry", Name: "Thierry", Description: "Calm Canadian French male voice with a dark, warm timbre. Best for premium narration, wellness, and thoughtful brand experiences.", Gender: "male"},
+	{ID: "william", Name: "William", Description: "Calm Australian male voice with warm depth and reassuring confidence. Best for onboarding, support, and premium narration.", Gender: "male"},
+	{ID: "xiaoxiao", Name: "Xiaoxiao", Description: "Sweet, soft, welcoming Mandarin female voice with rich emotional range. Best for hospitality, premium care, and warm customer-facing experiences.", Gender: "female"},
+	{ID: "ximena", Name: "Ximena", Description: "Crisp, cheerful Spanish female voice with clear positivity. Best for hospitality, support, and guided shopping.", Gender: "female"},
+	{ID: "yunxi", Name: "Yunxi", Description: "Lively Mandarin male voice with vivid, expressive emotion. Best for storytelling, engaging assistants, and interactive education.", Gender: "male"},
+}
+
 // AccentInfo is one selectable speech accent for the settings "Accent"
 // picker. Accents are NOT separate voices: the realtime voice set is
 // fixed, so an accent is delivered as a short speech-style directive
