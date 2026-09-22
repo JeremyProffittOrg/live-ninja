@@ -1,5 +1,18 @@
 # Backlog
 
+## Moved out of plan.md on 2026-09-22
+
+These were unfinished checkboxes in the archived plan. They are not part of `ship-remaining`. Do not build them unless the operator promotes one back into `plan.md`.
+
+- `codeupdate-spoken-run` — one spoken code-update run was never exercised. Spoken smokes were bypassed 2026-09-22. ⟵ completed/plan-2026-09-22.md §1
+- `fleet-apply-failure-status` — publish `last_update_error` on ghost-cli node status. That code is not in this repo. ⟵ completed/plan-2026-09-22.md §2
+- `windows1-updater` — a stale ghost-cli node that is not this machine. The archived note says it is not plan content. ⟵ completed/plan-2026-09-22.md §2
+- `gemini-long-session` — Gemini E1 continuation past 30 minutes was implementation-blocked. Mint, audio, tools, and cost were already proven. ⟵ completed/plan-2026-09-22.md §3.1
+- `tool-manifest-owner-smoke` — owner smoke of the tool catalog, including `code_update_*`. Not a build task. ⟵ completed/plan-2026-09-22.md §3.1
+- `android-tablet-signin` — visual check of the persona picker needs the owner signed in on tablet `R52XC06P9KJ`. ⟵ completed/plan-2026-09-22.md §4
+- `android-legacy-row-retest` — web path passed; the Android retest was still open. ⟵ completed/plan-2026-09-22.md §3.3
+- `wake-custom-training` — superseded 2026-09-20. Owner picked bundled phrases only. Default `hey-jarvis`. Do not resume. ⟵ completed/plan-2026-09-22.md §7.4
+
 Future actions **deliberately kept OUT of the plan**. Not scheduled work. Consolidated by
 `/clean-plans` on **2026-07-24**.
 
