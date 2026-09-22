@@ -70,14 +70,20 @@ func TestIoTCredentialsRouteIsAuthenticated(t *testing.T) {
 }
 
 // iotCredentials calls the real handler with an already-authenticated context
-// and returns the decoded body. IOT_DATA_ENDPOINT short-circuits the IoT
-// control-plane lookup, which is the same escape hatch internal/sync uses.
+// and returns the decoded body. No surface and no opt-in header: that is the
+// default path, which stays on live-ninja-iot. IOT_DATA_ENDPOINT short-circuits
+// the IoT control-plane lookup, which is the same escape hatch internal/sync uses.
 func iotCredentials(t *testing.T, deviceID string) map[string]any {
 	t.Helper()
 	return iotCredentialsWithSecrets(t, deviceID, nil)
 }
 
 func iotCredentialsWithSecrets(t *testing.T, deviceID string, secrets *config.Loader) map[string]any {
+	t.Helper()
+	return iotCredentialsFor(t, deviceID, secrets, "", nil)
+}
+
+func iotCredentialsFor(t *testing.T, deviceID string, secrets *config.Loader, surface string, headers map[string]string) map[string]any {
 	t.Helper()
 	t.Setenv("IOT_DATA_ENDPOINT", "a1b2c3-ats.iot.us-east-1.amazonaws.com")
 
@@ -93,13 +99,17 @@ func iotCredentialsWithSecrets(t *testing.T, deviceID string, secrets *config.Lo
 	app.Use(func(c *fiber.Ctx) error {
 		c.Locals(localUserID, "user-1")
 		c.Locals(localSessionID, "session-1")
-		c.Locals(localSurface, "web")
+		c.Locals(localSurface, surface)
 		c.Locals(localDeviceID, deviceID)
 		return c.Next()
 	})
 	app.Get("/api/v1/iot/credentials", handleIoTCredentials(deps))
 
-	res, err := app.Test(httptest.NewRequest("GET", "/api/v1/iot/credentials", nil))
+	req := httptest.NewRequest("GET", "/api/v1/iot/credentials", nil)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	res, err := app.Test(req)
 	require.NoError(t, err)
 	require.Equal(t, 200, res.StatusCode)
 	defer res.Body.Close()
@@ -175,9 +185,54 @@ func TestIoTAuthorizerNameMatchesTheTemplate(t *testing.T) {
 	tmpl := readRepoFile(t, "template.yaml")
 	require.Contains(t, tmpl, "AuthorizerName: "+iotAuthorizerName,
 		"the name the client sends must match the deployed authorizer")
+	require.Contains(t, tmpl, "AuthorizerName: "+iotSignedAuthorizerName)
+	require.Contains(t, tmpl, "SigningDisabled: false")
+	require.Contains(t, tmpl, "SigningDisabled: !If [IotAuthorizerSigningEnabled, false, true]",
+		"SigningDisabled on live-ninja-iot must stay conditional; AWS IoT cannot change it in place")
+	require.Contains(t, tmpl, "{{resolve:ssm:/live-ninja/prod/iot/authorizer_signing_public_key}}")
+}
+
+func TestIoTCredentialsDefaultNamesTheUnsignedAuthorizer(t *testing.T) {
+	body := iotCredentials(t, "dev-tab-s9")
+	assert.Equal(t, iotAuthorizerName, body["authorizerName"])
+	assert.Equal(t, false, body["signingRequired"])
 }
 
 func TestIoTCredentialsSignsTheTokenAndKeepsSigningOff(t *testing.T) {
+	key := iotTestSigningKey(t)
+	body := iotCredentialsFor(t, "dev-tab-s9", config.NewLoaderWithClient(nil), "device", nil)
+	assert.Equal(t, iotAuthorizerName, body["authorizerName"])
+	assert.Equal(t, false, body["signingRequired"],
+		"device and the default path stay on live-ninja-iot; Tab5 does not send a signature")
+	assertIoTTokenSignature(t, key, body)
+}
+
+func TestIoTCredentialsWebUsesTheSignedAuthorizer(t *testing.T) {
+	key := iotTestSigningKey(t)
+	body := iotCredentialsFor(t, "dev-browser", config.NewLoaderWithClient(nil), "web", nil)
+	assert.Equal(t, iotSignedAuthorizerName, body["authorizerName"])
+	assert.Equal(t, true, body["signingRequired"])
+	assertIoTTokenSignature(t, key, body)
+}
+
+func TestIoTCredentialsAndroidStaysUnsignedWithoutTheOptIn(t *testing.T) {
+	body := iotCredentialsFor(t, "dev-phone", nil, "android", nil)
+	assert.Equal(t, iotAuthorizerName, body["authorizerName"])
+	assert.Equal(t, false, body["signingRequired"])
+}
+
+func TestIoTCredentialsAndroidOptInUsesTheSignedAuthorizer(t *testing.T) {
+	key := iotTestSigningKey(t)
+	body := iotCredentialsFor(t, "dev-phone", config.NewLoaderWithClient(nil), "android", map[string]string{
+		iotSigningOptInHeader: "1",
+	})
+	assert.Equal(t, iotSignedAuthorizerName, body["authorizerName"])
+	assert.Equal(t, true, body["signingRequired"])
+	assertIoTTokenSignature(t, key, body)
+}
+
+func iotTestSigningKey(t *testing.T) *rsa.PrivateKey {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 	pemBytes := pem.EncodeToMemory(&pem.Block{
@@ -185,10 +240,11 @@ func TestIoTCredentialsSignsTheTokenAndKeepsSigningOff(t *testing.T) {
 		Bytes: x509.MarshalPKCS1PrivateKey(key),
 	})
 	t.Setenv(config.EnvOverrideIoTAuthorizerSigningPrivateKey, string(pemBytes))
+	return key
+}
 
-	body := iotCredentialsWithSecrets(t, "dev-tab-s9", config.NewLoaderWithClient(nil))
-	assert.Equal(t, false, body["signingRequired"],
-		"signing stays off until a new authorizer exists; flipping the old one drops clients")
+func assertIoTTokenSignature(t *testing.T, key *rsa.PrivateKey, body map[string]any) {
+	t.Helper()
 	sigB64, _ := body["tokenSignature"].(string)
 	require.NotEmpty(t, sigB64)
 	sig, err := base64.StdEncoding.DecodeString(sigB64)

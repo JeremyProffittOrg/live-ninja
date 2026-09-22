@@ -314,6 +314,7 @@ jobs:
           AZURE_VOICELIVE_CLIENT_ID: ${{ secrets.AZURE_VOICELIVE_CLIENT_ID }}
           AZURE_VOICELIVE_CLIENT_SECRET: ${{ secrets.AZURE_VOICELIVE_CLIENT_SECRET }}
           IOT_AUTHORIZER_SIGNING_PRIVATE_KEY: ${{ secrets.IOT_AUTHORIZER_SIGNING_PRIVATE_KEY }}
+          IOT_AUTHORIZER_SIGNING_PUBLIC_KEY: ${{ vars.IOT_AUTHORIZER_SIGNING_PUBLIC_KEY }}
         run: |
           set -eu
 
@@ -365,17 +366,40 @@ jobs:
             echo "azure/voicelive_client_secret synced"
           fi
 
-          # IoT authorizer signing (plan.md M1.5). The private half is synced
-          # so the web function can return tokenSignature. The public half is
-          # NOT passed to the stack: SigningDisabled on live-ninja-iot cannot
-          # be flipped in place, and enabling it before every client sends the
-          # signature would drop those connections.
+          # IoT authorizer signing. The private half lets the web function
+          # return tokenSignature. The public half is stored in SSM for
+          # live-ninja-iot-signed only. Do not pass it as
+          # IotAuthorizerSigningPublicKey: that parameter flips
+          # SigningDisabled on live-ninja-iot, and AWS IoT rejects that update.
           if [ -n "${IOT_AUTHORIZER_SIGNING_PRIVATE_KEY:-}" ]; then
             aws ssm put-parameter               --name "/live-ninja/prod/iot/authorizer_signing_private_key"               --type SecureString               --value "$IOT_AUTHORIZER_SIGNING_PRIVATE_KEY"               --overwrite >/dev/null
             echo "iot/authorizer_signing_private_key synced"
           else
             echo "IOT_AUTHORIZER_SIGNING_PRIVATE_KEY not set; credentials omit tokenSignature"
           fi
+          if [ -z "${IOT_AUTHORIZER_SIGNING_PUBLIC_KEY:-}" ]; then
+            echo "IOT_AUTHORIZER_SIGNING_PUBLIC_KEY is required to deploy live-ninja-iot-signed" >&2
+            exit 1
+          fi
+          python3 -c 'import sys,textwrap; exec(textwrap.dedent(sys.stdin.read()))' <<'PY'
+          import os, subprocess, sys
+          key = os.environ.get("IOT_AUTHORIZER_SIGNING_PUBLIC_KEY", "")
+          key = key.replace("\r\n", "\n").replace("\r", "\n")
+          if "\n" not in key and "\\n" in key:
+              key = key.replace("\\n", "\n")
+          key = key.strip() + "\n"
+          if "BEGIN PUBLIC KEY" not in key:
+              sys.stderr.write("IOT_AUTHORIZER_SIGNING_PUBLIC_KEY is not a PEM public key\n")
+              sys.exit(1)
+          subprocess.run([
+              "aws", "ssm", "put-parameter",
+              "--name", "/live-ninja/prod/iot/authorizer_signing_public_key",
+              "--type", "String",
+              "--value", key,
+              "--overwrite",
+          ], check=True, stdout=subprocess.DEVNULL)
+          print("iot/authorizer_signing_public_key synced")
+          PY
 
           # cred_pepper is generated once by the workflow and never rotated here;
           # only created if the parameter does not already exist.

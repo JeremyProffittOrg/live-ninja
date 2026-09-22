@@ -27,13 +27,24 @@ import (
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
+	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	lnsync "github.com/JeremyProffittOrg/live-ninja/internal/sync"
 )
 
-// iotAuthorizerName must match the AuthorizerName in template.yaml. Clients
-// name it explicitly on the connect URL, which is why the account's other
-// (certificate-authenticated) IoT devices are unaffected by its existence.
+// iotAuthorizerName must match AuthorizerName live-ninja-iot in template.yaml.
+// Clients name it explicitly on the connect URL. AWS IoT cannot change
+// SigningDisabled on that authorizer, so it stays the default.
 const iotAuthorizerName = "live-ninja-iot"
+
+// iotSignedAuthorizerName is live-ninja-iot-signed. Web uses it. Android
+// uses it only when the request sends iotSigningOptInHeader. Tab5 pairing
+// mints surface device (auth.ClaimPairing and the device poll access token)
+// and stays on iotAuthorizerName, as does every other surface.
+const iotSignedAuthorizerName = "live-ninja-iot-signed"
+
+// iotSigningOptInHeader is the opt-in the installed Android 0.3.11 build
+// does not send. Without it, an android session stays on live-ninja-iot.
+const iotSigningOptInHeader = "X-LN-IoT-Signing"
 
 // RegisterIoTRoutes mounts the credential route under the authenticated API.
 func RegisterIoTRoutes(app *fiber.App, deps *Deps) {
@@ -75,12 +86,14 @@ func handleIoTCredentials(deps *Deps) fiber.Handler {
 			return errorJSON(c, fiber.StatusInternalServerError, "internal", "could not mint a token")
 		}
 
-		// Signing stays off on the wire. AWS IoT does not allow SigningDisabled
-		// to be changed on an existing authorizer, so tokenSignature is minted
-		// for the next authorizer and is not sent until signingRequired is true.
+		// Web and an opted-in Android client use the signed authorizer.
+		// device, empty, and every other surface stay on live-ninja-iot
+		// with signingRequired false. tokenSignature is still attached
+		// whenever the private key reads.
+		authorizerName, signingRequired := iotAuthorizerForRequest(c)
 		body := fiber.Map{
 			"endpoint":       endpoint,
-			"authorizerName": iotAuthorizerName,
+			"authorizerName": authorizerName,
 			// The MQTT client id. It lands inside the IoT policy's Connect
 			// resource ARN, so the authorizer character-allowlists it; keeping
 			// it to the device id (or the session id for a browser with no
@@ -108,7 +121,7 @@ func handleIoTCredentials(deps *Deps) fiber.Handler {
 			// two would drift and every claim would be refused — silently, as a
 			// closed connection the client reconnects into.
 			"speakingTopic":   lnsync.SpeakingTopic(userID),
-			"signingRequired": false,
+			"signingRequired": signingRequired,
 		}
 		if sig := iotTokenSignature(c, deps, token); sig != "" {
 			body["tokenSignature"] = sig
@@ -117,9 +130,25 @@ func handleIoTCredentials(deps *Deps) fiber.Handler {
 	}
 }
 
+// iotAuthorizerForRequest picks the authorizer for this session.
+// surface web uses the signed authorizer. surface android uses it only
+// when X-LN-IoT-Signing is 1. surface device (Tab5), empty, and anything
+// else stay on live-ninja-iot with signing off.
+func iotAuthorizerForRequest(c *fiber.Ctx) (name string, signingRequired bool) {
+	switch Surface(c) {
+	case store.SurfaceWeb:
+		return iotSignedAuthorizerName, true
+	case store.SurfaceAndroid:
+		if c.Get(iotSigningOptInHeader) == "1" {
+			return iotSignedAuthorizerName, true
+		}
+	}
+	return iotAuthorizerName, false
+}
+
 // iotTokenSignature signs token with the SSM private key. A missing or
-// unreadable key returns "" and the credential response still succeeds:
-// the deployed authorizer has signing disabled, so a signature is optional.
+// unreadable key returns "" and the credential response still succeeds.
+// The client sends the signature only when signingRequired is true.
 // The key and the token are never logged.
 func iotTokenSignature(c *fiber.Ctx, deps *Deps, token string) string {
 	if deps.Secrets == nil {

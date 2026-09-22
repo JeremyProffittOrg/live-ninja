@@ -75,11 +75,11 @@ Parameters:
       guidance is "if you leave signing enabled, you can prevent excessive
       triggering of your Lambda by unrecognized clients".
 
-      To enable signing: generate an RSA keypair, put the PRIVATE half in the
-      repo secrets via scripts/set-secret.sh (never in this template, never in
-      a log), and pass the PUBLIC half here. The token mint then returns
-      {token, tokenSignature} and clients send both. Only the public half ever
-      belongs in CloudFormation.
+      Leave this empty. AWS IoT cannot change SigningDisabled on the existing
+      authorizer live-ninja-iot. The signed authorizer live-ninja-iot-signed
+      reads its public key from SSM
+      /live-ninja/prod/iot/authorizer_signing_public_key. Passing a key
+      here would try to flip SigningDisabled and the stack update would fail.
   OpenAIRealtimeModel:
     Type: String
     Default: gpt-realtime
@@ -272,9 +272,9 @@ Globals:
         LOG_LEVEL: debug
 
 Conditions:
-  # M1.5: signing is on only once a public key is supplied. Empty -> the
-  # authorizer deploys with SigningDisabled=true so the feature is usable
-  # before the keypair exists, and flipping it on is a parameter change.
+  # Empty IotAuthorizerSigningPublicKey keeps SigningDisabled true on the
+  # existing authorizer live-ninja-iot. Do not set that parameter: AWS IoT
+  # cannot change SigningDisabled in place. The signed authorizer is separate.
   IotAuthorizerSigningEnabled: !Not [!Equals [!Ref IotAuthorizerSigningPublicKey, ""]]
 
   # M12: the whole nova-bridge subsystem is gated OFF by default
@@ -771,12 +771,35 @@ Resources:
       # NOT a default authorizer for the account: clients name it explicitly
       # (x-amz-customauthorizer-name), so the existing certificate-authenticated
       # M5Stack devices keep authenticating exactly as they do today.
+      # SigningDisabled cannot be changed on this existing authorizer.
       SigningDisabled: !If [IotAuthorizerSigningEnabled, false, true]
       TokenKeyName: !If [IotAuthorizerSigningEnabled, "token", !Ref "AWS::NoValue"]
       TokenSigningPublicKeys: !If
       - IotAuthorizerSigningEnabled
       - LiveNinjaIotKey1: !Ref IotAuthorizerSigningPublicKey
       - !Ref "AWS::NoValue"
+
+  # Second invoke permission. Do not widen IotAuthorizerInvokePermission:
+  # its SourceArn stays authorizer/live-ninja-iot.
+  IotSignedAuthorizerInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt IotAuthorizerFunction.Arn
+      Principal: iot.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:authorizer/live-ninja-iot-signed"
+
+  IotSignedAuthorizer:
+    Type: AWS::IoT::Authorizer
+    DependsOn: IotSignedAuthorizerInvokePermission
+    Properties:
+      AuthorizerName: live-ninja-iot-signed
+      AuthorizerFunctionArn: !GetAtt IotAuthorizerFunction.Arn
+      Status: ACTIVE
+      SigningDisabled: false
+      TokenKeyName: token
+      TokenSigningPublicKeys:
+        LiveNinjaIotKey1: "{{resolve:ssm:/live-ninja/prod/iot/authorizer_signing_public_key}}"
 
   RealtimeBrokerFunction:
     Type: AWS::Serverless::Function

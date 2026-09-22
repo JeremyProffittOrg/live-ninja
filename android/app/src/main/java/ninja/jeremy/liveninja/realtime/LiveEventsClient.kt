@@ -329,7 +329,7 @@ class LiveEventsClient @Inject constructor(
 
         // AWS IoT takes the authorizer name from the query string and the token
         // from the MQTT CONNECT user-name field.
-        val url = iotSocketUrl(c.endpoint, c.authorizerName, c.tokenSignature, c.signingRequired)
+        val url = iotSocketUrl(c.endpoint, c.authorizerName, c.token, c.tokenSignature, c.signingRequired)
         val request = Request.Builder()
             .url(url)
             // The subprotocol AWS IoT requires on the handshake.

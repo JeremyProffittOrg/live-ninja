@@ -4,6 +4,7 @@ import okhttp3.ResponseBody
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
+import retrofit2.http.Headers
 import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.PUT
@@ -191,6 +192,7 @@ interface LiveNinjaApi {
      * Credentials for the cross-device change stream (§6 WS-3 M3.5). The token
      * it returns is audience-scoped to IoT and is NOT an API credential.
      */
+    @Headers("X-LN-IoT-Signing: 1")
     @GET("api/v1/iot/credentials")
     suspend fun iotCredentials(): IotCredentials
 

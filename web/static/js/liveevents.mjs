@@ -443,15 +443,17 @@ export function createEventRouter({ peers = new Map(), lock = null, onChange, on
  */
 /**
  * WebSocket URL for the AWS IoT custom authorizer.
- * The token stays in the MQTT CONNECT user-name field. The signature query
- * parameter is added only when the server sets signingRequired. The deployed
- * authorizer has signing disabled, and AWS does not allow that flag to be
- * flipped on the existing authorizer.
+ * The token stays in the MQTT CONNECT user-name field for the Lambda.
+ * When signingRequired is true, AWS IoT also requires that same token in the
+ * query parameter named token (TokenKeyName) plus
+ * x-amz-customauthorizer-signature. Both values are URL-encoded. The flag
+ * stays off for Tab5 and for the installed Android build.
  */
 export function iotSocketUrl(creds) {
   const name = encodeURIComponent((creds && creds.authorizerName) || '');
   let url = `wss://${creds.endpoint}/mqtt?x-amz-customauthorizer-name=${name}`;
-  if (creds && creds.signingRequired && creds.tokenSignature) {
+  if (creds && creds.signingRequired && creds.tokenSignature && creds.token) {
+    url += `&token=${encodeURIComponent(creds.token)}`;
     url += `&x-amz-customauthorizer-signature=${encodeURIComponent(creds.tokenSignature)}`;
   }
   return url;

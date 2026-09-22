@@ -338,6 +338,7 @@ test('the IoT signature stays off the socket until signing is required', () => {
   const creds = {
     endpoint: 'example.iot.us-east-1.amazonaws.com',
     authorizerName: 'live-ninja-iot',
+    token: 'a+b',
     tokenSignature: 'abc+def/ghi=',
     signingRequired: false,
   };
@@ -347,10 +348,11 @@ test('the IoT signature stays off the socket until signing is required', () => {
     'wss://example.iot.us-east-1.amazonaws.com/mqtt?x-amz-customauthorizer-name=live-ninja-iot',
   );
   assert.equal(off.includes('signature'), false);
+  assert.equal(off.includes('token='), false);
 
-  const on = iotSocketUrl({ ...creds, signingRequired: true });
+  const on = iotSocketUrl({ ...creds, signingRequired: true, authorizerName: 'live-ninja-iot-signed' });
   assert.equal(
     on,
-    'wss://example.iot.us-east-1.amazonaws.com/mqtt?x-amz-customauthorizer-name=live-ninja-iot&x-amz-customauthorizer-signature=abc%2Bdef%2Fghi%3D',
+    'wss://example.iot.us-east-1.amazonaws.com/mqtt?x-amz-customauthorizer-name=live-ninja-iot-signed&token=a%2Bb&x-amz-customauthorizer-signature=abc%2Bdef%2Fghi%3D',
   );
 });
