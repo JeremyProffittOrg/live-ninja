@@ -10,7 +10,7 @@ package webapp
 //   1. buildAPIToolMemory must return a non-nil MemoryService seam
 //      whenever a store is present (the exact call that was missing).
 //   2. The full /api/v1/tools/invoke route must execute memory_write
-//      successfully (ENT# + EMB# persisted) when Memory is wired the
+//      successfully (the ENT# item persisted) when Memory is wired the
 //      way buildAPIToolsRegistry now wires it.
 
 import (
@@ -60,12 +60,12 @@ func TestBuildAPIToolMemoryNilStoreDegrades(t *testing.T) {
 // exactly as buildAPIToolsRegistry wires it (tools.NewMemoryService over
 // memory.NewService), with only the Bedrock embedder swapped for the
 // deterministic fake. Before the fix this invocation answered 503
-// not_configured; now it must persist both the ENT# and EMB# items.
+// not_configured; now it must persist the ENT# item.
 func TestToolsInvokeMemoryWriteEndToEnd(t *testing.T) {
 	fake := testutil.NewFakeDynamo()
 	st := store.NewWithClient(fake, "live-ninja-test")
 
-	msvc, err := memory.NewService(st, &fakeEmbedder{})
+	msvc, err := memory.NewService(st)
 	if err != nil {
 		t.Fatalf("memory.NewService: %v", err)
 	}
@@ -116,8 +116,5 @@ func TestToolsInvokeMemoryWriteEndToEnd(t *testing.T) {
 	}
 	if fake.RawItem("USER#u1", "ENT#person#"+entityID) == nil {
 		t.Errorf("ENT item missing after tool write")
-	}
-	if fake.RawItem("USER#u1", "EMB#"+entityID) == nil {
-		t.Errorf("EMB item missing after tool write — entity saved but not semantically indexed")
 	}
 }

@@ -6,23 +6,19 @@ import (
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 )
 
-// Service wires the embedder to the DynamoDB entity/embedding store and
-// exposes the memory core operations the tool registry maps onto:
-// Search (memory_search), WriteEntity (memory_write), PlanUpsert
-// (plan_upsert), Forget (forget); entity_get goes straight to
-// store.GetEntityByID.
+// Service is the memory core the tool registry maps onto: Search
+// (memory_search), WriteEntity (memory_write), PlanUpsert (plan_upsert),
+// Forget (forget). entity_get goes straight to store.GetEntityByID.
+// Facts live as ENT# items. Recalled conversation text is AgentCore
+// Memory, wired beside this service. This service does not embed.
 type Service struct {
-	Store    *store.Store
-	Embedder Embedder
+	Store *store.Store
 }
 
-// NewService builds the memory core over an existing store and embedder.
-func NewService(st *store.Store, emb Embedder) (*Service, error) {
+// NewService builds the memory core over an existing store.
+func NewService(st *store.Store) (*Service, error) {
 	if st == nil {
 		return nil, errors.New("memory: store is required")
 	}
-	if emb == nil {
-		return nil, errors.New("memory: embedder is required")
-	}
-	return &Service{Store: st, Embedder: emb}, nil
+	return &Service{Store: st}, nil
 }

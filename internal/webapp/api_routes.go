@@ -688,22 +688,15 @@ func buildAPIToolsRegistry(deps *Deps) *tools.Registry {
 	return registry
 }
 
-// buildAPIToolMemory wires tools.Deps.Memory: the M10 memory core
-// (internal/memory, Bedrock Titan v2 embedder over the shared store)
-// behind the tool seam via tools.NewMemoryService. Returns nil on a
-// construction failure — the memory tools then degrade to
-// not_configured, mirroring buildMemoryService in cmd/web/main.go for
-// the REST surface — but never nil silently: the degradation is logged
-// loudly so a missing embedder shows up in CloudWatch, not just as
-// in-session "Memory failed" replies.
+// buildAPIToolMemory wires tools.Deps.Memory: the memory core
+// (internal/memory) behind the tool seam via tools.NewMemoryService.
+// Structured facts are ENT# rows. Conversation recall is AgentCore.
 func buildAPIToolMemory(ctx context.Context, deps *Deps) tools.MemoryService {
-	embedder, err := memory.NewBedrockEmbedder(ctx)
-	if err != nil {
-		deps.Log.Warn("api: memory embedder unavailable; memory tools degraded to not_configured",
-			slog.String("error", err.Error()))
+	if deps.Store == nil {
+		deps.Log.Warn("api: memory store unavailable; memory tools degraded to not_configured")
 		return nil
 	}
-	svc, err := memory.NewService(deps.Store, embedder)
+	svc, err := memory.NewService(deps.Store)
 	if err != nil {
 		deps.Log.Warn("api: memory core unavailable; memory tools degraded to not_configured",
 			slog.String("error", err.Error()))

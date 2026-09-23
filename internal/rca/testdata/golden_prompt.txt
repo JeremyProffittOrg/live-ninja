@@ -72,12 +72,12 @@ designed self-correction path, not a bug** to file an RCA against.
 
 ### The memory layer
 
-internal/memory: per-user `ENT#<type>#<id>` + `EMB#<id>` items, Titan v2 (512 dims) query
-embeddings, in-partition cosine — Query/GetItem only, never Scan. Since 2026-09-14
-(`agentcore-memory`, dual running) the sink also writes one AgentCore Memory event per exchange
-(`internal/agentmemory`, gate `AGENTCORE_MEMORY_MODE`), the broker preloads top records into a
-`REMEMBERED` block at mint, `memory_search` returns them under `remembered`, purge deletes them.
-A "memory not wired" RCA checks `AGENTCORE_MEMORY_ID`/`_MODE` as well as `Deps.Memory`.
+internal/memory: per-user `ENT#<type>#<id>` items for people, places, projects, tasks, and
+plans — Query/GetItem only, never Scan. `memory_search` matches that text. Since 2026-09-14
+conversation facts go to AgentCore Memory (`internal/agentmemory`, gate `AGENTCORE_MEMORY_MODE`).
+The broker preloads top records into a `REMEMBERED` block at mint, `memory_search` returns them
+under `remembered`, and purge deletes them. A "memory not wired" RCA checks
+`AGENTCORE_MEMORY_ID`/`_MODE` as well as `Deps.Memory`.
 
 ### Settings and the base-knowledge profile
 
@@ -105,7 +105,7 @@ One DynamoDB table `live-ninja`: `pk`/`sk` plus several GSIs, `PAY_PER_REQUEST`,
 **no Scan on any serving path**. Key prefixes an RCA may need: `USER#<uid>` with `SETTINGS` /
 `LOG#<sessionId>#<seq>` (tool-audit rows 90d TTL, transcript turns 30d TTL by default) /
 `CONV#<ts>#<sessionId>` (minted by cmd/topics-extract at session end, long after any mid-session
-tool failure) / `TOPIC#` / `PERSONA#` / `DELIV#` / `ENT#` / `EMB#` / `GUIDE#`, `DEVICE#<id>`,
+tool failure) / `TOPIC#` / `PERSONA#` / `DELIV#` / `ENT#` / `GUIDE#`, `DEVICE#<id>`,
 `IDEMP#<userId>#<key>`, and `RCA#*` (this pipeline's own records). Auth: LWA sign-in, KMS-signed
 JWTs, per-call re-authorization, owner-plus-allowlist access.
 

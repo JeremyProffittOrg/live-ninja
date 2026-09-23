@@ -1,35 +1,21 @@
 package store
 
-// M10 memory-layer item shapes (locked decisions — see plan.md M10):
+// Memory-layer item shapes:
 //
 //	ENTITY: pk=USER#<uid> sk=ENT#<type>#<entityId>
 //	        type ∈ {person place info project task plan}
 //	        fields: name, attrs(map), relations[{type,targetId}],
-//	        updatedAt, embedded(bool)
-//	EMB:    pk=USER#<uid> sk=EMB#<entityId>
-//	        vector (base64-encoded little-endian float32s), dim, model,
-//	        updatedAt (+ additive entityType field so search/forget can
-//	        key straight back to the ENT item without probing all six
-//	        type prefixes — documented extension of the locked shape)
+//	        updatedAt
 //	GUIDE:  pk=USER#<uid> sk=GUIDE#<guideId>
 //	        title, text, enabled, priority(int), version, updatedAt
 //
-// Vector-store decision (VERIFIED 2026-07-17): the aws-sdk-go-v2
-// `s3vectors` package IS published (v1.9.x), so the SDK itself is not
-// the blocker — but S3 Vectors needs a vector bucket + index + IAM that
-// are outside this deploy's locked template.yaml delta (no S3 Vectors
-// resources are provisioned), so per the locked fallback the embedding
-// store is DynamoDB-native: EMB# items in the user's partition,
-// brute-force cosine ranking over a single-partition Query capped at
-// MaxEmbeddingsPerUser. Query/GetItem only — never a Scan.
+// Query/GetItem only — never a Scan. Conversation recall is AgentCore
+// Memory, not a vector row in this table.
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/binary"
 	"errors"
 	"fmt"
-	"math"
 	"sort"
 	"time"
 
@@ -61,12 +47,6 @@ var EntityTypes = []string{
 // the EntityTypes enum.
 var ErrInvalidEntityType = errors.New("store: invalid entity type")
 
-// MaxEmbeddingsPerUser bounds the single-partition brute-force cosine
-// design: ListEmbeddings never returns more than this many vectors, so
-// memory search cost is capped regardless of how many entities a user
-// accumulates (locked decision: ≤2000 embeddings/user).
-const MaxEmbeddingsPerUser = 2000
-
 // Relation is one edge in an entity's relation list
 // (e.g. {Type:"works_at", TargetID:"<place entityId>"}).
 type Relation struct {
@@ -83,20 +63,6 @@ type Entity struct {
 	Attrs     map[string]any `dynamodbav:"attrs" json:"attrs"`
 	Relations []Relation     `dynamodbav:"relations" json:"relations"`
 	UpdatedAt string         `dynamodbav:"updatedAt" json:"updatedAt"` // RFC3339
-	Embedded  bool           `dynamodbav:"embedded" json:"embedded"`
-}
-
-// Embedding is the USER#<uid>/EMB#<entityId> item. Vector round-trips
-// through a base64(little-endian float32) string attribute on the wire;
-// the struct exposes the decoded []float32.
-type Embedding struct {
-	UserID     string    `dynamodbav:"-"`
-	EntityID   string    `dynamodbav:"entityId"`
-	EntityType string    `dynamodbav:"entityType"` // additive: keys back to ENT#<type>#<id>
-	Vector     []float32 `dynamodbav:"-"`
-	Dim        int       `dynamodbav:"dim"`
-	Model      string    `dynamodbav:"model"`
-	UpdatedAt  string    `dynamodbav:"updatedAt"` // RFC3339
 }
 
 // Guide is the USER#<uid>/GUIDE#<guideId> item — a standing instruction
@@ -135,7 +101,6 @@ func seedGuide() *Guide {
 // ---- key builders ----
 
 func entSK(entityType, entityID string) string { return "ENT#" + entityType + "#" + entityID }
-func embSK(entityID string) string             { return "EMB#" + entityID }
 func guideSK(guideID string) string            { return "GUIDE#" + guideID }
 
 // ValidEntityType reports whether t is one of the six entity types.
@@ -146,34 +111,6 @@ func ValidEntityType(t string) bool {
 		}
 	}
 	return false
-}
-
-// ---- vector wire encoding ----
-
-// EncodeVector packs a float32 vector into the base64(little-endian
-// IEEE-754) string stored on the EMB item.
-func EncodeVector(v []float32) string {
-	buf := make([]byte, 4*len(v))
-	for i, f := range v {
-		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(f))
-	}
-	return base64.StdEncoding.EncodeToString(buf)
-}
-
-// DecodeVector reverses EncodeVector.
-func DecodeVector(s string) ([]float32, error) {
-	buf, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		return nil, fmt.Errorf("store: decode vector base64: %w", err)
-	}
-	if len(buf)%4 != 0 {
-		return nil, fmt.Errorf("store: vector byte length %d not a multiple of 4", len(buf))
-	}
-	out := make([]float32, len(buf)/4)
-	for i := range out {
-		out[i] = math.Float32frombits(binary.LittleEndian.Uint32(buf[i*4:]))
-	}
-	return out, nil
 }
 
 // ---- ENTITY CRUD ----
@@ -262,8 +199,7 @@ func (s *Store) GetEntityByID(ctx context.Context, userID, entityID string) (*En
 
 // ListEntities returns the user's entities, optionally filtered to one
 // type (empty entityType = all types). Single-partition prefix Query,
-// paginated to exhaustion — a user's entity partition is bounded by the
-// same ≤2000 design cap as embeddings.
+// paginated to exhaustion.
 func (s *Store) ListEntities(ctx context.Context, userID, entityType string) ([]Entity, error) {
 	if userID == "" {
 		return nil, errors.New("store: userID is required")
@@ -319,39 +255,6 @@ func (s *Store) FindEntityByName(ctx context.Context, userID, entityType, name s
 	return nil, nil
 }
 
-// MarkEntityEmbedded flips embedded=true on an existing ENT item
-// (called after the EMB write lands). ErrNotFound if the entity is gone
-// (e.g. forgotten mid-flight) — the condition prevents resurrecting a
-// deleted entity as a key-only ghost item.
-func (s *Store) MarkEntityEmbedded(ctx context.Context, userID, entityType, entityID string) error {
-	if !ValidEntityType(entityType) {
-		return fmt.Errorf("%w: %q", ErrInvalidEntityType, entityType)
-	}
-	_, err := s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName: aws.String(s.table),
-		Key: map[string]types.AttributeValue{
-			"pk": &types.AttributeValueMemberS{Value: userPK(userID)},
-			"sk": &types.AttributeValueMemberS{Value: entSK(entityType, entityID)},
-		},
-		ConditionExpression: aws.String("attribute_exists(pk)"),
-		UpdateExpression:    aws.String("SET #emb = :true"),
-		ExpressionAttributeNames: map[string]string{
-			"#emb": "embedded",
-		},
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":true": &types.AttributeValueMemberBOOL{Value: true},
-		},
-	})
-	if err != nil {
-		var condErr *types.ConditionalCheckFailedException
-		if errors.As(err, &condErr) {
-			return ErrNotFound
-		}
-		return fmt.Errorf("store: mark entity embedded: %w", err)
-	}
-	return nil
-}
-
 // DeleteEntity removes the ENT item. Returns ErrNotFound when nothing
 // was there (ALL_OLD tells us), so forget can report accurately.
 func (s *Store) DeleteEntity(ctx context.Context, userID, entityType, entityID string) error {
@@ -371,132 +274,6 @@ func (s *Store) DeleteEntity(ctx context.Context, userID, entityType, entityID s
 	}
 	if out.Attributes == nil {
 		return ErrNotFound
-	}
-	return nil
-}
-
-// ---- EMB CRUD ----
-
-// embItem is the wire shape of the EMB item (vector as base64 string).
-type embItem struct {
-	PK         string `dynamodbav:"pk"`
-	SK         string `dynamodbav:"sk"`
-	EntityID   string `dynamodbav:"entityId"`
-	EntityType string `dynamodbav:"entityType"`
-	Vector     string `dynamodbav:"vector"`
-	Dim        int    `dynamodbav:"dim"`
-	Model      string `dynamodbav:"model"`
-	UpdatedAt  string `dynamodbav:"updatedAt"`
-}
-
-// PutEmbedding upserts the EMB item for an entity.
-func (s *Store) PutEmbedding(ctx context.Context, e *Embedding) error {
-	switch {
-	case e == nil:
-		return errors.New("store: embedding is required")
-	case e.UserID == "" || e.EntityID == "":
-		return errors.New("store: embedding userID and entityID are required")
-	case len(e.Vector) == 0:
-		return errors.New("store: embedding vector is required")
-	case !ValidEntityType(e.EntityType):
-		return fmt.Errorf("%w: %q", ErrInvalidEntityType, e.EntityType)
-	}
-	e.Dim = len(e.Vector)
-	e.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-
-	av, err := attributevalue.MarshalMap(embItem{
-		PK:         userPK(e.UserID),
-		SK:         embSK(e.EntityID),
-		EntityID:   e.EntityID,
-		EntityType: e.EntityType,
-		Vector:     EncodeVector(e.Vector),
-		Dim:        e.Dim,
-		Model:      e.Model,
-		UpdatedAt:  e.UpdatedAt,
-	})
-	if err != nil {
-		return fmt.Errorf("store: marshal embedding: %w", err)
-	}
-	if _, err := s.client.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: aws.String(s.table),
-		Item:      av,
-	}); err != nil {
-		return fmt.Errorf("store: put embedding: %w", err)
-	}
-	return nil
-}
-
-// ListEmbeddings loads the user's EMB partition — the brute-force cosine
-// corpus — as a paginated single-partition prefix Query, hard-capped at
-// MaxEmbeddingsPerUser items so a runaway partition cannot blow up
-// read cost or memory.
-func (s *Store) ListEmbeddings(ctx context.Context, userID string) ([]Embedding, error) {
-	if userID == "" {
-		return nil, errors.New("store: userID is required")
-	}
-
-	in := &dynamodb.QueryInput{
-		TableName:              aws.String(s.table),
-		KeyConditionExpression: aws.String("pk = :pk AND begins_with(sk, :pfx)"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":pk":  &types.AttributeValueMemberS{Value: userPK(userID)},
-			":pfx": &types.AttributeValueMemberS{Value: "EMB#"},
-		},
-	}
-
-	out := make([]Embedding, 0, 64)
-	for len(out) < MaxEmbeddingsPerUser {
-		remaining := int32(MaxEmbeddingsPerUser - len(out))
-		in.Limit = aws.Int32(remaining)
-		page, err := s.client.Query(ctx, in)
-		if err != nil {
-			return nil, fmt.Errorf("store: list embeddings: %w", err)
-		}
-		for _, raw := range page.Items {
-			var it embItem
-			if err := attributevalue.UnmarshalMap(raw, &it); err != nil {
-				return nil, fmt.Errorf("store: unmarshal embedding: %w", err)
-			}
-			vec, err := DecodeVector(it.Vector)
-			if err != nil {
-				return nil, fmt.Errorf("store: embedding %s: %w", it.EntityID, err)
-			}
-			out = append(out, Embedding{
-				UserID:     userID,
-				EntityID:   it.EntityID,
-				EntityType: it.EntityType,
-				Vector:     vec,
-				Dim:        it.Dim,
-				Model:      it.Model,
-				UpdatedAt:  it.UpdatedAt,
-			})
-			if len(out) >= MaxEmbeddingsPerUser {
-				break
-			}
-		}
-		if page.LastEvaluatedKey == nil || len(page.LastEvaluatedKey) == 0 {
-			break
-		}
-		in.ExclusiveStartKey = page.LastEvaluatedKey
-	}
-	return out, nil
-}
-
-// DeleteEmbedding removes the EMB item. Missing item is NOT an error —
-// forget must succeed for entities that were never embedded (or whose
-// embed failed and left embedded=false).
-func (s *Store) DeleteEmbedding(ctx context.Context, userID, entityID string) error {
-	if userID == "" || entityID == "" {
-		return errors.New("store: userID and entityID are required")
-	}
-	if _, err := s.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-		TableName: aws.String(s.table),
-		Key: map[string]types.AttributeValue{
-			"pk": &types.AttributeValueMemberS{Value: userPK(userID)},
-			"sk": &types.AttributeValueMemberS{Value: embSK(entityID)},
-		},
-	}); err != nil {
-		return fmt.Errorf("store: delete embedding: %w", err)
 	}
 	return nil
 }

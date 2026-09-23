@@ -6,7 +6,7 @@
 
 Live Ninja is a personal, always-available speech-to-speech AI assistant delivered across three Login-with-Amazon-gated surfaces — an Android app that becomes the phone's default voice assistant, a responsive web application, and an ambient M5Stack Tab5 embedded voice terminal on the desk — all sharing a single serverless AWS backend built on Go-Fiber (Lambda Web Adapter, arm64/Graviton) and OpenAI's GPT Realtime engine. The backend's core responsibilities are to broker short-lived OpenAI Realtime ephemeral tokens so the API key never touches a client, run the LWA OAuth exchange and mint first-party session credentials with surface-specific lifetimes (30 days for web/Android, 10 years for the M5Stack), persist users/devices/sessions/wake-word configs/usage in a single-table DynamoDB with strict Query/GetItem-only access, and serve the web UI and device config assets. Wake-word detection is always on-device on every surface — a hard architectural privacy invariant — and is user-programmable ("Hey Live Ninja" by default). This document specifies the vision, personas, functional and non-functional requirements per surface, UX rules, system architecture, voice experience, authentication, data model, security/privacy posture, KPIs, risks, and the baked-in decision for every open question.
 
-**Version 1.1 additions (fully specified below).** Beyond the three core surfaces, the platform adds: (1) a **Deliverables Store** — the assistant can create files, zip them, and deliver them as separate, durable, per-user downloadables on S3 (indexed in DynamoDB), reachable identically from the website Download Center and the Android Files tab (see FR-DLV-01..06, milestone M9); (2) a **Memory Layer** — a structured personal memory organized by **people, places, and information** with **organizational** (projects/lists) and **planning** (goals/tasks) capabilities, backed by a DynamoDB entity/relationship graph + S3 Vectors semantic recall with an optional local RAG sidecar (see FR-MEM-01..06, milestone M10); and (3) **Guide Entities** — standing guidance injected into *every* session on every surface, shipping with a default guide that treats AI as a fast-moving field and prefers sources published/updated within the last 30 days or the official technical docs of leading AI providers such as Anthropic and OpenAI (see FR-MEM-07..09).
+**Version 1.1 additions (fully specified below).** Beyond the three core surfaces, the platform adds: (1) a **Deliverables Store** — the assistant can create files, zip them, and deliver them as separate, durable, per-user downloadables on S3 (indexed in DynamoDB), reachable identically from the website Download Center and the Android Files tab (see FR-DLV-01..06, milestone M9); (2) a **Memory Layer** — a structured personal memory organized by **people, places, and information** with **organizational** (projects/lists) and **planning** (goals/tasks) capabilities, backed by DynamoDB `ENT#` items for structured facts and AgentCore Memory for facts learned from conversation (see FR-MEM-01..06, milestone M10); and (3) **Guide Entities** — standing guidance injected into *every* session on every surface, shipping with a default guide that treats AI as a fast-moving field and prefers sources published/updated within the last 30 days or the official technical docs of leading AI providers such as Anthropic and OpenAI (see FR-MEM-07..09).
 
 | Metadata | Value |
 |---|---|
@@ -605,7 +605,7 @@ The 10-year "login" is a continuously, silently rotated credential lineage ancho
 | Deliverable | `USER#<userId>` | `DELIV#<ts>#<deliverableId>` | `GSI1PK=DELIV#<deliverableId>` (share-by-id) | list = Query PK=`USER#<userId>`, SK `begins_with DELIV#`; fetch/share = GetItem or Query GSI1 on `DELIV#<deliverableId>`. |
 | Entity (people/places/information) | `USER#<userId>` | `ENTITY#<entityType>#<entityId>` | `GSI2PK=ETYPE#<userId>#<entityType>` (list by type) | fetch one = GetItem; list a type = Query GSI2 on `ETYPE#<userId>#<entityType>`. |
 | Edge (relationships) | `USER#<userId>` | `EDGE#<fromId>#<relation>#<toId>` | — | traverse from a node = Query PK=`USER#<userId>`, SK `begins_with EDGE#<fromId>#`. |
-| Memory (typed) | `USER#<userId>` | `MEM#<memoryType>#<memoryId>` | — | attrs `vectorId`, `sourceTurnId`, `confidence`, `retentionUntil` (TTL); `memoryType` ∈ {working, episodic, semantic, procedural}. Recall by type = Query SK `begins_with MEM#<memoryType>#`; semantic recall goes through S3 Vectors then GetItem by `memoryId`. |
+| Memory (structured) | `USER#<userId>` | `ENT#<type>#<entityId>` | — | `type` ∈ {person, place, info, project, task, plan}. List = Query SK `begins_with ENT#`. Conversation facts are AgentCore Memory records, not a second DynamoDB row. |
 | Guide | `USER#<userId>` | `GUIDE#<guideId>` | — | attrs `enabled`, `priority`, `version`, `body`; mirrored to the IoT device shadow. Load-all-enabled = Query SK `begins_with GUIDE#`. |
 | Plan | `USER#<userId>` | `PLAN#<planId>` | — | attr `status`; fetch = GetItem; list plans = Query SK `begins_with PLAN#`. |
 | Task | `USER#<userId>` | `TASK#<planId>#<taskId>` | — | attr `status`; list a plan's tasks = Query SK `begins_with TASK#<planId>#`. |
@@ -2056,7 +2056,7 @@ The assistant can create files, package them, and deliver them as separate, dura
 
 ### Memory Layer — Functional Requirements
 
-A structured personal memory organized by people, places, and information, with organizational (projects/lists) and planning (goals/tasks) capabilities, exposed to GPT-Realtime as tools. Recommended design: DynamoDB entity/relationship graph + S3 Vectors semantic recall + optional local RAG sidecar.
+A structured personal memory organized by people, places, and information, with organizational (projects/lists) and planning (goals/tasks) capabilities, exposed as tools. Structured facts are DynamoDB `ENT#` items. Facts learned from conversation are AgentCore Memory.
 
 **Memory-architecture options considered** (the full analysis also lives in the whitepaper; the decision is captured here so the PRD is self-contained):
 
@@ -2068,16 +2068,16 @@ A structured personal memory organized by people, places, and information, with 
 | D · OpenSearch Serverless | Highest | Low | High (idle floor) | Cloud | Low | Yes |
 | E · pgvector / Aurora | High | Low | Medium–High (idle floor) | Cloud | Medium | Yes |
 
-**Recommended:** a hybrid, tiered memory — DynamoDB entity/relationship graph (structured + organizational + planning) + S3 Vectors (semantic recall) + an OPTIONAL local-RAG sidecar (graceful fallback). Avoid the always-on cost floors of OpenSearch Serverless and Aurora unless scale later justifies them.
+**Shipped:** DynamoDB `ENT#` items for structured facts, plus AgentCore Memory for facts learned from conversation. The broker preloads AgentCore records into each new session. Avoid the always-on cost floors of OpenSearch Serverless and Aurora.
 
 | ID | Requirement | Acceptance Criteria |
 |---|---|---|
 | FR-MEM-01 | Entity graph in DynamoDB for people, places, information, projects, tasks, plans and relationships. | Entities/edges stored as items; retrieval by keys/GSIs, no Scan. |
-| FR-MEM-02 | Semantic recall tier via S3 Vectors (embeddings of notes/transcripts/facts). | `memory.search(query,entityTypes)` returns ranked hits from the vector index. |
-| FR-MEM-03 | Optional local RAG sidecar on the user PC; platform falls back to S3 Vectors when it is absent/offline. | Retrieval works with the sidecar present or absent; no hard dependency. |
+| FR-MEM-02 | Conversation recall via AgentCore Memory. | `memory_search` returns learned facts under `remembered`. The broker preloads the same records at session start. |
+| FR-MEM-03 | Structured search reads `ENT#` text. | `memory_search` returns entities whose name or attributes contain the query. |
 | FR-MEM-04 | Memory tools: `memory.search`, `memory.write`, `entity.get`, `plan.upsert`; session bootstrap primes the persona with relevant memory. | Tools callable mid-turn; connect-time retrieval injects a relevant slice. |
-| FR-MEM-05 | Memory browser (web/app) lists every person/place/fact/plan with edit and forget; forget removes from DynamoDB and the vector index; export is itself a Deliverable. | User can view/edit/delete; deletion propagates to both stores. |
-| FR-MEM-06 | Avoid always-on cost floors (OpenSearch Serverless, Aurora/pgvector) unless scale justifies. | Default design uses only serverless S3 and DynamoDB tiers. |
+| FR-MEM-05 | Memory browser (web/app) lists every person/place/fact/plan with edit and forget; forget removes the `ENT#` item and, when AgentCore is on, matching learned records. | User can view, edit, and delete. |
+| FR-MEM-06 | Avoid always-on cost floors (OpenSearch Serverless, Aurora/pgvector) unless scale justifies. | Structured facts use DynamoDB. Conversation recall uses AgentCore Memory. |
 
 
 ### Guide Entities (always-injected system guidance)

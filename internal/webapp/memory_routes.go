@@ -12,12 +12,10 @@
 //   - POST   /api/v1/memory              — upsert ({entityId?, type, name,
 //     attrs, relations?}) — the shape memory.mjs posts (contracts/api.md
 //     "write a typed memory item"); same core as the memory_write tool.
-//   - DELETE /api/v1/memory/:id          — "forget": deletes ENT# AND its
-//     EMB# embedding (both stores, FR-MEM-05).
+//   - DELETE /api/v1/memory/:id          — "forget": deletes the ENT# item.
 //   - DELETE /api/v1/entities/:id        — alias for forget.
-//   - POST   /api/v1/memory/search       — semantic recall via
-//     memory.Service.Search (embed query → bounded single-partition
-//     brute-force cosine → ranked entities).
+//   - POST   /api/v1/memory/search       — text match over the caller's
+//     ENT# items (name and attributes). Conversation recall is AgentCore.
 //   - GET    /api/v1/guides              — list Guide Entities (the store
 //     seeds the default "AI is an emerging technology" guide on a user's
 //     first list, FR-MEM-09).
@@ -97,7 +95,6 @@ func entityJSON(e *store.Entity) fiber.Map {
 		"name":      e.Name,
 		"attrs":     attrs,
 		"relations": relations,
-		"embedded":  e.Embedded,
 		"updatedAt": e.UpdatedAt,
 	}
 }
@@ -297,7 +294,7 @@ func handleWriteEntity(deps *Deps, svc *memory.Service, pickID func(*fiber.Ctx, 
 
 		// An explicit-id write that changes the type moves the item to a
 		// new sort key — remove the old ENT# item so it can't linger under
-		// the stale type (its EMB# is keyed by id alone and gets rewritten).
+		// the stale type.
 		created := id == ""
 		if id != "" {
 			existing, err := deps.Store.GetEntityByID(c.Context(), userID, id)
@@ -320,18 +317,11 @@ func handleWriteEntity(deps *Deps, svc *memory.Service, pickID func(*fiber.Ctx, 
 			Relations: body.Relations,
 		}
 		written, err := svc.WriteEntity(c.Context(), userID, e)
-		if err != nil && !errors.Is(err, memory.ErrEmbedFailed) {
+		if err != nil {
 			return apiInternalError(c, deps, "write entity", err)
 		}
 
 		resp := entityJSON(written)
-		if errors.Is(err, memory.ErrEmbedFailed) {
-			// Saved but not yet semantically searchable — honest partial
-			// success (a later write re-embeds), surfaced, never silent.
-			deps.Log.Warn("memory: entity saved but embedding failed",
-				slog.String("error", err.Error()), slog.String("entityId", written.EntityID))
-			resp["warning"] = "saved, but semantic indexing failed; it will re-index on the next edit"
-		}
 		status := fiber.StatusOK
 		if created {
 			status = fiber.StatusCreated
@@ -342,16 +332,11 @@ func handleWriteEntity(deps *Deps, svc *memory.Service, pickID func(*fiber.Ctx, 
 
 // ---- DELETE /api/v1/entities/:id + /api/v1/memory/:id ("forget") ----
 
-// forgetEntity mirrors memory.Service.Forget but needs only the store, so
-// forget keeps working even when the embedder (and thus svc) is absent:
-// EMB# is deleted first so a partial failure can never leave an orphan
-// vector resurfacing "forgotten" facts in search (FR-MEM-05).
+// forgetEntity deletes the ENT# item. It needs only the store, so forget
+// keeps working when the memory service is absent.
 func forgetEntity(ctx context.Context, deps *Deps, userID, entityID string) (*store.Entity, error) {
 	ent, err := deps.Store.GetEntityByID(ctx, userID, entityID)
 	if err != nil || ent == nil {
-		return nil, err
-	}
-	if err := deps.Store.DeleteEmbedding(ctx, userID, entityID); err != nil {
 		return nil, err
 	}
 	if err := deps.Store.DeleteEntity(ctx, userID, ent.Type, entityID); err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -385,7 +370,7 @@ func handleMemorySearch(deps *Deps, svc *memory.Service) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID := UserID(c)
 		if svc == nil {
-			return errorJSON(c, fiber.StatusServiceUnavailable, "not_configured", "semantic search is not configured (no embedder)")
+			return errorJSON(c, fiber.StatusServiceUnavailable, "not_configured", "memory search is not configured")
 		}
 
 		var body struct {
@@ -445,7 +430,7 @@ func handleMemorySearch(deps *Deps, svc *memory.Service) fiber.Handler {
 			hit["score"] = results[i].Score
 			hits = append(hits, hit)
 		}
-		return c.JSON(fiber.Map{"hits": hits, "model": memory.EmbedModelID})
+		return c.JSON(fiber.Map{"hits": hits})
 	}
 }
 

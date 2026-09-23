@@ -2,10 +2,9 @@ package tools
 
 // memory_search / memory_write / entity_get / plan_upsert / forget — the
 // M10 Memory Layer tool surface (FR-MEM-01/02/04/05). Thin adapters over a
-// MemoryService (implemented by internal/memory: ENT#<type>#<entityId> +
-// EMB#<entityId> items in the caller's own partition, Bedrock
-// titan-embed-text-v2 query embeddings, in-partition cosine ranking —
-// Query/GetItem only, never Scan). This file maps the tool-call schema onto
+// MemoryService (implemented by internal/memory: ENT#<type>#<entityId>
+// items in the caller's own partition, Query/GetItem only, never Scan).
+// Conversation recall is AgentCore Memory. This file maps the tool-call schema onto
 // the service, parses the flat "key=value" / "relType:targetId" argument
 // encodings (realtime tool args are scalars and string arrays — objects are
 // not part of the enforced ParamSpec vocabulary), and maps service outcomes
@@ -54,14 +53,11 @@ type MemoryEntity struct {
 	Attrs     map[string]any
 	Relations []EntityRelation
 	UpdatedAt string // RFC3339
-	// IndexPending marks a partial success: the entity is saved but its
-	// embedding write failed, so it is not semantically searchable yet
-	// (memory.ErrEmbedFailed — a later write re-embeds it).
+	// IndexPending is unused. Writes no longer have a separate index step.
 	IndexPending bool
 }
 
-// MemoryHit is one semantic-search result: an entity plus its cosine
-// similarity score against the query embedding (higher = closer).
+// MemoryHit is one search result: an entity plus a match score.
 type MemoryHit struct {
 	Entity MemoryEntity
 	Score  float64
@@ -81,21 +77,18 @@ type MemoryWriteInput struct {
 // tool tests inject a fake). Every method operates strictly inside the
 // given user's partition.
 type MemoryService interface {
-	// Search embeds query (Bedrock titan-embed-text-v2) and ranks the
-	// user's embedded entities by cosine similarity. entityType "" means
-	// all types; limit is >= 1.
+	// Search matches query text against the user's ENT# items.
+	// entityType "" means all types; limit is >= 1.
 	Search(ctx context.Context, userID, query, entityType string, limit int) ([]MemoryHit, error)
-	// Write upserts an entity (ENT# item) and refreshes its embedding
-	// (EMB# item, embedded=true on success). A non-empty EntityID updates
-	// that entity; an unknown EntityID returns (nil, nil).
+	// Write upserts an ENT# item. A non-empty EntityID updates that
+	// entity; an unknown EntityID returns (nil, nil).
 	Write(ctx context.Context, userID string, in MemoryWriteInput) (*MemoryEntity, error)
 	// Get returns the entity, or (nil, nil) when it does not exist.
 	Get(ctx context.Context, userID, entityID string) (*MemoryEntity, error)
 	// UpsertPlan creates or updates an ENT#plan entity with ordered steps.
 	// planID "" creates a new plan; an unknown planID returns (nil, nil).
 	UpsertPlan(ctx context.Context, userID, planID, title string, steps []string) (*MemoryEntity, error)
-	// Forget deletes both the ENT# and EMB# items (FR-MEM-05 propagation);
-	// returns false when no such entity exists.
+	// Forget deletes the ENT# item. Returns false when no such entity exists.
 	Forget(ctx context.Context, userID, entityID string) (bool, error)
 }
 

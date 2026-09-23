@@ -24,7 +24,7 @@
 //     not outlive them) and ACTIVEUSER#<uid># markers.
 //  6. The whole USER#<uid> partition via paginated Query +
 //     BatchWriteItem deletes (25/batch, unprocessed-item retry) — LOG#,
-//     SESS#, SETTINGS#, CONSENT#, DELIV#, WAKEWORD#, ENT#/EMB#, CONV#/
+//     SESS#, SETTINGS#, CONSENT#, DELIV#, WAKEWORD#, ENT#, CONV#/
 //     TREF#, PROFILE, everything.
 //  7. LWA revoke: Live Ninja never persists LWA access/refresh tokens
 //     (ExchangeCode's result is used transiently during sign-in and

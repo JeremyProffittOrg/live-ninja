@@ -382,10 +382,7 @@ Resources:
           BATCH_JOB_QUEUE: !Ref WakewordTrainJobQueue
           BATCH_JOB_DEFINITION: !Ref WakewordTrainJobDefinition
           ZIPPER_FUNCTION_NAME: !Ref DeliverablesZipperFunction
-          # M10/M11: memory-layer embeddings (DynamoDB-native EMB# store; no
-          # S3 Vectors resources - see internal/memory) + post-session topic
-          # extraction trigger.
-          BEDROCK_EMBED_MODEL: amazon.titan-embed-text-v2:0
+          # Post-session topic extraction trigger.
           TOPICS_EXTRACT_FUNCTION_NAME: !Ref TopicsExtractFunction
           # M17: Registry.finish enqueues error-outcome invocations here.
           # Unset disables the hook entirely (tools.Deps.RCA stays nil).
@@ -645,12 +642,6 @@ Resources:
           - lambda:InvokeFunction
           Resource:
           - !GetAtt DeliverablesZipperFunction.Arn
-            # ---- M10: memory-layer embeddings (DynamoDB-native EMB# store;
-            # S3 Vectors SDK support not confirmed for the pinned aws-sdk-go-v2
-            # version, so the locked fallback is a brute-force cosine scan
-            # Query over each user's own EMB# partition - internal/memory).
-            # Scoped to the single embedding model id; no other Bedrock models
-            # or InvokeModel* actions are granted.
             # ---- agentcore-memory: events in, long-term records out, plus the
             # record deletes behind `forget` and the Memory page. Scoped to the
             # one memory this stack owns.
@@ -665,12 +656,6 @@ Resources:
           - bedrock-agentcore:BatchDeleteMemoryRecords
           Resource:
           - !GetAtt AgentCoreMemory.MemoryArn
-        - Sid: BedrockEmbedModel
-          Effect: Allow
-          Action:
-          - bedrock:InvokeModel
-          Resource:
-          - !Sub "arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0"
             # ---- M11: post-session topic extraction, direct async invoke
             # from the transcript sink when it sees {final:true}.
         - Sid: InvokeTopicsExtract

@@ -204,12 +204,14 @@ Server-side effects of a stored profile (no client action required):
 
 ## Memory Layer & Guide Entities (M10 — FR-MEM-01..09)
 
+Structured facts are `ENT#` rows in DynamoDB (people, places, information, projects, tasks, plans). `memory_search` matches that text. Facts learned from conversation are AgentCore Memory: the broker preloads them, and `memory_search` also returns them as `remembered`.
+
 | Method | Path | Purpose | Auth |
 |---|---|---|---|
-| POST | `/v1/memory/search` | Semantic recall over S3 Vectors: `{query, entityTypes?}` → ranked hits (`memory.search` tool). | Session JWT |
-| POST | `/v1/memory` | Write a typed memory item (`memory.write` tool); `memoryType` ∈ `working`\|`episodic`\|`semantic`\|`procedural`. | Session JWT |
-| GET | `/v1/memory` | List the caller's memory items for the memory browser (FR-MEM-05); `Query`-only, paginated. | Session JWT |
-| DELETE | `/v1/memory/{id}` | "Forget" — removes the item from DynamoDB **and** the S3 Vectors index (both stores, FR-MEM-05). | Session JWT |
+| POST | `/v1/memory/search` | Match `{query, types?}` against the caller's `ENT#` items. Conversation facts come back from AgentCore as `remembered` on the tool. | Session JWT |
+| POST | `/v1/memory` | Write or update one entity (`type`, `name`, `attrs`, `relations`). Same core as the `memory_write` tool. | Session JWT |
+| GET | `/v1/memory` | List the caller's entities for the memory browser (FR-MEM-05); `Query`-only, paginated. | Session JWT |
+| DELETE | `/v1/memory/{id}` | "Forget" — removes the `ENT#` item. When AgentCore is on, the tool also drops matching learned records. | Session JWT |
 | GET | `/v1/entities/{id}` | Fetch one entity (person/place/information) — `entity.get` tool. | Session JWT |
 | GET | `/v1/entities?type={entityType}` | List entities of one type via `GSI2` (`ETYPE#<userId>#<entityType>`) for the memory browser. | Session JWT |
 | POST | `/v1/plans` | Create/update a plan and its tasks (`plan.upsert` tool). | Session JWT |

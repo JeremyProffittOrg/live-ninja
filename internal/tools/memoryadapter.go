@@ -1,10 +1,9 @@
 package tools
 
-// memoryAdapter bridges internal/memory.Service — the real M10 memory
-// core (Bedrock titan-embed embeddings + ENT#/EMB# items, Query-only) —
+// memoryAdapter bridges internal/memory.Service — ENT# items, Query-only —
 // onto the MemoryService seam the tool handlers consume. The web function
 // wires tools.Deps.Memory = tools.NewMemoryService(memorySvc); tests keep
-// injecting lightweight fakes of the seam.
+// injecting lightweight fakes of the seam. Conversation recall is AgentCore.
 
 import (
 	"context"
@@ -107,16 +106,10 @@ func (a *memoryAdapter) Forget(ctx context.Context, userID, entityID string) (bo
 	return true, nil
 }
 
-// adaptWriteResult maps the core's write outcomes onto the seam contract:
-// ErrEmbedFailed with a persisted entity is a partial success ("saved,
-// indexing pending"), store.ErrNotFound is the seam's (nil, nil).
+// adaptWriteResult maps the core's write outcomes onto the seam contract.
+// store.ErrNotFound is the seam's (nil, nil).
 func adaptWriteResult(ent *store.Entity, err error) (*MemoryEntity, error) {
 	if err != nil {
-		if errors.Is(err, memory.ErrEmbedFailed) && ent != nil {
-			out := fromStoreEntity(ent)
-			out.IndexPending = true
-			return out, nil
-		}
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, nil
 		}

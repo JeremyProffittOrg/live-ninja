@@ -34,8 +34,7 @@ type ModelInvoker interface {
 	Converse(ctx context.Context, params *bedrockruntime.ConverseInput, optFns ...func(*bedrockruntime.Options)) (*bedrockruntime.ConverseOutput, error)
 }
 
-// bedrockRegion is the locked Bedrock region for this account (same posture as
-// memory.NewBedrockEmbedder). The cross-region "us." inference profiles the
+// bedrockRegion is the locked Bedrock region for this account. The cross-region "us." inference profiles the
 // RCA model id uses are *called* here and may route the inference elsewhere;
 // that routing is what makes the extra foundation-model ARNs necessary in the
 // IAM policy, not an extra region in the client.

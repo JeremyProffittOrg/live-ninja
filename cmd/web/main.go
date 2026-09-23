@@ -322,24 +322,17 @@ func buildDeps(ctx context.Context, cfg config.App, logger *slog.Logger) (*webap
 	return deps, nil
 }
 
-// buildMemoryService wires the M10 memory core (internal/memory): the
-// Titan v2 Bedrock embedder over the shared store. The embedder client
-// builds from the ambient AWS config (bedrock:InvokeModel on the one
-// Titan model ARN is granted in template.yaml); a construction failure
-// degrades gracefully — RegisterMemoryRoutes answers 503 not_configured
-// on the embedding-dependent routes while the store-only memory routes
-// (list/get/forget/guides) and all history routes stay live.
-func buildMemoryService(ctx context.Context, deps *webapp.Deps, logger *slog.Logger) *memory.Service {
-	embedder, err := memory.NewBedrockEmbedder(ctx)
-	if err != nil {
-		logger.Warn("memory embedder unavailable; semantic memory routes degraded",
-			slog.String("error", err.Error()))
+// buildMemoryService wires the memory core (internal/memory) over the
+// shared store. ENT# rows are the structured facts. Conversation recall
+// is AgentCore Memory. A nil store leaves the memory routes unconfigured.
+func buildMemoryService(_ context.Context, deps *webapp.Deps, logger *slog.Logger) *memory.Service {
+	if deps.Store == nil {
+		logger.Warn("memory store unavailable; memory routes degraded")
 		return nil
 	}
-	svc, err := memory.NewService(deps.Store, embedder)
+	svc, err := memory.NewService(deps.Store)
 	if err != nil {
-		logger.Warn("memory service unavailable; semantic memory routes degraded",
-			slog.String("error", err.Error()))
+		logger.Warn("memory service unavailable", slog.String("error", err.Error()))
 		return nil
 	}
 	return svc

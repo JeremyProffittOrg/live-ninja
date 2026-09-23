@@ -7,7 +7,6 @@ package tools
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -18,21 +17,10 @@ import (
 	"github.com/JeremyProffittOrg/live-ninja/internal/testutil"
 )
 
-// wordEmbedder embeds deterministically: axis 0 fires on "sarah", axis 1
-// on everything else, so cosine ranking is fully predictable.
-type wordEmbedder struct{}
-
-func (wordEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
-	if strings.Contains(strings.ToLower(text), "sarah") {
-		return []float32{1, 0}, nil
-	}
-	return []float32{0, 1}, nil
-}
-
 func newAdapterUnderTest(t *testing.T) MemoryService {
 	t.Helper()
 	st := store.NewWithClient(testutil.NewFakeDynamo(), "live-ninja-test")
-	svc, err := memory.NewService(st, wordEmbedder{})
+	svc, err := memory.NewService(st)
 	require.NoError(t, err)
 	return NewMemoryService(svc)
 }
@@ -59,7 +47,7 @@ func TestMemoryAdapterRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, place)
 
-	// Search ranks the person first for a "sarah" query.
+	// Search finds the person from a word in the name.
 	hits, err := adapter.Search(ctx, "u1", "when is sarah's birthday", "", 5)
 	require.NoError(t, err)
 	require.NotEmpty(t, hits)
@@ -67,7 +55,7 @@ func TestMemoryAdapterRoundTrip(t *testing.T) {
 	assert.Greater(t, hits[0].Score, 0.9)
 
 	// Type filter drops non-matching entities.
-	placeHits, err := adapter.Search(ctx, "u1", "somewhere to stay", "place", 5)
+	placeHits, err := adapter.Search(ctx, "u1", "lake house", "place", 5)
 	require.NoError(t, err)
 	require.Len(t, placeHits, 1)
 	assert.Equal(t, place.EntityID, placeHits[0].Entity.EntityID)

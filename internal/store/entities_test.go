@@ -8,20 +8,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestVectorEncodeDecodeRoundTrip(t *testing.T) {
-	vec := []float32{0.25, -1.5, 3.14159, 0, 1e-7}
-	decoded, err := DecodeVector(EncodeVector(vec))
-	require.NoError(t, err)
-	assert.Equal(t, vec, decoded)
-
-	_, err = DecodeVector("!!!not-base64!!!")
-	assert.Error(t, err)
-
-	// 3 bytes is not a whole number of float32s.
-	_, err = DecodeVector("AAAA") // decodes to 3 bytes
-	assert.Error(t, err)
-}
-
 func TestEntityCRUD(t *testing.T) {
 	ctx := context.Background()
 	st, _ := newTestStore()
@@ -46,7 +32,6 @@ func TestEntityCRUD(t *testing.T) {
 	assert.Equal(t, "sister", got.Attrs["role"])
 	require.Len(t, got.Relations, 1)
 	assert.Equal(t, "e-austin", got.Relations[0].TargetID)
-	assert.False(t, got.Embedded)
 
 	// GetEntityByID probes type prefixes without knowing the type.
 	byID, err := st.GetEntityByID(ctx, "u1", "e-alice")
@@ -108,70 +93,6 @@ func TestListEntitiesTypeFilterAndIsolation(t *testing.T) {
 	missing, err := st.FindEntityByName(ctx, "u1", EntityTypePerson, "Mallory")
 	require.NoError(t, err)
 	assert.Nil(t, missing) // u2's entity never leaks into u1's partition
-}
-
-func TestMarkEntityEmbedded(t *testing.T) {
-	ctx := context.Background()
-	st, _ := newTestStore()
-
-	e := &Entity{UserID: "u1", Type: EntityTypeInfo, EntityID: "i1", Name: "Fact"}
-	require.NoError(t, st.PutEntity(ctx, e))
-
-	require.NoError(t, st.MarkEntityEmbedded(ctx, "u1", EntityTypeInfo, "i1"))
-	got, err := st.GetEntity(ctx, "u1", EntityTypeInfo, "i1")
-	require.NoError(t, err)
-	assert.True(t, got.Embedded)
-
-	// Absent entity: conditional fails as ErrNotFound, no ghost item.
-	require.ErrorIs(t, st.MarkEntityEmbedded(ctx, "u1", EntityTypeInfo, "i-gone"), ErrNotFound)
-	ghost, err := st.GetEntity(ctx, "u1", EntityTypeInfo, "i-gone")
-	require.NoError(t, err)
-	assert.Nil(t, ghost)
-}
-
-func TestEmbeddingCRUD(t *testing.T) {
-	ctx := context.Background()
-	st, _ := newTestStore()
-
-	emb := &Embedding{
-		UserID:     "u1",
-		EntityID:   "e1",
-		EntityType: EntityTypePerson,
-		Vector:     []float32{1, 0, 0.5},
-		Model:      "test-model",
-	}
-	require.NoError(t, st.PutEmbedding(ctx, emb))
-	assert.Equal(t, 3, emb.Dim)
-
-	require.NoError(t, st.PutEmbedding(ctx, &Embedding{
-		UserID: "u1", EntityID: "e2", EntityType: EntityTypePlace,
-		Vector: []float32{0, 1, 0}, Model: "test-model",
-	}))
-
-	list, err := st.ListEmbeddings(ctx, "u1")
-	require.NoError(t, err)
-	require.Len(t, list, 2)
-	byID := map[string]Embedding{}
-	for _, e := range list {
-		byID[e.EntityID] = e
-	}
-	assert.Equal(t, []float32{1, 0, 0.5}, byID["e1"].Vector)
-	assert.Equal(t, EntityTypePerson, byID["e1"].EntityType)
-	assert.Equal(t, "test-model", byID["e1"].Model)
-
-	// Deleting an embedding is idempotent (missing item is not an error —
-	// forget must succeed for never-embedded entities).
-	require.NoError(t, st.DeleteEmbedding(ctx, "u1", "e1"))
-	require.NoError(t, st.DeleteEmbedding(ctx, "u1", "e1"))
-	list, err = st.ListEmbeddings(ctx, "u1")
-	require.NoError(t, err)
-	assert.Len(t, list, 1)
-
-	// Validation.
-	require.Error(t, st.PutEmbedding(ctx, &Embedding{UserID: "u1", EntityID: "x", EntityType: EntityTypeInfo}))
-	require.ErrorIs(t, st.PutEmbedding(ctx, &Embedding{
-		UserID: "u1", EntityID: "x", EntityType: "alien", Vector: []float32{1},
-	}), ErrInvalidEntityType)
 }
 
 func TestGuidesSeedUpsertListDelete(t *testing.T) {

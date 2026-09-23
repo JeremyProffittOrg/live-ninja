@@ -10,7 +10,7 @@ The job of this file is to push the remaining shippable work to production on `m
 
 1. **2026-09-22 — bypass spoken smokes.** Do not run F1 or the E4 spoken turn. Do not wait for a microphone. Quote: "let's bypass the smoke tests and make the plan about pushing everything out."
 2. **2026-09-22 — push the rest.** A push to `main` is the production deploy. Never deploy from a laptop.
-3. **`emb-retire` is not before 2026-09-28.** The 2026-09-20 memory smoke already passed. This bypass does not move the date.
+3. **2026-09-22 — `emb-retire` runs now.** The operator said "perform the emb-retire early." The 2026-09-28 date is lifted. `ENT#` rows stay.
 4. **Do not flip `SigningDisabled` on authorizer `live-ninja-iot`.** AWS IoT does not allow that update. Tab5 stays on that authorizer. Signing for web and Android is a new authorizer.
 5. **G1–G6 stay in the backlog.** Do not pull them in.
 6. **2026-09-20 — wake training is off.** Bundled phrases only. Default `hey-jarvis`. Do not resume custom wake training.
@@ -59,7 +59,7 @@ Definition of done: `https://live.jeremy.ninja/v1/app/android/latest` shows a ve
 
 Definition of done: `grep -rn "EMB#\|Cosine(" internal/ cmd/` prints nothing and `go test ./...` passes.
 
-- [ ] `emb-retire` — not before 2026-09-28. Remove `EMB#` writes, `ListEmbeddings`, the cosine path, and the Titan IAM statement. Rewrite `contracts/api.md` memory lines, `PRD.md` memory sections, and `docs/system-map.md`. depends on: the date 2026-09-28
+- [x] `emb-retire` — Remove `EMB#` writes, `ListEmbeddings`, the cosine path, and the Titan IAM statement. Rewrite `contracts/api.md` memory lines, `PRD.md` memory sections, and `docs/system-map.md`. `ENT#` rows stay. Operator moved this to 2026-09-22.
 
 ## Restart policy
 
@@ -69,7 +69,7 @@ Each code milestone is one push to `main`. A red Deploy run is fixed and re-push
 
 - The operator says to stop.
 - A milestone would delete or update `SigningDisabled` on `live-ninja-iot`.
-- A milestone would start `emb-retire` before 2026-09-28.
+- A milestone would delete `ENT#` fact rows. The operator lifted the 2026-09-28 date on 2026-09-22.
 - A milestone would pull G1–G6 or resume custom wake training.
 - The Azure voice list cannot be quoted, so `voice-catalog` is `[!]` instead of a guessed list.
 
@@ -81,4 +81,4 @@ Each code milestone is one push to `main`. A red Deploy run is fixed and re-push
 - 2026-09-22 — `voice-catalog` quoted 34 ids from https://learn.microsoft.com/en-us/azure/ai-services/speech-service/voice-live-how-to section "Supported voices". Older notes said 35. That count was one high. Default `ava`. No picker, so Help was not changed. `gpt-live-azure` stays on `SupportedVoices` / `cedar`. `go test ./internal/realtime/ -run "Voice|Catalog" -count=1` ok. `go test ./internal/webapp/ -run TestHelpDrawer -count=1` ok. `go test ./... -count=1` exit 0. Pushed as `d18202d2303b8c3c81c300c1d5862507f25a851f`. Deploy run `35737704441` succeeded. Android Release run `35737704501` failed in `Instrumented tests (emulator)`: `SettingsRevampComposeTest > hostPickerKeepsUnsupportedHostVisibleAndExplicitlyDisabled` with `RootViewWithoutFocusException` and `Failed to start Emulator console`. JVM unit tests passed. That test does not read the voice catalog.
 - 2026-09-22 — `iot-signed-authorizer` pushed as `1babb949129073169198a034a7aa1ce83350074e`. Deploy run `35739047890` succeeded. `aws iot describe-authorizer --authorizer-name live-ninja-iot --region us-east-1` returned `status ACTIVE`, `signingDisabled true`, `tokenKeyName null`. `aws iot describe-authorizer --authorizer-name live-ninja-iot-signed --region us-east-1` returned `status ACTIVE`, `signingDisabled false`, `tokenKeyName token`. `go test ./internal/webapp/ -run IoT -count=1` ok. `node --test tests/web/unit/liveevents.test.mjs` 18 pass.
 - 2026-09-22 — `android-signature-release`. Version bump `5c00ff5dd936b71bbc8dacd039cc30c34ccbd33f` is versionCode 18, versionName `0.3.12`. Deploy run `35740023211` succeeded. Android Release `workflow_dispatch` run `35740036332` `build-and-publish` succeeded. `https://live.jeremy.ninja/v1/app/android/latest` returned `versionName` `0.3.12`, `versionCode` 18, `gitSha` `5c00ff5dd936b71bbc8dacd039cc30c34ccbd33f`. APK sha256 matched `e3f8b812e8f7679a92a26fe4810c3954fe8469bd2499d917eaab29ca6b131169`. `adb -s 4633424442303098 install -r` printed `Success`. `adb -s 4633424442303098 shell dumpsys package ninja.jeremy.liveninja` printed `versionCode=18` and `versionName=0.3.12`.
-- 2026-09-22 — `emb-retire` was not started. The calendar date is 2026-09-22. The milestone is not before 2026-09-28.
+- 2026-09-22 — `emb-retire` started early. The operator said "perform the emb-retire early." `ENT#` rows stay. `rg -n "EMB#|Cosine\(" internal cmd` printed nothing. `go test ./internal/memory/ ./internal/store/ ./internal/tools/ ./internal/webapp/ ./internal/rca/ ./cmd/account-purge/ -count=1` passed. `go test ./... -count=1` failed only `TestGoldenRCAPrompt` until the golden prompt was re-recorded; `go test ./internal/rca -run TestGoldenRCAPrompt -count=1` then passed. Titan `bedrock:InvokeModel` statement for `amazon.titan-embed-text-v2:0` removed from `template.yaml`. `MaxEmbeddingsPerUser` deleted.

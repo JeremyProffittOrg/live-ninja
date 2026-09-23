@@ -1,13 +1,11 @@
 package webapp
 
-// Route-level tests for the M10 memory + guide API (memory_routes.go):
-// entity write/list/get/forget over a real memory.Service wired to a
-// deterministic fake embedder + FakeDynamo-backed store, semantic search
-// ranking, guide CRUD with the FR-MEM-09 seed, validation rejections, and
-// the nil-service (embedder unavailable) degradation.
+// Route-level tests for the memory + guide API (memory_routes.go):
+// entity write/list/get/forget over a real memory.Service and
+// FakeDynamo-backed store, text search, guide CRUD with the FR-MEM-09
+// seed, and validation rejections.
 
 import (
-	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -21,30 +19,12 @@ import (
 	"github.com/JeremyProffittOrg/live-ninja/internal/testutil"
 )
 
-// fakeEmbedder returns axis-aligned vectors keyed by keywords in the
-// embedded text, so cosine ranking in tests is fully deterministic:
-// "coffee" → x-axis, "dog" → y-axis, everything else → z-axis.
-type fakeEmbedder struct{ calls int }
-
-func (f *fakeEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
-	f.calls++
-	lower := strings.ToLower(text)
-	switch {
-	case strings.Contains(lower, "coffee"):
-		return []float32{1, 0.1, 0}, nil
-	case strings.Contains(lower, "dog"):
-		return []float32{0.1, 1, 0}, nil
-	default:
-		return []float32{0, 0, 1}, nil
-	}
-}
-
 // newMemoryAPIApp mounts the memory routes as user u1 over fresh fakes.
 func newMemoryAPIApp(t *testing.T) (*fiber.App, *store.Store, *testutil.FakeDynamo) {
 	t.Helper()
 	fake := testutil.NewFakeDynamo()
 	st := store.NewWithClient(fake, "live-ninja")
-	svc, err := memory.NewService(st, &fakeEmbedder{})
+	svc, err := memory.NewService(st)
 	if err != nil {
 		t.Fatalf("memory.NewService: %v", err)
 	}
@@ -77,12 +57,8 @@ func TestEntityWriteListGetForget(t *testing.T) {
 	if id == "" || body["entityId"] != id {
 		t.Fatalf("create must return id + entityId alias, got %v", body)
 	}
-	if body["embedded"] != true {
-		t.Errorf("entity should be embedded after write, got %v", body["embedded"])
-	}
-	// The EMB item must exist alongside the ENT item.
-	if fake.RawItem("USER#u1", "EMB#"+id) == nil {
-		t.Errorf("EMB item missing after write")
+	if fake.RawItem("USER#u1", "ENT#person#"+id) == nil {
+		t.Errorf("ENT item missing after write")
 	}
 
 	// List: one item, plus the populated types enum for the UI filter.
@@ -132,13 +108,13 @@ func TestEntityWriteListGetForget(t *testing.T) {
 		t.Errorf("new-type ENT item missing after retype")
 	}
 
-	// Forget via the contracts path: ENT + EMB both gone.
+	// Forget deletes the ENT item.
 	resp, body = doJSON(t, app, http.MethodDelete, "/api/v1/memory/"+id, nil)
 	if resp.StatusCode != http.StatusOK || body["ok"] != true {
 		t.Fatalf("forget = %d %v", resp.StatusCode, body)
 	}
-	if fake.RawItem("USER#u1", "ENT#info#"+id) != nil || fake.RawItem("USER#u1", "EMB#"+id) != nil {
-		t.Errorf("forget must delete both ENT and EMB items")
+	if fake.RawItem("USER#u1", "ENT#info#"+id) != nil {
+		t.Errorf("forget must delete the ENT item")
 	}
 	resp, _ = doJSON(t, app, http.MethodDelete, "/api/v1/memory/"+id, nil)
 	if resp.StatusCode != http.StatusNotFound {
@@ -201,8 +177,8 @@ func TestMemorySearch(t *testing.T) {
 		t.Fatalf("search status = %d (%v)", resp.StatusCode, body)
 	}
 	hits, _ := body["hits"].([]any)
-	if len(hits) != 2 {
-		t.Fatalf("hits len = %d, want 2", len(hits))
+	if len(hits) != 1 {
+		t.Fatalf("hits len = %d, want 1", len(hits))
 	}
 	top, _ := hits[0].(map[string]any)
 	if top["id"] != coffee["id"] {
@@ -214,7 +190,7 @@ func TestMemorySearch(t *testing.T) {
 
 	// Type facet filters the ranked list.
 	_, body = doJSON(t, app, http.MethodPost, "/api/v1/memory/search", map[string]any{
-		"query": "coffee", "types": []string{"person"},
+		"query": "rex", "types": []string{"person"},
 	})
 	hits, _ = body["hits"].([]any)
 	if len(hits) != 1 {
