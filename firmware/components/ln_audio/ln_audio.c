@@ -350,6 +350,11 @@ static void playback_task(void *arg)
                 /* drained */
                 if (s.pb_eos) {
                     s.pb_eos = false;
+                } else {
+                    /* Ran dry before the producer marked end-of-reply: the
+                     * listener hears a gap. Logged so choppy playback can be
+                     * told apart from a server-side interruption. */
+                    ESP_LOGW(TAG, "playback underrun (ring dry mid-reply)");
                 }
                 s.pb_state = PB_IDLE;
                 xSemaphoreGive(s.pb_space_sem);

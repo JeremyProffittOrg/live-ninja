@@ -440,3 +440,126 @@ esp_err_t ln_rt_session_fetch(ln_rt_session_info_t *out, ln_rt_error_info_t *err
     memset(s_auth_hdr, 0, sizeof(s_auth_hdr));
     return err;
 }
+
+/* --- On-device tool invocation ------------------------------------------ *
+ * POST {backend}/api/v1/tools/invoke {"tool","args","callId","idempotencyKey"}
+ * with the same device JWT as the mint. The server re-authorizes the call
+ * against the paired user and fills profile defaults (e.g. get_weather's home
+ * location), so the device only relays. Runs on the ln_rt worker task — the
+ * only caller of this file — which is why the static JWT/header buffers are
+ * shared with ln_rt_session_fetch. */
+#define LN_RT_TOOLS_URL          CONFIG_LN_RT_BACKEND_BASE_URL "/api/v1/tools/invoke"
+#define LN_RT_TOOL_TIMEOUT_MS    30000 /* web/knowledge search can take tens of seconds */
+#define LN_RT_TOOL_BODY_CAP      (48 * 1024)
+
+static char *s_tool_body; /* PSRAM, LN_RT_TOOL_BODY_CAP */
+
+esp_err_t ln_rt_tool_invoke(const char *tool, const cJSON *args, const char *call_id,
+                            cJSON **out_result)
+{
+    if (tool == NULL || call_id == NULL || out_result == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out_result = NULL;
+
+    if (s_tool_body == NULL) {
+        s_tool_body = heap_caps_malloc(LN_RT_TOOL_BODY_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s_tool_body == NULL) {
+            s_tool_body = malloc(LN_RT_TOOL_BODY_CAP);
+        }
+        if (s_tool_body == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    if (req == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    cJSON_AddStringToObject(req, "tool", tool);
+    cJSON_AddItemToObject(req, "args", cJSON_IsObject(args) ? cJSON_Duplicate(args, true)
+                                                            : cJSON_CreateObject());
+    cJSON_AddStringToObject(req, "callId", call_id);
+    /* Gemini call ids are unique per call, so they double as the idempotency
+     * key the router requires for side-effecting tools. */
+    cJSON_AddStringToObject(req, "idempotencyKey", call_id);
+    char *req_body = cJSON_PrintUnformatted(req);
+    cJSON_Delete(req);
+    if (req_body == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t err = ln_auth_get_jwt(s_jwt, sizeof(s_jwt));
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "tool %s: ln_auth_get_jwt failed: %s", tool, esp_err_to_name(err));
+        cJSON_free(req_body);
+        return err;
+    }
+    snprintf(s_auth_hdr, sizeof(s_auth_hdr), "Bearer %s", s_jwt);
+
+    esp_http_client_config_t cfg = {
+        .url = LN_RT_TOOLS_URL,
+        .method = HTTP_METHOD_POST,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = LN_RT_TOOL_TIMEOUT_MS,
+        .buffer_size = 2048,
+        .buffer_size_tx = 4096, /* request headers carry the ~1-2 KB JWT */
+    };
+    esp_http_client_handle_t http = esp_http_client_init(&cfg);
+    if (http == NULL) {
+        cJSON_free(req_body);
+        err = ESP_FAIL;
+        goto scrub;
+    }
+    esp_http_client_set_header(http, "Authorization", s_auth_hdr);
+    esp_http_client_set_header(http, "Accept", "application/json");
+    esp_http_client_set_header(http, "Content-Type", "application/json");
+    esp_http_client_set_header(http, "X-LN-Client", ln_rt_client_header());
+
+    int req_len = (int)strlen(req_body);
+    err = esp_http_client_open(http, req_len);
+    if (err == ESP_OK && esp_http_client_write(http, req_body, req_len) != req_len) {
+        err = ESP_FAIL;
+    }
+    cJSON_free(req_body);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "tool %s: HTTP send failed: %s", tool, esp_err_to_name(err));
+        esp_http_client_cleanup(http);
+        goto scrub;
+    }
+
+    (void)esp_http_client_fetch_headers(http);
+    int status = esp_http_client_get_status_code(http);
+    size_t body_len = 0;
+    while (body_len < LN_RT_TOOL_BODY_CAP - 1) {
+        int r = esp_http_client_read(http, s_tool_body + body_len,
+                                     (int)(LN_RT_TOOL_BODY_CAP - 1 - body_len));
+        if (r <= 0) {
+            break;
+        }
+        body_len += (size_t)r;
+    }
+    s_tool_body[body_len] = '\0';
+    esp_http_client_close(http);
+    esp_http_client_cleanup(http);
+
+    /* The router answers failures with a structured Result too (4xx/5xx with
+     * {"ok":false,"error":{...}}) — hand the model whatever parsed, so it can
+     * voice the real reason. Only an unparseable body is a device-side error. */
+    *out_result = cJSON_ParseWithLength(s_tool_body, body_len);
+    if (*out_result == NULL || !cJSON_IsObject(*out_result)) {
+        ESP_LOGW(TAG, "tool %s: HTTP %d, unusable body (%u B): %.*s", tool, status,
+                 (unsigned)body_len, (int)(body_len > 200 ? 200 : body_len), s_tool_body);
+        cJSON_Delete(*out_result);
+        *out_result = NULL;
+        err = ESP_FAIL;
+    } else {
+        ESP_LOGI(TAG, "tool %s: HTTP %d (%u B)", tool, status, (unsigned)body_len);
+        err = ESP_OK;
+    }
+
+scrub:
+    memset(s_jwt, 0, sizeof(s_jwt));
+    memset(s_auth_hdr, 0, sizeof(s_auth_hdr));
+    return err;
+}

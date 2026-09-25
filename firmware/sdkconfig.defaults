@@ -81,4 +81,17 @@ CONFIG_LV_USE_QRCODE=y
 # reserved for task stacks/DMA (httpd + esp-hosted SDIO buffers must not starve).
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=8192
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
+# lwIP buffers in PSRAM: internal RAM is ~50 KB free, and the bigger TCP
+# window below would otherwise queue up to 32 KB of pbufs there.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 CONFIG_BSP_LCD_DRAW_BUF_HEIGHT=25
+
+# ---- TCP throughput (Gemini Live downlink) ----
+# 24 kHz reply audio needs ~64 KB/s of base64 JSON, sustained. Headroom over
+# the IDF 5760 B (4 MSS) default; lwIP buffers live in PSRAM (above), so
+# this costs no internal RAM. Not the fix for the 2026-09-25 choppy audio
+# on its own — that was internal-RAM starvation (see main/app_main.c) —
+# but it is the configuration that was HIL-verified at 1.0x realtime.
+CONFIG_LWIP_TCP_WND_DEFAULT=32768
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=16384
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=32

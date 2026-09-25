@@ -503,7 +503,16 @@ static bool sta_try_connect(int retry_count)
     EventBits_t bits = xEventGroupWaitBits(s_bits, BIT_GOT_IP | BIT_STA_FAIL,
                                            pdTRUE, pdFALSE, pdMS_TO_TICKS(20000));
     if (bits & BIT_GOT_IP) {
-        ESP_LOGI(TAG, "connected to \"%s\"", s_ssid);
+        wifi_ap_record_t ap;
+        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+            ESP_LOGI(TAG, "connected to \"%s\" (bssid %02x:%02x:%02x:%02x:%02x:%02x, "
+                          "channel %u, rssi %d dBm, phy %s%s%s)",
+                     s_ssid, ap.bssid[0], ap.bssid[1], ap.bssid[2], ap.bssid[3],
+                     ap.bssid[4], ap.bssid[5], ap.primary, ap.rssi,
+                     ap.phy_11ax ? "ax" : "", ap.phy_11n ? "n" : "", ap.phy_11g ? "g" : "");
+        } else {
+            ESP_LOGI(TAG, "connected to \"%s\"", s_ssid);
+        }
         post_wifi_event(LN_NET_EVENT_WIFI_CONNECTED);
         return true;
     }

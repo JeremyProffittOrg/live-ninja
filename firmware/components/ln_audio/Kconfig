@@ -3,10 +3,13 @@ menu "Live Ninja audio (ln_audio)"
     config LN_AUDIO_JITTER_PREBUFFER_MS
         int "Playback jitter prebuffer (ms)"
         range 20 500
-        default 80
+        default 240
         help
-            Milliseconds of downlink audio queued before playback starts.
-            Plan M5 calls for a 60-100 ms jitter buffer; 80 ms default.
+            Milliseconds of downlink audio queued before playback starts
+            (and before it resumes after an underrun). Gemini Live paces
+            reply audio at exactly 1.0x realtime, so any network jitter
+            larger than this buffer is an audible gap; 80 ms underran on
+            the bench Wi-Fi (HIL 2026-09-25), 240 ms did not.
 
     config LN_AUDIO_PLAYBACK_RING_MS
         int "Playback ring buffer capacity (ms)"

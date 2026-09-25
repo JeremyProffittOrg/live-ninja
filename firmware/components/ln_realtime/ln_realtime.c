@@ -50,6 +50,7 @@
 #include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_websocket_client.h"
 #include "mbedtls/base64.h"
 
@@ -86,6 +87,9 @@ static const char *TAG = "ln_rt";
 #define LN_RT_TASK_STACK        10240
 #define LN_RT_TASK_PRIO         5
 #define LN_RT_WS_TASK_STACK     8192
+/* Above LVGL/UI, below the audio capture/playback tasks (22/23), so the
+ * downlink reader keeps up while the UI redraws. The client default is 5. */
+#define LN_RT_WS_TASK_PRIO      15
 
 typedef enum {
     LN_RT_CMD_START = 1,
@@ -94,8 +98,13 @@ typedef enum {
 #define EG_WS_CONNECTED BIT0
 #define EG_WS_DOWN      BIT1
 #define EG_STOP_REQ     BIT2
+#define EG_TOOL_PENDING BIT3
+
+#define LN_RT_TOOL_Q_LEN         4
+#define LN_RT_TOOL_SEND_ATTEMPTS 3
 
 static QueueHandle_t s_cmd_q;
+static QueueHandle_t s_tool_q; /* char* functionCalls JSON, WS task -> worker */
 static EventGroupHandle_t s_eg;
 static SemaphoreHandle_t s_send_mtx; /* guards s_ws handle + uplink buffer */
 static TaskHandle_t s_task;
@@ -152,11 +161,16 @@ static volatile ln_rt_engine_mode_t s_engine_mode = LN_RT_ENGINE_OPENAI_DIRECT;
  * (written on the WS task, read by the worker during a reconnect fetch —
  * never concurrently, since fetches only run while no WSS session is live).
  * Google documents no handle size; a few hundred bytes observed, 512 is
- * generous. s_tool_buf stages toolResponse refusal frames (WS task only). */
+ * generous. s_tool_buf stages the OpenAI stop_listening ack (WS task only). */
 static const char *s_setup_frame;
 static char s_resume_handle[512];
 #define LN_RT_TOOL_BUF_SZ 4096
 static char *s_tool_buf; /* PSRAM */
+
+static int64_t s_rx_audio_t0_us;   /* first audio delta of the current reply */
+static uint64_t s_rx_audio_samples; /* 24 kHz samples received this reply */
+static int64_t s_rx_busy_us;        /* time spent parsing/decoding this reply */
+static uint64_t s_rx_bytes;         /* WSS payload bytes received this reply */
 
 /* ---------------------------------------------------------------- events -- */
 
@@ -454,6 +468,7 @@ static void handle_audio_delta(const char *b64)
         size_t total = off + olen;
         size_t n_samples = total / 2;
         if (n_samples > 0) {
+            s_rx_audio_samples += n_samples;
             ln_audio_play((const int16_t *)s_dec_buf, n_samples);
         }
         if ((total & 1U) != 0) {
@@ -601,36 +616,93 @@ const char *ln_rt_resumption_handle(void)
 static void gemini_mark_response_started(void)
 {
     if (!s_response_active) {
+        s_rx_audio_t0_us = esp_timer_get_time();
+        s_rx_audio_samples = 0;
+        s_rx_busy_us = 0;
+        s_rx_bytes = 0;
         s_response_active = true;
         s_have_carry = false;
         post_evt(LN_RT_EVENT_RESPONSE_STARTED);
     }
 }
 
-/** Answer every functionCall in a toolCall with a structured refusal.
+/** Hand a Gemini toolCall to the worker task.
  *
- *  Deliberate device parity, NOT a stub: this firmware has no tool router —
- *  the OpenAI path silently ignores its function_call events, and the
- *  device-side POST /api/v1/tools/invoke flow (contracts/api.md) was never
- *  implemented on this surface. Unlike OpenAI, an unanswered Gemini
- *  functionCall stalls the model's turn, so each call gets an immediate
- *  {"error":...} result and the model voices a graceful "can't do that
- *  here". Full on-device tool invocation is a backlog item. */
-static void gemini_refuse_tool_calls(const cJSON *calls)
+ *  Runs on the esp_websocket_client task, which holds the client's lock while
+ *  it dispatches this event. Sending the toolResponse from here deadlocked
+ *  against the uplink task (it held s_send_mtx and waited for that client
+ *  lock; this handler waited for s_send_mtx) until both 4 s timeouts fired —
+ *  the reply was dropped and the model sat waiting for it forever (HIL
+ *  2026-09-25). The backend call also takes seconds. So this only copies the
+ *  functionCalls array and wakes the worker; it never blocks. */
+static void gemini_queue_tool_calls(const cJSON *calls)
 {
-    cJSON *frame = cJSON_CreateObject();
-    if (frame == NULL) {
+    if (!cJSON_IsArray(calls) || cJSON_GetArraySize(calls) == 0) {
         return;
     }
-    cJSON *tr = cJSON_AddObjectToObject(frame, "toolResponse");
+    char *job = cJSON_PrintUnformatted(calls);
+    if (job == NULL) {
+        ESP_LOGE(TAG, "toolCall: out of memory copying %d call(s)", cJSON_GetArraySize(calls));
+        return;
+    }
+    if (xQueueSend(s_tool_q, &job, 0) != pdTRUE) {
+        ESP_LOGE(TAG, "toolCall dropped — %d job(s) already pending", LN_RT_TOOL_Q_LEN);
+        cJSON_free(job);
+        return;
+    }
+    xEventGroupSetBits(s_eg, EG_TOOL_PENDING);
+}
+
+/** Send a toolResponse frame from the worker. The uplink task shares the
+ *  socket, so a busy link can time one attempt out — retry while the session
+ *  is still up rather than leave the model waiting on a reply that never
+ *  arrives. */
+static esp_err_t gemini_send_tool_frame(const char *frame)
+{
+    esp_err_t err = ESP_ERR_INVALID_STATE;
+    for (int attempt = 1; attempt <= LN_RT_TOOL_SEND_ATTEMPTS && s_connected; attempt++) {
+        err = ws_send_str(frame);
+        if (err == ESP_OK) {
+            return ESP_OK;
+        }
+        ESP_LOGW(TAG, "toolResponse send attempt %d/%d failed: %s", attempt,
+                 LN_RT_TOOL_SEND_ATTEMPTS, esp_err_to_name(err));
+    }
+    return err;
+}
+
+/** Run one queued functionCalls array (worker task) and answer it.
+ *
+ *  stop_listening is the one device-local tool: it is acknowledged here and
+ *  ends the session once the reply is spoken. Every other call goes to the
+ *  backend tool router (ln_rt_tool_invoke), whose Result object — success or
+ *  structured failure — becomes the functionResponse the model reads. */
+static void gemini_run_tool_job(char *job)
+{
+    cJSON *calls = cJSON_Parse(job);
+    cJSON_free(job);
+    if (!cJSON_IsArray(calls)) {
+        cJSON_Delete(calls);
+        return;
+    }
+    cJSON *frame = cJSON_CreateObject();
+    cJSON *tr = (frame != NULL) ? cJSON_AddObjectToObject(frame, "toolResponse") : NULL;
     cJSON *arr = (tr != NULL) ? cJSON_AddArrayToObject(tr, "functionResponses") : NULL;
+    if (arr == NULL) {
+        ESP_LOGE(TAG, "toolResponse: out of memory");
+        cJSON_Delete(frame);
+        cJSON_Delete(calls);
+        return;
+    }
+
     int n = 0;
+    int failed = 0;
     bool stop_listening = false;
     const cJSON *call = NULL;
     cJSON_ArrayForEach(call, calls) {
         const cJSON *id = cJSON_GetObjectItemCaseSensitive(call, "id");
         const cJSON *name = cJSON_GetObjectItemCaseSensitive(call, "name");
-        if (arr == NULL || !cJSON_IsString(id)) {
+        if (!cJSON_IsString(id) || !cJSON_IsString(name)) {
             continue;
         }
         cJSON *fr = cJSON_CreateObject();
@@ -638,42 +710,77 @@ static void gemini_refuse_tool_calls(const cJSON *calls)
             continue;
         }
         cJSON_AddStringToObject(fr, "id", id->valuestring);
-        if (cJSON_IsString(name)) {
-            cJSON_AddStringToObject(fr, "name", name->valuestring);
-        }
-        cJSON *resp = cJSON_AddObjectToObject(fr, "response");
-        cJSON *result = (resp != NULL) ? cJSON_AddObjectToObject(resp, "result") : NULL;
-        if (result != NULL) {
-            if (cJSON_IsString(name) && name_is_stop_listening(name->valuestring)) {
-                stop_listening = true;
+        cJSON_AddStringToObject(fr, "name", name->valuestring);
+
+        cJSON *result = NULL;
+        if (name_is_stop_listening(name->valuestring)) {
+            stop_listening = true;
+            result = cJSON_CreateObject();
+            if (result != NULL) {
                 cJSON_AddBoolToObject(result, "ok", true);
                 cJSON_AddBoolToObject(result, "acknowledged", true);
                 cJSON_AddStringToObject(result, "instruction",
                                         "The live conversation will end as soon as you finish this reply. Be brief and tell the user to say the wake word when they want to talk again.");
-            } else {
-                cJSON_AddStringToObject(result, "error",
-                                        "tool execution is not available on this device");
             }
+        } else {
+            int64_t t0 = esp_timer_get_time();
+            esp_err_t err = ln_rt_tool_invoke(name->valuestring,
+                                              cJSON_GetObjectItemCaseSensitive(call, "args"),
+                                              id->valuestring, &result);
+            ESP_LOGI(TAG, "tool %s -> %s in %lld ms", name->valuestring,
+                     (err == ESP_OK) ? "reply" : esp_err_to_name(err),
+                     (long long)((esp_timer_get_time() - t0) / 1000));
+            if (err != ESP_OK) {
+                failed++;
+                result = cJSON_CreateObject();
+                if (result != NULL) {
+                    cJSON_AddBoolToObject(result, "ok", false);
+                    cJSON_AddStringToObject(result, "error",
+                                            (err == ESP_ERR_INVALID_STATE)
+                                                ? "the device is not signed in, so the tool could not run"
+                                                : "the tool service could not be reached from the device");
+                }
+            }
+        }
+        cJSON *resp = cJSON_AddObjectToObject(fr, "response");
+        if (resp != NULL && result != NULL) {
+            cJSON_AddItemToObject(resp, "result", result);
+        } else {
+            cJSON_Delete(result);
         }
         cJSON_AddItemToArray(arr, fr);
         n++;
     }
-    if (n > 0) {
-        if (s_tool_buf != NULL &&
-            cJSON_PrintPreallocated(frame, s_tool_buf, LN_RT_TOOL_BUF_SZ, 0)) {
-            if (ws_send_str(s_tool_buf) != ESP_OK) {
-                ESP_LOGW(TAG, "toolResponse send failed");
-            }
-            if (stop_listening) {
-                post_evt(LN_RT_EVENT_STOP_LISTENING);
-            }
-            ESP_LOGW(TAG, "handled %d tool call(s) (stop_listening=%d)", n, (int)stop_listening);
+    cJSON_Delete(calls);
+
+    if (n > 0 && s_connected) {
+        char *out = cJSON_PrintUnformatted(frame);
+        if (out == NULL) {
+            ESP_LOGE(TAG, "toolResponse: out of memory serializing %d reply(ies)", n);
         } else {
-            ESP_LOGE(TAG, "toolResponse refusal frame exceeds %d B — dropped",
-                     LN_RT_TOOL_BUF_SZ);
+            if (gemini_send_tool_frame(out) != ESP_OK) {
+                ESP_LOGE(TAG, "toolResponse for %d call(s) not delivered", n);
+            } else {
+                ESP_LOGI(TAG, "answered %d tool call(s) (%u B, failed=%d, stop_listening=%d)",
+                         n, (unsigned)strlen(out), failed, (int)stop_listening);
+                if (stop_listening) {
+                    post_evt(LN_RT_EVENT_STOP_LISTENING);
+                }
+            }
+            cJSON_free(out);
         }
     }
     cJSON_Delete(frame);
+}
+
+/** Free tool jobs left over from a session that ended before they ran. */
+static void tool_jobs_discard(void)
+{
+    char *job = NULL;
+    while (s_tool_q != NULL && xQueueReceive(s_tool_q, &job, 0) == pdTRUE) {
+        cJSON_free(job);
+    }
+    xEventGroupClearBits(s_eg, EG_TOOL_PENDING);
 }
 
 /** Gemini Live server messages (no OpenAI-style "type" field — each message
@@ -691,10 +798,11 @@ static void handle_gemini_msg(const cJSON *root)
 
     const cJSON *tc = cJSON_GetObjectItemCaseSensitive(root, "toolCall");
     if (cJSON_IsObject(tc)) {
-        gemini_refuse_tool_calls(cJSON_GetObjectItemCaseSensitive(tc, "functionCalls"));
+        gemini_queue_tool_calls(cJSON_GetObjectItemCaseSensitive(tc, "functionCalls"));
         return;
     }
-    /* toolCallCancellation: nothing is ever pending on-device — no-op. */
+    /* toolCallCancellation: a queued job still answers; the server ignores
+     * replies to cancelled ids. */
     if (cJSON_GetObjectItemCaseSensitive(root, "toolCallCancellation") != NULL) {
         return;
     }
@@ -732,6 +840,7 @@ static void handle_gemini_msg(const cJSON *root)
      * surface it as SPEECH_STARTED (same UI/state effect as OpenAI's
      * input_audio_buffer.speech_started barge-in). */
     if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(sc, "interrupted"))) {
+        ESP_LOGI(TAG, "gemini interrupted playback (server VAD heard speech)");
         ln_audio_play_stop();
         s_have_carry = false;
         s_response_active = false;
@@ -781,6 +890,19 @@ static void handle_gemini_msg(const cJSON *root)
         post_evt(LN_RT_EVENT_RESPONSE_AUDIO_DONE);
     }
     if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(sc, "turnComplete"))) {
+        if (s_rx_audio_samples > 0) {
+            /* Downlink health: audio must arrive at least as fast as it
+             * plays (ratio >= 1.0) or playback underruns. */
+            uint32_t audio_ms = (uint32_t)(s_rx_audio_samples * 1000 / 24000);
+            uint32_t wall_ms = (uint32_t)((esp_timer_get_time() - s_rx_audio_t0_us) / 1000);
+            ESP_LOGI(TAG, "reply audio: %u ms received over %u ms (x%.2f realtime), "
+                          "%u KB at %u KB/s, handler busy %u ms",
+                     (unsigned)audio_ms, (unsigned)wall_ms,
+                     wall_ms > 0 ? (double)audio_ms / wall_ms : 0.0,
+                     (unsigned)(s_rx_bytes / 1024),
+                     wall_ms > 0 ? (unsigned)(s_rx_bytes / wall_ms) : 0U,
+                     (unsigned)(s_rx_busy_us / 1000));
+        }
         ln_audio_play_end();
         s_response_active = false;
         post_evt(LN_RT_EVENT_RESPONSE_DONE);
@@ -899,7 +1021,10 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t event_id,
          * text on that engine. */
         if (d->op_code == 0x01 || d->op_code == 0x00 ||
             (d->op_code == 0x02 && s_engine_mode == LN_RT_ENGINE_GEMINI_DIRECT)) {
+            int64_t t0 = esp_timer_get_time();
             handle_rx(d);
+            s_rx_busy_us += esp_timer_get_time() - t0;
+            s_rx_bytes += (uint64_t)d->data_len;
         } else if (d->op_code == 0x08) {
             ESP_LOGI(TAG, "server sent close frame");
         }
@@ -1012,6 +1137,7 @@ static esp_err_t ws_open(const ln_rt_session_info_t *si)
         .crt_bundle_attach = esp_crt_bundle_attach,
         .buffer_size = 4096,
         .task_stack = LN_RT_WS_TASK_STACK,
+        .task_prio = LN_RT_WS_TASK_PRIO,
         .network_timeout_ms = 10000,
         .disable_auto_reconnect = true, /* we own reconnect + fresh-token policy */
         .ping_interval_sec = 15,
@@ -1058,6 +1184,7 @@ static void run_session(void)
      * Gemini session across it. Reconnects WITHIN this loop keep the handle
      * (that is the goAway/link-drop resume path). */
     s_resume_handle[0] = '\0';
+    tool_jobs_discard();
 
     while (s_should_run) {
         if (attempt > 0) {
@@ -1105,9 +1232,23 @@ static void run_session(void)
 
         /* Connected. Supervise until the link drops or a stop is requested. */
         attempt = 0;
-        EventBits_t b = xEventGroupWaitBits(s_eg, EG_WS_DOWN | EG_STOP_REQ, pdFALSE, pdFALSE,
-                                            portMAX_DELAY);
+        EventBits_t b;
+        for (;;) {
+            b = xEventGroupWaitBits(s_eg, EG_WS_DOWN | EG_STOP_REQ | EG_TOOL_PENDING,
+                                    pdFALSE, pdFALSE, portMAX_DELAY);
+            if ((b & (EG_WS_DOWN | EG_STOP_REQ)) != 0) {
+                break;
+            }
+            /* Tool calls run here: this task owns the HTTPS stack budget and
+             * never holds a lock the WS or uplink tasks need. */
+            xEventGroupClearBits(s_eg, EG_TOOL_PENDING);
+            char *job = NULL;
+            while (xQueueReceive(s_tool_q, &job, 0) == pdTRUE) {
+                gemini_run_tool_job(job);
+            }
+        }
         ws_teardown();
+        tool_jobs_discard();
         if ((b & EG_STOP_REQ) != 0 || !s_should_run) {
             break;
         }
@@ -1153,6 +1294,7 @@ esp_err_t ln_realtime_init(void)
         return ESP_ERR_INVALID_STATE;
     }
     s_cmd_q = xQueueCreate(2, sizeof(ln_rt_cmd_t));
+    s_tool_q = xQueueCreate(LN_RT_TOOL_Q_LEN, sizeof(char *));
     s_eg = xEventGroupCreate();
     s_send_mtx = xSemaphoreCreateMutex();
     s_rx_buf = ln_rt_alloc(LN_RT_RX_BUF_INIT);
@@ -1162,7 +1304,7 @@ esp_err_t ln_realtime_init(void)
     s_rs_buf = ln_rt_alloc((3 * LN_RT_RESAMPLE_IN_MAX / 2 + 2) * sizeof(int16_t));
     s_up_storage = ln_rt_alloc(LN_RT_UP_SB_BYTES);
     s_tool_buf = ln_rt_alloc(LN_RT_TOOL_BUF_SZ);
-    if (s_cmd_q == NULL || s_eg == NULL || s_send_mtx == NULL || s_rx_buf == NULL ||
+    if (s_cmd_q == NULL || s_tool_q == NULL || s_eg == NULL || s_send_mtx == NULL || s_rx_buf == NULL ||
         s_dec_buf == NULL || s_uplink_buf == NULL || s_rs_buf == NULL ||
         s_up_storage == NULL || s_tool_buf == NULL) {
         ESP_LOGE(TAG, "init: out of memory");

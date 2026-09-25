@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "cJSON.h"
 #include "esp_err.h"
 #include "ln_realtime.h"
 
@@ -83,6 +84,20 @@ esp_err_t ln_rt_session_fetch(ln_rt_session_info_t *out, ln_rt_error_info_t *err
  * WSS session is live (the only time a fetch runs).
  */
 const char *ln_rt_resumption_handle(void);
+
+/**
+ * Run one model tool call on the backend: POST {backend}/api/v1/tools/invoke
+ * with the device JWT (contracts/api.md). Blocking (up to ~30 s); call from
+ * the worker task only — it shares ln_rt_session_fetch's static buffers.
+ *
+ * On ESP_OK *out_result holds the router's parsed Result object
+ * ({"tool","callId","ok","output"|"error"}), including structured failures
+ * the router returned with a 4xx/5xx status; the caller owns it
+ * (cJSON_Delete). Any other return means no usable reply (network, auth,
+ * unparseable body) and *out_result is NULL.
+ */
+esp_err_t ln_rt_tool_invoke(const char *tool, const cJSON *args, const char *call_id,
+                            cJSON **out_result);
 
 #ifdef __cplusplus
 }

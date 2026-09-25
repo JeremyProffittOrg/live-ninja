@@ -56,7 +56,24 @@ void app_main(void)
 
     /* Display + touch via BSP (esp_lvgl_port task owns LVGL). */
     log_internal("nvs+eventloop");
-    lv_display_t *disp = bsp_display_start();
+    /* LVGL draw buffers (+ the SW-rotation buffer) in PSRAM, not internal
+     * DMA RAM: the BSP default took ~110 KB internal, which left the
+     * esp-hosted SDIO RX path unable to get even 1.5 KB internal buffers
+     * mid-session. Its PSRAM fallback throttled the whole network stack to
+     * ~40-115 KB/s and made Gemini replies arrive at 0.6-0.9x realtime —
+     * choppy playback (HIL 2026-09-25). The DPI framebuffer is PSRAM
+     * already, so UI rendering cost is small. */
+    const bsp_display_cfg_t disp_cfg = {
+        .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
+        .buffer_size = BSP_LCD_H_RES * CONFIG_BSP_LCD_DRAW_BUF_HEIGHT,
+        .double_buffer = CONFIG_BSP_LCD_DRAW_BUF_DOUBLE,
+        .flags = {
+            .buff_dma = false,
+            .buff_spiram = true,
+            .sw_rotate = true,
+        },
+    };
+    lv_display_t *disp = bsp_display_start_with_config(&disp_cfg);
     if (disp == NULL) {
         ESP_LOGE(TAG, "bsp_display_start failed — no display");
         esp_restart();

@@ -41,7 +41,6 @@ picked up again. Full history: [archive/plan.md](archive/plan.md) M5 + §8 M5 no
 - **`device_control` smoke step** — "reboot the terminal" → `device_control` with `action:reboot` was step 3 of the post-M19 tool-manifest smoke; unverifiable without a Tab5. ⟵ archive/tool-parity-plan.md §Verification
 - **Live voice round-trip capture from the Tab5** into the shared transcript sink (parity with web/Android) — unverified. ⟵ docs/qa-report.md
 - **Owner eyeball of the reworked LCD screens** — onboarding slide-outs, WiFi list-select, subnet picker, QR at bottom, conversation-fills-screen layout: all flashed and serial-verified, never visually reviewed.
-- **Gemini path on firmware is HIL-unverified** (committed `968d373`). ⟵ archive/gemini-plan.md §10
 - **Nova signed-config handshake on firmware.** The active web/Android bridge now requires the
   broker's `sessionConfig` as the first frame and verifies its signed digest before Bedrock opens.
   Tab5's old Nova branch parses only URL/token and must add this handshake before Nova can ever be
@@ -57,8 +56,8 @@ rule live in `c:\dev\fleet\esp32.md`.
 
 ### Tab5 technical debt (was already backlog before the surface was dropped)
 
-- **On-device tool invocation.** The firmware has *no* tool-invoke plumbing on any engine — OpenAI `function_call`s are ignored by design, and Gemini `functionCall`s get an immediate `{"error":"tool execution is not available on this device"}` response so turns never stall. Full on-device invocation is a deliberate future item. ⟵ archive/gemini-plan.md §10 · archive/tool-parity-plan.md §0
-- **Uplink shedding during playback.** 20–50 KB bursts of mic audio are dropped while downlink audio plays (SDIO/WiFi full-duplex ceiling). Options: pace/trim uplink during SPEAKING (barge-in only needs VAD-grade audio), or tune esp-hosted buffers. Non-blocking. ⟵ archive/plan.md §8
+- **On-device tool invocation — OpenAI path.** Gemini `functionCall`s now run through `POST /api/v1/tools/invoke` from the `ln_rt` worker task (HIL-verified 2026-09-25 with `get_weather`). The OpenAI-direct branch still ignores every `function_call` except `stop_listening`; only matters if a Tab5 is pinned to an OpenAI engine. ⟵ archive/gemini-plan.md §10 · archive/tool-parity-plan.md §0
+- **Uplink shedding during playback — watch.** The 20–90 KB mic-audio drops while the device spoke were internal-RAM starvation, not an SDIO ceiling: LVGL draw buffers held ~110 KB internal, so esp-hosted SDIO RX fell back to PSRAM and the whole network stack ran at 40–115 KB/s. With the buffers in PSRAM (2026-09-25) a 17 s reply had 0 drops and arrived at 0.99x realtime. Reopen only if `uplink behind` or `playback underrun` returns in the serial log. ⟵ archive/plan.md §8
 - **Echo-triggered self-barge-in at high volume.** AEC is imperfect at volume; also produces a benign `response_cancel_not_active` server warn. Same class the web solved with `micEagerness=low`; mitigable today via the device sensitivity setting. ⟵ archive/plan.md §8
 - **Transient `Could not lock ws-client within 1000 timeout`** during heavy downlink — self-recovers; watch only. ⟵ archive/plan.md §8
 - **Root-cause the internal DMA heap exhaustion during session setup** (lwIP TCP buffers + esp-tls internals + AFE + fragmentation suspected). Explicitly filed "for someday" — the PSRAM-fallback patches made it a non-issue. ⟵ archive/plan.md §8 item 11
