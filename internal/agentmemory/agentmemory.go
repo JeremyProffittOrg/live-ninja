@@ -186,6 +186,14 @@ func SessionID(sessionID string, now time.Time) string {
 // is what every read here uses.
 func Namespace(userID string) string { return "/users/" + ActorID(userID) + "/" }
 
+// KnowledgeNamespace is the actor's document-knowledge path: curated
+// documents (an owner's manual, for example) loaded as records by
+// scripts/knowledge-load, one sub-path per collection
+// (/knowledge/<actor>/<collection>/). It sits outside Namespace on purpose,
+// so documents never crowd the conversation-derived facts out of the mint
+// preload or memory_search; knowledge_search reads it instead.
+func KnowledgeNamespace(userID string) string { return "/knowledge/" + ActorID(userID) + "/" }
+
 func sanitizeID(id string) string {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -360,6 +368,16 @@ func (s *Service) Preload(ctx context.Context, userID string, topK int) ([]Recor
 
 // Retrieve is semantic search over the actor's namespaces.
 func (s *Service) Retrieve(ctx context.Context, userID, query string, topK int) ([]Record, error) {
+	return s.retrieve(ctx, Namespace(userID), userID, query, topK)
+}
+
+// RetrieveKnowledge is semantic search over the actor's loaded documents
+// (KnowledgeNamespace).
+func (s *Service) RetrieveKnowledge(ctx context.Context, userID, query string, topK int) ([]Record, error) {
+	return s.retrieve(ctx, KnowledgeNamespace(userID), userID, query, topK)
+}
+
+func (s *Service) retrieve(ctx context.Context, namespacePath, userID, query string, topK int) ([]Record, error) {
 	if s == nil {
 		return nil, nil
 	}
@@ -375,7 +393,7 @@ func (s *Service) Retrieve(ctx context.Context, userID, query string, topK int) 
 	}
 	out, err := s.client.RetrieveMemoryRecords(ctx, &bedrockagentcore.RetrieveMemoryRecordsInput{
 		MemoryId:      aws.String(s.cfg.MemoryID),
-		NamespacePath: aws.String(Namespace(userID)),
+		NamespacePath: aws.String(namespacePath),
 		SearchCriteria: &types.SearchCriteria{
 			SearchQuery: aws.String(clip(query, 10000)),
 			TopK:        aws.Int32(int32(topK)),

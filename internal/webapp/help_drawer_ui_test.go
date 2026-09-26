@@ -139,6 +139,8 @@ func TestHelpDrawerCoversTheAppsCapabilities(t *testing.T) {
 	for _, want := range []string{
 		"Ask about your own work",
 		"the home knowledge store did not answer",
+		// Loaded documents (AgentCore knowledge namespace, scripts/knowledge-load).
+		"Ask about documents you loaded",
 	} {
 		assert.Containsf(t, help, want, "help panel must cover the knowledge store: %q", want)
 	}

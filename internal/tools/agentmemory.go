@@ -16,6 +16,7 @@ import (
 // AgentMemoryRecord is one extracted long-term record as the tools return it.
 type AgentMemoryRecord struct {
 	ID        string
+	Namespace string
 	Text      string
 	Score     float64
 	CreatedAt time.Time
@@ -27,6 +28,9 @@ type AgentMemoryService interface {
 	Admits(role string) bool
 	// Search is semantic retrieval over the user's records.
 	Search(ctx context.Context, userID, query string, limit int) ([]AgentMemoryRecord, error)
+	// SearchKnowledge is semantic retrieval over the user's loaded documents
+	// (agentmemory.KnowledgeNamespace), which knowledge_search reads.
+	SearchKnowledge(ctx context.Context, userID, query string, limit int) ([]AgentMemoryRecord, error)
 	// RememberFact records an explicit "remember this" exchange.
 	RememberFact(ctx context.Context, userID, sessionID, text string) error
 	// ForgetMatching deletes the records whose text names the entity.
@@ -55,6 +59,18 @@ func (a *agentMemoryAdapter) Search(ctx context.Context, userID, query string, l
 	out := make([]AgentMemoryRecord, 0, len(recs))
 	for _, r := range recs {
 		out = append(out, AgentMemoryRecord{ID: r.ID, Text: r.Text, Score: r.Score, CreatedAt: r.CreatedAt})
+	}
+	return out, nil
+}
+
+func (a *agentMemoryAdapter) SearchKnowledge(ctx context.Context, userID, query string, limit int) ([]AgentMemoryRecord, error) {
+	recs, err := a.svc.RetrieveKnowledge(ctx, userID, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AgentMemoryRecord, 0, len(recs))
+	for _, r := range recs {
+		out = append(out, AgentMemoryRecord{ID: r.ID, Namespace: r.Namespace, Text: r.Text, Score: r.Score, CreatedAt: r.CreatedAt})
 	}
 	return out, nil
 }
