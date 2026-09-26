@@ -528,6 +528,15 @@ void ln_ui_set_device_info(const char *fw_version, const char *thing_name,
     bsp_display_unlock();
 }
 
+void ln_ui_set_last_restart(const char *text)
+{
+    if (text == NULL || !ui_lock()) {
+        return;
+    }
+    ln_scr_config_set_last_restart(text);
+    bsp_display_unlock();
+}
+
 void ln_ui_user_transcript(const char *text, bool replace)
 {
     if (text == NULL || !ui_lock()) {

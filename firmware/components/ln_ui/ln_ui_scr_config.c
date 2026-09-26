@@ -106,6 +106,7 @@ static lv_obj_t *s_about_mac_v;
 static lv_obj_t *s_about_ip_v;
 static lv_obj_t *s_about_uptime_v;
 static lv_obj_t *s_about_heap_v;
+static lv_obj_t *s_about_restart_v;
 
 /* ------------------------------------------------------------------ */
 
@@ -605,6 +606,8 @@ static lv_obj_t *build_about_panel(lv_obj_t *parent)
     ln_w_kv_row(card, "IP address", "—", &s_about_ip_v);
     ln_w_kv_row(card, "Uptime", "—", &s_about_uptime_v);
     ln_w_kv_row(card, "Heap", "—", &s_about_heap_v);
+    ln_w_kv_row(card, "Last restarts", "—", &s_about_restart_v);
+    lv_label_set_long_mode(s_about_restart_v, LV_LABEL_LONG_WRAP);
 
     lv_obj_t *danger = ln_w_card(panel);
     lv_obj_set_width(danger, lv_pct(100));
@@ -789,6 +792,13 @@ void ln_scr_config_set_net(const char *ssid, const char *ip, const char *signal)
     }
     if (signal != NULL) {
         lv_label_set_text(s_wifi_sig_v, signal[0] ? signal : "—");
+    }
+}
+
+void ln_scr_config_set_last_restart(const char *text)
+{
+    if (s_about_restart_v != NULL && text != NULL) {
+        lv_label_set_text(s_about_restart_v, text);
     }
 }
 

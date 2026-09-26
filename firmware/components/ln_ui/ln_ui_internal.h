@@ -88,6 +88,7 @@ void ln_scr_config_set_values(const ln_ui_config_t *cfg);
 void ln_scr_config_set_shadow(const char *voice, float sensitivity);
 void ln_scr_config_set_net(const char *ssid, const char *ip,
                            const char *signal);
+void ln_scr_config_set_last_restart(const char *text);
 void ln_scr_config_set_about(const char *fw, const char *thing,
                              const char *mac, const char *ip);
 

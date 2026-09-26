@@ -18,6 +18,7 @@
 #include "bsp/m5stack_tab5.h"
 
 #include "ln_audio.h"
+#include "ln_bootlog.h"
 #include "ln_ctrl.h"
 #include "ln_iot.h"
 #include "ln_net.h"
@@ -52,6 +53,7 @@ void app_main(void)
              app->version, app->project_name, app->idf_ver);
 
     ln_nvs_init();
+    ln_bootlog_init(); /* first: must see this boot's log from here on */
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     /* Display + touch via BSP (esp_lvgl_port task owns LVGL). */
@@ -81,6 +83,11 @@ void app_main(void)
     ESP_ERROR_CHECK(bsp_display_backlight_on());
     log_internal("display");
     ESP_ERROR_CHECK(ln_ui_init());
+    {
+        char restarts[160];
+        ln_bootlog_summary(restarts, sizeof(restarts));
+        ln_ui_set_last_restart(restarts);
+    }
     log_internal("ln_ui");
 
     /* Audio + wake. A codec/model failure must not brick provisioning —

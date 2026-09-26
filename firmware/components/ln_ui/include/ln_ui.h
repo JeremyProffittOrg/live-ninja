@@ -73,6 +73,9 @@ void ln_ui_set_wake_phrase(const char *phrase);
 void ln_ui_set_device_info(const char *fw_version, const char *thing_name,
                            const char *mac, const char *ip);
 
+/** Recent reset history for Config > About ("Last restarts"). */
+void ln_ui_set_last_restart(const char *text);
+
 /* ---- Session (Listening / Thinking / Speaking) ---- */
 /** User speech transcript. replace=false appends a fragment, true replaces. */
 void ln_ui_user_transcript(const char *text, bool replace);
