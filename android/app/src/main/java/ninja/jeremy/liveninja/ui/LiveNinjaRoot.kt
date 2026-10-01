@@ -269,10 +269,17 @@ fun LiveNinjaRoot(assistTriggers: SharedFlow<AssistTrigger> = MutableSharedFlow(
     }
 }
 
+/**
+ * Renders the self-updater's state. Checks are started by MainActivity.onStart
+ * (throttled) and AppUpdateWorker; the buttons here are the manual path.
+ */
 @Composable
 private fun AppUpdateHost(viewModel: AppUpdateViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    LaunchedEffect(Unit) { viewModel.check() }
+    // The download runs on the coordinator's own scope; the user may hide its
+    // progress dialog and keep using the app.
+    var progressHidden by remember { mutableStateOf(false) }
+    if (state !is AppUpdateState.Downloading) progressHidden = false
     when (val s = state) {
         is AppUpdateState.Available -> AlertDialog(
             onDismissRequest = viewModel::dismiss,
@@ -297,8 +304,23 @@ private fun AppUpdateHost(viewModel: AppUpdateViewModel = hiltViewModel()) {
                 }
             },
         )
-        is AppUpdateState.Downloading -> AlertDialog(
-            onDismissRequest = {},
+        is AppUpdateState.NeedsInstallPermission -> AlertDialog(
+            onDismissRequest = viewModel::dismiss,
+            title = { Text(stringResource(R.string.update_permission_title)) },
+            text = { Text(stringResource(R.string.update_permission_body, s.versionName)) },
+            confirmButton = {
+                TextButton(onClick = viewModel::openInstallPermissionSettings) {
+                    Text(stringResource(R.string.update_open_settings))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::dismiss) {
+                    Text(stringResource(R.string.update_later))
+                }
+            },
+        )
+        is AppUpdateState.Downloading -> if (!progressHidden) AlertDialog(
+            onDismissRequest = { progressHidden = true },
             title = { Text(stringResource(R.string.update_downloading_title)) },
             text = {
                 val total = s.totalBytes.coerceAtLeast(1L)
@@ -307,19 +329,32 @@ private fun AppUpdateHost(viewModel: AppUpdateViewModel = hiltViewModel()) {
                     modifier = Modifier.fillMaxWidth(),
                 )
             },
-            confirmButton = {},
+            confirmButton = {
+                TextButton(onClick = { progressHidden = true }) {
+                    Text(stringResource(R.string.update_hide))
+                }
+            },
         )
         AppUpdateState.Installing -> AlertDialog(
-            onDismissRequest = {},
+            onDismissRequest = viewModel::dismiss,
             title = { Text(stringResource(R.string.update_installing_title)) },
             text = { Text(stringResource(R.string.update_installing_body)) },
-            confirmButton = {},
+            confirmButton = {
+                TextButton(onClick = viewModel::dismiss) {
+                    Text(stringResource(R.string.update_later))
+                }
+            },
         )
         is AppUpdateState.Failed -> AlertDialog(
             onDismissRequest = viewModel::dismiss,
             title = { Text(stringResource(R.string.update_failed_title)) },
             text = { Text(s.message) },
             confirmButton = {
+                TextButton(onClick = viewModel::startInstall) {
+                    Text(stringResource(R.string.update_retry))
+                }
+            },
+            dismissButton = {
                 TextButton(onClick = viewModel::dismiss) {
                     Text(stringResource(R.string.update_later))
                 }

@@ -20,7 +20,8 @@ cmd/realtime-broker (the sole holder of the OpenAI/Gemini keys) -> an ephemeral 
 a session config. Composition order, verbatim and load-bearing:
 persona.Instructions -> SessionDirectives (memory + silence, internal/realtime/mint.go) ->
 BASE KNOWLEDGE (internal/realtime/baseknowledge.go, BuildBaseKnowledge) -> accent
-(AccentDirective) -> guides (guides.go) — applied identically on the OpenAI mint, the Gemini
+(AccentDirective) -> guides (guides.go) -> RULES index (rules.go: each enabled rule's name and
+when-to-use description only; the model calls rule_load for the body) — applied identically on the OpenAI mint, the Gemini
 mint, and the text fallback turn (cmd/realtime-broker/main.go). The tool manifest bound into
 every session is tools.CatalogManifest(), the same renderer that produces the tool-contract
 context an RCA is shown for the failing tool — so a schema mismatch between what the model was
@@ -104,7 +105,7 @@ One DynamoDB table `live-ninja`: `pk`/`sk` plus several GSIs, `PAY_PER_REQUEST`,
 **no Scan on any serving path**. Key prefixes an RCA may need: `USER#<uid>` with `SETTINGS` /
 `LOG#<sessionId>#<seq>` (tool-audit rows 90d TTL, transcript turns 30d TTL by default) /
 `CONV#<ts>#<sessionId>` (minted by cmd/topics-extract at session end, long after any mid-session
-tool failure) / `TOPIC#` / `PERSONA#` / `DELIV#` / `ENT#` / `GUIDE#`, `DEVICE#<id>`,
+tool failure) / `TOPIC#` / `PERSONA#` / `DELIV#` / `ENT#` / `GUIDE#` / `RULE#<name>` (assistant rules, managed on /memory and by the rule_* tools), `DEVICE#<id>`,
 `IDEMP#<userId>#<key>`, and `RCA#*` (this pipeline's own records). Auth: LWA sign-in, KMS-signed
 JWTs, per-call re-authorization, owner-plus-allowlist access.
 

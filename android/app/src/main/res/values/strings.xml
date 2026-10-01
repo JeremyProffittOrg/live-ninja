@@ -538,15 +538,27 @@
     <string name="update_later">Later</string>
     <string name="update_downloading_title">Downloading update</string>
     <string name="update_installing_title">Installing update</string>
-    <string name="update_installing_body">Android will ask you to confirm the install.</string>
+    <string name="update_installing_body">Android may ask you to confirm the install. The app restarts when it finishes.</string>
     <string name="update_failed_title">Couldn’t update</string>
+    <string name="update_retry">Retry</string>
+    <string name="update_hide">Hide</string>
+    <string name="update_permission_title">Allow app updates</string>
+    <string name="update_permission_body">Live Ninja %1$s is ready, but Android blocks this app from installing updates. Turn on “Allow from this source” to let the phone update itself.</string>
+    <string name="update_open_settings">Open settings</string>
+    <string name="update_notification_channel">App updates</string>
+    <string name="update_confirm_notification_title">Live Ninja update ready</string>
+    <string name="update_confirm_notification_body">Tap to confirm the install.</string>
+    <string name="update_permission_notification_title">Allow Live Ninja to update itself</string>
+    <string name="update_permission_notification_body">A new version is ready. Tap, then turn on “Allow from this source”.</string>
 
     <string name="perm_continue">Continue</string>
-    <string name="perm_later">Later</string>
+    <string name="perm_later">Skip</string>
     <string name="perm_battery_title">Keep listening in the background</string>
-    <string name="perm_battery_body">Android will pause Live Ninja unless you allow it to ignore battery optimizations. This is how always-listening survives overnight.</string>
+    <string name="perm_battery_body">Android (and Samsung’s One UI especially) stops Live Ninja in the background unless you let it ignore battery optimizations. This is how always-listening survives overnight.</string>
     <string name="perm_overlay_title">Show over other apps</string>
     <string name="perm_overlay_body">Needed for the floating conversation bubble when you leave the app mid-call.</string>
     <string name="perm_install_title">Install app updates</string>
     <string name="perm_install_body">Allow Live Ninja to install the APK published on this website, so the phone can update itself.</string>
+    <string name="perm_fullscreen_title">Wake the screen for the assistant</string>
+    <string name="perm_fullscreen_body">Lets a wake word light up the screen over the lock screen so the conversation can start right away.</string>
 </resources>

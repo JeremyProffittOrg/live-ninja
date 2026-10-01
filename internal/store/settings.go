@@ -458,6 +458,12 @@ func retainUnknownSettingsField(field string, value any) (any, bool) {
 			"label", "postalCode", "city", "admin1", "country", "lat", "lon", "timezone")
 		retainUnknownNestedMap(object, "workLocation",
 			"label", "postalCode", "city", "admin1", "country", "lat", "lon", "timezone")
+		// currentLocation is account-wide (profile.go); a copy that a client
+		// echoed into a device override is a known field, so an inherit or
+		// apply-all clears it rather than keeping it as foreign data.
+		retainUnknownNestedMap(object, "currentLocation",
+			"label", "postalCode", "city", "admin1", "country", "lat", "lon", "timezone",
+			"setAt", "source")
 		retainUnknownNestedMap(object, "quietHours", "start", "end")
 	default:
 		// Known scalar fields and map fields without an additive object

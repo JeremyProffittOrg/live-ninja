@@ -19,10 +19,15 @@ func testHome() *store.Location {
 	}
 }
 
-// An empty profile must cost nothing: sessions mint byte-identically to their
-// pre-M15 shape rather than carrying a block full of blanks.
-func TestBuildBaseKnowledgeEmptyProfileYieldsNothing(t *testing.T) {
-	assert.Equal(t, "", BuildBaseKnowledge(store.Profile{}, time.Now()))
+// An empty profile carries no blanks — but it does carry the clock, in the
+// default zone, so "what time is it" is never answered in UTC.
+func TestBuildBaseKnowledgeEmptyProfileYieldsOnlyTheClock(t *testing.T) {
+	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC) // 08:00 EDT
+	got := BuildBaseKnowledge(store.Profile{}, now)
+	assert.Equal(t, baseKnowledgeHeader+
+		"- Right now it is Friday, July 24, 2026 at 8:00 AM (EDT, America/New_York (default)). "+
+		"Use this for anything time- or date-relative.", got)
+	assert.NotContains(t, got, "Preferred units", "no unconfirmed facts for an empty profile")
 }
 
 func TestBuildBaseKnowledgeRendersTheFacts(t *testing.T) {
@@ -75,24 +80,106 @@ func TestTimezoneDatabaseIsAvailable(t *testing.T) {
 	}
 }
 
-// A stale or renamed zone must degrade, never panic or fail the mint.
-func TestBuildBaseKnowledgeUnknownTimezoneFallsBackToUTC(t *testing.T) {
+// A stale or renamed zone must degrade, never panic or fail the mint. It
+// degrades to the default zone, labelled as assumed — not to UTC.
+func TestBuildBaseKnowledgeUnknownTimezoneFallsBackToDefault(t *testing.T) {
 	home := testHome()
 	home.Timezone = "Mars/Olympus_Mons"
 	p := store.Profile{DisplayName: "Jeremy", HomeLocation: home}
 	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
 
 	got := BuildBaseKnowledge(p, now)
-	assert.Contains(t, got, "at 12:00 PM", "an unknown zone renders in UTC")
-	assert.NotEmpty(t, got)
+	assert.Contains(t, got, "at 8:00 AM (EDT, America/New_York (default; the stored zone Mars/Olympus_Mons is unknown))")
+	assert.NotContains(t, got, "at 12:00 PM", "an unknown zone must not render in UTC")
 }
 
-// A profile with no timezone anywhere still gets a clock — UTC, labelled
-// honestly so the model knows the zone is unconfirmed.
-func TestBuildBaseKnowledgeNoTimezoneSaysSo(t *testing.T) {
+// A profile with no timezone anywhere still gets a clock — America/New_York,
+// labelled honestly so the model knows the zone is assumed.
+func TestBuildBaseKnowledgeNoTimezoneUsesDefault(t *testing.T) {
 	p := store.Profile{DisplayName: "Jeremy"}
-	got := BuildBaseKnowledge(p, time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC))
-	assert.Contains(t, got, "no timezone on file")
+	got := BuildBaseKnowledge(p, time.Date(2026, 1, 24, 12, 0, 0, 0, time.UTC))
+	assert.Contains(t, got, "at 7:00 AM (EST, America/New_York (default))")
+}
+
+func testDenver() *store.Location {
+	return &store.Location{
+		Label: "Denver, Colorado, United States", City: "Denver", Admin1: "Colorado",
+		Country: "United States", Lat: 39.7392, Lon: -104.9903, Timezone: "America/Denver",
+	}
+}
+
+// Contract D: the current location overrides home for the clock, and the
+// block says so in a line the model can act on, while home stays listed.
+func TestBuildBaseKnowledgeCurrentLocationOverridesHome(t *testing.T) {
+	p := store.Profile{
+		DisplayName:           "Jeremy",
+		HomeLocation:          testHome(),
+		CurrentLocation:       testDenver(),
+		CurrentLocationSetAt:  "2026-10-01T03:30:00Z", // Sept 30 evening in Denver
+		CurrentLocationSource: store.CurrentLocationSourceCommand,
+	}
+	now := time.Date(2026, 10, 1, 18, 0, 0, 0, time.UTC) // 12:00 MDT
+
+	got := BuildBaseKnowledge(p, now)
+	assert.Contains(t, got, "Thursday, October 1, 2026 at 12:00 PM (MDT, America/Denver, current location)")
+	assert.Contains(t, got, "- Current location (set September 30, 2026, by the user's command): "+
+		"Denver, Colorado, United States (39.7392, -104.9903). Use this, not home, for time, weather, and 'here'.")
+	assert.Contains(t, got, "Home / default location: Huntersville", "home stays listed")
+
+	currentAt := strings.Index(got, "- Current location")
+	homeAt := strings.Index(got, "- Home / default location")
+	require.True(t, currentAt >= 0 && homeAt > currentAt, "current is listed before home")
+	// The no-location weather hint belongs to the current location now; on
+	// the home line it would contradict the override.
+	assert.Equal(t, 1, strings.Count(got, "get_weather with no location"))
+	assert.Contains(t, got[currentAt:homeAt], "get_weather with no location")
+}
+
+func TestBuildBaseKnowledgeCurrentLocationLineVariants(t *testing.T) {
+	cases := []struct {
+		name, setAt, source, want string
+	}{
+		{"gps", "2026-10-01T15:00:00Z", store.CurrentLocationSourceGPS,
+			"(set October 1, 2026, by GPS coordinates)"},
+		{"missing setAt", "", store.CurrentLocationSourceCommand,
+			"(set at an unknown time, by the user's command)"},
+		{"malformed setAt and unknown source", "yesterday", "carrier-pigeon",
+			"(set at an unknown time, by the user)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := store.Profile{CurrentLocation: testDenver(),
+				CurrentLocationSetAt: tc.setAt, CurrentLocationSource: tc.source}
+			got := BuildBaseKnowledge(p, time.Date(2026, 10, 1, 18, 0, 0, 0, time.UTC))
+			assert.Contains(t, got, tc.want)
+			assert.Contains(t, got, "America/Denver, current location")
+		})
+	}
+}
+
+// The clock follows DST in whichever zone is in effect; the abbreviation is
+// rendered so the two 1:30 AMs of a fall-back night are distinguishable.
+func TestBuildBaseKnowledgeClockAcrossDST(t *testing.T) {
+	cases := []struct {
+		name string
+		p    store.Profile
+		now  time.Time
+		want string
+	}{
+		{"default zone, before fall-back", store.Profile{}, time.Date(2026, 11, 1, 5, 30, 0, 0, time.UTC),
+			"1:30 AM (EDT"},
+		{"default zone, after fall-back", store.Profile{}, time.Date(2026, 11, 1, 6, 30, 0, 0, time.UTC),
+			"1:30 AM (EST"},
+		{"current zone, after spring-forward", store.Profile{CurrentLocation: testDenver()},
+			time.Date(2026, 3, 8, 9, 0, 0, 0, time.UTC), "3:00 AM (MDT"},
+		{"current zone, before spring-forward", store.Profile{CurrentLocation: testDenver()},
+			time.Date(2026, 3, 8, 8, 59, 0, 0, time.UTC), "1:59 AM (MST"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Contains(t, BuildBaseKnowledge(tc.p, tc.now), tc.want)
+		})
+	}
 }
 
 func TestBuildBaseKnowledgeMetricUnits(t *testing.T) {

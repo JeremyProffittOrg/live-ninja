@@ -145,6 +145,22 @@ func TestHelpDrawerCoversTheAppsCapabilities(t *testing.T) {
 		assert.Containsf(t, help, want, "help panel must cover the knowledge store: %q", want)
 	}
 
+	// Assistant rules (rule_save/rule_load tools, /api/v1/rules) and the
+	// current-location override (set_current_location). Each is pinned by the
+	// phrase a user would say, plus where rules are managed.
+	for _, want := range []string{
+		"Make a rule",
+		"Make a rule that",
+		"delete the packing rule",
+		"on the Memory page",
+		"<em>Rules</em>",
+		"Tell it where you are now",
+		"GPS coordinates",
+		"I'm back home",
+	} {
+		assert.Containsf(t, help, want, "help panel must cover rules and current location: %q", want)
+	}
+
 	// Every page reachable from the app shell.
 	for _, want := range []string{"History", "Memory", "Personas", "Downloads"} {
 		assert.Containsf(t, help, ">"+want+"<", "help panel must describe the %s page", want)

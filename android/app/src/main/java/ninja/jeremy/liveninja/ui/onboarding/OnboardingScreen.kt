@@ -65,6 +65,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import ninja.jeremy.liveninja.R
+import ninja.jeremy.liveninja.ui.SpecialAccess
+import ninja.jeremy.liveninja.ui.StartupPermissionLedger
 import ninja.jeremy.liveninja.ui.state.WakeWordOption
 
 /**
@@ -179,7 +181,10 @@ fun OnboardingScreen(
                     )
 
                     OnboardingStep.MIC_PERMISSION -> {
-                        LaunchedEffect(Unit) { viewModel.onMicDisclosureShown() }
+                        LaunchedEffect(Unit) {
+                            viewModel.onMicDisclosureShown()
+                            StartupPermissionLedger.markRuntimeAsked(listOf(Manifest.permission.RECORD_AUDIO))
+                        }
                         MicPermissionStep(
                             granted = state.micGranted,
                             onGrant = { micLauncher.launch(Manifest.permission.RECORD_AUDIO) },
@@ -188,7 +193,10 @@ fun OnboardingScreen(
                     }
 
                     OnboardingStep.CAMERA_PERMISSION -> {
-                        LaunchedEffect(Unit) { viewModel.onCameraDisclosureShown() }
+                        LaunchedEffect(Unit) {
+                            viewModel.onCameraDisclosureShown()
+                            StartupPermissionLedger.markRuntimeAsked(listOf(Manifest.permission.CAMERA))
+                        }
                         CameraPermissionStep(
                             granted = state.cameraGranted,
                             onGrant = { cameraLauncher.launch(Manifest.permission.CAMERA) },
@@ -196,66 +204,80 @@ fun OnboardingScreen(
                         )
                     }
 
-                    OnboardingStep.NOTIFICATIONS -> NotificationStep(
-                        granted = state.notificationsGranted,
-                        requestable = state.notificationsRequestable,
-                        onGrant = {
-                            notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        },
-                        onNext = viewModel::next,
-                    )
+                    OnboardingStep.NOTIFICATIONS -> {
+                        LaunchedEffect(Unit) {
+                            StartupPermissionLedger.markRuntimeAsked(
+                                listOf(Manifest.permission.POST_NOTIFICATIONS),
+                            )
+                        }
+                        NotificationStep(
+                            granted = state.notificationsGranted,
+                            requestable = state.notificationsRequestable,
+                            onGrant = {
+                                notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            },
+                            onNext = viewModel::next,
+                        )
+                    }
 
-                    OnboardingStep.ASSISTANT_ROLE -> AssistantRoleStep(
-                        roleHeld = state.roleHeld,
-                        requestAttempted = state.roleRequestAttempted,
-                        overlayGranted = state.overlayGranted,
-                        oemBucket = viewModel.oemBucket,
-                        onRequestRole = {
-                            val roleIntent = viewModel.assistantRoleRequestIntent()
-                            // A null intent, or one no activity handles on this OEM,
-                            // both mean: guided settings walkthrough + isRoleHeld
-                            // polling instead. Never a crash mid-onboarding.
-                            val launched = roleIntent != null && try {
-                                roleLauncher.launch(roleIntent)
-                                true
-                            } catch (e: ActivityNotFoundException) {
-                                false
-                            }
-                            if (!launched) viewModel.openAssistantSettings(context)
-                        },
-                        onOpenSettings = { viewModel.openAssistantSettings(context) },
-                        onRequestOverlay = {
-                            try {
-                                overlayLauncher.launch(
-                                    Intent(
-                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                        Uri.parse("package:${context.packageName}"),
-                                    ),
-                                )
-                            } catch (e: ActivityNotFoundException) {
-                                // No overlay-permission screen on this device: the
-                                // bubble is optional, so just re-read the status.
-                                viewModel.onOverlayReturned()
-                            }
-                        },
-                        onNext = viewModel::next,
-                        onSkip = viewModel::onRoleSkipped,
-                    )
+                    OnboardingStep.ASSISTANT_ROLE -> {
+                        // The overlay grant is offered on this step.
+                        LaunchedEffect(Unit) { StartupPermissionLedger.markSpecialAsked(SpecialAccess.OVERLAY) }
+                        AssistantRoleStep(
+                            roleHeld = state.roleHeld,
+                            requestAttempted = state.roleRequestAttempted,
+                            overlayGranted = state.overlayGranted,
+                            oemBucket = viewModel.oemBucket,
+                            onRequestRole = {
+                                val roleIntent = viewModel.assistantRoleRequestIntent()
+                                // A null intent, or one no activity handles on this OEM,
+                                // both mean: guided settings walkthrough + isRoleHeld
+                                // polling instead. Never a crash mid-onboarding.
+                                val launched = roleIntent != null && try {
+                                    roleLauncher.launch(roleIntent)
+                                    true
+                                } catch (e: ActivityNotFoundException) {
+                                    false
+                                }
+                                if (!launched) viewModel.openAssistantSettings(context)
+                            },
+                            onOpenSettings = { viewModel.openAssistantSettings(context) },
+                            onRequestOverlay = {
+                                try {
+                                    overlayLauncher.launch(
+                                        Intent(
+                                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                            Uri.parse("package:${context.packageName}"),
+                                        ),
+                                    )
+                                } catch (e: ActivityNotFoundException) {
+                                    // No overlay-permission screen on this device: the
+                                    // bubble is optional, so just re-read the status.
+                                    viewModel.onOverlayReturned()
+                                }
+                            },
+                            onNext = viewModel::next,
+                            onSkip = viewModel::onRoleSkipped,
+                        )
+                    }
 
-                    OnboardingStep.BATTERY -> BatteryStep(
-                        ignored = state.batteryOptimizationIgnored,
-                        onExempt = {
-                            // Some OEM builds ship no handler for this system prompt;
-                            // the step can still be skipped, so a missing activity
-                            // must not crash the wizard.
-                            try {
-                                batteryLauncher.launch(viewModel.batteryExemptionIntent())
-                            } catch (e: ActivityNotFoundException) {
-                                viewModel.refreshStatuses()
-                            }
-                        },
-                        onNext = viewModel::next,
-                    )
+                    OnboardingStep.BATTERY -> {
+                        LaunchedEffect(Unit) { StartupPermissionLedger.markSpecialAsked(SpecialAccess.BATTERY) }
+                        BatteryStep(
+                            ignored = state.batteryOptimizationIgnored,
+                            onExempt = {
+                                // Some OEM builds ship no handler for this system prompt;
+                                // the step can still be skipped, so a missing activity
+                                // must not crash the wizard.
+                                try {
+                                    batteryLauncher.launch(viewModel.batteryExemptionIntent())
+                                } catch (e: ActivityNotFoundException) {
+                                    viewModel.refreshStatuses()
+                                }
+                            },
+                            onNext = viewModel::next,
+                        )
+                    }
 
                     OnboardingStep.WAKE_WORD -> WakeWordStep(
                         options = state.wakeWordOptions,

@@ -141,6 +141,13 @@ func RegisterMemoryRoutes(app *fiber.App, deps *Deps, svc *memory.Service) {
 	api.Post("/guides", handleWriteGuide(deps, true))
 	api.Put("/guides/:id", handleWriteGuide(deps, false))
 	api.Delete("/guides/:id", handleDeleteGuide(deps))
+
+	// Assistant rules (rules_routes.go): name + description go into every
+	// session's index; the body is loaded on demand by rule_load.
+	api.Get("/rules", handleListRules(deps))
+	api.Post("/rules", handleWriteRule(deps))
+	api.Put("/rules/:name", handleToggleRule(deps))
+	api.Delete("/rules/:name", handleDeleteRule(deps))
 }
 
 // ---- GET /api/v1/entities ----

@@ -177,19 +177,14 @@ func handleSchedule(ctx context.Context, deps *Deps, inv Invocation, args map[st
 	}, nil
 }
 
-// schedulerLocation resolves the profile timezone for naive 'at' values,
-// degrading to UTC when the profile carries no timezone or names an unknown
-// one (a stale zone id must never fail a reminder).
+// schedulerLocation resolves the timezone naive 'at' values are read in:
+// the current location's, then home's, then work's, then
+// store.DefaultTimezone (America/New_York) — never UTC, which put "remind me
+// at 9am" four or five hours off for a user with no location on file. A
+// stale or unknown zone id degrades to the default rather than failing the
+// reminder.
 func schedulerLocation(p store.Profile) *time.Location {
-	tz := p.Timezone()
-	if tz == "" {
-		return time.UTC
-	}
-	loc, err := time.LoadLocation(tz)
-	if err != nil {
-		return time.UTC
-	}
-	return loc
+	return profileClock(p)
 }
 
 // naiveLocalLayouts are the offset-less datetime shapes accepted for 'at'

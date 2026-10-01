@@ -499,6 +499,7 @@ func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Re
 	} else {
 		guideSuffix = realtime.GuideInstructions(guides)
 	}
+	guideSuffix += b.rulesBlock(ctx, l, req)
 
 	// The Azure OpenAI pins reuse this whole path unchanged: same session
 	// config, same ephemeral-secret shape, same client WebRTC transport. Only
@@ -603,6 +604,7 @@ func (b *broker) handleVoiceLiveDirect(ctx context.Context, l *slog.Logger, req 
 	} else {
 		guideSuffix = realtime.GuideInstructions(guides)
 	}
+	guideSuffix += b.rulesBlock(ctx, l, req)
 	persona := realtime.ResolvePersona(req.Persona)
 	instructions := realtime.InstructionsForSurface(persona, req.Surface) + realtime.SessionDirectives + baseKnowledge + accentDirective + guideSuffix
 
@@ -701,6 +703,7 @@ func (b *broker) handleNovaBridge(ctx context.Context, l *slog.Logger, req Reque
 	} else {
 		guideSuffix = realtime.GuideInstructions(guides)
 	}
+	guideSuffix += b.rulesBlock(ctx, l, req)
 	persona := realtime.ResolvePersona(req.Persona)
 	instructions := realtime.InstructionsForServerExecution(persona) +
 		realtime.SessionDirectives + baseKnowledge +
@@ -794,6 +797,7 @@ func (b *broker) handleGeminiDirect(ctx context.Context, l *slog.Logger, req Req
 	} else {
 		guideSuffix = realtime.GuideInstructions(guides)
 	}
+	guideSuffix += b.rulesBlock(ctx, l, req)
 	persona := realtime.ResolvePersona(req.Persona)
 	instructions := realtime.InstructionsForSurface(persona, req.Surface) + realtime.SessionDirectives + baseKnowledge + accentDirective + guideSuffix
 
@@ -870,7 +874,10 @@ func (b *broker) handleFallbackTurn(ctx context.Context, l *slog.Logger, req Req
 	// execute (this function has no tool-side IAM, by design); device-local
 	// tools cannot be delegated through this topology.
 	if len(p.Messages) > 0 {
-		res, err := b.fallback.TurnWithToolsForSurface(ctx, req.Persona, req.Surface, p.Messages, extraSystem)
+		// Only the tool-capable turn carries the rule index: it invites a
+		// rule_load call, which the text-only turn below cannot make.
+		res, err := b.fallback.TurnWithToolsForSurface(ctx, req.Persona, req.Surface, p.Messages,
+			extraSystem+b.rulesBlock(ctx, l, req))
 		if err != nil {
 			return b.fallbackError(l, req, "turn", err)
 		}
@@ -1302,4 +1309,21 @@ func (b *broker) rememberedBlock(ctx context.Context, l *slog.Logger, req Reques
 		texts = append(texts, r.Text)
 	}
 	return realtime.RememberedBlock(texts)
+}
+
+// rulesBlock renders the caller's enabled-rule index (name + when it
+// applies) for the session instructions; the model reads a matching rule's
+// body with rule_load. Best-effort like the guide read: a failure is logged
+// and the session mints without the index rather than failing voice.
+func (b *broker) rulesBlock(ctx context.Context, l *slog.Logger, req Request) string {
+	if b.ddb == nil {
+		return "" // no table client wired (unit-test brokers); production always has one
+	}
+	rules, err := realtime.LoadEnabledRules(ctx, b.ddb, b.table, req.UserID)
+	if err != nil {
+		l.Warn("realtime-broker: rule index load failed; minting without rules",
+			slog.String("error", err.Error()))
+		return ""
+	}
+	return realtime.RulesIndexBlock(rules)
 }

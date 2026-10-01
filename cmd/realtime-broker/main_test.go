@@ -53,6 +53,7 @@ type fakeFallback struct {
 	toolsErr      error
 	gotTurnText   string
 	gotMessages   []realtime.ChatMessage
+	gotExtraSys   string
 	turnCalls     int
 	turnWithTools int
 }
@@ -63,8 +64,9 @@ func (f *fakeFallback) TurnForSurface(_ context.Context, _, _ string, text strin
 	return f.turnText, f.turnErr
 }
 
-func (f *fakeFallback) TurnWithToolsForSurface(_ context.Context, _, _ string, messages []realtime.ChatMessage, _ string) (*realtime.TurnResult, error) {
+func (f *fakeFallback) TurnWithToolsForSurface(_ context.Context, _, _ string, messages []realtime.ChatMessage, extraSystem string) (*realtime.TurnResult, error) {
 	f.turnWithTools++
+	f.gotExtraSys = extraSystem
 	f.gotMessages = messages
 	return f.toolsResult, f.toolsErr
 }

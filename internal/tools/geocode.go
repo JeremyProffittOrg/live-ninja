@@ -58,14 +58,16 @@ type geocodeSearchResponse struct {
 const geocodeCandidateCount = 5
 
 // resolvePlace geocodes a free-form place string into a single best
-// candidate, using home (when resolved) to break ties toward the user's part
-// of the world.
+// candidate, using anchor (when resolved) to break ties toward the user's part
+// of the world. Callers pass the profile's effective location — the current
+// location when one is set, else home — so "Boulder" asked during a Denver
+// trip ranks Colorado first. set_current_location reuses it for "I'm in X".
 //
 // The query is split on the first comma: the head is what the name index is
 // searched for, the tail is treated as an admin1/country hint used only for
 // ranking. A bare postal code is passed through whole — the index handles
 // those natively and they carry no comma anyway.
-func resolvePlace(ctx context.Context, deps *Deps, query string, home store.Location) (geoCandidate, *ToolError) {
+func resolvePlace(ctx context.Context, deps *Deps, query string, anchor store.Location) (geoCandidate, *ToolError) {
 	name, hint := splitPlaceQuery(query)
 	if name == "" {
 		return geoCandidate{}, toolErrf(CodeInvalidArgs, "location must name a place")
@@ -86,7 +88,7 @@ func resolvePlace(ctx context.Context, deps *Deps, query string, home store.Loca
 		return geoCandidate{}, toolErrf(CodeNotFound, "no place found matching %q", query)
 	}
 
-	return rankCandidates(resp.Results, hint, home), nil
+	return rankCandidates(resp.Results, hint, anchor), nil
 }
 
 // splitPlaceQuery separates "Huntersville, NC" into ("Huntersville", "NC").

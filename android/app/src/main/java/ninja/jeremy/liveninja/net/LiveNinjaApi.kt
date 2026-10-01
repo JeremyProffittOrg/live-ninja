@@ -213,6 +213,13 @@ interface LiveNinjaApi {
     @POST("api/v1/transcript")
     suspend fun uploadTranscript(@Body body: TranscriptUploadRequest)
 
+    /**
+     * Share the phone's current coarse location with the assistant
+     * (location/LocationReporter, at most once per 15 min at session start).
+     */
+    @POST("api/v1/location/current")
+    suspend fun reportCurrentLocation(@Body body: CurrentLocationReport)
+
     @GET("api/v1/conversations")
     suspend fun listConversations(
         @Query("topic") topic: String? = null,

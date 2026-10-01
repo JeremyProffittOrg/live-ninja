@@ -20,6 +20,11 @@
 //   - PUT    /api/v1/guides/{id}         — create/edit a guide
 //     ({title, text, enabled, priority, version}); create uses a fresh
 //     client UUID as {id} per the contract's "PUT creates or edits".
+//   - GET    /api/v1/rules               — list assistant rules
+//     ({rules:[...]}); the server seeds "location-and-time" on first list.
+//   - POST   /api/v1/rules               — create or update a rule by name.
+//   - PUT    /api/v1/rules/{name}        — {enabled} toggle.
+//   - DELETE /api/v1/rules/{name}        — delete a rule.
 //
 // Entity types are the fixed enum person|place|info|project|task|plan
 // (M10 locked item shapes) — every type control on this page is populated
@@ -736,6 +741,288 @@ guideForm.addEventListener('submit', async (ev) => {
   }
 });
 
+// ---- rules --------------------------------------------------------------
+//
+// Assistant rules (rules_routes.go). Every session sees each enabled
+// rule's name + description; the body is read on demand when a turn
+// matches. The name is the key, so editing keeps it fixed.
+
+const RULE_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+const RULE_SOURCE_LABELS = { seed: 'Built in', assistant: 'Made by voice', user: 'Made here' };
+
+let rules = [];
+let ruleLoadSeq = 0;
+
+const ruleLoadingEl = $('ruleLoading');
+const ruleEmptyEl = $('ruleEmpty');
+const ruleErrorEl = $('ruleError');
+const ruleErrorMsgEl = $('ruleErrorMsg');
+const ruleListEl = $('ruleList');
+
+function normalizeRule(r) {
+  if (!r || typeof r !== 'object' || typeof r.name !== 'string' || !r.name) return null;
+  return {
+    name: r.name,
+    description: String(r.description || ''),
+    body: String(r.body || ''),
+    enabled: r.enabled !== false,
+    source: typeof r.source === 'string' ? r.source : 'user',
+    version: Number.isFinite(Number(r.version)) ? Number(r.version) : 1,
+  };
+}
+
+function setRuleState(state) {
+  ruleLoadingEl.hidden = state !== 'loading';
+  ruleEmptyEl.hidden = state !== 'empty';
+  ruleErrorEl.hidden = state !== 'error';
+  ruleListEl.hidden = state !== 'list';
+}
+
+async function loadRules() {
+  const seq = ++ruleLoadSeq;
+  setRuleState('loading');
+  try {
+    const resp = await apiJSON('/api/v1/rules');
+    if (seq !== ruleLoadSeq) return;
+    const raw = resp && Array.isArray(resp.rules) ? resp.rules : [];
+    rules = raw.map(normalizeRule).filter(Boolean);
+    renderRules();
+  } catch (err) {
+    if (seq !== ruleLoadSeq || err instanceof AuthLostError) return;
+    ruleErrorMsgEl.textContent = apiErrorMessage(err, 'Check your connection and try again.');
+    setRuleState('error');
+  }
+}
+
+function renderRules() {
+  if (rules.length === 0) {
+    setRuleState('empty');
+    return;
+  }
+  const sorted = [...rules].sort((a, b) => a.name.localeCompare(b.name));
+  ruleListEl.textContent = '';
+  for (const r of sorted) ruleListEl.appendChild(buildRuleRow(r));
+  setRuleState('list');
+}
+
+function replaceRule(updated) {
+  const idx = rules.findIndex((x) => x.name === updated.name);
+  if (idx >= 0) rules[idx] = updated;
+  else rules.push(updated);
+}
+
+function buildRuleRow(r) {
+  const row = document.createElement('div');
+  row.className = 'mem-guide-row';
+  row.dataset.name = r.name;
+
+  // Enable toggle — PUT {enabled}; applies to the next session.
+  const toggle = document.createElement('label');
+  toggle.className = 'ln-toggle';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = r.enabled;
+  cb.setAttribute('aria-label', `Enable the rule ${r.name}`);
+  const track = document.createElement('span');
+  track.className = 'ln-toggle-track';
+  track.setAttribute('aria-hidden', 'true');
+  const thumb = document.createElement('span');
+  thumb.className = 'ln-toggle-thumb';
+  track.appendChild(thumb);
+  toggle.appendChild(cb);
+  toggle.appendChild(track);
+  cb.addEventListener('change', async () => {
+    const want = cb.checked;
+    cb.disabled = true;
+    try {
+      const resp = await apiJSON(`/api/v1/rules/${encodeURIComponent(r.name)}`, {
+        method: 'PUT',
+        json: { enabled: want },
+      });
+      replaceRule(normalizeRule(resp) || { ...r, enabled: want });
+      showToast(want ? `Enabled “${r.name}” — applies to your next session.` : `Disabled “${r.name}”.`);
+      renderRules();
+    } catch (err) {
+      cb.checked = !want; // revert on failure — never lie about state
+      if (!(err instanceof AuthLostError)) {
+        showToast(apiErrorMessage(err, "Couldn't update the rule — try again."), { error: true });
+      }
+    } finally {
+      cb.disabled = false;
+    }
+  });
+  row.appendChild(toggle);
+
+  const body = document.createElement('div');
+  body.className = 'mem-guide-body';
+  const title = document.createElement('div');
+  title.className = 'mem-guide-title';
+  const nameEl = document.createElement('span');
+  nameEl.className = 'mem-rule-name';
+  nameEl.textContent = r.name;
+  title.appendChild(nameEl);
+  const src = document.createElement('span');
+  src.className = 'ln-badge ln-badge--dot-none';
+  src.textContent = RULE_SOURCE_LABELS[r.source] || r.source;
+  title.appendChild(src);
+  if (!r.enabled) {
+    const off = document.createElement('span');
+    off.className = 'ln-badge ln-badge--dot-none';
+    off.textContent = 'Disabled';
+    title.appendChild(off);
+  }
+  body.appendChild(title);
+  const desc = document.createElement('p');
+  desc.className = 'mem-guide-text';
+  desc.textContent = r.description;
+  body.appendChild(desc);
+  const more = document.createElement('details');
+  more.className = 'mem-rule-more';
+  const summary = document.createElement('summary');
+  summary.textContent = 'Show the rule';
+  const pre = document.createElement('pre');
+  pre.textContent = r.body;
+  more.appendChild(summary);
+  more.appendChild(pre);
+  more.addEventListener('toggle', () => {
+    summary.textContent = more.open ? 'Hide the rule' : 'Show the rule';
+  });
+  body.appendChild(more);
+  row.appendChild(body);
+
+  const side = document.createElement('div');
+  side.className = 'mem-guide-side';
+  const editBtn = makeBtn('Edit', `Edit the rule ${r.name}`);
+  editBtn.addEventListener('click', () => openRuleDialog(r));
+  side.appendChild(editBtn);
+
+  // Delete — two-tap confirm on the button itself (same as Forget below).
+  const delBtn = makeBtn('Delete', `Delete the rule ${r.name}`, 'ln-btn ln-btn--danger');
+  let armed = false;
+  let disarm = 0;
+  delBtn.addEventListener('click', async () => {
+    if (!armed) {
+      armed = true;
+      delBtn.textContent = 'Tap again to delete';
+      disarm = setTimeout(() => {
+        armed = false;
+        delBtn.textContent = 'Delete';
+      }, 5000);
+      return;
+    }
+    clearTimeout(disarm);
+    delBtn.disabled = true;
+    try {
+      await apiJSON(`/api/v1/rules/${encodeURIComponent(r.name)}`, { method: 'DELETE' });
+    } catch (err) {
+      delBtn.disabled = false;
+      armed = false;
+      delBtn.textContent = 'Delete';
+      if (!(err instanceof AuthLostError)) {
+        showToast(apiErrorMessage(err, "Couldn't delete the rule — try again."), { error: true });
+      }
+      return;
+    }
+    rules = rules.filter((x) => x.name !== r.name);
+    showToast(`Deleted “${r.name}”.`);
+    renderRules();
+  });
+  side.appendChild(delBtn);
+
+  row.appendChild(side);
+  return row;
+}
+
+// ---- rule dialog --------------------------------------------------------
+
+const ruleDialog = $('ruleDialog');
+const ruleForm = $('ruleForm');
+const ruleDialogTitle = $('ruleDialogTitle');
+const ruleNameInput = $('ruleName');
+const ruleNameHint = $('ruleNameHint');
+const ruleNameErr = $('ruleNameErr');
+const ruleDescInput = $('ruleDescription');
+const ruleDescErr = $('ruleDescriptionErr');
+const ruleBodyInput = $('ruleBody');
+const ruleBodyErr = $('ruleBodyErr');
+const ruleEnabledInput = $('ruleEnabled');
+const ruleSaveBtn = $('ruleSave');
+const RULE_NAME_ERR_TEXT = ruleNameErr.textContent;
+
+let dialogRule = null; // null = creating
+
+function clearRuleErrors() {
+  for (const [input, err] of [[ruleNameInput, ruleNameErr], [ruleDescInput, ruleDescErr], [ruleBodyInput, ruleBodyErr]]) {
+    input.classList.remove('is-invalid');
+    err.hidden = true;
+  }
+  ruleNameErr.textContent = RULE_NAME_ERR_TEXT;
+}
+
+function openRuleDialog(r) {
+  dialogRule = r || null;
+  ruleDialogTitle.textContent = r ? `Edit “${r.name}”` : 'New rule';
+  ruleNameInput.value = r ? r.name : '';
+  ruleNameInput.readOnly = !!r; // the name is the rule's key
+  ruleNameHint.textContent = r
+    ? 'A rule’s name can’t change. To rename it, delete it and make a new one.'
+    : '3–48 lowercase letters, digits and hyphens.';
+  ruleDescInput.value = r ? r.description : '';
+  ruleBodyInput.value = r ? r.body : '';
+  ruleEnabledInput.checked = r ? r.enabled : true;
+  clearRuleErrors();
+  ruleDialog.showModal();
+  (r ? ruleDescInput : ruleNameInput).focus();
+}
+
+$('ruleNew').addEventListener('click', () => openRuleDialog(null));
+$('ruleCancel').addEventListener('click', () => ruleDialog.close());
+$('ruleRefresh').addEventListener('click', () => loadRules());
+$('ruleRetry').addEventListener('click', () => loadRules());
+
+ruleForm.addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  clearRuleErrors();
+  const name = ruleNameInput.value.trim();
+  const description = ruleDescInput.value.replace(/\s+/g, ' ').trim();
+  const body = ruleBodyInput.value.trim();
+  const bad = [];
+  if (name.length < 3 || name.length > 48 || !RULE_NAME_RE.test(name)) bad.push([ruleNameInput, ruleNameErr]);
+  if (description.length < 10 || description.length > 200) bad.push([ruleDescInput, ruleDescErr]);
+  if (!body) bad.push([ruleBodyInput, ruleBodyErr]);
+  if (!dialogRule && bad.length === 0 && rules.some((x) => x.name === name)) {
+    ruleNameErr.textContent = `You already have a rule named “${name}”. Pick another name, or edit that rule.`;
+    bad.push([ruleNameInput, ruleNameErr]);
+  }
+  if (bad.length) {
+    for (const [input, err] of bad) {
+      input.classList.add('is-invalid');
+      err.hidden = false;
+    }
+    bad[0][0].focus();
+    return;
+  }
+
+  ruleSaveBtn.disabled = true;
+  ruleSaveBtn.setAttribute('aria-busy', 'true');
+  try {
+    await apiJSON('/api/v1/rules', {
+      method: 'POST',
+      json: { name, description, body, enabled: ruleEnabledInput.checked },
+    });
+    ruleDialog.close();
+    showToast(dialogRule ? `Updated “${name}”.` : `Created “${name}” — it applies to your next session.`);
+    loadRules(); // re-fetch for the server's canonical row
+  } catch (err) {
+    if (!(err instanceof AuthLostError)) {
+      showToast(apiErrorMessage(err, "Couldn't save the rule — try again."), { error: true });
+    }
+  } finally {
+    ruleSaveBtn.disabled = false;
+    ruleSaveBtn.removeAttribute('aria-busy');
+  }
+});
+
 // ---- init -------------------------------------------------------------
 
 $('memTypeFilter').addEventListener('change', (ev) => {
@@ -750,6 +1037,7 @@ $('guideRetry').addEventListener('click', () => loadGuides());
 
 loadEntities();
 loadGuides();
+loadRules();
 
 // ---- Learned from conversations (agentcore-memory) ----------------------
 //

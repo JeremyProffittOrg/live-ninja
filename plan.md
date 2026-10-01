@@ -61,6 +61,34 @@ Definition of done: `grep -rn "EMB#\|Cosine(" internal/ cmd/` prints nothing and
 
 - [x] `emb-retire` — Remove `EMB#` writes, `ListEmbeddings`, the cosine path, and the Titan IAM statement. Rewrite `contracts/api.md` memory lines, `PRD.md` memory sections, and `docs/system-map.md`. `ENT#` rows stay. Operator moved this to 2026-09-22.
 
+## assistant-rules — saved rules and location-aware time
+
+Requested 2026-10-01: "add a rules capability, that I can have the llm save rules to its new rules tool, much like claude code rules, where the name/description governs its loading. For example, time, temperature and location should depend on the current location if available, and the home location if not. We're in EST most of the time, a direct command or gps coordinate can change that though."
+
+### rules-store-tools — RULE# rows, rule tools, mint index
+
+Definition of done: `go test ./internal/store/ ./internal/tools/ ./internal/realtime/ ./cmd/realtime-broker/ -count=1` passes.
+
+- [x] `rules-store-tools` — `RULE#<name>` rows; `rule_list`, `rule_load`, `rule_save`, `rule_delete` (save and delete need `confirm`); mint appends a RULES index of name and description only; seed rule `location-and-time`.
+
+### current-location — current location overrides home
+
+Definition of done: `go test ./internal/store/ ./internal/tools/ ./internal/realtime/ -count=1` passes.
+
+- [x] `current-location` — `profile.currentLocation`; `set_current_location` takes a place, GPS lat/lon, or `home=true`; clock and `get_weather` use current, then home, then `America/New_York`.
+
+### rules-ui-help — Memory page rules section and Help copy
+
+Definition of done: `go test ./internal/webapp/ -count=1` passes.
+
+- [x] `rules-ui-help` — `/api/v1/rules` routes, Memory page Rules section, Help drawer bullets.
+
+### android-autoupdate — self-update and start-up permissions, 0.3.13 (19)
+
+Definition of done: `https://live.jeremy.ninja/v1/app/android/latest` shows versionCode 19, and `adb -s 4633424442303098 shell dumpsys package ninja.jeremy.liveninja` shows versionName `0.3.13`.
+
+- [~] `android-autoupdate` — check on start (hourly throttle) and every 6 h by WorkManager; verified download; PackageInstaller commit. Start-up asks for mic, camera, notifications, location, then battery, install-unknown-apps, full-screen intent, overlay. Reports GPS to `POST /api/v1/location/current` at session start. depends on: `current-location`
+
 ## Restart policy
 
 Each code milestone is one push to `main`. A red Deploy run is fixed and re-pushed. Ceiling 3 attempts for that milestone, then mark it `[!]` with the run id and continue. Do not retry a deterministic failure unchanged.
@@ -82,3 +110,4 @@ Each code milestone is one push to `main`. A red Deploy run is fixed and re-push
 - 2026-09-22 — `iot-signed-authorizer` pushed as `1babb949129073169198a034a7aa1ce83350074e`. Deploy run `35739047890` succeeded. `aws iot describe-authorizer --authorizer-name live-ninja-iot --region us-east-1` returned `status ACTIVE`, `signingDisabled true`, `tokenKeyName null`. `aws iot describe-authorizer --authorizer-name live-ninja-iot-signed --region us-east-1` returned `status ACTIVE`, `signingDisabled false`, `tokenKeyName token`. `go test ./internal/webapp/ -run IoT -count=1` ok. `node --test tests/web/unit/liveevents.test.mjs` 18 pass.
 - 2026-09-22 — `android-signature-release`. Version bump `5c00ff5dd936b71bbc8dacd039cc30c34ccbd33f` is versionCode 18, versionName `0.3.12`. Deploy run `35740023211` succeeded. Android Release `workflow_dispatch` run `35740036332` `build-and-publish` succeeded. `https://live.jeremy.ninja/v1/app/android/latest` returned `versionName` `0.3.12`, `versionCode` 18, `gitSha` `5c00ff5dd936b71bbc8dacd039cc30c34ccbd33f`. APK sha256 matched `e3f8b812e8f7679a92a26fe4810c3954fe8469bd2499d917eaab29ca6b131169`. `adb -s 4633424442303098 install -r` printed `Success`. `adb -s 4633424442303098 shell dumpsys package ninja.jeremy.liveninja` printed `versionCode=18` and `versionName=0.3.12`.
 - 2026-09-22 — `emb-retire` started early. The operator said "perform the emb-retire early." `ENT#` rows stay. `rg -n "EMB#|Cosine\(" internal cmd` printed nothing. `go test ./internal/memory/ ./internal/store/ ./internal/tools/ ./internal/webapp/ ./internal/rca/ ./cmd/account-purge/ -count=1` passed. `go test ./... -count=1` failed only `TestGoldenRCAPrompt` until the golden prompt was re-recorded; `go test ./internal/rca -run TestGoldenRCAPrompt -count=1` then passed. Titan `bedrock:InvokeModel` statement for `amazon.titan-embed-text-v2:0` removed from `template.yaml`. `MaxEmbeddingsPerUser` deleted.
+- 2026-10-01 — `rules-store-tools`, `current-location`, `rules-ui-help` built by persona agents; security-qa review fixed 5 defects. `go build ./... && go vet ./... && go test ./... -count=1` printed no FAIL lines. Android `:app:testDebugUnitTest :app:assembleDebug` EXIT=0.

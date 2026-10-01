@@ -50,9 +50,20 @@ class AppUpdateRepository @Inject constructor(
             require(AndroidReleasePolicy.sha256MatchesUrl(release.url, release.sha256)) {
                 "APK URL is not content-addressed"
             }
-            val dir = File(context.cacheDir, "updates").also { it.mkdirs() }
-            val dest = File(dir, "pending.apk")
-            if (dest.exists()) dest.delete()
+            val dir = File(context.cacheDir, UPDATE_DIR).also { it.mkdirs() }
+            val dest = File(dir, "${release.sha256.lowercase()}.apk")
+            // Reuse an earlier verified download of the same content-addressed
+            // build (a declined or interrupted install must not cost another
+            // full download on every check), but re-hash it first.
+            if (dest.exists()) {
+                if (sha256Of(dest).equals(release.sha256, ignoreCase = true) &&
+                    (release.sizeBytes <= 0 || dest.length() == release.sizeBytes)
+                ) {
+                    return@withContext dest
+                }
+                dest.delete()
+            }
+            dir.listFiles()?.forEach { if (it != dest) it.delete() }
             val req = Request.Builder().url(release.url).get().build()
             http.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) error("APK HTTP ${resp.code}")
@@ -84,4 +95,26 @@ class AppUpdateRepository @Inject constructor(
             }
             dest
         }
+
+    /** Drop cached APKs once the installed build is current. */
+    fun clearCache() {
+        File(context.cacheDir, UPDATE_DIR).listFiles()?.forEach { it.delete() }
+    }
+
+    private fun sha256Of(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+                val n = input.read(buf)
+                if (n <= 0) break
+                digest.update(buf, 0, n)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private companion object {
+        const val UPDATE_DIR = "updates"
+    }
 }

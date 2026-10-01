@@ -31,6 +31,7 @@ import ninja.jeremy.liveninja.ui.conversation.ConversationViewModel
 import ninja.jeremy.liveninja.ui.state.SettingsStore
 import ninja.jeremy.liveninja.ui.theme.LiveNinjaTheme
 import ninja.jeremy.liveninja.ui.theme.liveNinjaColorScheme
+import ninja.jeremy.liveninja.update.AppUpdateCoordinator
 import ninja.jeremy.liveninja.wake.WakeBootReceiver
 import ninja.jeremy.liveninja.wake.WakePreferences
 import ninja.jeremy.liveninja.wake.WakeWordService
@@ -67,6 +68,9 @@ class MainActivity : ComponentActivity() {
      * shows the floating overlay bubble; foregrounding hides it.
      */
     private val conversationViewModel: ConversationViewModel by viewModels()
+
+    /** Self-updater: throttled check on every start + schedules the 6-hourly worker. */
+    @Inject lateinit var appUpdateCoordinator: AppUpdateCoordinator
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -141,6 +145,7 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         conversationViewModel.onAppForegrounded()
         resumeWakeServiceIfEnabled()
+        appUpdateCoordinator.onAppForegrounded()
     }
 
     /**

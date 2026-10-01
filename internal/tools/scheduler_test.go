@@ -248,15 +248,61 @@ func TestResolveFireTimeStillRejectsGarbage(t *testing.T) {
 	assert.Equal(t, CodeInvalidArgs, terr.Code)
 }
 
-// schedulerLocation degrades to UTC rather than failing when the profile
+// schedulerLocation follows current → home → work → America/New_York, and
+// degrades to the default zone (never UTC, never a failure) when the profile
 // carries no timezone or a stale one.
-func TestSchedulerLocationDegrades(t *testing.T) {
-	assert.Equal(t, time.UTC, schedulerLocation(store.Profile{}))
-	assert.Equal(t, time.UTC, schedulerLocation(store.Profile{
-		HomeLocation: &store.Location{Label: "x", Lat: 1, Lon: 2, Timezone: "Mars/Olympus_Mons"},
-	}))
-	loc := schedulerLocation(store.Profile{
-		HomeLocation: &store.Location{Label: "x", Lat: 1, Lon: 2, Timezone: "America/New_York"},
-	})
-	assert.Equal(t, "America/New_York", loc.String())
+func TestSchedulerLocationFallbackOrder(t *testing.T) {
+	cur := &store.Location{Label: "Denver", Lat: 39.7, Lon: -104.9, Timezone: "America/Denver"}
+	home := &store.Location{Label: "x", Lat: 1, Lon: 2, Timezone: "America/New_York"}
+	work := &store.Location{Label: "w", Lat: 3, Lon: 4, Timezone: "America/Chicago"}
+	stale := &store.Location{Label: "x", Lat: 1, Lon: 2, Timezone: "Mars/Olympus_Mons"}
+	cases := []struct {
+		name string
+		p    store.Profile
+		want string
+	}{
+		{"nothing on file uses the default", store.Profile{}, store.DefaultTimezone},
+		{"stale zone uses the default", store.Profile{HomeLocation: stale}, store.DefaultTimezone},
+		{"work only", store.Profile{WorkLocation: work}, "America/Chicago"},
+		{"home", store.Profile{HomeLocation: home, WorkLocation: work}, "America/New_York"},
+		{"current overrides home", store.Profile{CurrentLocation: cur, HomeLocation: home}, "America/Denver"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, schedulerLocation(tc.p).String())
+		})
+	}
+}
+
+// A naive 'at' is read in the effective zone, across both DST transitions.
+// Go documents the instant chosen for a wall time inside the spring-forward
+// gap or the fall-back overlap as unspecified, so those rows accept either
+// plausible instant; the unambiguous rows pin it exactly.
+func TestResolveFireTimeNaiveLocalAcrossDST(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+	denver, err := time.LoadLocation("America/Denver")
+	require.NoError(t, err)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name string
+		at   string
+		loc  *time.Location
+		want []string // acceptable UTC instants
+	}{
+		{"winter (EST, -5)", "2026-01-15T09:00", ny, []string{"2026-01-15T14:00:00Z"}},
+		{"summer (EDT, -4)", "2026-07-15T09:00", ny, []string{"2026-07-15T13:00:00Z"}},
+		{"current location zone (MDT, -6)", "2026-07-15T09:00", denver, []string{"2026-07-15T15:00:00Z"}},
+		{"spring-forward gap", "2026-03-08T02:30", ny, []string{"2026-03-08T06:30:00Z", "2026-03-08T07:30:00Z"}},
+		{"fall-back overlap", "2026-11-01T01:30", ny, []string{"2026-11-01T05:30:00Z", "2026-11-01T06:30:00Z"}},
+		{"day after fall-back", "2026-11-02T09:00", ny, []string{"2026-11-02T14:00:00Z"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, terr := resolveFireTime(now, map[string]any{"at": tc.at}, tc.loc)
+			require.Nil(t, terr)
+			assert.Contains(t, tc.want, got.UTC().Format(time.RFC3339))
+		})
+	}
 }

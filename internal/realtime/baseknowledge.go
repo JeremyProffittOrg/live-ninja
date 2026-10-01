@@ -17,10 +17,11 @@ package realtime
 //     from anything a client sent. Same anti-injection posture as persona
 //     resolution: clients send IDs, the server owns instruction text.
 //   - Always current. The local date/time is computed at mint from the
-//     profile's IANA timezone, so every session starts with a correct clock
-//     rather than the model's training-time guess.
-//   - Degradable. An empty profile yields "" and the session mints exactly as
-//     it did pre-M15. Nothing here can fail a mint.
+//     effective IANA timezone — the current location's, then home's, then
+//     work's, then America/New_York — so every session starts with a correct
+//     clock rather than the model's training-time guess, and never in UTC.
+//   - Degradable. An empty profile yields only the clock line. Nothing here
+//     can fail a mint.
 
 import (
 	"fmt"
@@ -47,13 +48,16 @@ const baseKnowledgeHeader = "\n\nBASE KNOWLEDGE — current, user-confirmed fact
 
 // BuildBaseKnowledge renders the profile into the instruction block appended
 // at mint. now is the mint-time clock (injected so tests are deterministic);
-// it is rendered in the profile's timezone.
+// it is rendered in the profile's effective timezone.
 //
-// Returns "" for an empty profile — the caller appends unconditionally, so
-// "no profile" must cost nothing.
+// An empty profile still gets the clock line (in store.DefaultTimezone): a
+// session that does not know the time answers "what time is it" in UTC or
+// from its training data, and both are wrong.
 func BuildBaseKnowledge(p store.Profile, now time.Time) string {
+	zone, tzLabel := effectiveClock(p)
+	clock := clockLine(now.In(zone), tzLabel)
 	if p.Empty() {
-		return ""
+		return baseKnowledgeHeader + clock
 	}
 
 	var lines []string
@@ -68,21 +72,24 @@ func BuildBaseKnowledge(p store.Profile, now time.Time) string {
 		lines = append(lines, "- The user's pronouns are "+p.Pronouns+".")
 	}
 
-	// The clock. This is the line that fixes "what time is it", "what's
-	// today", "is it late", and every relative-date calculation the model
-	// would otherwise botch.
-	loc := locationForTZ(p.Timezone())
-	local := now.In(loc)
-	tzLabel := p.Timezone()
-	if tzLabel == "" {
-		tzLabel = "UTC (no timezone on file)"
-	}
-	lines = append(lines, fmt.Sprintf("- Right now it is %s (%s, %s). Use this for anything time- or date-relative.",
-		local.Format("Monday, January 2, 2006 at 3:04 PM"), local.Format("MST"), tzLabel))
+	lines = append(lines, clock)
 
+	cur := p.Current()
+	if cur.Resolved() {
+		lines = append(lines, fmt.Sprintf("- Current location (set %s, by %s): %s (%.4f, %.4f). "+
+			"Use this, not home, for time, weather, and 'here'.%s",
+			setAtDate(p.CurrentLocationSetAt, zone), sourceLabel(p.CurrentLocationSource),
+			strings.Join(strings.Fields(cur.Label), " "), cur.Lat, cur.Lon, locationToolHint()))
+	}
 	if home := p.Home(); home.Resolved() {
+		hint := locationToolHint()
+		if cur.Resolved() {
+			// The weather default is the current location while one is set;
+			// telling the model home is the default would contradict it.
+			hint = ""
+		}
 		lines = append(lines, fmt.Sprintf("- Home / default location: %s (latitude %.4f, longitude %.4f).%s",
-			home.Label, home.Lat, home.Lon, locationToolHint()))
+			home.Label, home.Lat, home.Lon, hint))
 	}
 	if work := p.Work(); work.Resolved() {
 		lines = append(lines, "- Work location: "+work.Label+".")
@@ -111,6 +118,56 @@ func BuildBaseKnowledge(p store.Profile, now time.Time) string {
 	return baseKnowledgeHeader + strings.Join(lines, "\n")
 }
 
+// effectiveClock picks the zone the clock is rendered in and the label that
+// names it. Zone order: current → home → work → store.DefaultTimezone. An
+// unknown stored zone id degrades to the default, labelled so the model knows
+// the zone is assumed rather than confirmed.
+func effectiveClock(p store.Profile) (*time.Location, string) {
+	tz := p.Timezone()
+	if tz == "" {
+		return locationForTZ(store.DefaultTimezone), store.DefaultTimezone + " (default)"
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return locationForTZ(store.DefaultTimezone),
+			store.DefaultTimezone + " (default; the stored zone " + tz + " is unknown)"
+	}
+	if cur := p.Current(); cur.Resolved() && cur.Timezone == tz {
+		return loc, tz + ", current location"
+	}
+	return loc, tz
+}
+
+// clockLine renders the clock. This is the line that fixes "what time is it",
+// "what's today", "is it late", and every relative-date calculation the model
+// would otherwise botch.
+func clockLine(local time.Time, tzLabel string) string {
+	return fmt.Sprintf("- Right now it is %s (%s, %s). Use this for anything time- or date-relative.",
+		local.Format("Monday, January 2, 2006 at 3:04 PM"), local.Format("MST"), tzLabel)
+}
+
+// setAtDate renders profile.currentLocation.setAt as a calendar date in the
+// clock's zone, or "at an unknown time" when it is missing or malformed (an
+// older or hand-edited record must not break the line).
+func setAtDate(setAt string, zone *time.Location) string {
+	t, err := time.Parse(time.RFC3339, setAt)
+	if err != nil {
+		return "at an unknown time"
+	}
+	return t.In(zone).Format("January 2, 2006")
+}
+
+// sourceLabel names how the current location was set, in words.
+func sourceLabel(source string) string {
+	switch source {
+	case store.CurrentLocationSourceGPS:
+		return "GPS coordinates"
+	case store.CurrentLocationSourceCommand:
+		return "the user's command"
+	}
+	return "the user"
+}
+
 // locationToolHint tells the model it does not need to supply a location to
 // the weather tool. Without this it keeps passing one out of habit — which is
 // exactly the geocoding path M15 exists to avoid.
@@ -119,14 +176,12 @@ func locationToolHint() string {
 		"argument unless the user names a different place."
 }
 
-// locationForTZ resolves an IANA id to a *time.Location, degrading to UTC for
-// an empty or unknown id (a stale/renamed zone must not panic a mint).
+// locationForTZ resolves an IANA id to a *time.Location, degrading to UTC
+// only if even that id cannot load (a stale/renamed zone must not panic a
+// mint; with time/tzdata embedded the default zone always loads).
 func locationForTZ(tz string) *time.Location {
-	if tz == "" {
-		return time.UTC
-	}
 	loc, err := time.LoadLocation(tz)
-	if err != nil {
+	if err != nil || tz == "" {
 		return time.UTC
 	}
 	return loc

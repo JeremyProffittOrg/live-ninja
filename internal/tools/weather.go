@@ -9,17 +9,18 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 )
 
-// locationSource labels how the coordinates were chosen, so the model (and
-// the tool-call Details panel) can see when an answer came from the profile
-// rather than from an argument it supplied.
-func locationSource(argLocation string) string {
-	if argLocation == "" {
-		return "profile-home"
-	}
-	return "geocoded"
-}
+// Location sources reported in get_weather's output, so the model (and the
+// tool-call Details panel) can see when an answer came from the profile
+// rather than from an argument it supplied, and which profile location won.
+const (
+	weatherSourceCurrent  = "profile-current" // profile.currentLocation ("I'm in Denver")
+	weatherSourceHome     = "profile-home"    // profile.homeLocation
+	weatherSourceGeocoded = "geocoded"        // the location argument, geocoded
+)
 
 // get_weather is a keyless, real forecast tool built on Open-Meteo
 // (open-meteo.com): free geocoding + forecast APIs, no API key, generous
@@ -46,16 +47,17 @@ func getWeatherDefinition() *Definition {
 	return &Definition{
 		Name: "get_weather",
 		Description: "Get current weather conditions and a short daily forecast. " +
-			"Omit location to use the user's home location from your base knowledge — that is the " +
-			"normal case and the most accurate one. Pass location only when the user asks about a " +
+			"Omit location for the weather \"here\": it uses the user's current location when one " +
+			"is set, otherwise their home location, from your base knowledge — that is the normal " +
+			"case and the most accurate one. Pass location only when the user asks about a " +
 			"different place.",
 		Params: []ParamSpec{
-			// Optional since M15: with a profile home location the handler
+			// Optional since M15: with a profile current or home location the handler
 			// goes straight to coordinates and skips geocoding entirely, so
 			// the single most common weather question needs no argument the
 			// model could get wrong.
 			{Name: "location", Type: "string", MinLen: 2, MaxLen: 120,
-				Description: "Only when asking about somewhere other than home: a place name such as " +
+				Description: "Only when asking about somewhere other than where the user is: a place name such as " +
 					"'Charlotte', 'Huntersville, NC', 'Paris, France', or a postal code."},
 			{Name: "days", Type: "integer", Min: floatPtr(1), Max: floatPtr(7),
 				Description: "How many days of forecast to return (default 3)."},
@@ -104,41 +106,35 @@ func handleGetWeather(ctx context.Context, deps *Deps, inv Invocation, args map[
 	// Leg 1: resolve coordinates.
 	//
 	// The happy path has no leg 1 at all: with no location argument and a
-	// geocode-verified home in the profile, the coordinates are already known
-	// and correct, so the whole class of "which Paris did you mean" and
-	// "City, ST returns nothing" failures simply cannot occur.
+	// resolved current or home location in the profile, the coordinates are
+	// already known and correct, so the whole class of "which Paris did you
+	// mean" and "City, ST returns nothing" failures simply cannot occur.
+	// Current beats home: "what's the weather" from a user who said "I'm in
+	// Denver" is about Denver.
+	here, kind := profile.EffectiveLocation()
 	var place geoCandidate
+	var source string
 	switch {
 	case location == "":
-		home := profile.Home()
-		if !home.Resolved() {
+		if kind == "" {
 			return nil, toolErrf(CodeInvalidArgs,
-				"no location given and no home location is set in the user's profile — "+
+				"no location given and no current or home location is set in the user's profile — "+
 					"ask which place they mean, or have them set a home location in Settings")
 		}
-		// Label() composes name + admin1 + country, so feed it the CITY and
-		// let it rebuild the label — passing the already-composed
-		// home.Label here would render "Huntersville, North Carolina,
-		// United States, North Carolina, United States".
-		place = geoCandidate{
-			Name:      home.City,
-			Latitude:  home.Lat,
-			Longitude: home.Lon,
-			Country:   home.Country,
-			Admin1:    home.Admin1,
-			Timezone:  home.Timezone,
-		}
-		if place.Name == "" {
-			// A stored location without a separate city field: use the label
-			// verbatim and suppress the parts that would duplicate it.
-			place.Name, place.Admin1, place.Country = home.Label, "", ""
+		place = candidateFromLocation(here)
+		source = weatherSourceHome
+		if kind == store.LocationKindCurrent {
+			source = weatherSourceCurrent
 		}
 	default:
-		resolved, terr := resolvePlace(ctx, deps, location, profile.Home())
+		// Rank toward where the user is now, not where they live: "Boulder"
+		// asked from a Denver trip means Colorado.
+		resolved, terr := resolvePlace(ctx, deps, location, here)
 		if terr != nil {
 			return nil, terr
 		}
 		place = resolved
+		source = weatherSourceGeocoded
 	}
 
 	// Leg 2: forecast.
@@ -185,7 +181,7 @@ func handleGetWeather(ctx context.Context, deps *Deps, inv Invocation, args map[
 	return map[string]any{
 		"location": map[string]any{
 			"name":      locName,
-			"source":    locationSource(location),
+			"source":    source,
 			"latitude":  place.Latitude,
 			"longitude": place.Longitude,
 			"timezone":  place.Timezone,
@@ -201,6 +197,29 @@ func handleGetWeather(ctx context.Context, deps *Deps, inv Invocation, args map[
 		},
 		"daily": daily,
 	}, nil
+}
+
+// candidateFromLocation turns a stored profile location into the candidate
+// shape the forecast leg reports. Label() composes name + admin1 + country,
+// so feed it the CITY and let it rebuild the label — passing the
+// already-composed loc.Label here would render "Huntersville, North
+// Carolina, United States, North Carolina, United States".
+func candidateFromLocation(loc store.Location) geoCandidate {
+	c := geoCandidate{
+		Name:      loc.City,
+		Latitude:  loc.Lat,
+		Longitude: loc.Lon,
+		Country:   loc.Country,
+		Admin1:    loc.Admin1,
+		Timezone:  loc.Timezone,
+	}
+	if c.Name == "" {
+		// A stored location without a separate city field (a GPS fix, or an
+		// older record): use the label verbatim and suppress the parts that
+		// would duplicate it.
+		c.Name, c.Admin1, c.Country = loc.Label, "", ""
+	}
+	return c
 }
 
 // httpGetJSON GETs a URL with the shared UA and decodes the JSON body,

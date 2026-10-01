@@ -101,6 +101,16 @@
   .mem-guide-priority { width: 76px; min-height: 40px; padding: var(--ln-sp-2) var(--ln-sp-3); }
   .mem-guide-side .ln-btn { min-height: 36px; padding: 0 var(--ln-sp-3); font-size: var(--ln-fs-xs); }
 
+  /* Rules list (reuses the guide row layout; the body expands in place) */
+  .mem-rule-name { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 700; word-break: break-word; }
+  .mem-rule-more { margin-top: var(--ln-sp-2); font-size: var(--ln-fs-sm); }
+  .mem-rule-more summary { cursor: pointer; color: var(--ln-text-muted); }
+  .mem-rule-more pre {
+    margin: var(--ln-sp-2) 0 0; padding: var(--ln-sp-3); white-space: pre-wrap; overflow-wrap: anywhere;
+    background: var(--ln-surface-2); border: 1px solid var(--ln-border); border-radius: var(--ln-r-md);
+    font-family: inherit; font-size: var(--ln-fs-sm); color: var(--ln-text);
+  }
+
   .mem-section-head { display: flex; align-items: center; gap: var(--ln-sp-3); margin-bottom: var(--ln-sp-2); flex-wrap: wrap; }
   .mem-section-head h2 { font-size: var(--ln-fs-lg); flex: 1 1 auto; margin: 0; }
 </style>
@@ -234,6 +244,33 @@
 
     <div id="guideList" hidden></div>
   </section>
+
+  <section class="ln-card" aria-labelledby="ruleHeading">
+    <div class="mem-section-head">
+      <h2 id="ruleHeading">Rules</h2>
+      <button class="ln-btn ln-btn--ghost" id="ruleRefresh" type="button">Refresh</button>
+      <button class="ln-btn ln-btn--primary" id="ruleNew" type="button">New rule</button>
+    </div>
+    <p class="ln-muted">Saved instructions Live Ninja follows only when they apply. Every conversation sees each rule’s name and its “when to use” line; it reads the full rule when your request matches. Say “make a rule that…” in a conversation, or add one here.</p>
+
+    <div class="mem-skeleton" id="ruleLoading" role="status" aria-label="Loading your rules">
+      <div class="bar" style="width: 80%;"></div>
+      <div class="bar" style="width: 65%;"></div>
+    </div>
+
+    <div class="mem-state" id="ruleEmpty" hidden>
+      <h3>No rules yet</h3>
+      <p>Say “make a rule that when I ask what to pack, you list documents first” — or create one here.</p>
+    </div>
+
+    <div class="mem-state mem-state--error" id="ruleError" hidden>
+      <h3>Couldn’t load your rules</h3>
+      <p id="ruleErrorMsg">Check your connection and try again.</p>
+      <button class="ln-btn ln-btn--ghost" id="ruleRetry" type="button">Retry</button>
+    </div>
+
+    <div id="ruleList" hidden></div>
+  </section>
 </main>
 
 {{- /* Entity view/edit dialog. Native <dialog> gives modal focus trap +
@@ -306,6 +343,43 @@
     <div class="mem-dialog-actions">
       <button class="ln-btn ln-btn--ghost" id="guideCancel" type="button">Cancel</button>
       <button class="ln-btn ln-btn--primary" id="guideSave" type="submit">Save guide</button>
+    </div>
+  </form>
+</dialog>
+
+{{- /* Rule create/edit dialog. The name is the key, so it is fixed once
+       a rule exists. */}}
+<dialog class="mem-dialog" id="ruleDialog" aria-labelledby="ruleDialogTitle">
+  <h2 id="ruleDialogTitle">Rule</h2>
+  <form id="ruleForm" method="dialog" novalidate>
+    <div class="ln-field">
+      <label for="ruleName">Name</label>
+      <input class="ln-input" id="ruleName" type="text" minlength="3" maxlength="48" required autocomplete="off"
+             spellcheck="false" pattern="[a-z0-9]+(-[a-z0-9]+)*" placeholder="e.g. trip-packing">
+      <p class="ln-hint" id="ruleNameHint">3–48 lowercase letters, digits and hyphens.</p>
+      <p class="ln-error-text" id="ruleNameErr" hidden>Use 3–48 lowercase letters, digits and single hyphens — e.g. “trip-packing”.</p>
+    </div>
+    <div class="ln-field">
+      <label for="ruleDescription">When to use it</label>
+      <input class="ln-input" id="ruleDescription" type="text" minlength="10" maxlength="200" required autocomplete="off"
+             placeholder="e.g. Load when I ask what to pack for a trip.">
+      <p class="ln-hint">One line, 10–200 characters. Every conversation sees this line.</p>
+      <p class="ln-error-text" id="ruleDescriptionErr" hidden>Say when the rule applies, in 10–200 characters.</p>
+    </div>
+    <div class="ln-field">
+      <label for="ruleBody">Rule</label>
+      <textarea class="ln-textarea" id="ruleBody" maxlength="4000" required
+                placeholder="e.g. List travel documents first, then chargers, then clothes."></textarea>
+      <p class="ln-error-text" id="ruleBodyErr" hidden>Enter what Live Ninja should do when the rule applies.</p>
+    </div>
+    <label class="ln-toggle">
+      <input type="checkbox" id="ruleEnabled" checked>
+      <span class="ln-toggle-track" aria-hidden="true"><span class="ln-toggle-thumb"></span></span>
+      <span>Enabled — offer this rule in every new session</span>
+    </label>
+    <div class="mem-dialog-actions">
+      <button class="ln-btn ln-btn--ghost" id="ruleCancel" type="button">Cancel</button>
+      <button class="ln-btn ln-btn--primary" id="ruleSave" type="submit">Save rule</button>
     </div>
   </form>
 </dialog>

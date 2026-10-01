@@ -219,6 +219,12 @@ Structured facts are `ENT#` rows in DynamoDB (people, places, information, proje
 | GET | `/v1/plans/{id}` | Fetch one plan with its tasks. | Session JWT |
 | GET | `/v1/guides` | List the caller's Guide Entities. | Session JWT |
 | PUT | `/v1/guides/{id}` | Create/edit/enable/prioritize a guide (versioned; body includes `enabled`, `priority`, `body`, optional sourcing directives per FR-MEM-08); syncs to devices via the same settings-fan-out transport as `PUT /v1/settings`. | Session JWT |
+| GET | `/v1/rules` | List the caller's assistant rules, sorted by name: `{rules:[{name, description, body, enabled, source, createdAt, updatedAt, version}]}`. `source` is `seed`, `assistant` (made by voice with `rule_save`) or `user` (made on the Memory page). The first list of an empty account seeds the `location-and-time` rule (`source: seed`, enabled). | Session JWT |
+| POST | `/v1/rules` | Create or update one rule by name: `{name, description, body, enabled?}`. `name` is the key: a kebab-case slug, `^[a-z0-9]+(-[a-z0-9]+)*$`, 3..48 chars. `description` (10..200 runes, collapsed to one line) says when the rule applies; `body` is 1..4000 runes. Always stored with `source: user`; an update that omits `enabled` keeps the current value, `createdAt` is preserved, `version` increments. 201 for a new name, 200 for an update. 400 `bad_request` on a field violation; 409 `rule_limit` when a new name would exceed 50 rules. | Session JWT |
+| PUT | `/v1/rules/{name}` | `{enabled: bool}` — switch one rule on or off. Returns the stored rule. 400 when `enabled` is missing or `name` is not a valid slug; 404 when the rule does not exist. | Session JWT |
+| DELETE | `/v1/rules/{name}` | Delete one rule. `{ok: true}`; 404 when it does not exist. | Session JWT |
+
+Rules are stored as `pk=USER#<userId>`, `sk=RULE#<name>`. Only each enabled rule's `name` and `description` are bound into a session at mint (the RULES index, after guides); the body is read on demand with the `rule_load` tool. The voice tools `rule_save` and `rule_delete` require `confirm: true`, which the model sets only when the user explicitly asked.
 
 ## Conversation Topics & Filterable History (M11 — FR-TOP-01..07)
 

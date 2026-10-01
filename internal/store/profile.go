@@ -21,14 +21,38 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
+
+// DefaultTimezone is the IANA zone assumed when neither a current nor a home
+// location carries one (owner decision 2026-10-01: US Eastern, EST/EDT). It
+// replaces the old "no timezone means UTC" behaviour, which put every clock
+// and naive reminder time four or five hours off for a user who had not yet
+// picked a home.
+const DefaultTimezone = "America/New_York"
+
+// Current-location sources: how profile.currentLocation was set.
+const (
+	CurrentLocationSourceCommand = "command" // a spoken place name, geocoded
+	CurrentLocationSourceGPS     = "gps"     // coordinates the user gave
+)
+
+// Effective-location kinds reported by Profile.EffectiveLocation.
+const (
+	LocationKindCurrent = "current"
+	LocationKindHome    = "home"
+)
+
+// currentLocationKey is the profile key the current location lives under.
+const currentLocationKey = "currentLocation"
 
 // Units are the two unit systems the profile can select.
 const (
@@ -72,15 +96,26 @@ func (q QuietHours) Set() bool { return q.Start != "" && q.End != "" }
 
 // Profile is the typed read view of settings.profile.
 type Profile struct {
-	DisplayName  string      `dynamodbav:"displayName"`
-	Pronouns     string      `dynamodbav:"pronouns"`
-	HomeLocation *Location   `dynamodbav:"homeLocation"`
-	WorkLocation *Location   `dynamodbav:"workLocation"`
-	Units        string      `dynamodbav:"units"`
-	Locale       string      `dynamodbav:"locale"`
-	ContactEmail string      `dynamodbav:"contactEmail"`
-	QuietHours   *QuietHours `dynamodbav:"quietHours"`
-	Notes        []string    `dynamodbav:"notes"`
+	DisplayName  string    `dynamodbav:"displayName"`
+	Pronouns     string    `dynamodbav:"pronouns"`
+	HomeLocation *Location `dynamodbav:"homeLocation"`
+	WorkLocation *Location `dynamodbav:"workLocation"`
+	// CurrentLocation is where the user says they are right now ("I'm in
+	// Denver", or GPS coordinates). It overrides home for time, weather and
+	// "here" until cleared ("I'm back home"). It is account-wide, never
+	// per-device: LoadProfileForDevice always takes it from the account
+	// profile, so a device's About You override can neither hide nor pin one.
+	CurrentLocation *Location `dynamodbav:"currentLocation"`
+	// CurrentLocationSetAt (RFC3339 UTC) and CurrentLocationSource
+	// ("command"|"gps") describe CurrentLocation; both are "" when it is
+	// unset. They are stored inside the currentLocation object.
+	CurrentLocationSetAt  string      `dynamodbav:"-"`
+	CurrentLocationSource string      `dynamodbav:"-"`
+	Units                 string      `dynamodbav:"units"`
+	Locale                string      `dynamodbav:"locale"`
+	ContactEmail          string      `dynamodbav:"contactEmail"`
+	QuietHours            *QuietHours `dynamodbav:"quietHours"`
+	Notes                 []string    `dynamodbav:"notes"`
 }
 
 // Empty reports whether the profile carries nothing worth telling the model.
@@ -91,6 +126,7 @@ func (p Profile) Empty() bool {
 		p.Pronouns == "" &&
 		!p.Home().Resolved() &&
 		!p.Work().Resolved() &&
+		!p.Current().Resolved() &&
 		p.Locale == "" &&
 		p.ContactEmail == "" &&
 		len(p.Notes) == 0
@@ -112,6 +148,29 @@ func (p Profile) Work() Location {
 	return *p.WorkLocation
 }
 
+// Current returns the current location, or a zero Location when unset.
+func (p Profile) Current() Location {
+	if p.CurrentLocation == nil {
+		return Location{}
+	}
+	return *p.CurrentLocation
+}
+
+// EffectiveLocation is the location "here" means: the current location when
+// one is set, else home. kind is LocationKindCurrent, LocationKindHome, or ""
+// when neither is resolved (the returned Location is then zero). Work is
+// deliberately not a fallback: "the weather here" from someone who has only a
+// work address on file is a question to ask, not a guess to make.
+func (p Profile) EffectiveLocation() (Location, string) {
+	if cur := p.Current(); cur.Resolved() {
+		return cur, LocationKindCurrent
+	}
+	if home := p.Home(); home.Resolved() {
+		return home, LocationKindHome
+	}
+	return Location{}, ""
+}
+
 // UnitsOrDefault returns the profile's unit system, defaulting to imperial
 // (the pre-M15 hardcoded behaviour) when unset or unrecognized.
 func (p Profile) UnitsOrDefault() string {
@@ -121,14 +180,27 @@ func (p Profile) UnitsOrDefault() string {
 	return UnitsImperial
 }
 
-// Timezone returns the best-known IANA timezone id for the user: the home
-// location's, falling back to work, falling back to "". Callers treat "" as
-// UTC.
+// Timezone returns the best-known IANA timezone id for the user: the current
+// location's, then home's, then work's, then "". Anything that renders a clock
+// or interprets a local time must use TimezoneOrDefault instead; "" survives
+// here only so a caller can tell "nothing on file" from a real zone (the RCA
+// profile render reports exactly that).
 func (p Profile) Timezone() string {
+	if tz := p.Current().Timezone; tz != "" {
+		return tz
+	}
 	if tz := p.Home().Timezone; tz != "" {
 		return tz
 	}
 	return p.Work().Timezone
+}
+
+// TimezoneOrDefault is Timezone with DefaultTimezone in place of "".
+func (p Profile) TimezoneOrDefault() string {
+	if tz := p.Timezone(); tz != "" {
+		return tz
+	}
+	return DefaultTimezone
 }
 
 // profileAttr is the settings-document attribute the profile lives under.
@@ -198,7 +270,21 @@ func LoadProfileForDevice(ctx context.Context, g SettingsGetter, table, userID, 
 	if attributevalue.UnmarshalMap(out.Item, &raw) != nil {
 		return Profile{}
 	}
-	return ProfileFromDoc(EffectiveSettings(raw, deviceID))
+	p := ProfileFromDoc(EffectiveSettings(raw, deviceID))
+	if deviceID != "" {
+		// The current location is account-wide: where the user is does not
+		// depend on which device asks. Take it from the account profile so a
+		// device's About You override can neither hide nor pin one.
+		withCurrentFrom(&p, ProfileFromDoc(raw))
+	}
+	return p
+}
+
+// withCurrentFrom copies the current-location fields of src onto p.
+func withCurrentFrom(p *Profile, src Profile) {
+	p.CurrentLocation = src.CurrentLocation
+	p.CurrentLocationSetAt = src.CurrentLocationSetAt
+	p.CurrentLocationSource = src.CurrentLocationSource
 }
 
 // ProfileFromDoc projects a Profile out of an already-loaded settings
@@ -221,6 +307,12 @@ func ProfileFromDoc(doc map[string]any) Profile {
 	}
 	if loc, ok := locationFromAny(raw["workLocation"]); ok {
 		p.WorkLocation = &loc
+	}
+	if loc, ok := locationFromAny(raw[currentLocationKey]); ok {
+		p.CurrentLocation = &loc
+		cur, _ := raw[currentLocationKey].(map[string]any)
+		p.CurrentLocationSetAt = docStr(cur, "setAt")
+		p.CurrentLocationSource = docStr(cur, "source")
 	}
 	if qh, ok := raw["quietHours"].(map[string]any); ok {
 		q := QuietHours{Start: docStr(qh, "start"), End: docStr(qh, "end")}
@@ -251,10 +343,131 @@ func (p Profile) normalized() Profile {
 	if p.WorkLocation != nil && !p.WorkLocation.Resolved() {
 		p.WorkLocation = nil
 	}
+	if p.CurrentLocation != nil && !p.CurrentLocation.Resolved() {
+		p.CurrentLocation = nil
+	}
+	if p.CurrentLocation == nil {
+		p.CurrentLocationSetAt, p.CurrentLocationSource = "", ""
+	}
 	if p.QuietHours != nil && !p.QuietHours.Set() {
 		p.QuietHours = nil
 	}
 	return p
+}
+
+// ---- current location: the versioned set / clear write path ----
+
+// ErrInvalidCurrentLocation is returned by SetCurrentLocation for a location
+// that is not resolved, has out-of-range coordinates, carries no loadable
+// timezone, or names an unknown source.
+var ErrInvalidCurrentLocation = errors.New("store: invalid current location")
+
+// SetCurrentLocation stores loc as profile.currentLocation (account-wide),
+// stamped with setAt and source. It rides the same optimistic-concurrency path
+// as every other settings write (GetSettings → mutate → PutSettings with the
+// version read, retried on a lost race), so the settings version advances and
+// every surface's sync sees the change. Only profile.currentLocation is
+// replaced; every other profile key and every unknown field survive. Returns
+// the committed settings version.
+func (s *Store) SetCurrentLocation(ctx context.Context, userID string, loc Location, source string, setAt time.Time) (int64, error) {
+	if userID == "" {
+		return 0, errors.New("store: userID is required")
+	}
+	// Every text field is collapsed to one line: the label comes from the
+	// model's label argument or a geocoder and is rendered verbatim into
+	// every session's BASE KNOWLEDGE block, so a newline in it could open a
+	// line that poses as a user-confirmed fact or an instruction.
+	loc.Label = oneLine(loc.Label)
+	loc.Timezone = strings.TrimSpace(loc.Timezone)
+	if err := validateCurrentLocation(loc, source); err != nil {
+		return 0, err
+	}
+	value := map[string]any{
+		"label":      loc.Label,
+		"postalCode": oneLine(loc.PostalCode),
+		"city":       oneLine(loc.City),
+		"admin1":     oneLine(loc.Admin1),
+		"country":    oneLine(loc.Country),
+		"lat":        loc.Lat,
+		"lon":        loc.Lon,
+		"timezone":   loc.Timezone,
+		"setAt":      setAt.UTC().Format(time.RFC3339),
+		"source":     source,
+	}
+	version, _, err := s.mutateProfile(ctx, userID, func(profile map[string]any) bool {
+		profile[currentLocationKey] = value
+		return true
+	})
+	return version, err
+}
+
+// ClearCurrentLocation removes profile.currentLocation ("I'm back home")
+// through the same versioned path. cleared is false — and nothing is written
+// — when no current location was set.
+func (s *Store) ClearCurrentLocation(ctx context.Context, userID string) (cleared bool, version int64, err error) {
+	if userID == "" {
+		return false, 0, errors.New("store: userID is required")
+	}
+	version, changed, err := s.mutateProfile(ctx, userID, func(profile map[string]any) bool {
+		if _, present := profile[currentLocationKey]; !present {
+			return false
+		}
+		delete(profile, currentLocationKey)
+		return true
+	})
+	return changed, version, err
+}
+
+// mutateProfile applies fn to the account-level settings.profile map and
+// writes the whole document back iff fn reports a change, retrying a lost
+// optimistic-concurrency race up to autoApplyMaxAttempts times. It returns
+// the committed (or, when nothing changed, the current) version.
+func (s *Store) mutateProfile(ctx context.Context, userID string, fn func(profile map[string]any) bool) (int64, bool, error) {
+	for attempt := 0; attempt < autoApplyMaxAttempts; attempt++ {
+		doc, err := s.GetSettings(ctx, userID)
+		if err != nil {
+			return 0, false, err
+		}
+		expected := settingsDocVersion(doc)
+		profile, ok := doc[profileAttr].(map[string]any)
+		if !ok {
+			profile = map[string]any{}
+			doc[profileAttr] = profile
+		}
+		if !fn(profile) {
+			return expected, false, nil
+		}
+		newVersion, err := s.PutSettings(ctx, userID, doc, expected)
+		if errors.Is(err, ErrVersionConflict) {
+			continue // another surface wrote first — re-read and re-apply
+		}
+		if err != nil {
+			return 0, false, err
+		}
+		return newVersion, true, nil
+	}
+	return 0, false, ErrVersionConflict
+}
+
+// oneLine collapses every whitespace run (newlines included) to one space.
+func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+func validateCurrentLocation(loc Location, source string) error {
+	switch {
+	case source != CurrentLocationSourceCommand && source != CurrentLocationSourceGPS:
+		return fmt.Errorf("%w: source must be %q or %q", ErrInvalidCurrentLocation,
+			CurrentLocationSourceCommand, CurrentLocationSourceGPS)
+	case !loc.Resolved():
+		return fmt.Errorf("%w: a label and coordinates are required", ErrInvalidCurrentLocation)
+	case loc.Lat < -90 || loc.Lat > 90 || loc.Lon < -180 || loc.Lon > 180:
+		return fmt.Errorf("%w: coordinates out of range", ErrInvalidCurrentLocation)
+	case loc.Timezone == "":
+		return fmt.Errorf("%w: a timezone is required", ErrInvalidCurrentLocation)
+	}
+	if _, err := time.LoadLocation(loc.Timezone); err != nil {
+		return fmt.Errorf("%w: unknown timezone %q", ErrInvalidCurrentLocation, loc.Timezone)
+	}
+	return nil
 }
 
 // USStateName maps a two-letter US state/territory abbreviation to its full

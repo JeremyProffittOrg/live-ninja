@@ -307,3 +307,63 @@ func TestGetWeatherLocationIsOptionalInTheManifest(t *testing.T) {
 	}
 	t.Fatal("get_weather has no location param")
 }
+
+// Contract D: with a current location set, "the weather here" is about where
+// the user is now, not home — and still makes no geocoding call.
+func TestGetWeatherDefaultLocationOrder(t *testing.T) {
+	denver := store.Location{Label: "Denver, Colorado, United States", City: "Denver",
+		Admin1: "Colorado", Country: "United States", Lat: 39.7392, Lon: -104.9903,
+		Timezone: "America/Denver"}
+	gpsFix := store.Location{Label: "39.7400, -104.9900", Lat: 39.74, Lon: -104.99,
+		Timezone: "America/Denver"}
+
+	cases := []struct {
+		name       string
+		p          store.Profile
+		wantName   string
+		wantSource string
+		wantLat    float64
+	}{
+		{"home only", store.Profile{HomeLocation: &charlotteNC}, charlotteNC.Label, "profile-home", charlotteNC.Lat},
+		{"current overrides home", store.Profile{CurrentLocation: &denver, HomeLocation: &charlotteNC},
+			denver.Label, "profile-current", denver.Lat},
+		{"current without home", store.Profile{CurrentLocation: &denver}, denver.Label, "profile-current", denver.Lat},
+		{"GPS fix renders its label verbatim", store.Profile{CurrentLocation: &gpsFix, HomeLocation: &charlotteNC},
+			"39.7400, -104.9900", "profile-current", gpsFix.Lat},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeGeoServer{}
+			withFakeUpstreams(t, fake)
+			out, terr := handleGetWeather(context.Background(), weatherDeps(tc.p),
+				Invocation{UserID: "user-1"}, map[string]any{})
+			require.Nil(t, terr)
+			assert.Empty(t, fake.lastName, "a profile location means no geocoding call")
+			loc := out["location"].(map[string]any)
+			assert.Equal(t, tc.wantName, loc["name"])
+			assert.Equal(t, tc.wantSource, loc["source"])
+			assert.Equal(t, tc.wantLat, loc["latitude"])
+		})
+	}
+}
+
+// A named place is ranked toward the current location, not home: "Aurora"
+// asked during a Denver trip means Colorado, even for a North Carolina home.
+func TestGetWeatherRanksNamedPlaceTowardCurrentLocation(t *testing.T) {
+	auroraIL := geoCandidate{Name: "Aurora", Admin1: "Illinois", Country: "United States",
+		CountryCode: "US", Latitude: 41.7606, Longitude: -88.3201}
+	auroraCO := geoCandidate{Name: "Aurora", Admin1: "Colorado", Country: "United States",
+		CountryCode: "US", Latitude: 39.7294, Longitude: -104.8319}
+	fake := &fakeGeoServer{results: []geoCandidate{auroraIL, auroraCO}}
+	withFakeUpstreams(t, fake)
+
+	denver := store.Location{Label: "Denver", Country: "United States", Lat: 39.7392, Lon: -104.9903,
+		Timezone: "America/Denver"}
+	deps := weatherDeps(store.Profile{CurrentLocation: &denver, HomeLocation: &charlotteNC})
+	out, terr := handleGetWeather(context.Background(), deps,
+		Invocation{UserID: "user-1"}, map[string]any{"location": "Aurora"})
+	require.Nil(t, terr)
+	loc := out["location"].(map[string]any)
+	assert.Equal(t, "Aurora, Colorado, United States", loc["name"])
+	assert.Equal(t, "geocoded", loc["source"])
+}

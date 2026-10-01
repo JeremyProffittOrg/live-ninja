@@ -5,6 +5,12 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Share the phone's location with the assistant at session start
+         (location/LocationReporter: POST /api/v1/location/current). Asked by
+         StartupPermissionGate; denied simply means nothing is reported.
+         Foreground-only: no ACCESS_BACKGROUND_LOCATION. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <!-- Load-bearing for M21.2's echo fix, and silent when absent: all three
          transports' configureAudioForCall() set AudioManager.mode =
          MODE_IN_COMMUNICATION (WebRtcTransport.kt:494, NovaBridgeTransport.kt:477,
@@ -39,7 +45,8 @@
          requested via Settings.ACTION_MANAGE_OVERLAY_PERMISSION in onboarding;
          LiveOverlayController no-ops without the user grant. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-    <!-- Sideload updates from the published APK on live.jeremy.ninja. -->
+    <!-- Sideload updates from the published APK on live.jeremy.ninja
+         (update/AppUpdateCoordinator: on app start + AppUpdateWorker every 6 h). -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- Camera tools are optional capability: camera-less tablets may still
@@ -203,9 +210,9 @@
              WorkManager's documented "on-demand initialization" recipe: with the default
              initializer's meta-data gone, WorkManager only initializes (using
              workManagerConfiguration above) the first time WorkManager.getInstance(context) is
-             actually called; today that is exclusively WakeWatchdogWorker.enqueue()/cancel()
-             from WakeWordService, i.e. only once the always-listening service actually starts,
-             never on a bare app launch. This is also the fix for the pre-existing
+             actually called: WakeWatchdogWorker.enqueue()/cancel() from WakeWordService, and
+             AppUpdateWorker.enqueue() from MainActivity.onStart, which runs it off the main
+             thread so the work database never opens on the launch path. This is also the fix for the pre-existing
              RemoveWorkManagerInitializer lint error (plan.md M22 baseline). -->
         <provider
             android:name="androidx.startup.InitializationProvider"

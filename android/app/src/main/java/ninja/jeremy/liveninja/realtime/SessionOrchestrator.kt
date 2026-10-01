@@ -23,6 +23,7 @@ import ninja.jeremy.liveninja.assistant.AssistSource
 import ninja.jeremy.liveninja.assistant.AssistTrigger
 import ninja.jeremy.liveninja.assistant.AssistantEvents
 import ninja.jeremy.liveninja.audio.WakeWordDetection
+import ninja.jeremy.liveninja.location.LocationReporter
 import ninja.jeremy.liveninja.log.LNLog
 import ninja.jeremy.liveninja.log.LogCategory
 import ninja.jeremy.liveninja.ui.state.RealtimeSessionController
@@ -218,6 +219,7 @@ class SessionOrchestrator @Inject constructor(
     private val assistantEvents: AssistantEvents,
     private val controller: RealtimeSessionController,
     private val settingsStore: SettingsStore,
+    private val locationReporter: LocationReporter,
 ) {
     private val powerManager = context.getSystemService(PowerManager::class.java)
     private val audioManager = context.getSystemService(AudioManager::class.java)
@@ -299,8 +301,16 @@ class SessionOrchestrator @Inject constructor(
     /** Keyguard state at the current session's launch (KeyguardGate input). */
     val launchedWhileLocked: StateFlow<Boolean> get() = core.launchedWhileLocked
 
+    /** Side-observers of the session lifecycle (outside the pure core). */
+    private val observerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
     init {
         core.bind(wakeEvents.detections, assistantEvents.triggers)
+        // Each session start shares the phone's location (throttled to once per
+        // 15 min inside the reporter; a no-op without the permission).
+        observerScope.launch {
+            core.sessionActive.collect { active -> if (active) locationReporter.onSessionStarted() }
+        }
     }
 
     /** End the active session (notification "End" action / manual stop). */

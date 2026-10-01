@@ -366,6 +366,8 @@ Consolidated first-party API surface (path-versioned `/v1`). Auth is the LWA-min
 | POST | `/v1/plans` | Create/update a plan and its tasks (`plan.upsert`). | Session JWT |
 | GET | `/v1/guides` | List the caller's Guide Entities. | Session JWT |
 | PUT | `/v1/guides/{id}` | Create/edit/enable/prioritize a guide (versioned; synced to devices). | Session JWT |
+| GET/POST | `/v1/rules` | List / create-or-update assistant rules (name + when-to-use description + body); see `contracts/api.md`. | Session JWT |
+| PUT/DELETE | `/v1/rules/{name}` | Enable/disable or delete one rule. | Session JWT |
 | GET | `/v1/conversations` | List/filter conversation history by `topic`, `device`, `from`, `to` (Query + GSIs, never Scan). | Session JWT |
 | GET | `/v1/conversations/{id}` | Fetch one conversation (transcript pointer, summary, topics). | Session JWT |
 | GET | `/v1/topics` | List the caller's topic taxonomy. | Session JWT |
@@ -607,6 +609,7 @@ The 10-year "login" is a continuously, silently rotated credential lineage ancho
 | Edge (relationships) | `USER#<userId>` | `EDGE#<fromId>#<relation>#<toId>` | — | traverse from a node = Query PK=`USER#<userId>`, SK `begins_with EDGE#<fromId>#`. |
 | Memory (structured) | `USER#<userId>` | `ENT#<type>#<entityId>` | — | `type` ∈ {person, place, info, project, task, plan}. List = Query SK `begins_with ENT#`. Conversation facts are AgentCore Memory records, not a second DynamoDB row. |
 | Guide | `USER#<userId>` | `GUIDE#<guideId>` | — | attrs `enabled`, `priority`, `version`, `body`; mirrored to the IoT device shadow. Load-all-enabled = Query SK `begins_with GUIDE#`. |
+| Rule | `USER#<userId>` | `RULE#<name>` | — | attrs `name` (kebab-case key), `description` (when it applies), `body`, `enabled`, `source` (seed\|assistant\|user), `version`; max 50 per user. Only `name` + `description` of enabled rules are bound at mint (Query SK `begins_with RULE#`, projection without `body`); `rule_load` reads the body on demand. Seeded with `location-and-time`. |
 | Plan | `USER#<userId>` | `PLAN#<planId>` | — | attr `status`; fetch = GetItem; list plans = Query SK `begins_with PLAN#`. |
 | Task | `USER#<userId>` | `TASK#<planId>#<taskId>` | — | attr `status`; list a plan's tasks = Query SK `begins_with TASK#<planId>#`. |
 | Topic | `USER#<userId>` | `TOPIC#<topicId>` | — | attrs `name`, `color`, `status` (active\|archived), `aliases[]`, `mergedInto`, `createdAt`, `updatedAt`; tags reference the STABLE `topicId`, so rename/merge/split never re-tags. List = Query SK `begins_with TOPIC#`. |

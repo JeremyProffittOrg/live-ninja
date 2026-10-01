@@ -77,6 +77,7 @@ func RegisterAPIRoutes(app *fiber.App, deps *Deps) {
 
 	api.Get("/realtime/session", handleRealtimeSession(deps))
 	api.Post("/tools/invoke", handleToolsInvoke(deps, registry))
+	api.Post("/location/current", handleReportCurrentLocation(deps, registry))
 	api.Post("/rca/client-event", handleRCAClientEvent(deps))
 	api.Post("/transcript", handleTranscript(deps))
 
