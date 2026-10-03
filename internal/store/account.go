@@ -56,6 +56,7 @@ func (s *Store) QueryUserPartition(ctx context.Context, userID string) ([]map[st
 	}
 	raw, err := s.queryAllPages(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String(s.table),
+		ConsistentRead:         aws.Bool(true),
 		KeyConditionExpression: aws.String("pk = :pk"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":pk": &types.AttributeValueMemberS{Value: userPK(userID)},

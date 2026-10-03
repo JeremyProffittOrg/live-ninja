@@ -661,7 +661,7 @@ function attachTranscriptRendering(session) {
   session.addEventListener('toolresult', (e) => {
     toolActivityEnd();
     const entry = bufferToolResult(e.detail);
-    if (!showToolCalls()) return;
+    if (!showToolCalls() && !isReviewProposal(entry.error)) return;
     renderToolCard(entry);
   });
   session.addEventListener('toolerror', (e) => {
@@ -895,8 +895,9 @@ function bufferToolCall({ tool, callId, args }) {
 function bufferToolResult({ tool, callId, result }) {
   const entry = (callId && toolEntryByCallId.get(callId)) || bufferToolCall({ tool, callId, args: undefined });
   entry.result = result;
+  entry.error = result?.ok === false ? result.error : undefined;
   entry.done = true;
-  entry.failed = false;
+  entry.failed = result?.ok === false;
   return entry;
 }
 

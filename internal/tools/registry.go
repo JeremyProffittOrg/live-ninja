@@ -49,6 +49,7 @@ import (
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/codeupdate"
 	"github.com/JeremyProffittOrg/live-ninja/internal/ghost"
+	"github.com/JeremyProffittOrg/live-ninja/internal/jobs"
 	"github.com/JeremyProffittOrg/live-ninja/internal/observ"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	lnsync "github.com/JeremyProffittOrg/live-ninja/internal/sync"
@@ -387,10 +388,12 @@ type FailureEnqueuer interface {
 // Deps carries everything the tool handlers need. The web function wires
 // real AWS clients; tests wire fakes against the narrow interfaces.
 type Deps struct {
-	Store     *store.Store // ConditionalPut (IDEMP#, LOG#, NOTE#) + GetItem (DEVICE# ownership check)
-	DDB       QueryAPI     // recall_note single-partition Query
-	TableName string       // env TABLE_NAME
-	Log       *slog.Logger
+	Jobs                  *jobs.Service
+	JobsSchedulingEnabled bool
+	Store                 *store.Store // ConditionalPut (IDEMP#, LOG#, NOTE#) + GetItem (DEVICE# ownership check)
+	DDB                   QueryAPI     // recall_note single-partition Query
+	TableName             string       // env TABLE_NAME
+	Log                   *slog.Logger
 
 	SQS           SQSAPI // send_email + code_update_start enqueue
 	EmailQueueURL string // env EMAIL_QUEUE_URL
@@ -617,6 +620,8 @@ func definitions() []*Definition {
 		forgetDefinition(),
 		webResearchDefinition(),
 		profileSuggestDefinition(),
+		jobListDefinition(), jobStatusDefinition(), jobCreateDefinition(),
+		jobActionDefinition("start"), jobActionDefinition("pause"), jobActionDefinition("resume"), jobActionDefinition("cancel"), jobRetryDefinition(), jobCommandDefinition(),
 		// Voice-driven code updates: pick a repo, brief a coding agent, and run
 		// it on one of the owner's machines (internal/ghost + cmd/codeupdate-dispatch).
 		codeUpdateReposDefinition(),

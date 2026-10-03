@@ -138,7 +138,7 @@ func (c *FallbackClient) TurnWithToolsForSurface(ctx context.Context, personaID,
 		return nil, fmt.Errorf("realtime: invalid fallback messages: %w", err)
 	}
 
-	body, err := buildToolTurnRequestForSurface(personaID, surface, messages, extraSystem)
+	body, err := buildToolTurnRequestForClient(ctx, personaID, surface, messages, extraSystem)
 	if err != nil {
 		return nil, err
 	}
@@ -157,10 +157,15 @@ func buildToolTurnRequest(personaID string, messages []ChatMessage, extraSystem 
 }
 
 func buildToolTurnRequestForSurface(personaID, _ string, messages []ChatMessage, extraSystem string) ([]byte, error) {
+	// Static catalog/parity helper. Production always supplies request context.
+	return buildToolTurnRequestForClient(WithClientCapabilities(context.Background(), "web", []string{JobsReviewCapability}), personaID, "", messages, extraSystem)
+}
+
+func buildToolTurnRequestForClient(ctx context.Context, personaID, _ string, messages []ChatMessage, extraSystem string) ([]byte, error) {
 	persona := ResolvePersona(personaID)
 
 	wire := make([]map[string]any, 0, len(messages)+1)
-	wire = append(wire, map[string]any{"role": "system", "content": InstructionsForServerExecution(persona) + extraSystem})
+	wire = append(wire, map[string]any{"role": "system", "content": ClientInstructions(ctx, InstructionsForServerExecution(persona)) + extraSystem})
 	for _, m := range messages {
 		switch m.Role {
 		case "tool":
@@ -194,7 +199,7 @@ func buildToolTurnRequestForSurface(personaID, _ string, messages []ChatMessage,
 	body, err := json.Marshal(map[string]any{
 		"model":    fallbackChatModel,
 		"messages": wire,
-		"tools":    chatCompletionTools,
+		"tools":    FilterJobsTools(chatCompletionTools, jobsReviewEnabled(ctx)),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("realtime: marshal tool turn request: %w", err)

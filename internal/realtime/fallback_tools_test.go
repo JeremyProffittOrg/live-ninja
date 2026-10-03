@@ -166,7 +166,7 @@ func TestTurnWithToolsReturnsToolCallsUntouched(t *testing.T) {
 		})
 	})
 
-	res, err := c.TurnWithTools(context.Background(), "", []ChatMessage{{Role: "user", Content: "email me the weather"}}, "")
+	res, err := c.TurnWithTools(WithClientCapabilities(context.Background(), "web", []string{JobsReviewCapability}), "", []ChatMessage{{Role: "user", Content: "email me the weather"}}, "")
 	require.NoError(t, err)
 	assert.Empty(t, res.Text)
 	require.Len(t, res.ToolCalls, 2)

@@ -10,7 +10,7 @@ if (!['127.0.0.1', 'localhost', '[::1]'].includes(new URL(baseURL).hostname)) th
 export default defineConfig({
   ...deployed,
   use: { ...deployed.use, baseURL, serviceWorkers: 'block' },
-  testMatch: ['**/jobs.spec.mjs', '**/approvals.spec.mjs'],
+  testMatch: ['**/jobs.spec.mjs', '**/approvals.spec.mjs', '**/ghost-work.spec.mjs'],
   testIgnore: [],
   reporter: process.env.CI
     ? [['list'], ['html', { open: 'never', outputFolder: 'playwright-local-report' }]]

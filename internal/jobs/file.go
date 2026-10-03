@@ -20,6 +20,7 @@ type FileStore struct {
 	mu      sync.Mutex
 	path    string
 	records map[string]Record
+	history map[string]HistoryEntry
 	unlock  func() error
 	closed  bool
 }
@@ -36,7 +37,7 @@ func NewFileStore(path string) (*FileStore, error) {
 	if e != nil {
 		return nil, fmt.Errorf("jobs: local store is already open or cannot be locked: %w", e)
 	}
-	s := &FileStore{path: abs, records: map[string]Record{}, unlock: unlock}
+	s := &FileStore{path: abs, records: map[string]Record{}, history: map[string]HistoryEntry{}, unlock: unlock}
 	b, e := os.ReadFile(abs)
 	if errors.Is(e, os.ErrNotExist) {
 		return s, nil
@@ -45,12 +46,26 @@ func NewFileStore(path string) (*FileStore, error) {
 		unlock()
 		return nil, e
 	}
-	if e = json.Unmarshal(b, &s.records); e != nil {
+	var snapshot fileSnapshot
+	if e = json.Unmarshal(b, &snapshot); e == nil && snapshot.FormatVersion == 2 {
+		if snapshot.Records == nil || snapshot.History == nil {
+			e = ErrCorrupt
+		} else {
+			s.records = snapshot.Records
+			s.history = snapshot.History
+		}
+	} else {
+		e = json.Unmarshal(b, &s.records)
+	}
+	if e != nil {
 		unlock()
 		return nil, fmt.Errorf("jobs: cannot read durable store (original retained): %w", e)
 	}
 	if s.records == nil {
 		s.records = map[string]Record{}
+	}
+	if s.history == nil {
+		s.history = map[string]HistoryEntry{}
 	}
 	return s, nil
 }
@@ -138,19 +153,38 @@ func (s *FileStore) CompareAndSwap(ctx context.Context, r *Record, expected int6
 	if len(b) > 300000 {
 		return ErrLimit
 	}
+	var before *Record
+	if exists {
+		before = &old
+	}
+	entries, e := buildHistory(before, r)
+	if e != nil {
+		return e
+	}
+	for _, entry := range entries {
+		if _, exists := s.history[recordKey(r.UserID, historyKey(entry))]; exists {
+			return ErrConflict
+		}
+	}
 	s.records[k] = cloneRecord(*r)
+	for _, entry := range entries {
+		s.history[recordKey(r.UserID, historyKey(entry))] = entry
+	}
 	if e = s.persist(); e != nil {
 		if exists {
 			s.records[k] = old
 		} else {
 			delete(s.records, k)
 		}
+		for _, entry := range entries {
+			delete(s.history, recordKey(r.UserID, historyKey(entry)))
+		}
 		return e
 	}
 	return nil
 }
 func (s *FileStore) persist() error {
-	b, e := json.MarshalIndent(s.records, "", "  ")
+	b, e := json.Marshal(fileSnapshot{FormatVersion: 2, Records: s.records, History: s.history})
 	if e != nil {
 		return e
 	}

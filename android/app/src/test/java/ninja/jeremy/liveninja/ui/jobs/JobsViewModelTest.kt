@@ -3,6 +3,9 @@ package ninja.jeremy.liveninja.ui.jobs
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import io.mockk.every
+import kotlinx.coroutines.flow.MutableStateFlow
+import ninja.jeremy.liveninja.auth.AuthState
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -39,7 +42,7 @@ class JobsViewModelTest {
 
     @Test fun duplicateSaveClicksSubmitOnceAndKeepTheEditorWhilePending() {
         val gate = CompletableDeferred<JobResponse>()
-        coEvery { repository.create(any(), any()) } coAnswers { gate.await() }
+        coEvery { repository.create(any(), any(), any()) } coAnswers { gate.await() }
         val vm = vm(); vm.newJob(); vm.updateDraft { it.copy(title = "New title", instructions = "New notes") }
         vm.saveDraft(); vm.saveDraft()
         assertTrue(vm.state.value.busy); assertNotNull(vm.state.value.draft)
@@ -191,5 +194,61 @@ class JobsViewModelTest {
         assertEquals(2L, vm.state.value.jobs.single().version)
         assertEquals("paused", vm.state.value.selected?.status)
         assertFalse(vm.state.value.loading)
+    }
+
+    @Test fun noteRequiresExplicitReviewAndKeepsItsExactTextDuringSubmission() {
+        val gate = CompletableDeferred<JobCommandResponse>()
+        coEvery { repository.note(any(), any(), any(), any(), any()) } coAnswers { gate.await() }
+        val vm = vm(); vm.openJob(job)
+        vm.handle(JobsEvent.Note("The exact note")); vm.handle(JobsEvent.ReviewNote)
+        vm.handle(JobsEvent.Note("Changed draft behind dialog"))
+        coVerify(exactly = 0) { repository.note(any(), any(), any(), any(), any()) }
+        vm.confirmAction(); vm.confirmAction()
+        coVerify(exactly = 1) { repository.note(job.id, "The exact note", 1, any(), null) }
+        gate.complete(JobCommandResponse(JobCommandDto(id = "n1", jobId = job.id, status = "recorded"), job.copy(version = 2)))
+        assertEquals("", vm.state.value.noteDraft)
+        assertNull(vm.state.value.confirmation)
+    }
+
+    @Test fun oldAccountSaveCompletionCannotRepopulateTheNewAccountScreen() {
+        val auth = MutableStateFlow<AuthState>(AuthState.SignedIn("sid-a"))
+        val proposals = MutableStateFlow<List<JobsVoiceProposal>>(emptyList())
+        val inbox = mockk<JobsProposalInbox> {
+            every { authState } returns auth
+            every { pending } returns proposals
+            every { captureSession() } answers { (auth.value as? AuthState.SignedIn)?.sessionId }
+        }
+        val gate = CompletableDeferred<JobResponse>()
+        coEvery { repository.create(any(), any(), any()) } coAnswers { gate.await() }
+        val vm = JobsViewModel(repository, inbox); vm.loadIfNeeded(); vm.newJob()
+        vm.updateDraft { it.copy(title = "Account A private title", instructions = "Private notes") }; vm.saveDraft()
+        coEvery { repository.list(any()) } returns JobsListResponse(emptyList(), capabilities = capabilities)
+        auth.value = AuthState.SignedIn("sid-b")
+        gate.complete(JobResponse(job.copy(title = "Account A private title")))
+        assertNull(vm.state.value.selected); assertTrue(vm.state.value.jobs.isEmpty()); assertNull(vm.state.value.draft)
+        assertFalse(vm.state.value.busy)
+    }
+
+    @Test fun voiceProposalNeverExecutesBeforeReviewAndAnExplicitClick() {
+        val auth = MutableStateFlow<AuthState>(AuthState.SignedIn("sid-a"))
+        val proposal = JobsVoiceProposal("call-a", "sid-a", "job_start", 0, job = job, jobId = job.id, expectedVersion = 1)
+        val proposals = MutableStateFlow(listOf(proposal))
+        val inbox = mockk<JobsProposalInbox> {
+            every { authState } returns auth; every { pending } returns proposals
+            every { captureSession() } returns "sid-a"; every { isCurrent(proposal) } returns true
+            every { dismiss(any()) } answers { proposals.value = emptyList() }
+        }
+        val gate = CompletableDeferred<JobResponse>()
+        coEvery { repository.approveProposal(any(), any()) } coAnswers { gate.await() }
+        coEvery { repository.historyPage(any(), any(), any()) } coAnswers { JobHistoryPage(firstArg()) }
+        val vm = JobsViewModel(repository, inbox); vm.loadIfNeeded()
+        coVerify(exactly = 0) { repository.approveProposal(any(), any()) }
+        vm.handle(JobsEvent.ReviewVoice(proposal))
+        assertEquals("Saved notes", vm.state.value.voiceReview?.job?.instructions)
+        coVerify(exactly = 0) { repository.approveProposal(any(), any()) }
+        vm.handle(JobsEvent.ConfirmVoice); vm.handle(JobsEvent.ConfirmVoice)
+        coVerify(exactly = 1) { repository.approveProposal(proposal, any()) }
+        gate.complete(JobResponse(job.copy(version = 2)))
+        assertNull(vm.state.value.voiceReview); assertFalse(vm.state.value.busy)
     }
 }

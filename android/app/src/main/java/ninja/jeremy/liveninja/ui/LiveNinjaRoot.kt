@@ -23,6 +23,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import ninja.jeremy.liveninja.ui.jobs.JobsNavigationViewModel
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -136,6 +139,8 @@ fun LiveNinjaRoot(assistTriggers: SharedFlow<AssistTrigger> = MutableSharedFlow(
         return
     }
     StartupPermissionGate()
+    val jobsNavigation: JobsNavigationViewModel = hiltViewModel()
+    val pendingJobs by jobsNavigation.pending.collectAsStateWithLifecycle()
 
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
@@ -215,6 +220,11 @@ fun LiveNinjaRoot(assistTriggers: SharedFlow<AssistTrigger> = MutableSharedFlow(
                                 }
                             },
                             icon = {
+                                BadgedBox(badge = {
+                                    if (destination == TopLevelDestination.JOBS && pendingJobs.isNotEmpty()) {
+                                        Badge { Text(pendingJobs.size.toString()) }
+                                    }
+                                }) {
                                 Icon(
                                     imageVector = if (selected) {
                                         destination.selectedIcon
@@ -223,6 +233,7 @@ fun LiveNinjaRoot(assistTriggers: SharedFlow<AssistTrigger> = MutableSharedFlow(
                                     },
                                     contentDescription = null, // label below announces it
                                 )
+                                }
                             },
                             label = { Text(label) },
                         )

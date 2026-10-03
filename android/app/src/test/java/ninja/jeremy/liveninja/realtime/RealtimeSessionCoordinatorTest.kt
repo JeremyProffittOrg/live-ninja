@@ -19,6 +19,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import ninja.jeremy.liveninja.ui.state.SessionUiEvent
 import ninja.jeremy.liveninja.ui.state.TranscriptRole
@@ -49,6 +51,7 @@ class RealtimeSessionCoordinatorTest {
         val sentEvents = mutableListOf<JSONObject>()
         var disconnects = 0
         var failConnect = false
+        var beforeConnect: suspend () -> Unit = {}
 
         // M8.3 latency-parallelization instrumentation.
         var prepareCalls = 0
@@ -73,6 +76,7 @@ class RealtimeSessionCoordinatorTest {
 
         override suspend fun connect(ephemeralToken: String, callsUrl: String) {
             connectCalls += ephemeralToken to callsUrl
+            beforeConnect()
             if (failConnect) throw IOException("sdp negotiation failed")
             _state.value = TransportState.CONNECTED
         }
@@ -101,6 +105,8 @@ class RealtimeSessionCoordinatorTest {
         fun driveState(state: TransportState) {
             _state.value = state
         }
+
+        fun lateEvent(event: RealtimeEvent) { _events.tryEmit(event) }
     }
 
     private val transport = FakeTransport()
@@ -109,13 +115,16 @@ class RealtimeSessionCoordinatorTest {
     private val novaTransport = FakeTransport()
     private val geminiTransport = FakeTransport()
     private val voiceLiveTransport = FakeTransport()
+    private val authState = MutableStateFlow<ninja.jeremy.liveninja.auth.AuthState>(ninja.jeremy.liveninja.auth.AuthState.SignedIn("auth-a"))
+    private val auth = mockk<ninja.jeremy.liveninja.auth.AuthRepository> { every { state } returns authState }
     private val sessionApi = mockk<RealtimeSessionApi>()
     private val toolRouter = mockk<ToolCallRouter>()
     private val deviceVolumeTool = mockk<DeviceVolumeToolExecutor>()
     private val deviceCameraTool = mockk<DeviceCameraToolExecutor>()
+    private val transcriptStore = TranscriptStore()
 
     private fun coordinator(): RealtimeSessionCoordinator {
-        coEvery { sessionApi.fetchSession() } returns RealtimeSession(
+        coEvery { sessionApi.fetchSession(any()) } returns RealtimeSession(
             clientSecret = "ephemeral-token",
             expiresAt = null,
             model = "gpt-realtime",
@@ -128,8 +137,141 @@ class RealtimeSessionCoordinatorTest {
             mockk<android.content.Context>(relaxed = true),
             transport, novaTransport, geminiTransport, voiceLiveTransport, sessionApi, toolRouter, deviceVolumeTool,
             deviceCameraTool,
-            TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())),
+            transcriptStore, TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())), auth,
         )
+    }
+
+    @Test
+    fun signOutStopsTransportAndDropsLateOldAccountEvents() = runBlocking {
+        val coord = coordinator()
+        coord.start()
+        transport.serverEvent(RealtimeEvent.UserTranscriptCompleted("private-a", "A private turn"))
+        awaitUntil("old transcript recorded") { transcriptStore.turns.value.isNotEmpty() }
+        authState.value = ninja.jeremy.liveninja.auth.AuthState.SignedOut()
+        transport.lateEvent(RealtimeEvent.FunctionCall("late", "job_list", "{}"))
+        awaitUntil("old transport disconnected") { transport.disconnects == 1 && !coord.connected.value }
+        authState.value = ninja.jeremy.liveninja.auth.AuthState.SignedIn("auth-b")
+        transport.lateEvent(RealtimeEvent.FunctionCall("later", "job_status", "{}"))
+        delay(50)
+        assertTrue(transcriptStore.turns.value.isEmpty())
+        assertTrue(transport.sentEvents.isEmpty())
+        coVerify(exactly = 0) { toolRouter.invoke(any(), any()) }
+    }
+
+    @Test
+    fun accountChangeDuringBootstrapDoesNotConnectProvider() = runBlocking {
+        val coord = coordinator()
+        val fetched = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        coEvery { sessionApi.fetchSession("auth-a") } coAnswers {
+            fetched.complete(Unit)
+            release.await()
+            RealtimeSession(clientSecret = "old-secret", expiresAt = null, model = null,
+                voice = null, sessionId = "old-conversation", quotaWarning = null)
+        }
+        val starting = launch { runCatching { coord.start() } }
+        fetched.await()
+        authState.value = ninja.jeremy.liveninja.auth.AuthState.SignedIn("auth-b")
+        release.complete(Unit)
+        starting.join()
+        assertFalse(coord.connected.value)
+        assertTrue(transport.connectCalls.isEmpty())
+        assertTrue(transport.abortPrepareCalls > 0)
+        coVerify(exactly = 1) { sessionApi.fetchSession("auth-a") }
+    }
+
+    @Test
+    fun accountChangeDuringConnectDisconnectsAndNeverPublishesConnected() = runBlocking {
+        val coord = coordinator()
+        transport.beforeConnect = {
+            authState.value = ninja.jeremy.liveninja.auth.AuthState.SignedIn("auth-b")
+        }
+        runCatching { coord.start() }
+        assertFalse(coord.connected.value)
+        assertEquals(1, transport.disconnects)
+    }
+
+    @Test
+    fun oldToolCompletionCannotWriteIntoReplacementConversation() = runBlocking {
+        val coord = coordinator()
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val completed = CompletableDeferred<Unit>()
+        coEvery { toolRouter.invoke(any(), "auth-a") } coAnswers {
+            entered.complete(Unit)
+            // Simulate an already-dispatched HTTP call whose completion races cancellation.
+            withContext(NonCancellable) { release.await() }
+            completed.complete(Unit)
+            """{"ok":true,"output":{"private":"A's jobs"}}"""
+        }
+        coord.start()
+        transport.serverEvent(RealtimeEvent.FunctionCall("old-call", "job_list", "{}"))
+        entered.await()
+        authState.value = ninja.jeremy.liveninja.auth.AuthState.SignedIn("auth-b")
+        awaitUntil("account switch closed A") { !coord.connected.value && transport.disconnects == 1 }
+        coord.start()
+        release.complete(Unit)
+        completed.await()
+        delay(50)
+        assertTrue(coord.connected.value)
+        assertTrue(transport.sentEvents.isEmpty())
+        assertTrue(transcriptStore.turns.value.isEmpty())
+        coVerify(exactly = 1) { toolRouter.invoke(any(), "auth-a") }
+        coVerify(exactly = 0) { toolRouter.invoke(any(), "auth-b") }
+        coord.stop()
+    }
+
+    @Test
+    fun sameAuthSessionRemainsConnectedAndRoutesWithOriginalSid() = runBlocking {
+        val coord = coordinator()
+        coEvery { toolRouter.invoke(any(), "auth-a") } returns """{"ok":true}"""
+        coord.start()
+        // Access-token rotation preserves this sid; a new state instance is not a logout.
+        authState.value = ninja.jeremy.liveninja.auth.AuthState.SignedIn("auth-a")
+        transport.serverEvent(RealtimeEvent.FunctionCall("same", "job_list", "{}"))
+        awaitUntil("tool response") { transport.sentEvents.size == 2 }
+        assertEquals(0, transport.disconnects)
+        coVerify(exactly = 1) { toolRouter.invoke(any(), "auth-a") }
+        coord.stop()
+    }
+
+    @Test
+    fun signedOutCannotBootstrap() = runBlocking {
+        val coord = coordinator()
+        authState.value = ninja.jeremy.liveninja.auth.AuthState.SignedOut()
+        assertTrue(runCatching { coord.start() }.exceptionOrNull() is RealtimeSessionException)
+        coVerify(exactly = 0) { sessionApi.fetchSession(any()) }
+        assertEquals(0, transport.prepareCalls)
+    }
+
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
+    @Test
+    fun delayedAuthObserverCannotDiscardReplacementSessionsTranscript() = runBlocking {
+        val releaseObserver = CompletableDeferred<Unit>()
+        val delayedState = object : StateFlow<ninja.jeremy.liveninja.auth.AuthState> {
+            override val value get() = authState.value
+            override val replayCache get() = authState.replayCache
+            override suspend fun collect(collector: kotlinx.coroutines.flow.FlowCollector<ninja.jeremy.liveninja.auth.AuthState>): Nothing =
+                authState.collect(object : kotlinx.coroutines.flow.FlowCollector<ninja.jeremy.liveninja.auth.AuthState> {
+                    override suspend fun emit(value: ninja.jeremy.liveninja.auth.AuthState) {
+                        if (value == ninja.jeremy.liveninja.auth.AuthState.SignedIn("auth-b")) releaseObserver.await()
+                        collector.emit(value)
+                    }
+                })
+        }
+        every { auth.state } returns delayedState
+        val coord = coordinator()
+        coord.start()
+        authState.value = ninja.jeremy.liveninja.auth.AuthState.SignedIn("auth-b")
+        // start() observes the current auth synchronously, before its observer catches up.
+        coord.start()
+        transport.serverEvent(RealtimeEvent.UserTranscriptCompleted("b-turn", "B private turn"))
+        awaitUntil("B transcript recorded") { transcriptStore.turns.value.any { it.id == "b-turn" } }
+        releaseObserver.complete(Unit)
+        delay(50)
+        assertTrue(coord.connected.value)
+        assertEquals("B private turn", transcriptStore.turns.value.single().text)
+        coord.stop()
     }
 
     /** Collect coordinator UI events into [sink] and wait until [predicate] matches one. */
@@ -171,7 +313,7 @@ class RealtimeSessionCoordinatorTest {
     @Test
     fun start_emitsQuotaWarningWithoutTurningItIntoSessionError() = runBlocking {
         val coord = coordinator()
-        coEvery { sessionApi.fetchSession() } returns RealtimeSession(
+        coEvery { sessionApi.fetchSession(any()) } returns RealtimeSession(
             clientSecret = "ephemeral-token",
             expiresAt = null,
             model = "gpt-realtime",
@@ -272,7 +414,7 @@ class RealtimeSessionCoordinatorTest {
     fun start_geminiDirect_routesToGeminiTransportAndPrimes() = runBlocking {
         val endpoint = "wss://generativelanguage.googleapis.com/ws/" +
             "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained"
-        coEvery { sessionApi.fetchSession() } returns RealtimeSession(
+        coEvery { sessionApi.fetchSession(any()) } returns RealtimeSession(
             mode = RealtimeSession.MODE_GEMINI_DIRECT,
             clientSecret = "",
             expiresAt = null,
@@ -292,7 +434,7 @@ class RealtimeSessionCoordinatorTest {
             mockk<android.content.Context>(relaxed = true),
             transport, novaTransport, geminiTransport, voiceLiveTransport, sessionApi, toolRouter, deviceVolumeTool,
             deviceCameraTool,
-            TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())),
+            TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())), auth,
         )
 
         coord.start()
@@ -321,7 +463,7 @@ class RealtimeSessionCoordinatorTest {
             cachedTextInPer1M = 0.75,
             cachedAudioInPer1M = 3.00,
         )
-        coEvery { sessionApi.fetchSession() } returns RealtimeSession(
+        coEvery { sessionApi.fetchSession(any()) } returns RealtimeSession(
             mode = RealtimeSession.MODE_GEMINI_DIRECT,
             clientSecret = "",
             expiresAt = null,
@@ -339,7 +481,7 @@ class RealtimeSessionCoordinatorTest {
             mockk<android.content.Context>(relaxed = true),
             transport, novaTransport, geminiTransport, voiceLiveTransport, sessionApi, toolRouter, deviceVolumeTool,
             deviceCameraTool,
-            TranscriptStore(), TranscriptUploader(transcriptSink, this),
+            TranscriptStore(), TranscriptUploader(transcriptSink, this), auth,
         )
         val seen = mutableListOf<SessionUiEvent>()
         val job = collectInto(coord, seen)
@@ -398,7 +540,7 @@ class RealtimeSessionCoordinatorTest {
 
     @Test
     fun start_geminiDirect_abortsSpeculativeWebRtcBootstrap() = runBlocking {
-        coEvery { sessionApi.fetchSession() } returns RealtimeSession(
+        coEvery { sessionApi.fetchSession(any()) } returns RealtimeSession(
             mode = RealtimeSession.MODE_GEMINI_DIRECT,
             clientSecret = "",
             expiresAt = null,
@@ -414,7 +556,7 @@ class RealtimeSessionCoordinatorTest {
             mockk<android.content.Context>(relaxed = true),
             transport, novaTransport, geminiTransport, voiceLiveTransport, sessionApi, toolRouter, deviceVolumeTool,
             deviceCameraTool,
-            TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())),
+            TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())), auth,
         )
 
         coord.start()
@@ -430,12 +572,12 @@ class RealtimeSessionCoordinatorTest {
     fun fetchFailure_abortsSpeculativeBootstrapAndPropagates() = runBlocking {
         // A session-fetch failure must abort the speculative WebRTC bootstrap and
         // surface the identical error (02-voice §D.2, failure-path parity).
-        coEvery { sessionApi.fetchSession() } throws IOException("session mint failed")
+        coEvery { sessionApi.fetchSession(any()) } throws IOException("session mint failed")
         val coord = RealtimeSessionCoordinator(
             mockk<android.content.Context>(relaxed = true),
             transport, novaTransport, geminiTransport, voiceLiveTransport, sessionApi, toolRouter, deviceVolumeTool,
             deviceCameraTool,
-            TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())),
+            TranscriptStore(), TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())), auth,
         )
         try {
             coord.start()
@@ -566,7 +708,7 @@ class RealtimeSessionCoordinatorTest {
 
     @Test
     fun functionCall_roundTripsOutputThenResponseCreate() = runBlocking {
-        coEvery { toolRouter.invoke(any()) } returns """{"ok":true,"output":{"sum":42}}"""
+        coEvery { toolRouter.invoke(any(), any()) } returns """{"ok":true,"output":{"sum":42}}"""
         val coord = coordinator()
         val seen = mutableListOf<SessionUiEvent>()
         val job = collectInto(coord, seen)
@@ -623,7 +765,7 @@ class RealtimeSessionCoordinatorTest {
                 """{"action":"set","level":60}""",
             )
         }
-        coVerify(exactly = 0) { toolRouter.invoke(any()) }
+        coVerify(exactly = 0) { toolRouter.invoke(any(), any()) }
         val output = transport.sentEvents.first()
             .getJSONObject("item")
             .getString("output")
@@ -666,7 +808,7 @@ class RealtimeSessionCoordinatorTest {
                 """{"camera":"front"}""",
             )
         }
-        coVerify(exactly = 0) { toolRouter.invoke(any()) }
+        coVerify(exactly = 0) { toolRouter.invoke(any(), any()) }
         val output = transport.sentEvents.first()
             .getJSONObject("item")
             .getString("output")
@@ -725,7 +867,7 @@ class RealtimeSessionCoordinatorTest {
             .map { it.getJSONObject("item").getString("output") }
         assertEquals(listOf(localOutput), outputs)
         assertEquals(1, transport.sentEvents.count { it.optString("type") == "response.create" })
-        coVerify(exactly = 0) { toolRouter.invoke(any()) }
+        coVerify(exactly = 0) { toolRouter.invoke(any(), any()) }
 
         coord.stop()
     }
@@ -768,7 +910,7 @@ class RealtimeSessionCoordinatorTest {
             .map { it.getJSONObject("item").getString("output") }
         assertEquals(listOf(localOutput), outputs)
         assertEquals(1, transport.sentEvents.count { it.optString("type") == "response.create" })
-        coVerify(exactly = 0) { toolRouter.invoke(any()) }
+        coVerify(exactly = 0) { toolRouter.invoke(any(), any()) }
 
         coord.stop()
         transport.sentEvents.clear()
@@ -810,13 +952,13 @@ class RealtimeSessionCoordinatorTest {
      * uploader inert so they don't need a network fake.
      */
     private object NoopTranscriptSink : TranscriptSink {
-        override suspend fun upload(body: ninja.jeremy.liveninja.net.TranscriptUploadRequest) = Unit
+        override suspend fun upload(body: ninja.jeremy.liveninja.net.TranscriptUploadRequest, expectedSessionId: String) = Unit
     }
 
     private class CapturingTranscriptSink : TranscriptSink {
         val requests = mutableListOf<ninja.jeremy.liveninja.net.TranscriptUploadRequest>()
 
-        override suspend fun upload(body: ninja.jeremy.liveninja.net.TranscriptUploadRequest) {
+        override suspend fun upload(body: ninja.jeremy.liveninja.net.TranscriptUploadRequest, expectedSessionId: String) {
             requests += body
         }
     }

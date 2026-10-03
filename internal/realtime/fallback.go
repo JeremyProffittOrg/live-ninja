@@ -80,7 +80,7 @@ func (c *FallbackClient) TurnForSurface(ctx context.Context, personaID, _ string
 	body, err := json.Marshal(map[string]any{
 		"model": fallbackChatModel,
 		"messages": []map[string]string{
-			{"role": "system", "content": InstructionsForServerExecution(persona) + extraSystem},
+			{"role": "system", "content": ClientInstructions(ctx, InstructionsForServerExecution(persona)) + extraSystem},
 			{"role": "user", "content": text},
 		},
 	})

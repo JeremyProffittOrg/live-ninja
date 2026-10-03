@@ -56,9 +56,15 @@ class TokenRefresher @Inject constructor(
      * while we waited on the lock, the fresh stored token is returned without
      * a second network call.
      */
-    fun refreshBlocking(staleAccessToken: String?): RefreshOutcome = synchronized(lock) {
+    fun refreshBlocking(staleAccessToken: String?): RefreshOutcome = refresh(staleAccessToken, null)
+
+    /** Rotation for a reviewed operation must never borrow or overwrite another session. */
+    fun refreshBoundBlocking(expectedSessionId: String, staleAccessToken: String?): RefreshOutcome = refresh(staleAccessToken, expectedSessionId)
+
+    private fun refresh(staleAccessToken: String?, expectedSessionId: String?): RefreshOutcome = synchronized(lock) {
         val session = tokenStore.session()
             ?: return RefreshOutcome.SessionExpired // signed out already
+        if (expectedSessionId != null && session.sessionId != expectedSessionId) return RefreshOutcome.Transient
         val now = System.currentTimeMillis() / 1000
 
         // Someone else rotated while we waited for the lock.
@@ -91,19 +97,25 @@ class TokenRefresher @Inject constructor(
                     } catch (e: kotlinx.serialization.SerializationException) {
                         return RefreshOutcome.Transient
                     }
-                    tokenStore.updateFromRefresh(
-                        accessToken = grant.accessToken,
-                        accessExpiresAt = grant.expiresAt,
-                        refreshToken = grant.refreshToken,
-                        refreshExpiresAt = grant.refreshExpiresAt,
-                        sessionId = grant.sessionId,
-                    )
+                    synchronized(tokenStore) {
+                        if (tokenStore.session()?.sessionId != session.sessionId || (grant.sessionId != null && grant.sessionId != session.sessionId)) return RefreshOutcome.Transient
+                        tokenStore.updateFromRefresh(
+                            accessToken = grant.accessToken,
+                            accessExpiresAt = grant.expiresAt,
+                            refreshToken = grant.refreshToken,
+                            refreshExpiresAt = grant.refreshExpiresAt,
+                            sessionId = grant.sessionId,
+                        )
+                    }
                     RefreshOutcome.Refreshed(grant.accessToken)
                 }
                 resp.code in 400..499 -> {
                     // invalid_refresh_token / refresh_reused / session_revoked /
                     // account_unavailable: the session is unrecoverable.
-                    tokenStore.clearSession()
+                    synchronized(tokenStore) {
+                        if (tokenStore.session()?.sessionId != session.sessionId) return RefreshOutcome.Transient
+                        tokenStore.clearSession()
+                    }
                     _sessionExpired.tryEmit(Unit)
                     RefreshOutcome.SessionExpired
                 }

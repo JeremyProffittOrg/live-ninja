@@ -109,3 +109,28 @@ data class JobSaveRequest(
 
 @Serializable
 data class JobActionRequest(val expectedVersion: Long, val requestId: String)
+
+@Serializable
+data class JobHistoryEntryDto(
+    val id: String = "", val jobId: String = "", val sequence: Long = 0,
+    val role: String = "", val kind: String = "", val text: String? = null,
+    val createdAt: String = "", val status: String? = null, val runId: String? = null,
+    val actor: String = "", val version: Long = 0, val run: JobRunDto? = null,
+)
+
+@Serializable
+data class JobHistoryResponse(
+    val entries: List<JobHistoryEntryDto>? = null,
+    val olderCursor: String? = null, val newerCursor: String? = null,
+    val hasMore: Boolean = false, val retentionBoundary: String? = null,
+    val legacyHistoryAvailable: Boolean? = null, val legacyRunLimit: Int? = null,
+)
+
+@Serializable
+data class JobCommandRequest(val kind: String, val text: String, val runId: String? = null, val expectedVersion: Long, val requestId: String)
+
+@Serializable
+data class JobCommandDto(val id: String = "", val jobId: String = "", val runId: String? = null, val kind: String = "", val text: String = "", val status: String = "", val result: String = "", val createdAt: String = "")
+
+@Serializable
+data class JobCommandResponse(val command: JobCommandDto? = null, val job: JobDto? = null)

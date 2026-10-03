@@ -36,7 +36,7 @@ object ClientId {
      *
      * `voice-live-direct` is declared now that [ninja.jeremy.liveninja.realtime.VoiceLiveTransport] ships.
      */
-    const val CAPABILITIES: String = "azure-direct,voice-live-direct"
+    const val CAPABILITIES: String = "azure-direct,voice-live-direct,jobs-review-v1"
 }
 
 /**

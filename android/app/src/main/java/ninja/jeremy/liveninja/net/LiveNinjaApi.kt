@@ -5,6 +5,8 @@ import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.Headers
+import retrofit2.http.Header
+import retrofit2.http.Tag
 import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.PUT
@@ -29,6 +31,18 @@ import kotlinx.serialization.json.JsonObject
  * resource routes under `/api/v1/` per contracts/api.md.
  */
 interface LiveNinjaApi {
+    @GET("api/v1/ghost-work/nodes")
+    suspend fun ghostNodes(@Header("Authorization") authorization: String, @Tag bound: AuthBoundRequest): GhostNodesResponse
+
+    @GET("api/v1/ghost-work/jobs")
+    suspend fun ghostJobs(@Header("Authorization") authorization: String, @Tag bound: AuthBoundRequest): GhostJobsResponse
+
+    @GET("api/v1/ghost-work/sessions")
+    suspend fun ghostSessions(@Query("node_id") nodeId: String, @Query("cursor") cursor: String?, @Header("Authorization") authorization: String, @Tag bound: AuthBoundRequest): GhostSessionsResponse
+
+    @GET("api/v1/ghost-work/events")
+    suspend fun ghostEvents(@Query("node_id") nodeId: String, @Query("session_id") sessionId: String, @Query("cursor") cursor: String?, @Header("Authorization") authorization: String, @Tag bound: AuthBoundRequest): GhostEventsResponse
+
     // ---- Durable Jobs: authenticated personal UI, never model approval ----
 
     @GET("api/v1/jobs/")
@@ -70,6 +84,31 @@ interface LiveNinjaApi {
         @Path("action") action: String,
         @Body body: JobActionRequest,
     ): JobRunResponse
+
+    @GET("api/v1/jobs/{id}/history")
+    suspend fun jobHistory(@Path("id") id: String, @Query("cursor") cursor: String? = null, @Query("after") after: String? = null, @Query("limit") limit: Int = 30, @Header("Authorization") authorization: String? = null, @Tag bound: AuthBoundRequest? = null): JobHistoryResponse
+
+    @POST("api/v1/jobs/{id}/commands")
+    suspend fun jobCommand(@Path("id") id: String, @Body body: JobCommandRequest, @Header("Authorization") authorization: String? = null, @Tag bound: AuthBoundRequest? = null): JobCommandResponse
+
+    // Trusted review binds these requests to the session that supplied the proposal.
+    @POST("api/v1/jobs/")
+    suspend fun createJobReviewed(@Body body: JobSaveRequest, @Header("Authorization") authorization: String, @Tag bound: AuthBoundRequest): JobResponse
+
+    @PATCH("api/v1/jobs/{id}")
+    suspend fun updateJobReviewed(@Path("id") id: String, @Body body: JobSaveRequest, @Header("Authorization") authorization: String, @Tag bound: AuthBoundRequest): JobResponse
+
+    @POST("api/v1/jobs/{id}/runs/{runId}/{action}")
+    suspend fun jobRunActionReviewed(@Path("id") id: String, @Path("runId") runId: String, @Path("action") action: String, @Body body: JobActionRequest, @Header("Authorization") authorization: String, @Tag bound: AuthBoundRequest): JobRunResponse
+
+    @POST("api/v1/jobs/{id}/{action}")
+    suspend fun jobActionReviewed(@Path("id") id: String, @Path("action") action: String, @Body body: JobActionRequest, @Header("Authorization") authorization: String, @Tag bound: AuthBoundRequest): JobResponse
+
+    @POST("api/v1/jobs/{id}/run")
+    suspend fun runJobReviewed(@Path("id") id: String, @Body body: JobActionRequest, @Header("Authorization") authorization: String, @Tag bound: AuthBoundRequest): JobRunResponse
+
+    @POST("api/v1/jobs/{id}/runs/{runId}/retry")
+    suspend fun retryJobRunReviewed(@Path("id") id: String, @Path("runId") runId: String, @Body body: JobActionRequest, @Header("Authorization") authorization: String, @Tag bound: AuthBoundRequest): JobRunResponse
 
     /** Android Custom-Tabs + PKCE code exchange -> first token grant. */
     @POST("auth/lwa/exchange")
@@ -253,6 +292,9 @@ interface LiveNinjaApi {
      */
     @POST("api/v1/transcript")
     suspend fun uploadTranscript(@Body body: TranscriptUploadRequest)
+
+    @POST("api/v1/transcript")
+    suspend fun uploadTranscriptBound(@Body body: TranscriptUploadRequest, @Header("Authorization") authorization: String, @Tag binding: AuthBoundRequest)
 
     /**
      * Share the phone's current coarse location with the assistant

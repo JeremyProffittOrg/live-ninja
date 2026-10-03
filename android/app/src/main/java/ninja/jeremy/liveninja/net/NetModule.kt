@@ -73,6 +73,6 @@ object NetModule {
     /** WS-5 M21.1: the transcript-upload seam used by TranscriptUploader. */
     @Provides
     @Singleton
-    fun provideTranscriptSink(api: LiveNinjaApi): ninja.jeremy.liveninja.realtime.TranscriptSink =
-        ninja.jeremy.liveninja.realtime.ApiTranscriptSink(api)
+    fun provideTranscriptSink(api: LiveNinjaApi, boundSession: BoundJobsSession): ninja.jeremy.liveninja.realtime.TranscriptSink =
+        ninja.jeremy.liveninja.realtime.ApiTranscriptSink(api, boundSession)
 }

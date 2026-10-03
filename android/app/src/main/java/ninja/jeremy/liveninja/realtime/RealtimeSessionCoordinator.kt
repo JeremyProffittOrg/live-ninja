@@ -7,6 +7,7 @@ import ninja.jeremy.liveninja.log.LogCategory
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -26,6 +27,8 @@ import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
 import ninja.jeremy.liveninja.ui.state.TranscriptRole
 import org.json.JSONObject
+import ninja.jeremy.liveninja.auth.AuthRepository
+import ninja.jeremy.liveninja.auth.AuthState
 
 /**
  * Generation-bound state for a deferred device-session action.
@@ -119,6 +122,7 @@ class RealtimeSessionCoordinator @Inject constructor(
     private val deviceCameraTool: DeviceCameraToolExecutor,
     private val transcriptStore: TranscriptStore,
     private val transcriptUploader: TranscriptUploader,
+    private val auth: AuthRepository,
 ) : RealtimeSessionController {
 
     /**
@@ -141,6 +145,35 @@ class RealtimeSessionCoordinator @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaught)
     private val deviceActionState = DeviceActionSessionState()
     private val lifecycleMutex = Mutex()
+    private class SessionBinding(val authSessionId: String, val generation: Long) {
+        @Volatile var valid = true
+        var transport: RealtimeTransport? = null
+        val tools = SupervisorJob()
+    }
+    @Volatile private var activeBinding: SessionBinding? = null
+
+    private fun currentAuthSessionId(): String? =
+        (auth.state.value as? AuthState.SignedIn)?.sessionId?.takeIf { it.isNotBlank() }
+
+    private fun isCurrent(binding: SessionBinding): Boolean =
+        binding.valid && activeBinding === binding &&
+            binding.authSessionId == currentAuthSessionId()
+
+    private fun requireCurrent(binding: SessionBinding) {
+        if (!isCurrent(binding)) throw RealtimeSessionException(
+            "session_changed", "Your sign-in session changed. Start a new conversation.", 401,
+        )
+    }
+
+    private fun invalidate(binding: SessionBinding, clearTranscript: Boolean = true, cleanup: Boolean = true) {
+        binding.valid = false
+        binding.tools.cancel()
+        if (cleanup && activeBinding === binding) {
+            deviceActionState.advanceGeneration()
+            transcriptUploader.discard()
+            if (clearTranscript) transcriptStore.clear()
+        }
+    }
 
     private val _connected = MutableStateFlow(false)
     override val connected: StateFlow<Boolean> = _connected.asStateFlow()
@@ -167,13 +200,54 @@ class RealtimeSessionCoordinator @Inject constructor(
      */
     private val emittedChars = HashMap<String, Int>()
 
-    override suspend fun start() {
+    init {
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            var previousSessionId = currentAuthSessionId()
+            auth.state.collect {
+                val currentSessionId = currentAuthSessionId()
+                val changed = currentSessionId != previousSessionId
+                previousSessionId = currentSessionId
+                val binding = activeBinding
+                if (binding == null) {
+                    if (changed) lifecycleMutex.withLock {
+                        // start() may have established the new account while
+                        // this observer waited. Never discard that new buffer.
+                        if (activeBinding == null) {
+                            transcriptUploader.discard()
+                            transcriptStore.clear()
+                        }
+                    }
+                    return@collect
+                }
+                if (isCurrent(binding)) return@collect
+                // Invalidate before waiting for lifecycle cleanup. Every event
+                // and tool continuation also checks auth.state synchronously.
+                invalidate(binding, cleanup = false)
+                lifecycleMutex.withLock {
+                    if (activeBinding === binding) closeBinding(binding, upload = false)
+                }
+            }
+        }
+    }
+
+    override suspend fun start() = startForSession()
+
+    private suspend fun startForSession(expectedSessionId: String? = null) {
         lifecycleMutex.withLock {
-            if (_connected.value) return
+            if (expectedSessionId != null && currentAuthSessionId() != expectedSessionId) return
+            activeBinding?.let {
+                if (_connected.value && isCurrent(it)) return
+                closeBinding(it, upload = false)
+            }
+            val authSessionId = currentAuthSessionId() ?: throw RealtimeSessionException(
+                "not_authenticated", "Sign in before starting a conversation.", 401,
+            )
 
             // Fresh conversation: clear the process-wide transcript so a UI
             // attaching mid-session (screen-on) renders only this session.
             deviceActionState.advanceGeneration()
+            val binding = SessionBinding(authSessionId, deviceActionState.currentGeneration())
+            activeBinding = binding
             localToolResults.reset()
             transcriptStore.clear()
 
@@ -190,9 +264,11 @@ class RealtimeSessionCoordinator @Inject constructor(
             webRtcTransport.prepare()
 
             val session = try {
-                sessionApi.fetchSession()
+                sessionApi.fetchSession(binding.authSessionId).also { requireCurrent(binding) }
             } catch (t: Throwable) {
                 webRtcTransport.abortPrepare()
+                invalidate(binding)
+                if (activeBinding === binding) activeBinding = null
                 throw t
             }
 
@@ -207,6 +283,7 @@ class RealtimeSessionCoordinator @Inject constructor(
             transcriptUploader.begin(
                 session.sessionId,
                 TranscriptUploader.engineForMode(session.mode),
+                binding.authSessionId,
             )
 
             // Route by the resolved engine pin. connect()'s two string params
@@ -235,10 +312,12 @@ class RealtimeSessionCoordinator @Inject constructor(
                     session.clientSecret to session.callsUrl
                 }
             }
+            binding.transport = transport
             // Engines needing more than (credential, endpoint) — e.g. the
             // Gemini setup frame — take it from the full bootstrap (no-op
             // for the others).
             transport.prime(session)
+            requireCurrent(binding)
 
             emittedChars.clear()
             // Join, not just cancel: a cancelled collector stays subscribed to
@@ -249,12 +328,18 @@ class RealtimeSessionCoordinator @Inject constructor(
             // only lifecycle-mutex users run in their own launched coroutines,
             // so joining under the lock cannot deadlock.
             eventsJob?.cancelAndJoin()
-            eventsJob = scope.launch { transport.events.collect(::onTransportEvent) }
+            val sessionTransport = transport
+            eventsJob = scope.launch {
+                sessionTransport.events.collect { event ->
+                    if (isCurrent(binding)) onTransportEvent(event, binding)
+                }
+            }
             try {
-                transport.connect(credential, endpointUrl)
+                requireCurrent(binding)
+                sessionTransport.connect(credential, endpointUrl)
+                requireCurrent(binding)
             } catch (t: Throwable) {
-                eventsJob?.cancel()
-                eventsJob = null
+                closeBinding(binding, upload = false)
                 throw t
             }
             _connected.value = true
@@ -265,7 +350,7 @@ class RealtimeSessionCoordinator @Inject constructor(
 
             stateWatchJob?.cancel()
             stateWatchJob = scope.launch {
-                transport.state.collect { state ->
+                sessionTransport.state.collect { state ->
                     if (state != TransportState.FAILED && state != TransportState.CLOSED) return@collect
                     if (!_connected.value) return@collect
                     // A transport that failed or was closed by the far end still
@@ -278,17 +363,20 @@ class RealtimeSessionCoordinator @Inject constructor(
                     // lifecycle lock first, and flip `connected` last — that flip
                     // is what resumes the wake engine and lets a new session start.
                     lifecycleMutex.withLock {
-                        if (!_connected.value) return@withLock
+                        if (!_connected.value || activeBinding !== binding) return@withLock
                         eventsJob?.cancelAndJoin()
                         eventsJob = null
                         try {
-                            transport.disconnect()
+                            sessionTransport.disconnect()
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {
                             LNLog.w(LogCategory.REALTIME, TAG, "disconnect after transport $state failed", e)
                         }
-                        transcriptUploader.finish(costTracker.cost)
+                        if (isCurrent(binding)) transcriptUploader.finish(costTracker.cost)
+                        else transcriptUploader.discard()
+                        invalidate(binding, clearTranscript = false)
+                        activeBinding = null
                         _connected.value = false
                     }
                     if (state == TransportState.FAILED) {
@@ -303,25 +391,34 @@ class RealtimeSessionCoordinator @Inject constructor(
 
     override suspend fun stop() {
         lifecycleMutex.withLock {
-            // Stop watching first so a deliberate teardown never reads as an error.
-            stateWatchJob?.cancel()
-            stateWatchJob = null
-            // Joined so the subscriber is gone before stop() returns (see start()).
-            // stateWatchJob is only cancelled: its body takes lifecycleMutex, which
-            // this block already holds.
-            eventsJob?.cancelAndJoin()
-            eventsJob = null
+            activeBinding?.let { closeBinding(it, upload = isCurrent(it)) }
+        }
+    }
+
+    /** Called only under lifecycleMutex; an old teardown cannot close a new session. */
+    private suspend fun closeBinding(binding: SessionBinding, upload: Boolean) {
+        if (activeBinding !== binding) return
+        // Stop watching first so a deliberate teardown never reads as an error.
+        stateWatchJob?.cancel()
+        stateWatchJob = null
+        // The state watcher takes lifecycleMutex, so cancel it without joining.
+        eventsJob?.cancelAndJoin()
+        eventsJob = null
+        // A normal final flush retains this account's binding. Auth changes
+        // discard private buffered turns instead of uploading under new auth.
+        if (upload) transcriptUploader.finish(costTracker.cost) else transcriptUploader.discard()
+        invalidate(binding, clearTranscript = !upload)
+        try {
+            (binding.transport ?: transport).disconnect()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            LNLog.w(LogCategory.REALTIME, TAG, "disconnect during session cleanup failed", e)
+        } finally {
+            activeBinding = null
             _connected.value = false
-            deviceActionState.advanceGeneration()
-            transport.disconnect()
             emittedChars.clear()
             localToolResults.reset()
-            // Session-end seam: the final:true flush is what makes the backend
-            // run topics-extract and persist the CONV record for History.
-            // Carry the session's accrued estimate on the same flush — it is what
-            // puts a cost on the CONV row, so it has to ride the final post
-            // rather than a follow-up call that a dying process may never make.
-            transcriptUploader.finish(costTracker.cost)
         }
     }
 
@@ -335,7 +432,8 @@ class RealtimeSessionCoordinator @Inject constructor(
 
     // ---- event mapping ----
 
-    private fun onTransportEvent(event: RealtimeEvent) {
+    private fun onTransportEvent(event: RealtimeEvent, binding: SessionBinding) {
+        if (!isCurrent(binding)) return
         when (event) {
             is RealtimeEvent.SpeechStarted ->
                 emit(SessionUiEvent.UserSpeechStarted)
@@ -350,8 +448,8 @@ class RealtimeSessionCoordinator @Inject constructor(
                 emit(SessionUiEvent.AssistantSpeaking(speaking = false))
                 deviceActionState.takeAcknowledged()?.let { pending ->
                     scope.launch {
-                        if (deviceActionState.isCurrent(pending.generation)) {
-                            runDeviceAction(pending.action)
+                        if (isCurrent(binding) && deviceActionState.isCurrent(pending.generation)) {
+                            runDeviceAction(pending.action, binding)
                         }
                     }
                 }
@@ -372,7 +470,7 @@ class RealtimeSessionCoordinator @Inject constructor(
             is RealtimeEvent.AssistantTranscriptDone ->
                 emitFinal(event.itemId, TranscriptRole.ASSISTANT, event.text)
 
-            is RealtimeEvent.FunctionCall -> handleFunctionCall(event)
+            is RealtimeEvent.FunctionCall -> handleFunctionCall(event, binding)
 
             is RealtimeEvent.ServerError ->
                 // In-band server errors (e.g. a cancel racing a finished
@@ -416,10 +514,11 @@ class RealtimeSessionCoordinator @Inject constructor(
      * Tool round-trip (FR-V04): execute server-side, then hand the result
      * back to the model and ask it to continue the spoken response.
      */
-    private fun handleFunctionCall(call: RealtimeEvent.FunctionCall) {
-        val generation = deviceActionState.currentGeneration()
-        scope.launch {
-            if (!deviceActionState.isCurrent(generation)) return@launch
+    private fun handleFunctionCall(call: RealtimeEvent.FunctionCall, binding: SessionBinding) {
+        val generation = binding.generation
+        val sessionTransport = binding.transport ?: return
+        scope.launch(binding.tools) {
+            if (!isCurrent(binding) || !deviceActionState.isCurrent(generation)) return@launch
 
             // Device-local tools never reach the backend router. Session actions
             // are deferred until the assistant has spoken its confirmation;
@@ -449,10 +548,10 @@ class RealtimeSessionCoordinator @Inject constructor(
                     delivery.output
                 }
 
-                else -> toolRouter.invoke(call)
+                else -> toolRouter.invoke(call, binding.authSessionId)
             }
-            if (!shouldRespond || !deviceActionState.isCurrent(generation)) return@launch
-            transport.sendEvent(
+            if (!shouldRespond || !isCurrent(binding) || !deviceActionState.isCurrent(generation)) return@launch
+            sessionTransport.sendEvent(
                 JSONObject()
                     .put("type", "conversation.item.create")
                     .put(
@@ -463,13 +562,15 @@ class RealtimeSessionCoordinator @Inject constructor(
                             .put("output", output),
                     ),
             )
-            transport.sendEvent(JSONObject().put("type", "response.create"))
+            if (!isCurrent(binding)) return@launch
+            sessionTransport.sendEvent(JSONObject().put("type", "response.create"))
 
             val summary = runCatching {
                 val json = JSONObject(output)
                 if (json.optBoolean("ok")) "completed" else
                     json.optJSONObject("error")?.optString("message").orEmpty().ifEmpty { "failed" }
             }.getOrDefault("completed")
+            if (!isCurrent(binding)) return@launch
             transcriptStore.addToolChip(itemId = call.callId, name = call.name, summary = summary)
             emit(SessionUiEvent.ToolCall(itemId = call.callId, name = call.name, summary = summary))
         }
@@ -483,8 +584,10 @@ class RealtimeSessionCoordinator @Inject constructor(
      */
     override fun sendUserText(text: String) {
         if (text.isBlank() || !connected.value) return
+        val binding = activeBinding?.takeIf { isCurrent(it) } ?: return
+        val sessionTransport = binding.transport ?: return
         runCatching {
-            transport.sendEvent(
+            sessionTransport.sendEvent(
                 JSONObject()
                     .put("type", "conversation.item.create")
                     .put(
@@ -500,7 +603,7 @@ class RealtimeSessionCoordinator @Inject constructor(
                             ),
                     ),
             )
-            transport.sendEvent(JSONObject().put("type", "response.create"))
+            if (isCurrent(binding)) sessionTransport.sendEvent(JSONObject().put("type", "response.create"))
         }.onFailure {
             // The transport raced closed. A missed notification is not worth
             // surfacing to the user.
@@ -512,21 +615,14 @@ class RealtimeSessionCoordinator @Inject constructor(
      * Perform a deferred device-local tool action, after the assistant's spoken
      * confirmation has completed.
      */
-    private suspend fun runDeviceAction(action: DeviceSessionTool) {
-        when (action) {
-            DeviceSessionTool.STOP_LISTENING -> {
-                // End the live session only. Always-listening stays armed so
-                // the next wake word starts a new conversation.
-                runCatching { stop() }
-            }
-
-            DeviceSessionTool.START_NEW_CONVERSATION -> {
-                // A full stop/start, not a transcript clear: the session id is what
-                // the backend keys LOG#/CONV rows against, so only a genuinely new
-                // session gives the new conversation its own History row.
-                runCatching { stop() }
-                runCatching { start() }
-            }
+    private suspend fun runDeviceAction(action: DeviceSessionTool, binding: SessionBinding) {
+        val closed = lifecycleMutex.withLock {
+            if (!isCurrent(binding)) return@withLock false
+            closeBinding(binding, upload = true)
+            true
+        }
+        if (closed && action == DeviceSessionTool.START_NEW_CONVERSATION) {
+            runCatching { startForSession(binding.authSessionId) }
         }
     }
 

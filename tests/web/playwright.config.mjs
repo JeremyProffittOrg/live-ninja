@@ -15,7 +15,7 @@ const baseURL = process.env.LN_BASE_URL || 'https://live.jeremy.ninja';
 export default defineConfig({
   testDir: './specs',
   // Mutating Jobs/Approvals checks require the isolated preview suite.
-  testIgnore: ['**/jobs.spec.mjs', '**/approvals.spec.mjs'],
+  testIgnore: ['**/jobs.spec.mjs', '**/approvals.spec.mjs', '**/ghost-work.spec.mjs'],
   // Production is being hit over the network; give it room but never hang CI.
   timeout: 45_000,
   expect: { timeout: 10_000 },

@@ -267,3 +267,33 @@ test('older run pages survive background refresh until an explicit refresh', asy
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(page.locator('#jobsRuns .jobs-run')).toHaveCount(20);
 });
+
+test('retained timeline pages beyond old limits and records a note without changing instructions', async ({ page }) => {
+  test.setTimeout(60000);
+  await open(page);await create(page,unique('Long retained history'));
+  const id=await selectedID(page);
+  await page.evaluate(async id=>{
+    const {apiJSON}=await import('/static/js/toolclient.mjs');
+    let {job}=await apiJSON(`/api/v1/jobs/${id}`);
+    for(let i=1;i<=110;i++){
+      const result=await apiJSON(`/api/v1/jobs/${id}/commands`,{method:'POST',json:{kind:'note',text:`History ${i}: `+'retained output '.repeat(80),expectedVersion:job.version,requestId:crypto.randomUUID()}});job=result.job;
+    }
+  },id);
+  await page.getByRole('button',{name:'Refresh',exact:true}).click();
+  await expect(page.locator('.jobs-history-status').first()).toContainText('entries loaded');
+  const older=page.getByRole('button',{name:'Load older',exact:true});
+  while(await older.isEnabled()){await older.click();await expect(older).toBeEnabled({timeout:100}).catch(()=>{});await page.waitForFunction(()=>!document.querySelector('.jobs-history-status')?.textContent.includes('Loading'));}
+  await expect(page.locator('.jobs-history-entry')).toHaveCount(111);
+  const viewport=page.locator('#localJobsWorkspace .jobs-history-viewport');await viewport.evaluate(n=>n.scrollTop=0);
+  await expect(page.locator('.jobs-history-entry').first()).toBeVisible();
+  const before=await api(page,`/api/v1/jobs/${id}`);
+  await page.getByLabel('Add a note to this job').fill('<script>not executable</script> Final follow-up');
+  await page.getByRole('button',{name:'Save note',exact:true}).click();
+  await expect(page.locator('.jobs-command-form')).toContainText('Note recorded');
+  const after=await api(page,`/api/v1/jobs/${id}`);expect(after.job.instructions).toBe(before.job.instructions);
+  await expect(page.locator('.jobs-history-entry')).toHaveCount(112);
+  expect(await viewport.evaluate(n=>n.scrollTop)).toBeLessThan(100);
+  await page.getByRole('button',{name:'Latest',exact:true}).click();
+  await expect(page.locator('.jobs-history-entry').last()).toContainText('<script>not executable</script> Final follow-up');
+  await expect(page.locator('.jobs-history-entry script')).toHaveCount(0);
+});

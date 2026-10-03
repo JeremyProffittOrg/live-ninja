@@ -285,6 +285,7 @@ func ddbKey(pk, sk string) map[string]ddbtypes.AttributeValue {
 func (p *Purger) listPartitionKeys(ctx context.Context, pk string) ([]itemKey, error) {
 	in := &dynamodb.QueryInput{
 		TableName:                aws.String(p.Table),
+		ConsistentRead:           aws.Bool(true),
 		KeyConditionExpression:   aws.String("#pk = :pk"),
 		ProjectionExpression:     aws.String("#pk, #sk"),
 		ExpressionAttributeNames: map[string]string{"#pk": "pk", "#sk": "sk"},

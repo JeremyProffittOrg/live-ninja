@@ -22,10 +22,10 @@ func manifestNames(manifest []map[string]any) map[string]bool {
 
 func TestToolManifestAndInstructionsAreScopedToSurface(t *testing.T) {
 	tests := []struct {
-		surface   string
-		stop      bool
-		startNew  bool
-		android   bool
+		surface  string
+		stop     bool
+		startNew bool
+		android  bool
 	}{
 		{surface: "web", stop: true, startNew: true},
 		{surface: "android", stop: true, startNew: true, android: true},
@@ -100,7 +100,7 @@ func TestNovaSessionConfigUsesOnlyServerExecutableToolsAndStableDigest(t *testin
 	config := BuildNovaSessionConfig("trusted system prompt")
 	assert.Equal(t, "trusted system prompt", config.SystemPrompt)
 
-	wantNames := manifestNames(toolManifestForServerExecution())
+	wantNames := manifestNames(FilterJobsTools(toolManifestForServerExecution(), false))
 	gotNames := make(map[string]bool, len(config.Tools))
 	for _, spec := range config.Tools {
 		gotNames[spec.Name] = true

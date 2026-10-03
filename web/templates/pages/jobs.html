@@ -9,6 +9,8 @@
     <div><p class="jobs-eyebrow">Your personal work</p><h1>Jobs</h1><p class="ln-muted">A place for commitments, schedules, and what actually happened.</p></div>
     <button class="ln-btn ln-btn--primary" type="button" id="jobNew" disabled>New job</button>
   </header>
+  <nav class="jobs-history-toolbar" aria-label="Work sources"><button type="button" class="ln-btn ln-btn--primary" id="localJobsMode" aria-pressed="true">Personal jobs</button><button type="button" class="ln-btn ln-btn--ghost" id="ghostWorkMode" aria-pressed="false">Ghost work</button></nav>
+  <section id="localJobsWorkspace">
   <div class="jobs-notice" id="jobsNotice" role="status" aria-live="polite" hidden></div>
   <section class="jobs-capabilities" aria-label="Available job capabilities">
     <span class="jobs-capability" id="jobsCapability">Checking availability…</span>
@@ -31,9 +33,13 @@
     <section class="jobs-detail" id="jobDetail" aria-labelledby="jobDetailHeading" tabindex="-1">
       <div class="jobs-state jobs-placeholder" id="jobPlaceholder"><h2 id="jobDetailHeading">Every job has a story</h2><p>Select a job to see its schedule, progress, and run receipts.</p></div>
       <div id="jobContent" hidden></div>
+      <section id="jobConversation" class="jobs-conversation" hidden></section>
+      <section id="jobReceipts" hidden></section>
     </section>
   </div>
   <p class="jobs-footer">A receipt describes the recorded outcome. A queued job has not completed its work.</p>
+  </section>
+  <section id="ghostWorkWorkspace" class="jobs-detail" hidden></section>
 </main>
 <dialog class="jobs-dialog" id="jobEditor" aria-labelledby="jobEditorTitle">
   <form id="jobForm">

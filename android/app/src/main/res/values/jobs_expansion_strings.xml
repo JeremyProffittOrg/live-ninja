@@ -1,0 +1,26 @@
+<resources>
+    <string name="jobs_command_center">Your command center</string>
+    <string name="jobs_loaded_summary">%1$d loaded · %2$d active · %3$d need review</string>
+    <string name="jobs_voice_proposal">Voice proposal · awaiting your review</string>
+    <string name="jobs_review_proposal">Review proposal</string>
+    <string name="jobs_dismiss_proposal">Dismiss</string>
+    <string name="jobs_voice_review_title">Review this exact action</string>
+    <string name="jobs_voice_review_boundary">Your voice request prepared this proposal. Only Confirm applies the action shown here. A spoken yes does not approve it. No browser, coding agent, or external message is started by these controls.</string>
+    <string name="jobs_proposal_job_version">Job %1$s · reviewed version %2$d</string>
+    <string name="jobs_proposal_expired">This proposal expired or your signed-in session changed. Ask again and review a fresh proposal.</string>
+    <string name="jobs_bound_auth_error">Your reviewed session could not be verified. Go back, refresh Jobs to renew your sign-in, then review this proposal again. If that fails, sign in again and ask for a fresh proposal.</string>
+    <string name="jobs_add_context">Add context</string>
+    <string name="jobs_note_label">Note for this job</string>
+    <string name="jobs_review_note">Review and save note</string>
+    <string name="jobs_note_boundary">This saves a note in the job history. It does not change execution instructions or send commands to an agent.</string>
+    <string name="jobs_timeline">Retained history</string>
+    <string name="jobs_provider_history_boundary">This timeline contains events saved by Live Ninja. Ghost conversation history is not connected here.</string>
+    <string name="jobs_history_not_connected">History is unavailable until this signed-in session connects to a server that supports it.</string>
+    <string name="jobs_history_older">Load older</string>
+    <string name="jobs_history_latest">Check latest</string>
+    <string name="jobs_history_more_updates">Load more updates</string>
+    <string name="jobs_history_backlog">More updates remain on the server. Continue loading to catch up; your reading position is kept.</string>
+    <string name="jobs_history_you">You</string>
+    <string name="jobs_history_event">Job event</string>
+    <string name="jobs_history_read_error">History could not be loaded. Your loaded entries are kept. Check latest to try again; unavailable or expired records cannot be recovered here.</string>
+</resources>

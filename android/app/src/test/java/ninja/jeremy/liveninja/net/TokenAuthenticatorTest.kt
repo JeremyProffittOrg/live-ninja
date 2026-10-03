@@ -35,6 +35,13 @@ class TokenAuthenticatorTest {
             .build()
 
     @Test
+    fun reviewedSessionBoundRequestNeverRefreshesOrReplays() {
+        val bound = request("/api/v1/jobs/job-a/run", bearer = "session-a-token").newBuilder().tag(AuthBoundRequest::class.java, AuthBoundRequest()).build()
+        assertNull(authenticator.authenticate(null, response401(bound)))
+        verify(exactly = 0) { refresher.refreshBlocking(any()) }
+    }
+
+    @Test
     fun refreshSucceeds_requestReplayedWithFreshBearer() {
         every { refresher.refreshBlocking("stale") } returns RefreshOutcome.Refreshed("fresh")
 

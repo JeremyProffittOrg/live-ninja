@@ -20,6 +20,7 @@ class TokenAuthenticator @Inject constructor(
 
     override fun authenticate(route: Route?, response: Response): Request? {
         val request = response.request
+        if (request.tag(AuthBoundRequest::class.java) != null) return null
 
         // Never authenticate the bootstrap routes themselves.
         val path = request.url.encodedPath

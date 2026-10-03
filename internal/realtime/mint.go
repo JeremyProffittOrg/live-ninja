@@ -374,7 +374,7 @@ func buildAudioInput(eagerness string) map[string]any {
 // Mint itself performs no quota checks.
 func (m *Minter) Mint(ctx context.Context, personaID, voice, eagerness, instructionsSuffix, surface string) (*MintResult, error) {
 	persona := ResolvePersona(personaID)
-	manifest := toolManifestForSurface(surface)
+	manifest := FilterJobsTools(toolManifestForSurface(surface), jobsReviewEnabled(ctx))
 
 	sessionConfig := map[string]any{
 		"type":  "realtime",
@@ -386,7 +386,7 @@ func (m *Minter) Mint(ctx context.Context, personaID, voice, eagerness, instruct
 			// "Unknown parameter" (broke every mint in prod 2026-07-18).
 			"input": buildAudioInput(eagerness),
 		},
-		"instructions": InstructionsForSurface(persona, surface) + SessionDirectives + instructionsSuffix,
+		"instructions": ClientInstructions(ctx, InstructionsForSurface(persona, surface)) + SessionDirectives + instructionsSuffix,
 		"tools":        manifest,
 	}
 	body, err := json.Marshal(map[string]any{
@@ -461,7 +461,7 @@ func (m *Minter) Mint(ctx context.Context, personaID, voice, eagerness, instruct
 		Model:         m.model,
 		Voice:         voice,
 		SessionConfig: cfgJSON,
-		ToolManifest:  ToolManifestJSONForSurface(surface),
+		ToolManifest:  ToolManifestJSONForClient(ctx, surface, false),
 	}, nil
 }
 

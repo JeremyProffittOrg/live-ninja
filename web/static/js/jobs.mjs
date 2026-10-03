@@ -1,6 +1,8 @@
 // Jobs uses the same authenticated/CSRF-protected client as Memory.
 // User-authored values only enter the DOM through textContent/value.
-import { apiJSON } from './toolclient.mjs';
+import { apiJSON, pageSessionJSON } from './toolclient.mjs';
+import { mountJobHistory } from './job-timeline.mjs';
+import { mountGhostWork } from './ghost-work.mjs';
 
 const LABELS = { active: 'Active', paused: 'Paused', cancelled: 'Cancelled', queued: 'Queued', running: 'Running', waiting_approval: 'Needs review', succeeded: 'Completed', failed: 'Failed' };
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -87,6 +89,14 @@ if (typeof document !== 'undefined' && document.getElementById('jobsList')) init
 function initJobs() {
   const $ = (id) => document.getElementById(id);
   const root = '/api/v1/jobs';
+  const ghostWork=mountGhostWork($('ghostWorkWorkspace'),{request:pageSessionJSON});
+  function sourceMode(ghost){
+    $('localJobsWorkspace').hidden=ghost;$('ghostWorkWorkspace').hidden=!ghost;$('jobNew').hidden=ghost;
+    $('localJobsMode').setAttribute('aria-pressed',String(!ghost));$('ghostWorkMode').setAttribute('aria-pressed',String(ghost));
+    for(const [id,selected] of [['localJobsMode',!ghost],['ghostWorkMode',ghost]]){$(id).classList.toggle('ln-btn--primary',selected);$(id).classList.toggle('ln-btn--ghost',!selected);}
+    if(ghost)ghostWork.show();else ghostWork.hide();
+  }
+  $('localJobsMode').onclick=()=>sourceMode(false);$('ghostWorkMode').onclick=()=>sourceMode(true);
   const state = { jobs: [], selected: '', runs: [], runsLoaded: false, runPagesExpanded: false, jobPagesExpanded: false, runError: '', capabilities: null, cursor: '', runCursor: '', listSeq: 0, runSeq: 0, busy: false, loading: false, reloadNeeded: false, lastRefresh: 0, editorJob: null, editorVersion: 0, editing: false, saving: false, confirm: null };
   const keys = createRequestKeys();
   let detailSignature = ''; let runsSignature = '';
@@ -95,6 +105,8 @@ function initJobs() {
   const badge = (status) => el('span', `jobs-badge jobs-badge--${Object.hasOwn(LABELS, status) ? status : 'unknown'}`, statusLabel(status));
   const actionButton = (label, action, cls = 'ln-btn--ghost') => { const b = el('button', `ln-btn ${cls}`, label); b.type = 'button'; b.disabled = state.busy; b.addEventListener('click', action); return b; };
   const current = () => state.jobs.find((job) => job.id === state.selected);
+  const freshest = incoming => { const old=state.jobs.find(j=>j.id===incoming.id); return old && old.version>incoming.version ? old : incoming; };
+  const timeline = mountJobHistory($('jobConversation'), {request:apiJSON, getJob:current, onCommand(data){ if(data?.job) state.jobs=state.jobs.map(j=>j.id===data.job.id?freshest(data.job):j); renderList();renderDetail(); }});
   const jobPath = (id) => `${root}/${encodeURIComponent(id)}`;
   const runPath = (job, run) => `${jobPath(job.id)}/runs/${encodeURIComponent(run.id)}`;
   const more = actionButton('Load more jobs', () => loadJobs(true));
@@ -122,7 +134,7 @@ function initJobs() {
       const preservePages = quiet && state.jobPagesExpanded;
       const data = preservePages ? null : await apiJSON(`${root}${append && state.cursor ? `?cursor=${encodeURIComponent(state.cursor)}` : ''}`);
       if (seq !== state.listSeq) return;
-      const incoming = Array.isArray(data?.jobs) ? data.jobs : [];
+      const incoming = Array.isArray(data?.jobs) ? data.jobs.map(freshest) : [];
       if (!preservePages) {
         state.jobs = append ? [...new Map([...state.jobs, ...incoming].map((j) => [j.id, j])).values()] : incoming;
         state.cursor = data?.nextCursor || ''; state.jobPagesExpanded = append;
@@ -130,13 +142,13 @@ function initJobs() {
       // A selected/just-created job may not be in the first query page.
       // Keep it addressable across refreshes rather than losing its detail.
       if (state.selected && (!current() || preservePages)) {
-        try { const selected = await apiJSON(jobPath(state.selected)); if (selected?.job) state.jobs = [...new Map([...state.jobs, selected.job].map((j) => [j.id, j])).values()]; }
+        try { const selected = await apiJSON(jobPath(state.selected)); if (selected?.job) state.jobs = [...new Map([...state.jobs, freshest(selected.job)].map((j) => [j.id, j])).values()]; }
         catch (error) { if (error?.status === 404) state.selected = ''; else throw error; }
       }
       if (data) setCapabilities(data.capabilities || {});
       $('jobsError').hidden = true;
       renderList();
-      if (state.selected && current()) { renderDetail(); if (!quiet || !state.runPagesExpanded) await loadRuns(); }
+      if (state.selected && current()) { renderDetail(); await timeline.refresh(); if (!quiet || !state.runPagesExpanded) await loadRuns(); }
       else if (state.selected) { state.selected = ''; renderDetail(); }
     } catch (error) {
       if (!quiet || !state.jobs.length) { $('jobsError').hidden = false; $('jobsErrorText').textContent = errorMessage(error); }
@@ -183,20 +195,21 @@ function initJobs() {
     state.selected = id; state.runs = []; state.runCursor = ''; state.runsLoaded = false; state.runPagesExpanded = false; state.runError = ''; expandedRuns.clear();
     renderList(); renderDetail();
     $('jobDetail').focus({ preventScroll: true });
-    if (globalThis.matchMedia('(max-width:700px)').matches) $('jobDetail').scrollIntoView({ behavior: 'instant', block: 'start' });
+    if (globalThis.matchMedia('(max-width:800px)').matches) $('jobDetail').scrollIntoView({ behavior: 'instant', block: 'start' });
     await loadRuns();
   }
 
   function fact(list, label, value) { const wrapper = el('div'); wrapper.append(el('dt', '', label), el('dd', '', value)); list.append(wrapper); }
   function renderDetail() {
     const job = current(); const content = $('jobContent');
+    $('jobConversation').hidden = !job; $('jobReceipts').hidden = !job; timeline.select(job?.id || '');
     const signature = JSON.stringify([job, state.busy, state.capabilities?.historyLimit]);
     if (signature === detailSignature) return;
     detailSignature = signature;
-    const focusedAction = content.contains(document.activeElement) ? document.activeElement?.textContent : null;
+    const focusedAction = $('jobDetail').contains(document.activeElement) ? document.activeElement?.textContent : null;
     const focusedRun = document.activeElement?.closest('.jobs-run')?.dataset.runId;
     $('jobPlaceholder').hidden = Boolean(job); content.hidden = !job;
-    content.replaceChildren();
+    content.replaceChildren(); $('jobReceipts').replaceChildren();
     if (!job) { $('jobDetail').setAttribute('aria-labelledby', 'jobDetailHeading'); return; }
     $('jobDetail').setAttribute('aria-labelledby', 'jobSelectedTitle');
     const head = el('div', 'jobs-detail-head'); const title = el('div', 'jobs-detail-title');
@@ -216,13 +229,13 @@ function initJobs() {
     } else if (job.status === 'paused') actions.append(actionButton('Resume', () => mutate(job, 'resume'), 'ln-btn--primary'));
     if (job.status !== 'cancelled') actions.append(actionButton('Cancel job', () => confirmAction('Cancel this job?', 'Stop future runs and cancel pending checkpoints for this job. Its run history remains available.', () => mutate(job, 'cancel', null, true)), 'ln-btn--danger'));
     content.append(actions);
-    content.append(el('h3', 'jobs-runs-heading', 'Run history'));
-    content.append(el('p', 'jobs-runs-intro', `Each run records the job as it was at that time. Up to ${state.capabilities?.historyLimit || 50} recent runs are retained; long receipts can reduce that number. Review approval only completes a human checkpoint.`));
-    const runState = el('p', 'ln-muted', 'Loading run history…'); runState.id = 'jobsRunState'; content.append(runState);
-    const runs = el('ol', 'jobs-runs'); runs.id = 'jobsRuns'; content.append(runs);
+    $('jobReceipts').append(el('h3', 'jobs-runs-heading', 'Run history'));
+    $('jobReceipts').append(el('p', 'jobs-runs-intro', `Each run records the job as it was at that time. Up to ${state.capabilities?.historyLimit || 50} recent runs are retained; long receipts can reduce that number. Review approval only completes a human checkpoint.`));
+    const runState = el('p', 'ln-muted', 'Loading run history…'); runState.id = 'jobsRunState'; $('jobReceipts').append(runState);
+    const runs = el('ol', 'jobs-runs'); runs.id = 'jobsRuns'; $('jobReceipts').append(runs);
     renderRuns(state.runsLoaded, true);
     if (focusedAction) {
-      const replacement = [...content.querySelectorAll('button, summary')].find((button) => button.textContent === focusedAction && (!focusedRun || button.closest('.jobs-run')?.dataset.runId === focusedRun));
+      const replacement = [...$('jobDetail').querySelectorAll('button, summary')].find((button) => button.textContent === focusedAction && (!focusedRun || button.closest('.jobs-run')?.dataset.runId === focusedRun));
       if (replacement && !replacement.disabled) replacement.focus({ preventScroll: true });
       else $('jobDetail').focus({ preventScroll: true });
     }
@@ -305,7 +318,7 @@ function initJobs() {
     try {
       const data = await apiJSON(path, { method: 'POST', json: { ...payload, requestId } });
       keys.clear(path, payload);
-      if (data?.job) state.jobs = state.jobs.map((j) => j.id === data.job.id ? data.job : j);
+      if (data?.job) state.jobs = state.jobs.map((j) => j.id === data.job.id ? freshest(data.job) : j);
       if (inDialog) $('jobConfirm').close();
       const receipt = data?.run;
       notice(receipt ? `Run ${statusLabel(receipt.status).toLowerCase()}. Open its receipt below for the recorded outcome.` : ({ pause: 'Job paused. Pending reviews were cancelled.', resume: 'Job resumed.', cancel: 'Job cancelled. Its history is retained.' }[action] || 'Job updated.'));

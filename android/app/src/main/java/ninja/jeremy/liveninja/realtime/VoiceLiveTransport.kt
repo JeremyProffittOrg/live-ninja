@@ -39,6 +39,8 @@ class VoiceLiveTransport @Inject constructor(
 
     override suspend fun postSdpOffer(callsUrl: String, token: String, sdp: String): String {
         val answer = CompletableDeferred<String>()
+        // A delayed old socket callback must never read a replacement session's config.
+        val offeredSession = sessionConfig?.let { JSONObject(it.toString()) } ?: JSONObject()
         val url = Uri.parse(callsUrl).buildUpon()
             .appendQueryParameter("Authorization", "Bearer $token")
             .build()
@@ -49,7 +51,7 @@ class VoiceLiveTransport @Inject constructor(
                 val payload = JSONObject()
                     .put("type", "rtc.call.sdp.create")
                     .put("sdp_offer", sdp)
-                    .put("session", sessionConfig ?: JSONObject())
+                    .put("session", offeredSession)
                 webSocket.send(payload.toString())
             }
 

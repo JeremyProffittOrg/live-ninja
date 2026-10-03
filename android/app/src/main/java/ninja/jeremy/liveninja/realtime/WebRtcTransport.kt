@@ -88,6 +88,7 @@ open class WebRtcTransport @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val connectMutex = Mutex()
+    private val callbackFence = WebRtcCallbackFence()
 
     private val _state = MutableStateFlow(TransportState.IDLE)
     override val state: StateFlow<TransportState> = _state.asStateFlow()
@@ -226,6 +227,7 @@ open class WebRtcTransport @Inject constructor(
      */
     private suspend fun bootstrapOffer() {
         ensureFactory()
+        val generation = callbackFence.begin()
 
         val gathering = CompletableDeferred<Unit>()
         val connected = CompletableDeferred<Unit>()
@@ -235,7 +237,7 @@ open class WebRtcTransport @Inject constructor(
         val rtcConfig = PeerConnection.RTCConfiguration(emptyList()).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
         }
-        val pc = requireNotNull(factory).createPeerConnection(rtcConfig, PcObserver())
+        val pc = requireNotNull(factory).createPeerConnection(rtcConfig, PcObserver(generation))
             ?: throw IOException("createPeerConnection returned null")
         peerConnection = pc
 
@@ -252,7 +254,7 @@ open class WebRtcTransport @Inject constructor(
         val dc = pc.createDataChannel(eventsChannelLabel, DataChannel.Init())
             ?: throw IOException("createDataChannel returned null")
         dataChannel = dc
-        dc.registerObserver(DcObserver(dc))
+        dc.registerObserver(DcObserver(dc, generation))
 
         val offerConstraints = MediaConstraints().apply {
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
@@ -362,20 +364,25 @@ open class WebRtcTransport @Inject constructor(
         assistantSpeaking = false
         sendEvent(JSONObject().put("type", "response.cancel"))
         fadeJob?.cancel()
+        val generation = callbackFence.current()
+        val track = remoteAudioTrack
         fadeJob = scope.launch {
-            val track = remoteAudioTrack
             if (track != null) {
                 val steps = FADE_STEPS
                 for (i in 1..steps) {
-                    runCatching { track.setVolume(NOMINAL_VOLUME * (steps - i) / steps) }
+                    if (!callbackFence.runIfCurrent(generation) {
+                        runCatching { track.setVolume(NOMINAL_VOLUME * (steps - i) / steps) }
+                    }) return@launch
                     delay(FADE_MS / steps)
                 }
             }
-            sendEvent(JSONObject().put("type", "output_audio_buffer.clear"))
-            // Speaker is silent now (faded + flushed), so the guard reopens on its
-            // short flush tail rather than the full playout tail.
-            echoGate.playbackFlushed()
-            updateMicEnabled()
+            callbackFence.runIfCurrent(generation) {
+                sendEvent(JSONObject().put("type", "output_audio_buffer.clear"))
+                // Speaker is silent now (faded + flushed), so the guard reopens on its
+                // short flush tail rather than the full playout tail.
+                echoGate.playbackFlushed()
+                updateMicEnabled()
+            }
         }
     }
 
@@ -532,6 +539,10 @@ open class WebRtcTransport @Inject constructor(
     }
 
     protected open fun releaseSession() {
+        // Wait for any accepted callback publication before releasing native
+        // handles. Never hold the fence while closing native objects: close can
+        // synchronously invoke callbacks, which must now be rejected.
+        callbackFence.invalidate()
         fadeJob?.cancel()
         fadeJob = null
         assistantSpeaking = false
@@ -564,51 +575,61 @@ open class WebRtcTransport @Inject constructor(
 
     // ---- webrtc observers ----
 
-    private inner class PcObserver : PeerConnection.Observer {
+    private inner class PcObserver(private val generation: Long) : PeerConnection.Observer {
         override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
-            if (state == PeerConnection.IceGatheringState.COMPLETE) {
-                iceGatheringComplete?.complete(Unit)
+            callbackFence.runIfCurrent(generation) {
+                if (state == PeerConnection.IceGatheringState.COMPLETE) {
+                    iceGatheringComplete?.complete(Unit)
+                }
             }
         }
 
         override fun onConnectionChange(newState: PeerConnection.PeerConnectionState?) {
-            when (newState) {
-                PeerConnection.PeerConnectionState.CONNECTED -> peerConnected?.complete(Unit)
-                PeerConnection.PeerConnectionState.FAILED -> {
-                    peerConnected?.completeExceptionally(IOException("peer connection failed"))
-                    if (_state.value == TransportState.CONNECTED) {
-                        _state.value = TransportState.FAILED
+            callbackFence.runIfCurrent(generation) {
+                when (newState) {
+                    PeerConnection.PeerConnectionState.CONNECTED -> peerConnected?.complete(Unit)
+                    PeerConnection.PeerConnectionState.FAILED -> {
+                        peerConnected?.completeExceptionally(IOException("peer connection failed"))
+                        if (_state.value == TransportState.CONNECTED) {
+                            _state.value = TransportState.FAILED
+                        }
                     }
-                }
-                PeerConnection.PeerConnectionState.CLOSED -> {
-                    if (_state.value == TransportState.CONNECTED) {
-                        _state.value = TransportState.CLOSED
+                    PeerConnection.PeerConnectionState.CLOSED -> {
+                        if (_state.value == TransportState.CONNECTED) {
+                            _state.value = TransportState.CLOSED
+                        }
                     }
+                    else -> Unit
                 }
-                else -> Unit
             }
         }
 
         override fun onTrack(transceiver: RtpTransceiver?) {
-            val track = transceiver?.receiver?.track()
-            if (track is AudioTrack) {
-                remoteAudioTrack = track
-                runCatching { track.setVolume(NOMINAL_VOLUME) }
+            callbackFence.runIfCurrent(generation) {
+                val track = transceiver?.receiver?.track()
+                if (track is AudioTrack) {
+                    remoteAudioTrack = track
+                    runCatching { track.setVolume(NOMINAL_VOLUME) }
+                }
             }
         }
 
         override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
-            val track = receiver?.track()
-            if (track is AudioTrack) {
-                remoteAudioTrack = track
-                runCatching { track.setVolume(NOMINAL_VOLUME) }
+            callbackFence.runIfCurrent(generation) {
+                val track = receiver?.track()
+                if (track is AudioTrack) {
+                    remoteAudioTrack = track
+                    runCatching { track.setVolume(NOMINAL_VOLUME) }
+                }
             }
         }
 
         override fun onDataChannel(channel: DataChannel?) {
             // We create `oai-events` ourselves; a remotely-announced channel
             // (if any) is observed with the same handler for completeness.
-            channel?.registerObserver(DcObserver(channel))
+            callbackFence.runIfCurrent(generation) {
+                channel?.registerObserver(DcObserver(channel, generation))
+            }
         }
 
         override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
@@ -621,17 +642,21 @@ open class WebRtcTransport @Inject constructor(
         override fun onRenegotiationNeeded() {}
     }
 
-    private inner class DcObserver(private val channel: DataChannel) : DataChannel.Observer {
+    private inner class DcObserver(private val channel: DataChannel, private val generation: Long) : DataChannel.Observer {
         override fun onMessage(buffer: DataChannel.Buffer?) {
             val data = buffer?.data ?: return
             val bytes = ByteArray(data.remaining())
             data.get(bytes)
             if (buffer.binary) return
-            handleServerEvent(String(bytes, StandardCharsets.UTF_8))
+            callbackFence.runIfCurrent(generation) {
+                handleServerEvent(String(bytes, StandardCharsets.UTF_8))
+            }
         }
 
         override fun onStateChange() {
-            LNLog.d(LogCategory.REALTIME, TAG, "oai-events channel state: ${runCatching { channel.state() }.getOrNull()}")
+            callbackFence.runIfCurrent(generation) {
+                LNLog.d(LogCategory.REALTIME, TAG, "oai-events channel state: ${runCatching { channel.state() }.getOrNull()}")
+            }
         }
 
         override fun onBufferedAmountChange(previousAmount: Long) {}

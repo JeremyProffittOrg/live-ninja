@@ -8,6 +8,8 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.StateFlow
@@ -47,10 +49,26 @@ class AppUpdateCoordinator @Inject constructor(
     private val running = Mutex()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val workerScheduled = AtomicBoolean(false)
+    private val foregroundLoop = ForegroundUpdateLoop(scope) {
+        // This sibling operation keeps an already-started verified download
+        // alive across onStop. Cancelling the timer prevents any NEW checks.
+        scope.async {
+            try { check(UpdateTrigger.FOREGROUND) }
+            catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                store.lastCheckAtMs = System.currentTimeMillis()
+                store.consecutiveFetchFailures += 1
+                LNLog.w(LogCategory.GENERAL, TAG, "foreground update check failed", t)
+            }
+        }.await()
+        UpdateRetrySchedule.remainingMs(System.currentTimeMillis(), store.lastCheckAtMs,
+            store.consecutiveFetchFailures).coerceAtLeast(60_000L)
+    }
 
     /** True after a check stopped only because "install unknown apps" was off. */
     @Volatile
     private var blockedOnPermission = false
+    @Volatile private var reportPendingOnForeground = true
 
     val state: StateFlow<AppUpdateState> get() = sharedState.asStateFlow()
 
@@ -73,11 +91,12 @@ class AppUpdateCoordinator @Inject constructor(
     }
 
     /**
-     * MainActivity.onStart hook: make sure the 6-hourly [AppUpdateWorker] is
-     * scheduled (once per process, off the main thread so WorkManager's
-     * database never opens on the launch path), then run a throttled check.
+     * MainActivity.onStart hook: starts one hourly loop while visible and
+     * retains the existing six-hour background fallback.
      */
     fun onAppForegrounded() {
+        reportPendingOnForeground = true
+        foregroundLoop.start()
         scope.launch {
             if (workerScheduled.compareAndSet(false, true)) {
                 runCatching { AppUpdateWorker.enqueue(context) }
@@ -86,31 +105,52 @@ class AppUpdateCoordinator @Inject constructor(
                         LNLog.w(LogCategory.GENERAL, TAG, "could not schedule AppUpdateWorker", it)
                     }
             }
-            runCatching { check(UpdateTrigger.FOREGROUND) }
-                .onFailure { LNLog.w(LogCategory.GENERAL, TAG, "foreground update check crashed", it) }
         }
     }
 
+    /** MainActivity.onStop hook. Existing downloads may finish; no new timer checks run. */
+    fun onAppBackgrounded() = foregroundLoop.stop()
+
     /** Returns the decision taken, or null when throttled, busy, or the fetch failed. */
     suspend fun check(trigger: UpdateTrigger): UpdateDecision? {
-        val canInstall = context.packageManager.canRequestPackageInstalls()
-        val now = System.currentTimeMillis()
-        // A check that was blocked only on "install unknown apps" re-runs as soon as
-        // the grant appears, instead of waiting out the hour.
-        val permissionJustGranted = canInstall && blockedOnPermission
-        if (!permissionJustGranted && !UpdateCheckThrottle.isDue(trigger, now, store.lastCheckAtMs)) {
-            return null
-        }
         if (!running.tryLock()) return null
         try {
+            val canInstall = context.packageManager.canRequestPackageInstalls()
+            val now = System.currentTimeMillis()
+            if (installer.hasPendingSession()) {
+                if (trigger == UpdateTrigger.MANUAL) {
+                    try { installer.abandonPendingSession() }
+                    catch (t: Throwable) {
+                        if (t is CancellationException) throw t
+                        publish(AppUpdateState.Failed("Android still has the previous update request. Retry when it has finished."))
+                        return null
+                    }
+                } else {
+                    if (trigger == UpdateTrigger.FOREGROUND && reportPendingOnForeground) {
+                        publish(AppUpdateState.Failed(PENDING_RECOVERY_MESSAGE))
+                    }
+                    reportPendingOnForeground = false
+                    return null
+                }
+            }
+            reportPendingOnForeground = false
+            // Returning from the explicit install permission screen may retry immediately.
+            val permissionJustGranted = canInstall && blockedOnPermission
+            if (trigger != UpdateTrigger.MANUAL && !permissionJustGranted &&
+                UpdateRetrySchedule.remainingMs(now, store.lastCheckAtMs, store.consecutiveFetchFailures) > 0) {
+                return null
+            }
             store.lastCheckAtMs = now
             val latest = try {
                 repository.fetchLatest()
             } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                store.consecutiveFetchFailures += 1
                 LNLog.w(LogCategory.NET, TAG, "update check ($trigger) failed", t)
                 if (trigger == UpdateTrigger.MANUAL) publish(AppUpdateState.Failed(t.message?.take(200) ?: "Couldn't reach the update server."))
                 return null
             }
+            store.consecutiveFetchFailures = 0
             val decision = UpdateDecider.decide(
                 latest = latest,
                 installedVersionCode = BuildConfig.VERSION_CODE,
@@ -130,8 +170,10 @@ class AppUpdateCoordinator @Inject constructor(
                     AppUpdateNotifier.cancelAll(context)
                     if (sharedState.value is AppUpdateState.NeedsInstallPermission) publish(AppUpdateState.Idle)
                 }
-                is UpdateDecision.Rejected ->
+                is UpdateDecision.Rejected -> {
                     LNLog.w(LogCategory.GENERAL, TAG, "refusing published APK: ${decision.reason}")
+                    if (trigger == UpdateTrigger.MANUAL) publish(AppUpdateState.Failed("The published update could not be verified."))
+                }
                 is UpdateDecision.Offer -> publish(
                     AppUpdateState.Available(
                         versionName = latest.versionName,
@@ -161,10 +203,10 @@ class AppUpdateCoordinator @Inject constructor(
                 sharedState.value = AppUpdateState.Downloading(copied, release.sizeBytes)
             }
             publish(AppUpdateState.Installing)
-            store.committedVersionCode = release.versionCode
-            installer.install(apk, release.versionCode)
+            installer.install(apk, release)
             // The receiver moves the state on (confirm screen, success, or failure).
         } catch (t: Throwable) {
+            if (t is CancellationException) throw t
             LNLog.w(LogCategory.NET, TAG, "update install failed", t)
             publish(AppUpdateState.Failed(t.message?.take(200) ?: "Couldn't install this update."))
         }
@@ -172,6 +214,7 @@ class AppUpdateCoordinator @Inject constructor(
 
     companion object {
         private const val TAG = "AppUpdate"
+        internal const val PENDING_RECOVERY_MESSAGE = "An update is waiting for Android confirmation. Tap Retry to cancel that request and open a new verified install confirmation."
 
         /** Process-wide so [UpdateInstallReceiver] (no Hilt) can move the UI on. */
         private val sharedState = MutableStateFlow<AppUpdateState>(AppUpdateState.Idle)

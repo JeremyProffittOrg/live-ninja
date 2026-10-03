@@ -9,8 +9,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.CancellationException
+import ninja.jeremy.liveninja.net.AuthBoundRequest
+import ninja.jeremy.liveninja.net.BoundJobsSession
 import ninja.jeremy.liveninja.net.LiveNinjaApi
 import ninja.jeremy.liveninja.ui.state.TranscriptRole
 import ninja.jeremy.liveninja.net.TranscriptUploadTurnDto
@@ -22,15 +23,19 @@ import ninja.jeremy.liveninja.net.TranscriptUploadRequest
  * exactly this call, and a test fake shouldn't have to implement the whole [LiveNinjaApi] surface.
  */
 interface TranscriptSink {
-    suspend fun upload(body: TranscriptUploadRequest)
+    suspend fun upload(body: TranscriptUploadRequest, expectedSessionId: String)
 }
 
 /** Production [TranscriptSink], backed by Retrofit. */
 @Singleton
 class ApiTranscriptSink @Inject constructor(
     private val api: LiveNinjaApi,
+    private val boundSession: BoundJobsSession,
 ) : TranscriptSink {
-    override suspend fun upload(body: TranscriptUploadRequest) = api.uploadTranscript(body)
+    override suspend fun upload(body: TranscriptUploadRequest, expectedSessionId: String) {
+        val credentials = boundSession.credentials(expectedSessionId)
+        api.uploadTranscriptBound(body, "Bearer ${credentials.accessToken}", AuthBoundRequest())
+    }
 }
 
 /**
@@ -63,10 +68,12 @@ class TranscriptUploader internal constructor(
     @Inject
     constructor(sink: TranscriptSink) : this(sink, CoroutineScope(SupervisorJob() + Dispatchers.IO))
 
-    private val mutex = Mutex()
-
-    private var sessionId: String? = null
-    private var engine: String = ENGINE_OPENAI
+    private val lock = Any()
+    private class Binding(val sessionId: String, val authSessionId: String, val engine: String) {
+        @Volatile var valid = true
+    }
+    private data class Batch(val binding: Binding, val turns: List<TranscriptUploadTurnDto>)
+    private var binding: Binding? = null
     // Sequence zero belongs to the broker's session-start ledger marker.
     // Starting client turns at zero makes the first spoken turn collide
     // with that marker and disappear under the idempotent write contract.
@@ -79,18 +86,28 @@ class TranscriptUploader internal constructor(
      * nothing the server can key rows against, so uploads stay disabled for that session rather
      * than inventing one client-side.
      */
-    suspend fun begin(sessionId: String?, engine: String) {
-        mutex.withLock {
-            this.sessionId = sessionId?.takeIf { it.isNotBlank() }
-            this.engine = engine
+    suspend fun begin(sessionId: String?, engine: String, authSessionId: String) {
+        synchronized(lock) {
+            binding?.valid = false
+            binding = sessionId?.takeIf { it.isNotBlank() && authSessionId.isNotBlank() }
+                ?.let { Binding(it, authSessionId, engine) }
             nextSeq = 1
             pending.clear()
             timerJob?.cancel()
             timerJob = null
-            if (this.sessionId == null) {
+            if (binding == null) {
                 Log.w(TAG, "no sessionId for this session; transcript will not be uploaded")
             }
         }
+    }
+
+    /** Auth teardown discards private buffered turns; it must not finish as a new user. */
+    fun discard() = synchronized(lock) {
+        binding?.valid = false
+        binding = null
+        pending.clear()
+        timerJob?.cancel()
+        timerJob = null
     }
 
     /**
@@ -100,19 +117,17 @@ class TranscriptUploader internal constructor(
     fun record(role: TranscriptRole, text: String) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
-        scope.launch {
-            val batch = mutex.withLock {
-                if (sessionId == null) return@launch
-                pending += TranscriptUploadTurnDto(
-                    seq = nextSeq++,
-                    role = role.wireName(),
-                    text = trimmed,
-                    engine = engine,
-                )
-                if (pending.size >= BATCH_SIZE) drainLocked() else { armTimerLocked(); null }
-            }
-            batch?.let { send(it, final = false) }
+        val batch = synchronized(lock) {
+            val current = binding ?: return
+            pending += TranscriptUploadTurnDto(
+                seq = nextSeq++,
+                role = role.wireName(),
+                text = trimmed,
+                engine = current.engine,
+            )
+            if (pending.size >= BATCH_SIZE) drainLocked(current) else { armTimerLocked(current); null }
         }
+        batch?.let { scope.launch { send(it, final = false) } }
     }
 
     /**
@@ -121,58 +136,50 @@ class TranscriptUploader internal constructor(
      * record (`internal/webapp/api_routes.go`: "A final-only flush with zero turns is valid").
      */
     fun finish(cost: SessionCost? = null) {
-        scope.launch {
-            val (id, batch) = mutex.withLock {
-                val id = sessionId ?: return@launch
-                timerJob?.cancel()
-                timerJob = null
-                val batch = pending.toList()
-                pending.clear()
-                sessionId = null
-                id to batch
-            }
-            send(batch, final = true, sessionIdOverride = id, cost = cost)
+        val batch = synchronized(lock) {
+            val current = binding ?: return
+            drainLocked(current).also { binding = null }
         }
+        scope.launch { send(batch, final = true, cost = cost) }
     }
 
     /** Drain the buffer under the lock, returning what to send. */
-    private fun drainLocked(): List<TranscriptUploadTurnDto> {
+    private fun drainLocked(current: Binding): Batch {
         timerJob?.cancel()
         timerJob = null
         val batch = pending.toList()
         pending.clear()
-        return batch
+        return Batch(current, batch)
     }
 
     /** Start the time-based flush if one isn't already pending. */
-    private fun armTimerLocked() {
+    private fun armTimerLocked(current: Binding) {
         if (timerJob != null) return
         timerJob = scope.launch {
             delay(BATCH_INTERVAL_MS)
-            val batch = mutex.withLock {
+            val batch = synchronized(lock) {
+                if (binding !== current) return@launch
                 timerJob = null
-                if (pending.isEmpty() || sessionId == null) return@launch
-                val b = pending.toList()
-                pending.clear()
-                b
+                if (pending.isEmpty()) return@launch
+                drainLocked(current)
             }
             send(batch, final = false)
         }
     }
 
     private suspend fun send(
-        turns: List<TranscriptUploadTurnDto>,
+        batch: Batch,
         final: Boolean,
-        sessionIdOverride: String? = null,
         cost: SessionCost? = null,
     ) {
-        val id = sessionIdOverride ?: mutex.withLock { sessionId } ?: return
+        if (!batch.binding.valid) return
+        val turns = batch.turns
         // The server rejects a non-final flush with no turns; nothing to do.
         if (turns.isEmpty() && !final) return
         try {
             sink.upload(
                 TranscriptUploadRequest(
-                    sessionId = id,
+                    sessionId = batch.binding.sessionId,
                     final = final,
                     turns = turns,
                     // Only ever on the final flush, and only with real usage
@@ -186,7 +193,10 @@ class TranscriptUploader internal constructor(
                         )
                     },
                 ),
+                batch.binding.authSessionId,
             )
+        } catch (e: CancellationException) {
+            throw e
         } catch (t: Throwable) {
             Log.w(TAG, "transcript upload failed (final=$final, turns=${turns.size})", t)
         }

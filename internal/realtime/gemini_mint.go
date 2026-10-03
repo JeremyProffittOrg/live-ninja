@@ -603,7 +603,21 @@ func (m *GeminiMinter) MintForSurface(ctx context.Context, voice, instructions, 
 	expiresAt := now.Add(geminiTokenTTL)
 	newSessionExpiresAt := now.Add(geminiNewSessionWindow)
 	uses := int32(1)
+	instructions = ClientInstructions(ctx, instructions)
 	setup := buildGeminiSetupForSurface(m.model, voice, instructions, surface)
+	setup["tools"] = []map[string]any{{"functionDeclarations": FilterJobsTools(geminiToolDeclarationsForSurface(surface), jobsReviewEnabled(ctx))}}
+	constraints := buildGeminiConstraintsForSurface(m.model, voice, instructions, surface)
+	if !jobsReviewEnabled(ctx) {
+		for _, tool := range constraints.Config.Tools {
+			allowed := tool.FunctionDeclarations[:0]
+			for _, declaration := range tool.FunctionDeclarations {
+				if !strings.HasPrefix(declaration.Name, "job_") {
+					allowed = append(allowed, declaration)
+				}
+			}
+			tool.FunctionDeclarations = allowed
+		}
+	}
 	setupJSON, err := json.Marshal(setup)
 	if err != nil {
 		return nil, fmt.Errorf("realtime: marshal gemini session config: %w", err)
@@ -612,7 +626,7 @@ func (m *GeminiMinter) MintForSurface(ctx context.Context, voice, instructions, 
 		Uses:                   &uses,
 		ExpireTime:             expiresAt,
 		NewSessionExpireTime:   newSessionExpiresAt,
-		LiveConnectConstraints: buildGeminiConstraintsForSurface(m.model, voice, instructions, surface),
+		LiveConnectConstraints: constraints,
 		// A non-nil empty slice tells the SDK to lock exactly the fields in
 		// LiveConnectConstraints. Nil means a global lock, which would ignore
 		// the client-only sessionResumption field.
@@ -659,6 +673,6 @@ func (m *GeminiMinter) MintForSurface(ctx context.Context, voice, instructions, 
 		Model:         m.model,
 		Voice:         voice,
 		SessionConfig: setupJSON,
-		ToolManifest:  ToolManifestJSONForSurface(surface),
+		ToolManifest:  ToolManifestJSONForClient(ctx, surface, false),
 	}, nil
 }

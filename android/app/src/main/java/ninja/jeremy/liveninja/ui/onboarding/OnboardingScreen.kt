@@ -67,6 +67,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import ninja.jeremy.liveninja.R
 import ninja.jeremy.liveninja.ui.SpecialAccess
 import ninja.jeremy.liveninja.ui.StartupPermissionLedger
+import ninja.jeremy.liveninja.ui.permissions.AndroidPermissionHistory
+import ninja.jeremy.liveninja.ui.permissions.PermissionFeature
 import ninja.jeremy.liveninja.ui.state.WakeWordOption
 
 /**
@@ -187,7 +189,10 @@ fun OnboardingScreen(
                         }
                         MicPermissionStep(
                             granted = state.micGranted,
-                            onGrant = { micLauncher.launch(Manifest.permission.RECORD_AUDIO) },
+                            onGrant = {
+                                AndroidPermissionHistory(context).markRequested(PermissionFeature.MICROPHONE)
+                                micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            },
                             onNext = viewModel::next,
                         )
                     }
@@ -199,7 +204,10 @@ fun OnboardingScreen(
                         }
                         CameraPermissionStep(
                             granted = state.cameraGranted,
-                            onGrant = { cameraLauncher.launch(Manifest.permission.CAMERA) },
+                            onGrant = {
+                                AndroidPermissionHistory(context).markRequested(PermissionFeature.CAMERA)
+                                cameraLauncher.launch(Manifest.permission.CAMERA)
+                            },
                             onNext = viewModel::next,
                         )
                     }
@@ -214,6 +222,7 @@ fun OnboardingScreen(
                             granted = state.notificationsGranted,
                             requestable = state.notificationsRequestable,
                             onGrant = {
+                                AndroidPermissionHistory(context).markRequested(PermissionFeature.NOTIFICATIONS)
                                 notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                             },
                             onNext = viewModel::next,

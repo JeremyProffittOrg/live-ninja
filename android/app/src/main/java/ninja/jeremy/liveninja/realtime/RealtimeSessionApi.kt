@@ -6,7 +6,10 @@ import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import ninja.jeremy.liveninja.config.BackendConfig
+import ninja.jeremy.liveninja.auth.DeviceIdentityStore
 import ninja.jeremy.liveninja.net.AuthorizedClient
+import ninja.jeremy.liveninja.net.AuthBoundRequest
+import ninja.jeremy.liveninja.net.BoundJobsSession
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONException
@@ -112,22 +115,29 @@ class RealtimeSessionException(
 
 /**
  * Fetches the realtime session bootstrap from the Fiber backend. Uses the
- * [AuthorizedClient] OkHttp client, so the session JWT header and the
- * 401 refresh-and-retry are handled by the net layer; a 401 surfacing here
- * means the refresh itself failed (signed out).
+ * [AuthorizedClient] OkHttp client with a proactively refreshed, explicitly
+ * pinned bearer. The request cannot retry under a replacement sign-in session.
  */
 @Singleton
 class RealtimeSessionApi @Inject constructor(
     @AuthorizedClient private val httpClient: OkHttpClient,
+    private val boundSession: BoundJobsSession,
+    private val deviceIdentity: DeviceIdentityStore,
 ) {
 
     /**
      * `GET /api/v1/realtime/session`. Throws [RealtimeSessionException] on
      * auth/quota/shape failures and IOException on transport failures.
      */
-    suspend fun fetchSession(): RealtimeSession = withContext(Dispatchers.IO) {
+    suspend fun fetchSession(expectedSessionId: String): RealtimeSession = withContext(Dispatchers.IO) {
+        // Pin the bootstrap itself: an account change during HTTP dispatch must
+        // never mint the replacement account's provider credentials.
+        val credentials = boundSession.credentials(expectedSessionId)
         val request = Request.Builder()
             .url(BackendConfig.REALTIME_SESSION_URL)
+            .header("Authorization", "Bearer ${credentials.accessToken}")
+            .header("X-LN-Device-ID", deviceIdentity.deviceId)
+            .tag(AuthBoundRequest::class.java, AuthBoundRequest())
             .get()
             .build()
 

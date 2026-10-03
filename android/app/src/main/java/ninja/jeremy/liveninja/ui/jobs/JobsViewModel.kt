@@ -16,10 +16,13 @@ import ninja.jeremy.liveninja.net.JobsCapabilitiesDto
 import retrofit2.HttpException
 import java.util.UUID
 import javax.inject.Inject
+import ninja.jeremy.liveninja.auth.AuthState
+import ninja.jeremy.liveninja.net.JobsSessionException
 
-data class JobConfirmation(val job: JobDto, val action: String, val run: JobRunDto? = null)
+data class JobConfirmation(val job: JobDto, val action: String, val run: JobRunDto? = null, val note: String? = null)
 
 sealed interface JobsEvent {
+    data object OpenGhost : JobsEvent
     data object Refresh : JobsEvent
     data object New : JobsEvent
     data object Edit : JobsEvent
@@ -32,6 +35,15 @@ sealed interface JobsEvent {
     data object Confirm : JobsEvent
     data object DismissConfirmation : JobsEvent
     data object DismissNotice : JobsEvent
+    data object OlderHistory : JobsEvent
+    data object LatestHistory : JobsEvent
+    data object ReviewNote : JobsEvent
+    data object ConfirmVoice : JobsEvent
+    data object DismissVoice : JobsEvent
+    data class Note(val text: String) : JobsEvent
+    data class ReviewVoice(val proposal: JobsVoiceProposal) : JobsEvent
+    data class DismissProposal(val id: String) : JobsEvent
+    data class HistoryPosition(val id: String, val offset: Int) : JobsEvent
     data class Filter(val value: String) : JobsEvent
     data class Open(val job: JobDto) : JobsEvent
     data class Draft(val value: JobDraft) : JobsEvent
@@ -65,20 +77,47 @@ data class JobsUiState(
     val busy: Boolean = false,
     val uncertain: Boolean = false,
     val notice: Int? = null,
+    val history: JobHistoryState = JobHistoryState(),
+    val noteDraft: String = "",
+    val proposals: List<JobsVoiceProposal> = emptyList(),
+    val voiceReview: JobsVoiceProposal? = null,
+    val voiceError: Int? = null,
+    val voiceStale: Boolean = false,
 )
 
-private data class MutationKey(val path: String, val version: Long = 0, val input: JobInputDto? = null)
+private data class MutationKey(val path: String, val version: Long = 0, val input: JobInputDto? = null, val note: String? = null)
 
 /** Native Jobs state retains mutation identity and exact review snapshots across rotation. */
 @HiltViewModel
-class JobsViewModel @Inject constructor(private val repository: JobsRepository) : ViewModel() {
+class JobsViewModel @Inject constructor(private val repository: JobsRepository, private val proposalInbox: JobsProposalInbox? = null) : ViewModel() {
     private val mutableState = MutableStateFlow(JobsUiState())
     val state: StateFlow<JobsUiState> = mutableState
     private val requestIds = mutableMapOf<MutationKey, String>()
     private var detailSequence = 0
     private var listSequence = 0
+    private val timeline = JobHistoryPager(JobHistorySource(repository::historyPage), viewModelScope)
+    private var sessionId = proposalInbox?.captureSession()
+    private var accountGeneration = 0L
+
+    init {
+        viewModelScope.launch { timeline.state.collect { history -> mutableState.update { it.copy(history = history) } } }
+        proposalInbox?.let { inbox ->
+            viewModelScope.launch { inbox.pending.collect { proposals ->
+                mutableState.update { current -> current.copy(proposals = proposals.filter { it.sessionId == inbox.captureSession() }, voiceReview = current.voiceReview?.takeIf(inbox::isCurrent)) }
+            } }
+            viewModelScope.launch { inbox.authState.collect { auth ->
+                val next = (auth as? AuthState.SignedIn)?.sessionId
+                if (next != sessionId) {
+                    accountGeneration++; sessionId = next; invalidateReads(); timeline.close(); requestIds.clear()
+                    mutableState.value = JobsUiState()
+                    if (next != null) refresh()
+                }
+            } }
+        }
+    }
 
     fun handle(event: JobsEvent) { when (event) {
+        JobsEvent.OpenGhost -> Unit // Navigation belongs to the signed-in screen.
         JobsEvent.Refresh -> refresh()
         JobsEvent.New -> newJob()
         JobsEvent.Edit -> editJob()
@@ -91,6 +130,15 @@ class JobsViewModel @Inject constructor(private val repository: JobsRepository) 
         JobsEvent.Confirm -> confirmAction()
         JobsEvent.DismissConfirmation -> dismissConfirmation()
         JobsEvent.DismissNotice -> dismissNotice()
+        JobsEvent.OlderHistory -> timeline.older()
+        JobsEvent.LatestHistory -> timeline.latest()
+        JobsEvent.ReviewNote -> reviewNote()
+        JobsEvent.ConfirmVoice -> confirmVoice()
+        JobsEvent.DismissVoice -> if (!state.value.busy) mutableState.update { it.copy(voiceReview = null, voiceError = null, voiceStale = false) }
+        is JobsEvent.Note -> if (!state.value.busy) mutableState.update { it.copy(noteDraft = event.text) }
+        is JobsEvent.ReviewVoice -> if (!state.value.busy && proposalInbox?.isCurrent(event.proposal) == true) mutableState.update { it.copy(voiceReview = event.proposal, voiceError = null, voiceStale = false) }
+        is JobsEvent.DismissProposal -> if (!state.value.busy) proposalInbox?.dismiss(event.id)
+        is JobsEvent.HistoryPosition -> timeline.rememberPosition(event.id, event.offset)
         is JobsEvent.Filter -> setFilter(event.value)
         is JobsEvent.Open -> openJob(event.job)
         is JobsEvent.Draft -> updateDraft { event.value }
@@ -103,7 +151,7 @@ class JobsViewModel @Inject constructor(private val repository: JobsRepository) 
 
     fun refresh(quiet: Boolean = false) {
         val old = state.value
-        if (old.loading || old.loadingMore || old.detailLoading || old.runsLoading || old.busy || (quiet && (old.draft != null || old.confirmation != null || old.uncertain))) return
+        if (old.loading || old.loadingMore || old.detailLoading || old.runsLoading || old.busy || (quiet && (old.draft != null || old.confirmation != null || old.voiceReview != null || old.uncertain))) return
         val sequence = ++listSequence
         mutableState.update { it.copy(loading = true, error = if (quiet) it.error else null) }
         viewModelScope.launch {
@@ -141,12 +189,14 @@ class JobsViewModel @Inject constructor(private val repository: JobsRepository) 
         if (state.value.busy) return
         detailSequence++
         mutableState.update { it.copy(selected = job, detailLoading = true, runs = emptyList(), runsLoaded = false, runsCursor = null, runPagesExpanded = false, runsError = null) }
+        sessionId?.let { timeline.open(JobHistoryScope(it, job.id)) }
         viewModelScope.launch { refreshDetail(job.id) }
     }
 
     fun closeDetail() {
         if (state.value.busy) return
         detailSequence++
+        timeline.close()
         mutableState.update { it.copy(selected = null, detailLoading = false, runs = emptyList(), runsCursor = null, runsError = null) }
     }
 
@@ -196,14 +246,16 @@ class JobsViewModel @Inject constructor(private val repository: JobsRepository) 
     fun reloadDraft() {
         val id = state.value.draft?.id ?: return
         if (state.value.busy) return
+        val account = accountGeneration to sessionId
         mutableState.update { it.copy(busy = true) }
         viewModelScope.launch {
             try {
                 val job = repository.get(id).job ?: error("Missing job response")
+                if (!isAccount(account)) return@launch
                 if (job.status == "cancelled") { mutableState.update { it.copy(draftError = R.string.jobs_cancelled_edit, draftConflict = false) }; return@launch }
                 mutableState.update { it.copy(draft = JobDraft.from(job), draftError = null, draftConflict = false, uncertain = false) }
-            } catch (error: Exception) { rethrowCancellation(error); mutableState.update { it.copy(draftError = errorLabel(error)) } }
-            finally { mutableState.update { it.copy(busy = false) } }
+            } catch (error: Exception) { rethrowCancellation(error); if (isAccount(account)) mutableState.update { it.copy(draftError = errorLabel(error)) } }
+            finally { if (isAccount(account)) mutableState.update { it.copy(busy = false) } }
         }
     }
 
@@ -214,20 +266,23 @@ class JobsViewModel @Inject constructor(private val repository: JobsRepository) 
         if (state.value.capabilities?.scheduling != true && (input.schedule.kind != "once" || !input.schedule.at.isNullOrBlank())) { mutableState.update { it.copy(draftError = R.string.jobs_scheduler_disabled) }; return }
         val key = MutationKey("save:${draft.id ?: "new"}", draft.version, input)
         val requestId = requestIds.getOrPut(key) { UUID.randomUUID().toString() }
+        val account = accountGeneration to sessionId
         invalidateReads()
         mutableState.update { it.copy(busy = true, draftError = null) }
         viewModelScope.launch {
             try {
-                val response = if (draft.id == null) repository.create(input, requestId) else repository.update(draft.id, input, draft.version, requestId)
+                val response = if (draft.id == null) repository.create(input, requestId, account.second) else repository.update(draft.id, input, draft.version, requestId, account.second)
+                if (!isAccount(account)) return@launch
                 val job = response.job ?: error("Missing job response")
                 requestIds.remove(key); detailSequence++
                 mutableState.update { it.copy(draft = null, draftError = null, draftConflict = false, selected = job, jobs = (listOf(job) + it.jobs).distinctBy { saved -> saved.id }, filter = "all", runs = emptyList(), runsLoaded = false, runsCursor = null, uncertain = false, notice = if (draft.id == null) R.string.jobs_created else R.string.jobs_saved) }
                 loadRunsPage(job.id, append = false)
             } catch (error: Exception) {
                 rethrowCancellation(error)
+                if (!isAccount(account)) return@launch
                 val conflict = (error as? HttpException)?.code() == 409
                 mutableState.update { it.copy(draftError = errorLabel(error), draftConflict = conflict, uncertain = !conflict) }
-            } finally { mutableState.update { it.copy(busy = false) } }
+            } finally { if (isAccount(account)) mutableState.update { it.copy(busy = false) } }
         }
     }
 
@@ -238,30 +293,68 @@ class JobsViewModel @Inject constructor(private val repository: JobsRepository) 
         if (action in listOf("run", "resume")) perform(request)
         else mutableState.update { it.copy(confirmation = request, confirmationError = null, confirmationStale = false) }
     }
+
+    private fun reviewNote() {
+        val current = state.value
+        val job = current.selected ?: return
+        val text = current.noteDraft.trim()
+        if (current.busy) return
+        if (text.isBlank() || text.toByteArray(Charsets.UTF_8).size > 2000) { mutableState.update { it.copy(notice = R.string.jobs_invalid_notes) }; return }
+        mutableState.update { it.copy(confirmation = JobConfirmation(job, "note", note = text), confirmationError = null, confirmationStale = false) }
+    }
+
+    private fun confirmVoice() {
+        val proposal = state.value.voiceReview ?: return
+        if (state.value.busy || state.value.voiceStale) return
+        if (proposalInbox?.isCurrent(proposal) != true) { mutableState.update { it.copy(voiceError = R.string.jobs_proposal_expired, voiceStale = true) }; return }
+        val key = MutationKey("voice:${proposal.sessionId}:${proposal.id}")
+        val requestId = requestIds.getOrPut(key) { UUID.randomUUID().toString() }
+        invalidateReads()
+        mutableState.update { it.copy(busy = true, voiceError = null) }
+        viewModelScope.launch {
+            try {
+                val job = repository.approveProposal(proposal, requestId).job ?: error("Missing job response")
+                if (proposalInbox.captureSession() != proposal.sessionId) return@launch
+                requestIds.remove(key); proposalInbox.dismiss(proposal.id)
+                mutableState.update { it.copy(voiceReview = null, voiceError = null, uncertain = false, selected = job, jobs = (listOf(job) + it.jobs).distinctBy(JobDto::id), notice = R.string.jobs_action_recorded) }
+                sessionId?.let { timeline.open(JobHistoryScope(it, job.id)) }
+                loadRunsPage(job.id, append = false)
+            } catch (error: Exception) {
+                rethrowCancellation(error)
+                if (proposalInbox.captureSession() == proposal.sessionId) mutableState.update { it.copy(voiceError = if ((error as? HttpException)?.code() in listOf(401, 403)) R.string.jobs_bound_auth_error else errorLabel(error), voiceStale = (error as? HttpException)?.code() == 409, uncertain = (error as? HttpException)?.code() != 409) }
+            } finally { if (proposalInbox.captureSession() == proposal.sessionId) mutableState.update { it.copy(busy = false) } }
+        }
+    }
     fun dismissConfirmation() { if (!state.value.busy) mutableState.update { it.copy(confirmation = null, confirmationError = null, confirmationStale = false) } }
     fun confirmAction() { if (!state.value.confirmationStale) state.value.confirmation?.let(::perform) }
 
     private fun perform(request: JobConfirmation) {
         if (state.value.busy) return
-        val key = MutationKey("${request.job.id}:${request.run?.id ?: "job"}:${request.action}", request.job.version)
+        val key = MutationKey("${request.job.id}:${request.run?.id ?: "job"}:${request.action}", request.job.version, note = request.note)
         val requestId = requestIds.getOrPut(key) { UUID.randomUUID().toString() }
+        val account = accountGeneration to sessionId
         invalidateReads()
         mutableState.update { it.copy(busy = true, confirmationError = null, notice = null) }
         viewModelScope.launch {
             try {
                 val job = when {
-                    request.run != null -> repository.runAction(request.job.id, request.run.id, request.action, request.job.version, requestId).job
-                    request.action == "run" -> repository.runNow(request.job.id, request.job.version, requestId).job
-                    else -> repository.jobAction(request.job.id, request.action, request.job.version, requestId).job
+                    request.action == "note" -> repository.note(request.job.id, requireNotNull(request.note), request.job.version, requestId, expectedSessionId = account.second).job
+                    request.run != null -> repository.runAction(request.job.id, request.run.id, request.action, request.job.version, requestId, account.second).job
+                    request.action == "run" -> repository.runNow(request.job.id, request.job.version, requestId, account.second).job
+                    else -> repository.jobAction(request.job.id, request.action, request.job.version, requestId, account.second).job
                 } ?: error("Missing job response")
+                if (!isAccount(account)) return@launch
                 requestIds.remove(key); applyJob(job)
                 mutableState.update { it.copy(confirmation = null, confirmationError = null, confirmationStale = false, uncertain = false, notice = R.string.jobs_action_recorded) }
+                if (request.action == "note") mutableState.update { it.copy(noteDraft = "") }
+                timeline.latest()
                 loadRunsPage(job.id, append = false)
             } catch (error: Exception) {
                 rethrowCancellation(error)
+                if (!isAccount(account)) return@launch
                 val conflict = (error as? HttpException)?.code() == 409
                 mutableState.update { it.copy(confirmationError = if (it.confirmation != null) errorLabel(error) else null, confirmationStale = conflict, notice = if (it.confirmation == null) errorLabel(error) else null, uncertain = !conflict) }
-            } finally { mutableState.update { it.copy(busy = false) } }
+            } finally { if (isAccount(account)) mutableState.update { it.copy(busy = false) } }
         }
     }
 
@@ -273,7 +366,8 @@ class JobsViewModel @Inject constructor(private val repository: JobsRepository) 
     }
     private fun applyJob(job: JobDto) = mutableState.update { it.copy(selected = if (it.selected?.id == job.id && job.version >= it.selected.version) job else it.selected, jobs = it.jobs.map { row -> if (row.id == job.id && job.version >= row.version) job else row }) }
     private fun rethrowCancellation(error: Exception) { if (error is CancellationException) throw error }
-    private fun errorLabel(error: Exception): Int = when ((error as? HttpException)?.code()) {
+    private fun isAccount(captured: Pair<Long, String?>): Boolean = captured.first == accountGeneration && (proposalInbox == null || captured.second == proposalInbox.captureSession())
+    private fun errorLabel(error: Exception): Int = if (error is JobsSessionException) R.string.jobs_bound_auth_error else when ((error as? HttpException)?.code()) {
         401, 403 -> R.string.jobs_auth_error
         404 -> R.string.jobs_missing
         409 -> R.string.jobs_conflict

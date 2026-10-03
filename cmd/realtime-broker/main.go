@@ -165,9 +165,9 @@ type Response struct {
 	SessionConfig json.RawMessage `json:"sessionConfig,omitempty"`
 	// VoiceLiveEndpoint is the WSS URL for mode voice-live-direct. Named
 	// so it cannot be mistaken for Nova's wsUrl (azure-voice-plan.md C2).
-	VoiceLiveEndpoint string `json:"voiceLiveEndpoint,omitempty"`
-	ToolManifest  json.RawMessage `json:"toolManifest,omitempty"`
-	SessionID     string          `json:"sessionId,omitempty"`
+	VoiceLiveEndpoint string          `json:"voiceLiveEndpoint,omitempty"`
+	ToolManifest      json.RawMessage `json:"toolManifest,omitempty"`
+	SessionID         string          `json:"sessionId,omitempty"`
 	// Nova-bridge success fields (Mode == "nova-bridge" only): the WSS URL
 	// to open and the short-lived per-session first-party token (also
 	// embedded in WSURL) the bridge verifies before opening Bedrock.
@@ -269,7 +269,7 @@ type broker struct {
 	geminiMint geminiMintAPI
 	// entraToken exchanges the Voice Live client secret for an Entra bearer
 	// token (azure-voice-plan.md C1). nil when not configured.
-	entraToken entraTokener
+	entraToken     entraTokener
 	voiceLiveHost  string
 	voiceLiveModel string
 }
@@ -347,6 +347,7 @@ func (b *broker) Handle(ctx context.Context, req Request) (resp Response, _ erro
 }
 
 func (b *broker) handleMint(ctx context.Context, l *slog.Logger, req Request) Response {
+	ctx = realtime.WithClientCapabilities(ctx, req.Surface, req.Capabilities)
 	// Resolve the device's voiceEngine pin FIRST (FR-VE-03):
 	// devices[deviceId] ?? default ?? openai-realtime. Fail open to the
 	// openai-realtime default on any read error — a settings-read hiccup must
@@ -606,7 +607,7 @@ func (b *broker) handleVoiceLiveDirect(ctx context.Context, l *slog.Logger, req 
 	}
 	guideSuffix += b.rulesBlock(ctx, l, req)
 	persona := realtime.ResolvePersona(req.Persona)
-	instructions := realtime.InstructionsForSurface(persona, req.Surface) + realtime.SessionDirectives + baseKnowledge + accentDirective + guideSuffix
+	instructions := realtime.ClientInstructions(ctx, realtime.InstructionsForSurface(persona, req.Surface)) + realtime.SessionDirectives + baseKnowledge + accentDirective + guideSuffix
 
 	start := time.Now()
 	tok, err := b.entraToken.Token(ctx, realtime.VoiceLiveScope)
@@ -708,7 +709,9 @@ func (b *broker) handleNovaBridge(ctx context.Context, l *slog.Logger, req Reque
 	instructions := realtime.InstructionsForServerExecution(persona) +
 		realtime.SessionDirectives + baseKnowledge +
 		realtime.AccentDirective(sv.AccentID) + guideSuffix
-	novaConfig := realtime.BuildNovaSessionConfig(instructions)
+	// Nova's scoped backend executor has no trusted client review binding.
+	ctx = realtime.WithClientCapabilities(ctx, req.Surface, nil)
+	novaConfig := realtime.BuildNovaSessionConfigForClient(ctx, instructions)
 	configJSON, err := json.Marshal(novaConfig)
 	if err != nil {
 		l.Error("realtime-broker: Nova session config marshal failed",
@@ -758,7 +761,7 @@ func (b *broker) handleNovaBridge(ctx context.Context, l *slog.Logger, req Reque
 		BridgeToken:          bs.Token,
 		BridgeTokenExpiresAt: bs.ExpiresAt.UTC().Format(time.RFC3339),
 		SessionConfig:        configJSON,
-		ToolManifest:         realtime.ToolManifestJSONForServerExecution(),
+		ToolManifest:         realtime.ToolManifestJSONForClient(ctx, req.Surface, true),
 		SessionID:            sessionID,
 		QuotaWarning:         strings.Join(warnings, ","),
 	}
@@ -847,6 +850,7 @@ func (b *broker) handleGeminiDirect(ctx context.Context, l *slog.Logger, req Req
 }
 
 func (b *broker) handleFallbackTurn(ctx context.Context, l *slog.Logger, req Request) Response {
+	ctx = realtime.WithClientCapabilities(ctx, req.Surface, req.Capabilities)
 	var p turnPayload
 	if err := json.Unmarshal(orEmptyObject(req.Payload), &p); err != nil ||
 		(len(p.Messages) == 0 && strings.TrimSpace(p.Text) == "") {

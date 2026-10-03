@@ -64,11 +64,18 @@ func (f *fakeDynamo) TransactWriteItems(_ context.Context, in *dynamodb.Transact
 	f.tx = in
 	return &dynamodb.TransactWriteItemsOutput{}, f.txErr
 }
+func setFakeHistoryBase(f *fakeDynamo, r *Record, version int64) {
+	before := cloneRecord(*r)
+	before.Job.Version = version
+	b, _ := json.Marshal(before)
+	f.item = map[string]types.AttributeValue{"payload": avs(string(b))}
+}
 func TestDynamoOwnershipAndActiveProfileCAS(t *testing.T) {
 	f := &fakeDynamo{}
 	s := NewDynamoStoreWithClient(f, "table")
 	ctx := context.Background()
 	r := &Record{UserID: "alice", Job: Job{ID: "job_12345678901234567890123456789012", Status: "active", Version: 2, NextRunAt: "2026-10-03T12:00:00Z"}}
+	setFakeHistoryBase(f, r, 1)
 	if e := s.CompareAndSwap(ctx, r, 1); e != nil {
 		t.Fatal(e)
 	}
@@ -108,6 +115,7 @@ func TestDynamoConditionalFailureDistinguishesRevocation(t *testing.T) {
 	f := &fakeDynamo{}
 	s := NewDynamoStoreWithClient(f, "table")
 	r := &Record{UserID: "alice", Job: Job{ID: "job_12345678901234567890123456789012", Version: 2}}
+	setFakeHistoryBase(f, r, 1)
 	f.txErr = &types.TransactionCanceledException{CancellationReasons: []types.CancellationReason{{Code: aws.String("ConditionalCheckFailed")}, {Code: aws.String("None")}}}
 	if e := s.CompareAndSwap(context.Background(), r, 1); !errors.Is(e, ErrForbidden) {
 		t.Fatal(e)
@@ -170,6 +178,7 @@ func TestDynamoMemberGrantIsAtomicAndRevocationPausesSafely(t *testing.T) {
 	s := NewDynamoStoreWithClient(f, "table")
 	ctx := context.Background()
 	r := &Record{UserID: "alice", Job: Job{ID: "job_12345678901234567890123456789012", Version: 2, Status: "active", NextRunAt: "2026-10-03T12:00:00Z"}}
+	setFakeHistoryBase(f, r, 1)
 	if e := s.CompareAndSwap(ctx, r, 1); e != nil {
 		t.Fatal(e)
 	}

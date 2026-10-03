@@ -39,7 +39,7 @@ func TestGeminiMintBuildsConstrainedTokenAndSetup(t *testing.T) {
 		},
 	}
 
-	res, err := m.Mint(context.Background(), "Puck", "You are terse.")
+	res, err := m.Mint(WithClientCapabilities(context.Background(), "web", []string{JobsReviewCapability}), "Puck", "You are terse.")
 	require.NoError(t, err)
 
 	// Token + windows.

@@ -1,149 +1,104 @@
 package ninja.jeremy.liveninja.ui
 
-import android.Manifest
-import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import ninja.jeremy.liveninja.ui.permissions.PermissionAction
+import ninja.jeremy.liveninja.ui.permissions.PermissionCoordinator
+import ninja.jeremy.liveninja.ui.permissions.PermissionFacts
+import ninja.jeremy.liveninja.ui.permissions.PermissionFeature
+import ninja.jeremy.liveninja.ui.permissions.PermissionHistory
 
 class StartupPermissionGateTest {
-
-    private val mic = Manifest.permission.RECORD_AUDIO
-    private val camera = Manifest.permission.CAMERA
-    private val notifications = Manifest.permission.POST_NOTIFICATIONS
-    private val coarse = Manifest.permission.ACCESS_COARSE_LOCATION
-    private val fine = Manifest.permission.ACCESS_FINE_LOCATION
-
-    private val nothingGranted = SpecialAccessStatus(
-        batteryOptimizationIgnored = false,
-        canInstallPackages = false,
-        canUseFullScreenIntent = false,
-        canDrawOverlays = false,
-    )
-
-    @After
-    fun resetLedger() = StartupPermissionLedger.resetForTest()
-
-    @Test
-    fun api29AsksMicCameraAndLocation() {
-        assertEquals(listOf(mic, camera, coarse, fine), runtimePermissionNames(29))
+    private class SavedHistory : PermissionHistory {
+        override var guideSeen = false
+        val requests = mutableSetOf<PermissionFeature>()
+        override fun wasRequested(feature: PermissionFeature) = feature in requests
+        override fun markRequested(feature: PermissionFeature) { requests.add(feature) }
     }
 
     @Test
-    fun api33AlsoAsksNotifications() {
-        assertTrue(runtimePermissionNames(33).contains(notifications))
-        assertFalse(runtimePermissionNames(32).contains(notifications))
+    fun guideDoesNotRepeatAfterNewCoordinatorOrAppProcess() {
+        val history = SavedHistory()
+        assertTrue(PermissionCoordinator(history).claimStartupGuide())
+        assertFalse(PermissionCoordinator(history).claimStartupGuide())
+        assertTrue(history.requests.isEmpty())
     }
 
     @Test
-    fun firstLaunchRequestsEverythingInOneSheet() {
-        val ask = StartupPermissionPlan.runtimeToRequest(34, isGranted = { false }, alreadyAsked = emptySet())
-        assertEquals(listOf(mic, camera, notifications, coarse, fine), ask)
+    fun seeingOrSkippingGuideDoesNotRecordAnySystemPermissionRequest() {
+        val history = SavedHistory()
+        val coordinator = PermissionCoordinator(history)
+        coordinator.claimStartupGuide()
+        PermissionFeature.entries.forEach { feature ->
+            assertEquals(PermissionAction.REQUEST, coordinator.action(feature, PermissionFacts(granted = false)))
+        }
+        assertTrue(history.requests.isEmpty())
     }
 
     @Test
-    fun grantedPermissionsAreNotAskedAgain() {
-        val granted = setOf(mic, camera, notifications, coarse, fine)
-        assertEquals(
-            emptyList<String>(),
-            StartupPermissionPlan.runtimeToRequest(34, isGranted = { it in granted }, alreadyAsked = emptySet()),
-        )
-        assertEquals(
-            listOf(coarse, fine),
-            StartupPermissionPlan.runtimeToRequest(
-                34,
-                isGranted = { it in setOf(mic, camera, notifications) },
-                alreadyAsked = emptySet(),
-            ),
-        )
+    fun grantedAccessNeverProducesAnotherRequest() {
+        val coordinator = PermissionCoordinator(SavedHistory())
+        PermissionFeature.entries.forEach { feature ->
+            assertEquals(PermissionAction.NONE, coordinator.action(feature, PermissionFacts(granted = true)))
+        }
     }
 
     @Test
-    fun whatOnboardingAlreadyAskedIsSkipped() {
-        val ask = StartupPermissionPlan.runtimeToRequest(
-            34,
-            isGranted = { false },
-            alreadyAsked = setOf(mic, camera, notifications),
-        )
-        assertEquals(listOf(coarse, fine), ask)
+    fun deniedAccessCanBeRetriedOnlyAfterExplicitFeatureTapWithRationale() {
+        val history = SavedHistory()
+        val coordinator = PermissionCoordinator(history)
+        coordinator.requestStarted(PermissionFeature.MICROPHONE)
+        assertEquals(PermissionAction.REQUEST, coordinator.action(
+            PermissionFeature.MICROPHONE, PermissionFacts(granted = false, shouldShowRationale = true),
+        ))
+        assertEquals(setOf(PermissionFeature.MICROPHONE), history.requests)
+        assertEquals(PermissionAction.REQUEST, coordinator.action(
+            PermissionFeature.CAMERA, PermissionFacts(granted = false),
+        ))
     }
 
     @Test
-    fun fineLocationAlwaysTravelsWithCoarse() {
-        // Coarse was asked (and denied) earlier this process; fine still needs it in the same request.
-        val ask = StartupPermissionPlan.runtimeToRequest(
-            34,
-            isGranted = { it == mic || it == camera || it == notifications },
-            alreadyAsked = setOf(coarse),
-        )
-        assertEquals(listOf(coarse, fine), ask)
+    fun denialWithoutAnotherAndroidPromptOffersSettingsAcrossRestart() {
+        val history = SavedHistory()
+        PermissionCoordinator(history).requestStarted(PermissionFeature.CAMERA)
+        assertEquals(PermissionAction.OPEN_SETTINGS, PermissionCoordinator(history).action(
+            PermissionFeature.CAMERA, PermissionFacts(granted = false, shouldShowRationale = false),
+        ))
     }
 
     @Test
-    fun approximateOnlyGrantAsksForFineAlone() {
-        val ask = StartupPermissionPlan.runtimeToRequest(
-            34,
-            isGranted = { it != fine },
-            alreadyAsked = emptySet(),
-        )
-        assertEquals(listOf(fine), ask)
+    fun revokedOrExpiredGrantIsReadFreshAndCanRecoverThroughSettings() {
+        val coordinator = PermissionCoordinator(SavedHistory())
+        coordinator.requestStarted(PermissionFeature.MICROPHONE)
+        assertEquals(PermissionAction.NONE, coordinator.action(PermissionFeature.MICROPHONE, PermissionFacts(true)))
+        assertEquals(PermissionAction.OPEN_SETTINGS, coordinator.action(PermissionFeature.MICROPHONE, PermissionFacts(false)))
     }
 
     @Test
-    fun specialStepsFollowTheFixedOrder() {
-        assertEquals(
-            listOf(
-                SpecialAccess.BATTERY,
-                SpecialAccess.INSTALL_PACKAGES,
-                SpecialAccess.FULL_SCREEN_INTENT,
-                SpecialAccess.OVERLAY,
-            ),
-            StartupPermissionPlan.specialToShow(34, nothingGranted, alreadyAsked = emptySet()),
-        )
+    fun notificationsDisabledOnOlderAndroidOpenSettingsInsteadOfUnsupportedRuntimeRequest() {
+        val coordinator = PermissionCoordinator(SavedHistory())
+        assertEquals(PermissionAction.OPEN_SETTINGS, coordinator.action(
+            PermissionFeature.NOTIFICATIONS, PermissionFacts(false, runtimeRequestAvailable = false),
+        ))
     }
 
     @Test
-    fun fullScreenIntentIsOnlyAskedOnApi34Plus() {
-        val steps = StartupPermissionPlan.specialToShow(33, nothingGranted, alreadyAsked = emptySet())
-        assertFalse(steps.contains(SpecialAccess.FULL_SCREEN_INTENT))
-        assertEquals(
-            listOf(SpecialAccess.BATTERY, SpecialAccess.INSTALL_PACKAGES, SpecialAccess.OVERLAY),
-            StartupPermissionPlan.specialToShow(29, nothingGranted, alreadyAsked = emptySet()),
-        )
+    fun globallyDisabledNotificationsWithRuntimeGrantAlsoOpenSettings() {
+        val coordinator = PermissionCoordinator(SavedHistory())
+        assertEquals(PermissionAction.OPEN_SETTINGS, coordinator.action(
+            PermissionFeature.NOTIFICATIONS, PermissionFacts(false, runtimeRequestAvailable = false),
+        ))
+        assertEquals(PermissionAction.NONE, coordinator.action(
+            PermissionFeature.NOTIFICATIONS, PermissionFacts(true, runtimeRequestAvailable = false),
+        ))
     }
 
     @Test
-    fun overlayIsSkippedWhenTheAppDoesNotUseIt() {
-        val steps = StartupPermissionPlan.specialToShow(
-            34,
-            nothingGranted,
-            alreadyAsked = emptySet(),
-            appUsesOverlay = false,
-        )
-        assertFalse(steps.contains(SpecialAccess.OVERLAY))
-    }
-
-    @Test
-    fun grantedOrAlreadyAskedSpecialsAreDropped() {
-        val status = nothingGranted.copy(batteryOptimizationIgnored = true, canUseFullScreenIntent = true)
-        assertEquals(
-            listOf(SpecialAccess.INSTALL_PACKAGES),
-            StartupPermissionPlan.specialToShow(34, status, alreadyAsked = setOf(SpecialAccess.OVERLAY)),
-        )
-    }
-
-    @Test
-    fun gateRunsAtMostOncePerProcess() {
-        assertTrue(StartupPermissionLedger.claimGateRun())
-        assertFalse(StartupPermissionLedger.claimGateRun())
-    }
-
-    @Test
-    fun ledgerRecordsOnboardingAsks() {
-        StartupPermissionLedger.markRuntimeAsked(listOf(mic))
-        StartupPermissionLedger.markSpecialAsked(SpecialAccess.BATTERY)
-        assertEquals(setOf(mic), StartupPermissionLedger.askedRuntime())
-        assertEquals(setOf(SpecialAccess.BATTERY), StartupPermissionLedger.askedSpecial())
+    fun cameraAbsentDoesNotOfferUnusablePermissionRequest() {
+        assertEquals(PermissionAction.NONE, PermissionCoordinator(SavedHistory()).action(
+            PermissionFeature.CAMERA, PermissionFacts(false, hardwareAvailable = false),
+        ))
     }
 }

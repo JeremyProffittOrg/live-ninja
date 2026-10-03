@@ -12,6 +12,13 @@ import ninja.jeremy.liveninja.net.JobRunsResponse
 import ninja.jeremy.liveninja.net.JobSaveRequest
 import ninja.jeremy.liveninja.net.JobsListResponse
 import ninja.jeremy.liveninja.net.LiveNinjaApi
+import ninja.jeremy.liveninja.net.JobHistoryResponse
+import ninja.jeremy.liveninja.net.JobCommandRequest
+import ninja.jeremy.liveninja.net.JobCommandResponse
+import ninja.jeremy.liveninja.net.AuthBoundRequest
+import ninja.jeremy.liveninja.auth.TokenStore
+import ninja.jeremy.liveninja.net.BoundJobsSession
+import ninja.jeremy.liveninja.net.JobsSessionException
 
 /**
  * Uses the app's existing authenticated Retrofit stack. Mutations are performed
@@ -22,10 +29,11 @@ import ninja.jeremy.liveninja.net.LiveNinjaApi
  * and discards it after success, a definitive conflict, or an edited intent.
  * A 409 must prompt a refresh and new confirmation; this repository never
  * silently refreshes the version, changes the intent, or repeats an action.
- * The shared 401 authenticator may replay the SAME serialized request body.
+ * Production mutations proactively refresh only the UI's captured session,
+ * then pin its bearer and disable authenticator replay for that request.
  */
 @Singleton
-class JobsRepository @Inject constructor(private val api: LiveNinjaApi) {
+class JobsRepository @Inject constructor(private val api: LiveNinjaApi, private val tokenStore: TokenStore? = null, private val boundSessions: BoundJobsSession? = null) {
     suspend fun list(cursor: String? = null): JobsListResponse {
         val response = api.listJobs(cursor = cursor?.takeIf { it.isNotBlank() }, limit = PAGE_SIZE)
         return response.copy(jobs = response.jobs.orEmpty(), nextCursor = response.nextCursor?.takeIf { it.isNotBlank() })
@@ -42,31 +50,107 @@ class JobsRepository @Inject constructor(private val api: LiveNinjaApi) {
         return response.copy(runs = response.runs.orEmpty(), nextCursor = response.nextCursor?.takeIf { it.isNotBlank() })
     }
 
-    suspend fun create(input: JobInputDto, requestId: String): JobResponse =
-        api.createJob(saveRequest(input, requestId)).requireJob()
+    suspend fun create(input: JobInputDto, requestId: String, expectedSessionId: String? = null): JobResponse {
+        val body = saveRequest(input, requestId)
+        val bound = bind(expectedSessionId)
+        return (if (bound == null) api.createJob(body) else api.createJobReviewed(body, bound.first, bound.second)).requireJob()
+    }
 
-    suspend fun update(id: String, input: JobInputDto, version: Long, requestId: String): JobResponse {
+    suspend fun update(id: String, input: JobInputDto, version: Long, requestId: String, expectedSessionId: String? = null): JobResponse {
         requireId(id)
         requireVersion(version)
-        return api.updateJob(id, saveRequest(input, requestId, version)).requireJob()
+        val body = saveRequest(input, requestId, version); val bound = bind(expectedSessionId)
+        return (if (bound == null) api.updateJob(id, body) else api.updateJobReviewed(id, body, bound.first, bound.second)).requireJob()
     }
 
-    suspend fun jobAction(id: String, action: String, version: Long, requestId: String): JobResponse {
+    suspend fun jobAction(id: String, action: String, version: Long, requestId: String, expectedSessionId: String? = null): JobResponse {
         requireId(id)
         require(action in JOB_ACTIONS) { "Unsupported job action." }
-        return api.jobAction(id, action, actionRequest(version, requestId)).requireJob()
+        val body = actionRequest(version, requestId); val bound = bind(expectedSessionId)
+        return (if (bound == null) api.jobAction(id, action, body) else api.jobActionReviewed(id, action, body, bound.first, bound.second)).requireJob()
     }
 
-    suspend fun runNow(id: String, version: Long, requestId: String): JobRunResponse {
+    suspend fun runNow(id: String, version: Long, requestId: String, expectedSessionId: String? = null): JobRunResponse {
         requireId(id)
-        return api.runJob(id, actionRequest(version, requestId)).requireReceipt()
+        val body = actionRequest(version, requestId); val bound = bind(expectedSessionId)
+        return (if (bound == null) api.runJob(id, body) else api.runJobReviewed(id, body, bound.first, bound.second)).requireReceipt()
     }
 
-    suspend fun runAction(id: String, runId: String, action: String, version: Long, requestId: String): JobRunResponse {
+    suspend fun runAction(id: String, runId: String, action: String, version: Long, requestId: String, expectedSessionId: String? = null): JobRunResponse {
         requireId(id)
         requireId(runId)
         require(action in RUN_ACTIONS) { "Unsupported run action." }
-        return api.jobRunAction(id, runId, action, actionRequest(version, requestId)).requireReceipt()
+        val body = actionRequest(version, requestId); val bound = bind(expectedSessionId)
+        return (if (bound == null) api.jobRunAction(id, runId, action, body) else api.jobRunActionReviewed(id, runId, action, body, bound.first, bound.second)).requireReceipt()
+    }
+
+    suspend fun history(id: String, cursor: String? = null, after: String? = null): JobHistoryResponse {
+        requireId(id)
+        require(cursor == null || after == null)
+        val response = api.jobHistory(id, cursor, after, PAGE_SIZE)
+        if (response.entries == null || response.entries.any { it.jobId != id || it.id.isBlank() }) throw IOException("Unverified job history response.")
+        return response
+    }
+
+    suspend fun historyPage(scope: JobHistoryScope, cursor: String?, direction: HistoryDirection): JobHistoryPage {
+        val bound = bind(scope.tenantId) ?: throw JobsSessionException()
+        requireId(scope.jobId)
+        val response = api.jobHistory(scope.jobId, cursor.takeIf { direction == HistoryDirection.OLDER }, cursor.takeIf { direction == HistoryDirection.LATEST }, PAGE_SIZE, bound.first, bound.second)
+        if (response.entries == null || response.entries.any { it.jobId != scope.jobId || it.id.isBlank() }) throw IOException("Unverified job history response.")
+        check(tokenStore?.session()?.sessionId == scope.tenantId) { "The signed-in session changed." }
+        return JobHistoryPage(scope, response.entries.orEmpty().map { entry ->
+            val text = buildList {
+                entry.text?.takeIf { it.isNotBlank() }?.let(::add)
+                entry.run?.title?.takeIf { it.isNotBlank() && it != entry.text }?.let(::add)
+                entry.run?.instructions?.takeIf { it.isNotBlank() && it != entry.text }?.let(::add)
+                entry.run?.progress?.takeIf { it.isNotBlank() }?.let(::add)
+                entry.run?.result?.takeIf { it.isNotBlank() }?.let(::add)
+                entry.run?.error?.takeIf { it.isNotBlank() }?.let(::add)
+            }.joinToString("\n\n")
+            JobHistoryEntry(entry.id, entry.sequence, entry.role, text, entry.createdAt, entry.kind, entry.status)
+        }, response.olderCursor, response.newerCursor, HistoryRetention.PARTIAL, response.retentionBoundary, direction == HistoryDirection.LATEST && cursor != null && response.hasMore)
+    }
+
+    suspend fun note(id: String, text: String, version: Long, requestId: String, runId: String? = null, expectedSessionId: String? = null): JobCommandResponse {
+        requireId(id); requireVersion(version); requireRequestId(requestId)
+        require(text.isNotBlank() && text.toByteArray(Charsets.UTF_8).size <= 2000)
+        if (runId != null) requireId(runId)
+        val bound = bind(expectedSessionId)
+        return api.jobCommand(id, JobCommandRequest(kind = "note", text = text, runId = runId, expectedVersion = version, requestId = requestId), bound?.first, bound?.second).requireCommand(id)
+    }
+
+    /** Called only from a trusted review click; the captured bearer cannot change account on retry. */
+    suspend fun approveProposal(proposal: JobsVoiceProposal, requestId: String): JobResponse {
+        requireRequestId(requestId)
+        val binding = bind(proposal.sessionId) ?: throw JobsSessionException()
+        val bearer = binding.first
+        val bound = binding.second
+        if (proposal.operation == "job_create") return api.createJobReviewed(saveRequest(requireNotNull(proposal.input), requestId), bearer, bound).requireJob()
+        val id = requireNotNull(proposal.jobId); requireId(id); requireVersion(proposal.expectedVersion)
+        val body = actionRequest(proposal.expectedVersion, requestId)
+        val job = when (proposal.operation) {
+            "job_start" -> api.runJobReviewed(id, body, bearer, bound).requireReceipt().job
+            "job_pause", "job_resume", "job_cancel" -> api.jobActionReviewed(id, proposal.operation.removePrefix("job_"), body, bearer, bound).requireJob().job
+            "job_retry" -> { val runId = requireNotNull(proposal.runId); requireId(runId); api.retryJobRunReviewed(id, runId, body, bearer, bound).requireReceipt().job }
+            "job_command" -> api.jobCommand(id, JobCommandRequest(kind = "note", text = requireNotNull(proposal.text), runId = proposal.runId, expectedVersion = proposal.expectedVersion, requestId = requestId), bearer, bound).requireCommand(id).job
+            else -> throw IllegalArgumentException("Unsupported reviewed operation.")
+        }
+        return JobResponse(job).requireJob()
+    }
+
+    private fun JobCommandResponse.requireCommand(id: String): JobCommandResponse {
+        if (command == null || command.id.isBlank() || command.jobId != id || command.kind != "note" || command.status != "recorded" || job == null || job.id != id || job.version < 1) throw IOException("The note receipt could not be verified.")
+        return this
+    }
+
+    private suspend fun bind(expectedSessionId: String?): Pair<String, AuthBoundRequest>? {
+        // The bare-api constructor is a hermetic test seam. Hilt supplies both
+        // session dependencies in the app; production callers must name the UI session.
+        if (tokenStore == null) { check(expectedSessionId == null); return null }
+        if (expectedSessionId.isNullOrBlank()) throw JobsSessionException()
+        val session = boundSessions?.credentials(expectedSessionId) ?: tokenStore.session() ?: throw JobsSessionException()
+        if (session.sessionId != expectedSessionId) throw JobsSessionException()
+        return "Bearer ${session.accessToken}" to AuthBoundRequest()
     }
 
     private fun saveRequest(input: JobInputDto, requestId: String, version: Long? = null): JobSaveRequest {

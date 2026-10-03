@@ -1,6 +1,7 @@
 package realtime
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -13,7 +14,12 @@ import (
 // the client to the bridge. Nova executes every tool call in the backend, so
 // its tool list is deliberately limited to the server-executable catalog.
 func BuildNovaSessionConfig(systemPrompt string) voiceengine.Config {
+	return BuildNovaSessionConfigForClient(context.Background(), systemPrompt)
+}
+
+func BuildNovaSessionConfigForClient(ctx context.Context, systemPrompt string) voiceengine.Config {
 	manifest := toolManifestForServerExecution()
+	manifest = FilterJobsTools(manifest, jobsReviewEnabled(ctx))
 	specs := make([]voiceengine.ToolSpec, 0, len(manifest))
 	for _, entry := range manifest {
 		name, nameOK := entry["name"].(string)
@@ -32,7 +38,7 @@ func BuildNovaSessionConfig(systemPrompt string) voiceengine.Config {
 		})
 	}
 	return voiceengine.Config{
-		SystemPrompt: systemPrompt,
+		SystemPrompt: ClientInstructions(ctx, systemPrompt),
 		Tools:        specs,
 	}
 }

@@ -50,6 +50,7 @@ func RegisterJobsAPI(app *fiber.App, svc *jobs.Service, scheduling bool, authori
 		}
 		return c.Next()
 	})
+	registerJobsHistoryRoutes(api, svc)
 	api.Get("/", func(c *fiber.Ctx) error {
 		page, err := svc.List(c.UserContext(), UserID(c), queryLimit(c, 30, 50), c.Query("cursor"))
 		if err != nil {
@@ -194,6 +195,8 @@ func jobRunResponse(c *fiber.Ctx, svc *jobs.Service, r *jobs.Run) error {
 }
 func jobsError(c *fiber.Ctx, err error) error {
 	switch {
+	case errors.Is(err, jobs.ErrUnsupported):
+		return errorJSON(c, 501, "unsupported_command", "This command or conversation provider is not connected. A note can be saved without changing execution.")
 	case errors.Is(err, jobs.ErrValidation):
 		return errorJSON(c, 400, "invalid_request", err.Error())
 	case errors.Is(err, jobs.ErrNotFound):
@@ -212,7 +215,7 @@ func jobsError(c *fiber.Ctx, err error) error {
 	return errorJSON(c, 503, "jobs_unavailable", "Jobs could not be saved or loaded. Your request can be retried safely.")
 }
 func jobsCapabilities(scheduling bool) fiber.Map {
-	return fiber.Map{"reminder": true, "review": true, "scheduling": scheduling, "historyLimit": 50, "providers": []fiber.Map{
+	return fiber.Map{"reminder": true, "review": true, "scheduling": scheduling, "historyLimit": 50, "durableHistory": true, "noteCommands": true, "steering": false, "providers": []fiber.Map{
 		{"id": "reminder", "label": "In-app reminders", "available": true, "reason": "Creates a durable reminder receipt in Jobs. No email is sent."},
 		{"id": "review", "label": "Human review", "available": true, "reason": "Waits for your review of the saved instructions. Approval records your acknowledgement; it does not execute external work."},
 		{"id": "coding", "label": "Coding agents", "available": false, "reason": "Durable isolated execution is not connected to Jobs yet."},

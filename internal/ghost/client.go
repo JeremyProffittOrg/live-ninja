@@ -69,8 +69,22 @@ var (
 	// ErrUpstream is anything else, including a transport failure.
 	ErrUpstream = errors.New("ghost: upstream error")
 	// ErrNotConfigured means THIS side has no function name wired.
-	ErrNotConfigured = errors.New("ghost: client is not configured")
+	ErrNotConfigured        = errors.New("ghost: client is not configured")
+	ErrInvalidRequest       = errors.New("ghost: invalid request")
+	ErrHistoryGone          = errors.New("ghost: history expired or missing")
+	ErrHistoryTooLarge      = errors.New("ghost: history object too large")
+	ErrHistoryMalformed     = errors.New("ghost: malformed retained history")
+	ErrTransportUnavailable = errors.New("ghost: internal transport unavailable")
 )
+
+// HTTPError preserves authorization status without retaining private upstream bodies.
+type HTTPError struct {
+	StatusCode int
+	Cause      error
+}
+
+func (e *HTTPError) Error() string { return e.Cause.Error() }
+func (e *HTTPError) Unwrap() error { return e.Cause }
 
 // InvokeAPI is the one Lambda control-plane operation this package needs.
 // A *lambda.Client satisfies it; tests inject a fake.
@@ -173,7 +187,7 @@ func (c *Client) call(ctx context.Context, method, resource, body string, query 
 	if fe := aws.ToString(out.FunctionError); fe != "" {
 		c.log.Error("ghost: function error",
 			slog.String("resource", resource), slog.String("function_error", fe))
-		return "", fmt.Errorf("%w: function error %s", ErrUpstream, fe)
+		return "", fmt.Errorf("%w: %w", ErrUpstream, ErrTransportUnavailable)
 	}
 
 	var resp proxyResponse
@@ -186,11 +200,19 @@ func (c *Client) call(ctx context.Context, method, resource, body string, query 
 		return resp.Body, nil
 	case resp.StatusCode == 401 || resp.StatusCode == 403:
 		c.log.Warn("ghost: not authorized", slog.String("resource", resource))
-		return "", ErrNotAuthorized
+		return "", &HTTPError{StatusCode: resp.StatusCode, Cause: ErrNotAuthorized}
+	case resp.StatusCode == 400:
+		return "", ErrInvalidRequest
 	case resp.StatusCode == 404:
 		return "", ErrNotFound
 	case resp.StatusCode == 409:
 		return resp.Body, ErrConflict
+	case resp.StatusCode == 410:
+		return "", ErrHistoryGone
+	case resp.StatusCode == 413:
+		return "", ErrHistoryTooLarge
+	case resp.StatusCode == 422:
+		return "", ErrHistoryMalformed
 	case resp.StatusCode == 429:
 		return "", ErrQuota
 	case resp.StatusCode == 503:
@@ -477,8 +499,12 @@ func (c *Client) FindRun(ctx context.Context, eventID, runID, corrID string) (Ev
 
 // Node is one fleet machine as GET /nodes reports it.
 type Node struct {
-	NodeID string `json:"node_id"`
-	Status string `json:"status"`
+	NodeID       string `json:"node_id"`
+	Status       string `json:"status,omitempty"`
+	State        string `json:"state"`
+	AgentVersion string `json:"agent_version"`
+	LastSeen     string `json:"last_seen"`
+	Connected    bool   `json:"connected"`
 }
 
 // Nodes lists the fleet. Used to tell "that machine is offline" apart from
@@ -493,6 +519,9 @@ func (c *Client) Nodes(ctx context.Context, corrID string) ([]Node, error) {
 	}
 	if err := json.Unmarshal([]byte(resp), &parsed); err != nil {
 		return nil, fmt.Errorf("%w: decode nodes: %v", ErrUpstream, err)
+	}
+	if parsed.Nodes == nil {
+		return nil, fmt.Errorf("%w: missing node inventory", ErrUpstream)
 	}
 	return parsed.Nodes, nil
 }

@@ -13,6 +13,10 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONException
 import org.json.JSONObject
+import ninja.jeremy.liveninja.ui.jobs.JobsProposalInbox
+import ninja.jeremy.liveninja.auth.TokenStore
+import ninja.jeremy.liveninja.net.AuthBoundRequest
+import ninja.jeremy.liveninja.net.BoundJobsSession
 
 /**
  * Routes realtime `function_call`s to the backend tool router
@@ -27,9 +31,24 @@ import org.json.JSONObject
 @Singleton
 class ToolCallRouter @Inject constructor(
     @AuthorizedClient private val httpClient: OkHttpClient,
+    private val jobsProposals: JobsProposalInbox,
+    private val tokenStore: TokenStore,
+    private val boundSessions: BoundJobsSession? = null,
 ) {
 
-    suspend fun invoke(call: RealtimeEvent.FunctionCall): String = withContext(Dispatchers.IO) {
+    suspend fun invoke(call: RealtimeEvent.FunctionCall, expectedSessionId: String? = null): String = withContext(Dispatchers.IO) {
+        val jobsCall = call.name.startsWith("job_")
+        val boundCall = jobsCall || expectedSessionId != null
+        if (boundCall && (expectedSessionId.isNullOrBlank() || expectedSessionId != jobsProposals.captureSession())) {
+            return@withContext errorOutput(call, "session_changed", "Restart the conversation after signing in before accessing jobs.")
+        }
+        val proposalCredentials = if (boundCall) runCatching {
+            boundSessions?.credentials(requireNotNull(expectedSessionId)) ?: tokenStore.session()
+        }.getOrNull() else null
+        val proposalSession = proposalCredentials?.sessionId
+        if (boundCall && (proposalSession == null || proposalSession != expectedSessionId || proposalSession != jobsProposals.captureSession())) {
+            return@withContext errorOutput(call, "session_changed", "Sign in again before preparing this job proposal.")
+        }
         val args = try {
             JSONObject(call.argumentsJson)
         } catch (_: JSONException) {
@@ -46,6 +65,12 @@ class ToolCallRouter @Inject constructor(
         val request = Request.Builder()
             .url(BackendConfig.TOOLS_INVOKE_URL)
             .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .apply {
+                if (proposalCredentials != null) {
+                    header("Authorization", "Bearer ${proposalCredentials.accessToken}")
+                    tag(AuthBoundRequest::class.java, AuthBoundRequest())
+                }
+            }
             .build()
 
         try {
@@ -55,7 +80,11 @@ class ToolCallRouter @Inject constructor(
                 // is already what the model should see — pass it through as-is
                 // whenever it is valid JSON, success or tool-level failure alike.
                 try {
-                    JSONObject(text).toString()
+                    val valid = JSONObject(text).toString()
+                    // A tool-level confirmation_required may use HTTP 409; its exact
+                    // backend envelope is reviewed by a human, never auto-applied.
+                    jobsProposals.offer(proposalSession, call.name, call.callId, valid)
+                    valid
                 } catch (_: JSONException) {
                     errorOutput(call, "http_${response.code}", "tool router returned a non-JSON body")
                 }

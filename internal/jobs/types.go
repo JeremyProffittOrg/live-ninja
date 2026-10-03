@@ -17,6 +17,7 @@ var (
 	ErrForbidden    = errors.New("jobs: account is not active")
 	ErrLimit        = errors.New("jobs: pending run limit reached; resolve or cancel pending runs")
 	ErrCorrupt      = errors.New("jobs: stored record requires operator recovery")
+	ErrUnsupported  = errors.New("jobs: this command or conversation provider is not connected")
 )
 
 const MaxRuns = 50
@@ -94,12 +95,26 @@ type Record struct {
 	Receipts          []Receipt `json:"receipts"`
 	CreateFingerprint string    `json:"createFingerprint"`
 	RetryAfter        string    `json:"retryAfter,omitempty"`
+	pendingEntries    []HistoryEntry
+	evictedRuns       []Run // terminal snapshots to archive before aggregate compaction
 }
 type Receipt struct {
 	ID          string `json:"id"`
 	Fingerprint string `json:"fingerprint"`
 	RunID       string `json:"runId,omitempty"`
+	ResourceID  string `json:"resourceId,omitempty"`
+	Version     int64  `json:"version,omitempty"`
+	Sequence    int64  `json:"sequence,omitempty"`
+	CreatedAt   string `json:"createdAt,omitempty"`
 }
+
+func (r Receipt) resourceID() string {
+	if r.ResourceID != "" {
+		return r.ResourceID
+	}
+	return r.RunID
+}
+
 type Ref struct{ UserID, ID string }
 type Store interface {
 	Get(context.Context, string, string) (*Record, error)

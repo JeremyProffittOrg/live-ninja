@@ -13,8 +13,9 @@ import (
 )
 
 type Service struct {
-	store Store
-	now   func() time.Time
+	store         Store
+	now           func() time.Time
+	conversations ConversationReader
 }
 
 func NewService(store Store) *Service { return &Service{store: store, now: time.Now} }
@@ -39,6 +40,9 @@ func validateInput(in *Input, now time.Time, creating bool) error {
 	}
 	return nil
 }
+
+// ValidateProposedInput normalizes draft fields without creating a job.
+func ValidateProposedInput(in *Input, now time.Time) error { return validateInput(in, now, true) }
 func validIdentity(uid, requestID string) error {
 	if uid == "" {
 		return ErrForbidden
@@ -154,7 +158,7 @@ func (s *Service) mutate(ctx context.Context, uid, id, requestID, fp string, ver
 			if receipt.Fingerprint != fp {
 				return nil, "", ErrConflict
 			}
-			return r, receipt.RunID, nil
+			return r, receipt.resourceID(), nil
 		}
 	}
 	if version < 1 || r.Job.Version != version {
@@ -165,7 +169,7 @@ func (s *Service) mutate(ctx context.Context, uid, id, requestID, fp string, ver
 	if e != nil {
 		return nil, "", e
 	}
-	r.Receipts = append(r.Receipts, Receipt{ID: requestID, Fingerprint: fp, RunID: runID})
+	r.Receipts = append(r.Receipts, Receipt{ID: requestID, Fingerprint: fp, ResourceID: runID, Version: r.Job.Version + 1, Sequence: (r.Job.Version + 1) * 100, CreatedAt: stamp(now)})
 	if len(r.Receipts) > MaxReceipts {
 		r.Receipts = r.Receipts[len(r.Receipts)-MaxReceipts:]
 	}
@@ -181,7 +185,7 @@ func (s *Service) mutate(ctx context.Context, uid, id, requestID, fp string, ver
 			if readErr == nil {
 				for _, rc := range fresh.Receipts {
 					if rc.ID == requestID && rc.Fingerprint == fp {
-						return fresh, rc.RunID, nil
+						return fresh, rc.resourceID(), nil
 					}
 				}
 			}
@@ -288,6 +292,7 @@ func reserveRun(r *Record) error {
 		if found < 0 {
 			return ErrLimit
 		}
+		r.evictedRuns = append(r.evictedRuns, r.Runs[found])
 		r.Runs = append(r.Runs[:found], r.Runs[found+1:]...)
 	}
 	return nil
@@ -314,6 +319,7 @@ func compact(r *Record, keepID string) error {
 		if found < 0 {
 			return ErrLimit
 		}
+		r.evictedRuns = append(r.evictedRuns, r.Runs[found])
 		r.Runs = append(r.Runs[:found], r.Runs[found+1:]...)
 	}
 }

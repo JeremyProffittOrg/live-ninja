@@ -1,10 +1,11 @@
-import { apiJSON } from './toolclient.mjs';
+import { apiJSON, reviewedProposalRequest } from './toolclient.mjs';
 
+const JOB_OPERATIONS=['job_create','job_start','job_pause','job_resume','job_cancel','job_retry','job_command'];
 let active = null;
 const el = (tag, text, cls) => { const node = document.createElement(tag); if (text != null) node.textContent = text; if (cls) node.className = cls; return node; };
 const key = () => crypto.randomUUID();
 export function isReviewProposal(error) {
-  return error?.code === 'confirmation_required' && ['save', 'delete', 'propose_code_update'].includes(error?.details?.operation);
+  return error?.code === 'confirmation_required' && ['save', 'delete', 'propose_code_update', ...JOB_OPERATIONS].includes(error?.details?.operation);
 }
 export function reviewedRuleRequest(details, current) {
   const proposed = details.proposed;
@@ -46,12 +47,33 @@ function button(view, text, action) {
 }
 export async function openProposalReview(details, { request = apiJSON, onChanged = () => {} } = {}) {
   // Work with an isolated snapshot. Later assistant turns cannot change this review.
+  let bindingError=null;
+  if(JOB_OPERATIONS.includes(details?.operation)&&request===apiJSON){try{request=reviewedProposalRequest(details);}catch(e){bindingError=e;}}
   details = structuredClone(details);
   const coding = details?.operation === 'propose_code_update';
-  const v = dialog(coding ? 'Review coding proposal' : details?.operation === 'delete' ? 'Review rule deletion' : 'Review rule change');
+  const jobs = JOB_OPERATIONS.includes(details?.operation);
+  const v = dialog(jobs ? 'Review job action' : coding ? 'Review coding proposal' : details?.operation === 'delete' ? 'Review rule deletion' : 'Review rule change');
   v.status.textContent = 'Loading the current state…';
   try {
-    if (coding) {
+    if(bindingError)throw bindingError;
+    if(jobs) {
+      const action=reviewedJobRequest(details);
+      if(details.job){
+        const current=await request(`/api/v1/jobs/${encodeURIComponent(details.job.id)}`);
+        if(current.job?.version!==details.proposed.expectedVersion)throw new Error('This job changed. Ask for a fresh proposal after reviewing its latest state.');
+        field(v.body,'Current job',`${details.job.title}\n\n${details.job.instructions}\nStatus: ${details.job.status}\nVersion: ${details.job.version}`);
+      }
+      field(v.body,'Exact proposed action',JSON.stringify(details.proposed,null,2));
+      if(details.run)field(v.body,'Run to retry',JSON.stringify(details.run,null,2));
+      v.body.append(el('p','This changes only the local reminder or review job shown here. Notes do not steer external agents. Close this review to make no change.'));
+      v.status.textContent='Review the complete action before approving.';
+      button(v,'Approve job action',async b=>{
+        const result=await request(action.path,{method:'POST',json:action.payload});
+        if(!result?.job?.id)throw new Error('The server did not confirm the change. Check Jobs before retrying.');
+        b.remove();v.status.textContent=details.operation==='job_command'?'Note saved. No external instructions changed.':'Job action recorded. Open Jobs to inspect its current state and receipt.';
+        onChanged(result);
+      });
+    } else if (coding) {
       field(v.body, 'Proposed work', codingSummary(details.proposed));
       v.body.append(el('p', 'Preparing verifies the selected repository and machine and saves a review snapshot. It does not start work. Coding execution is currently unavailable.'));
       v.status.textContent = '';
@@ -105,4 +127,26 @@ function showCodeIntent(v, intent, request, onChanged) {
 }
 export function openCodeIntent(intent, options = {}) {
   const v = dialog('Review saved coding intent'); showCodeIntent(v, structuredClone(intent), options.request || apiJSON, options.onChanged || (() => {})); return v.d;
+}
+
+export function reviewedJobRequest(details) {
+  const p=details.proposed;
+  if(!JOB_OPERATIONS.includes(details.operation)||details.executionAvailable!==true||!p)throw new Error('This job proposal is incomplete. Ask for a new proposal.');
+  if(details.operation==='job_create') {
+    if(!p.title||(p.instructions!=null&&typeof p.instructions!=='string')||!['reminder','review'].includes(p.kind)||!p.schedule)throw new Error('This job proposal is incomplete.');
+    return {path:'/api/v1/jobs',payload:{title:p.title,instructions:p.instructions || '',kind:p.kind,schedule:p.schedule,requestId:key()}};
+  }
+  if(!p.jobId||details.job?.id!==p.jobId||!Number.isSafeInteger(p.expectedVersion)||p.expectedVersion!==details.job.version)throw new Error('This job snapshot is incomplete.');
+  const payload={expectedVersion:p.expectedVersion,requestId:key()};
+  const root=`/api/v1/jobs/${encodeURIComponent(p.jobId)}`;
+  if(details.operation==='job_command') {
+    if(p.kind!=='note'||typeof p.text!=='string'||!p.text.trim())throw new Error('Only a saved note is supported.');
+    return {path:root+'/commands',payload:{...payload,kind:'note',text:p.text,...(p.runId?{runId:p.runId}:{})}};
+  }
+  if(details.operation==='job_retry') {
+    if(!p.runId||details.run?.id!==p.runId)throw new Error('The exact run to retry is missing.');
+    return {path:root+`/runs/${encodeURIComponent(p.runId)}/retry`,payload};
+  }
+  const action={job_start:'run',job_pause:'pause',job_resume:'resume',job_cancel:'cancel'}[details.operation];
+  return {path:root+'/'+action,payload};
 }

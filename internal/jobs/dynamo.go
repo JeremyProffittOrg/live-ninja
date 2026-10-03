@@ -144,6 +144,16 @@ func (s *DynamoStore) write(ctx context.Context, r *Record, expected int64, acti
 	}
 	putIndex := len(checks)
 	checks = append(checks, types.TransactWriteItem{Put: &types.Put{TableName: aws.String(s.table), Item: item, ConditionExpression: aws.String(condition), ExpressionAttributeValues: values}})
+	if active {
+		eventWrites, e := s.historyWrites(ctx, r, expected)
+		if e != nil {
+			return e
+		}
+		checks = append(checks, eventWrites...)
+	}
+	// Inactive suspension only changes an existing aggregate. Account purge
+	// snapshots USER keys before deleting them; creating an event after that
+	// snapshot would leave an orphan even when the job version is fenced.
 	_, e = s.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: checks})
 	if e != nil {
 		var cancelled *types.TransactionCanceledException

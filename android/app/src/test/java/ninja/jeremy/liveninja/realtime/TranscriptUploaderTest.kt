@@ -22,7 +22,7 @@ class TranscriptUploaderTest {
         val api = FakeSink()
         val uploader = TranscriptUploader(api, this)
 
-        uploader.begin("sess-1", TranscriptUploader.ENGINE_OPENAI)
+        uploader.begin("sess-1", TranscriptUploader.ENGINE_OPENAI, "auth-a")
         uploader.finish()
         advanceUntilIdle()
 
@@ -39,7 +39,7 @@ class TranscriptUploaderTest {
         val api = FakeSink()
         val uploader = TranscriptUploader(api, this)
 
-        uploader.begin("sess-2", TranscriptUploader.ENGINE_GEMINI)
+        uploader.begin("sess-2", TranscriptUploader.ENGINE_GEMINI, "auth-a")
         uploader.record(TranscriptRole.USER, "what is the weather")
         uploader.record(TranscriptRole.ASSISTANT, "it is overcast and 72")
         uploader.finish()
@@ -58,7 +58,7 @@ class TranscriptUploaderTest {
         val api = FakeSink()
         val uploader = TranscriptUploader(api, this)
 
-        uploader.begin("sess-3", TranscriptUploader.ENGINE_OPENAI)
+        uploader.begin("sess-3", TranscriptUploader.ENGINE_OPENAI, "auth-a")
         uploader.record(TranscriptRole.USER, "   ")
         uploader.record(TranscriptRole.USER, "")
         uploader.finish()
@@ -74,7 +74,7 @@ class TranscriptUploaderTest {
 
         // The broker didn't return an id — there is nothing to key rows against, so the
         // uploader must stay quiet rather than invent one.
-        uploader.begin(null, TranscriptUploader.ENGINE_OPENAI)
+        uploader.begin(null, TranscriptUploader.ENGINE_OPENAI, "auth-a")
         uploader.record(TranscriptRole.USER, "hello")
         uploader.finish()
         advanceUntilIdle()
@@ -87,7 +87,7 @@ class TranscriptUploaderTest {
         val api = FakeSink()
         val uploader = TranscriptUploader(api, this)
 
-        uploader.begin("sess-4", TranscriptUploader.ENGINE_OPENAI)
+        uploader.begin("sess-4", TranscriptUploader.ENGINE_OPENAI, "auth-a")
         repeat(TranscriptUploader.BATCH_SIZE) { uploader.record(TranscriptRole.USER, "turn $it") }
         advanceUntilIdle()
 
@@ -102,7 +102,7 @@ class TranscriptUploaderTest {
         val api = FakeSink(failing = true)
         val uploader = TranscriptUploader(api, this)
 
-        uploader.begin("sess-5", TranscriptUploader.ENGINE_OPENAI)
+        uploader.begin("sess-5", TranscriptUploader.ENGINE_OPENAI, "auth-a")
         uploader.record(TranscriptRole.USER, "hello")
         uploader.finish()
         advanceUntilIdle()
@@ -131,9 +131,55 @@ class TranscriptUploaderTest {
     /** One-method fake for the [TranscriptSink] seam. */
     private class FakeSink(private val failing: Boolean = false) : TranscriptSink {
         val requests = mutableListOf<TranscriptUploadRequest>()
-        override suspend fun upload(body: TranscriptUploadRequest) {
+        val authSessions = mutableListOf<String>()
+        override suspend fun upload(body: TranscriptUploadRequest, expectedSessionId: String) {
             if (failing) throw IllegalStateException("simulated network failure")
             requests += body
+            authSessions += expectedSessionId
         }
+    }
+
+    @Test
+    fun `queued old batch is discarded on account invalidation`() = runTest {
+        val sink = FakeSink()
+        val uploader = TranscriptUploader(sink, this)
+        uploader.begin("conversation-a", TranscriptUploader.ENGINE_OPENAI, "auth-a")
+        repeat(TranscriptUploader.BATCH_SIZE) { uploader.record(TranscriptRole.USER, "A private turn") }
+        uploader.discard()
+        uploader.begin("conversation-b", TranscriptUploader.ENGINE_OPENAI, "auth-b")
+        uploader.record(TranscriptRole.USER, "B turn")
+        uploader.finish()
+        advanceUntilIdle()
+        assertEquals(listOf("auth-b"), sink.authSessions)
+        assertEquals(listOf("conversation-b"), sink.requests.map { it.sessionId })
+        assertEquals(listOf("B turn"), sink.requests.flatMap { it.turns }.map { it.text })
+    }
+
+    @Test
+    fun `delayed final batch retains original conversation and auth ids`() = runTest {
+        val sink = FakeSink()
+        val uploader = TranscriptUploader(sink, this)
+        uploader.begin("conversation-a", TranscriptUploader.ENGINE_OPENAI, "auth-a")
+        uploader.record(TranscriptRole.USER, "A turn")
+        uploader.finish()
+        uploader.begin("conversation-b", TranscriptUploader.ENGINE_OPENAI, "auth-b")
+        uploader.record(TranscriptRole.USER, "B turn")
+        uploader.finish()
+        advanceUntilIdle()
+        assertEquals(listOf("auth-a", "auth-b"), sink.authSessions)
+        assertEquals(listOf("conversation-a", "conversation-b"), sink.requests.map { it.sessionId })
+        assertEquals(listOf("A turn", "B turn"), sink.requests.flatMap { it.turns }.map { it.text })
+    }
+
+    @Test
+    fun `discard cancels timer and does not flush private buffer`() = runTest {
+        val sink = FakeSink()
+        val uploader = TranscriptUploader(sink, this)
+        uploader.begin("conversation-a", TranscriptUploader.ENGINE_OPENAI, "auth-a")
+        uploader.record(TranscriptRole.USER, "private")
+        uploader.discard()
+        uploader.finish()
+        advanceUntilIdle()
+        assertTrue(sink.requests.isEmpty())
     }
 }

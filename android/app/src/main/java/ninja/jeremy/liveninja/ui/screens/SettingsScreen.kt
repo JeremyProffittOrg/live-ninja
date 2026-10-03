@@ -101,6 +101,7 @@ import ninja.jeremy.liveninja.wake.decideWakeSwitchAction
 import ninja.jeremy.liveninja.wake.wakeSwitchDisplay
 import ninja.jeremy.liveninja.R
 import ninja.jeremy.liveninja.ui.settings.CustomWakeJob
+import ninja.jeremy.liveninja.ui.permissions.PermissionSettingsButton
 import ninja.jeremy.liveninja.ui.settings.resolveWakePhrase
 import ninja.jeremy.liveninja.ui.settings.GeminiVoiceOption
 import ninja.jeremy.liveninja.ui.settings.MicDeviceOption
@@ -1914,6 +1915,8 @@ private fun AccountSection(
 ) {
     var confirmSignOut by remember { mutableStateOf(false) }
     var confirmSignOutEverywhere by remember { mutableStateOf(false) }
+
+    PermissionSettingsButton()
 
     Text(
         if (signedIn) {

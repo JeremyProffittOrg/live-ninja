@@ -5,6 +5,7 @@ package ninja.jeremy.liveninja.ui.screens
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -40,6 +41,7 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -67,6 +69,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -91,6 +94,7 @@ import ninja.jeremy.liveninja.ui.jobs.JobsUiState
 import ninja.jeremy.liveninja.ui.jobs.JobsViewModel
 import ninja.jeremy.liveninja.ui.jobs.jobDateLabel
 import ninja.jeremy.liveninja.ui.jobs.jobStatusLabel
+import ninja.jeremy.liveninja.ui.jobs.JobsVoiceProposal
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
@@ -105,13 +109,16 @@ fun JobsScreen(modifier: Modifier = Modifier) {
     val viewModel: JobsViewModel = hiltViewModel()
     val state by viewModel.state.collectAsStateWithLifecycle()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    LaunchedEffect(viewModel, lifecycle) {
+    var showGhost by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(viewModel, lifecycle, showGhost) {
+        if (showGhost) return@LaunchedEffect
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             viewModel.loadIfNeeded()
             while (isActive) { delay(15_000); viewModel.refresh(quiet = true) }
         }
     }
-    JobsContent(state, viewModel::handle, modifier)
+    if (showGhost) GhostExplorerScreen(onBack = { showGhost = false })
+    else JobsContent(state, { event -> if (event == JobsEvent.OpenGhost) showGhost = true else viewModel.handle(event) }, modifier)
 }
 
 /** Stateless surface permits Compose tests without replacing production authentication. */
@@ -127,7 +134,7 @@ fun JobsContent(state: JobsUiState, onEvent: (JobsEvent) -> Unit, modifier: Modi
                 if (state.selected != null) IconButton(onClick = { onEvent(JobsEvent.CloseDetail) }, enabled = !state.busy) {
                     Icon(Icons.AutoMirrored.Outlined.ArrowBack, stringResource(R.string.jobs_back))
                 }
-                Text(stringResource(R.string.jobs_title), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                Text(stringResource(R.string.jobs_title), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f).semantics { heading() })
                 IconButton(onClick = { onEvent(JobsEvent.Refresh) }, enabled = !state.loading && !state.busy) {
                     Icon(Icons.Outlined.Refresh, stringResource(R.string.jobs_refresh))
                 }
@@ -137,19 +144,49 @@ fun JobsContent(state: JobsUiState, onEvent: (JobsEvent) -> Unit, modifier: Modi
             }
             if (state.loading || state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             HorizontalDivider()
-            val job = state.selected
-            if (job == null) JobsList(state, onEvent) else JobDetail(job, state, onEvent)
+            BoxWithConstraints(Modifier.fillMaxSize()) {
+                val job = state.selected
+                if (job == null) JobsList(state, onEvent)
+                else if (maxWidth >= 900.dp) Row(Modifier.fillMaxSize()) {
+                    Box(Modifier.weight(0.35f)) { JobsList(state, onEvent) }
+                    VerticalDivider()
+                    Box(Modifier.weight(0.65f)) { JobDetail(job, state, onEvent) }
+                } else JobDetail(job, state, onEvent)
+            }
         }
     }
     state.draft?.let { JobEditorDialog(it, state, onEvent) }
     state.confirmation?.let { JobConfirmationDialog(it, state, onEvent) }
+    state.voiceReview?.let { JobsVoiceReviewDialog(it, state, onEvent) }
 }
 
 @Composable
 private fun JobsList(state: JobsUiState, onEvent: (JobsEvent) -> Unit) {
     val rows = state.jobs.filter { state.filter == "all" || it.status == state.filter }
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxSize().testTag("jobs-list")) {
-        item { Text(stringResource(R.string.jobs_subtitle), color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        item {
+            Text(stringResource(R.string.jobs_command_center), style = MaterialTheme.typography.headlineMedium, modifier = Modifier.semantics { heading() })
+            Text(stringResource(R.string.jobs_subtitle), color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
+            OutlinedButton(onClick = { onEvent(JobsEvent.OpenGhost) }, enabled = !state.busy) { Text(stringResource(R.string.ghost_open)) }
+        }
+        item {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(stringResource(R.string.jobs_loaded_summary, state.jobs.size, state.jobs.count { it.status == "active" }, state.jobs.count { it.lastRun?.status == "waiting_approval" }), style = MaterialTheme.typography.labelLarge)
+            }
+        }
+        items(state.proposals, key = { "proposal-${it.id}" }) { proposal ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(stringResource(R.string.jobs_voice_proposal), style = MaterialTheme.typography.titleMedium)
+                    Text(proposal.input?.title ?: proposal.job?.title.orEmpty())
+                    Text(stringResource(voiceOperationLabel(proposal.operation)))
+                    Row {
+                        Button(onClick = { onEvent(JobsEvent.ReviewVoice(proposal)) }, enabled = !state.busy) { Text(stringResource(R.string.jobs_review_proposal)) }
+                        TextButton(onClick = { onEvent(JobsEvent.DismissProposal(proposal.id)) }, enabled = !state.busy) { Text(stringResource(R.string.jobs_dismiss_proposal)) }
+                    }
+                }
+            }
+        }
         item { CapabilityCard(state) }
         state.notice?.let { notice -> item { NoticeCard(notice, onDismiss = { onEvent(JobsEvent.DismissNotice) }) } }
         state.error?.let { error -> item { ErrorCard(error, onRetry = { onEvent(JobsEvent.Refresh) }) } }
@@ -212,7 +249,7 @@ private fun JobDetail(job: JobDto, state: JobsUiState, onEvent: (JobsEvent) -> U
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp), modifier = Modifier.fillMaxSize().testTag("job-detail")) {
         item {
             Status(job.status)
-            Text(job.title, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 10.dp))
+            Text(job.title, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 10.dp).semantics { heading() })
             SelectionContainer { Text(job.instructions, modifier = Modifier.padding(vertical = 12.dp)) }
             Text(scheduleLabel(job.schedule), style = MaterialTheme.typography.bodyMedium)
             Text(nextRunLabel(job), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
@@ -230,6 +267,17 @@ private fun JobDetail(job: JobDto, state: JobsUiState, onEvent: (JobsEvent) -> U
                 if (job.status != "cancelled") TextButton(onClick = { onEvent(JobsEvent.Action("cancel")) }, enabled = !state.busy) { Text(stringResource(R.string.jobs_cancel_job), color = MaterialTheme.colorScheme.error) }
             }
         }
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.jobs_add_context), style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
+                    Text(stringResource(R.string.jobs_note_boundary), style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(state.noteDraft, { onEvent(JobsEvent.Note(it)) }, enabled = !state.busy, label = { Text(stringResource(R.string.jobs_note_label)) }, minLines = 2, maxLines = 6, modifier = Modifier.fillMaxWidth().testTag("job-note"))
+                    Button(onClick = { onEvent(JobsEvent.ReviewNote) }, enabled = !state.busy && state.noteDraft.isNotBlank()) { Text(stringResource(R.string.jobs_review_note)) }
+                }
+            }
+        }
+        jobTimeline(state.history, onEvent)
         item {
             HorizontalDivider()
             Text(stringResource(R.string.jobs_history), style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 20.dp))
@@ -354,6 +402,7 @@ private fun TimezoneDialog(onClose: () -> Unit, onChoose: (String) -> Unit) {
 @Composable
 private fun JobConfirmationDialog(request: JobConfirmation, state: JobsUiState, onEvent: (JobsEvent) -> Unit) {
     val (title, body) = when {
+        request.action == "note" -> R.string.jobs_review_note to R.string.jobs_note_boundary
         request.action == "approve" -> R.string.jobs_confirm_review to R.string.jobs_confirm_review_body
         request.action == "retry" -> R.string.jobs_confirm_retry to R.string.jobs_confirm_retry_body
         request.action == "pause" -> R.string.jobs_confirm_pause to R.string.jobs_confirm_pause_body
@@ -365,7 +414,7 @@ private fun JobConfirmationDialog(request: JobConfirmation, state: JobsUiState, 
             Text(stringResource(body))
             SelectionContainer { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(request.run?.title ?: request.job.title, style = MaterialTheme.typography.titleMedium)
-                Text(request.run?.instructions ?: request.job.instructions)
+                Text(request.note ?: request.run?.instructions ?: request.job.instructions)
                 request.run?.let { Text(stringResource(R.string.jobs_run_id, it.id), style = MaterialTheme.typography.bodySmall) }
                 request.run?.approvalExpiresAt?.let { Text(stringResource(R.string.jobs_review_expires, jobDateLabel(it)), style = MaterialTheme.typography.bodySmall) }
             } }
@@ -381,7 +430,7 @@ private fun JobConfirmationDialog(request: JobConfirmation, state: JobsUiState, 
 @Composable private fun ErrorCard(message: Int, onRetry: () -> Unit) { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { ErrorText(message); TextButton(onClick = onRetry) { Text(stringResource(R.string.jobs_try_again)) } } } }
 @Composable private fun NoticeCard(message: Int, onDismiss: () -> Unit) { Card(Modifier.fillMaxWidth()) { Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text(stringResource(message), modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite }); IconButton(onClick = onDismiss) { Icon(Icons.Outlined.Close, stringResource(R.string.jobs_close)) } } } }
 private fun weekdayLabel(day: Int): String = DayOfWeek.of(if (day == 0) 7 else day.coerceIn(1, 7)).getDisplayName(TextStyle.FULL, Locale.getDefault())
-@Composable private fun scheduleLabel(schedule: JobScheduleDto): String = when (schedule.kind) {
+@Composable internal fun scheduleLabel(schedule: JobScheduleDto): String = when (schedule.kind) {
     "once" -> if (schedule.at.isNullOrBlank()) stringResource(R.string.jobs_manual) else "${stringResource(R.string.jobs_once)} · ${jobDateLabel(schedule.at, schedule.timezone)} · ${schedule.timezone ?: "UTC"}"
     "daily" -> "${stringResource(R.string.jobs_daily)} · ${schedule.time} · ${schedule.timezone}"
     "weekdays" -> "${stringResource(R.string.jobs_weekdays)} · ${schedule.time} · ${schedule.timezone}"

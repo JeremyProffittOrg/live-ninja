@@ -40,6 +40,41 @@ type purgeDDB struct {
 	unprocessedOnFirst bool
 }
 
+type consistentPurgeQuery struct {
+	*purgeDDB
+	t       *testing.T
+	queries int
+}
+
+func (f *consistentPurgeQuery) Query(ctx context.Context, in *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+	f.queries++
+	if !aws.ToBool(in.ConsistentRead) {
+		f.t.Fatal("purge snapshot used eventual consistency")
+	}
+	bounded := *in
+	bounded.Limit = aws.Int32(2)
+	return f.FakeDynamo.Query(ctx, &bounded, opts...)
+}
+
+func TestPurgeHistoryPartitionSnapshotUsesStrongPagination(t *testing.T) {
+	ctx := context.Background()
+	f := &consistentPurgeQuery{purgeDDB: &purgeDDB{FakeDynamo: testutil.NewFakeDynamo(), table: "table"}, t: t}
+	for n := 0; n < 7; n++ {
+		f.SeedItem(ddbKey("USER#alice", "JOBEVENT#job#"+strconv.Itoa(n)))
+	}
+	f.SeedItem(ddbKey("USER#bob", "JOBEVENT#job#private"))
+	p := &Purger{DDB: f, Table: "table"}
+	keys, e := p.listPartitionKeys(ctx, "USER#alice")
+	if e != nil || len(keys) != 7 || f.queries < 2 {
+		t.Fatalf("incomplete strong snapshot: %d keys, %d pages, %v", len(keys), f.queries, e)
+	}
+	for _, key := range keys {
+		if key.pk != "USER#alice" {
+			t.Fatal("cross-user purge key")
+		}
+	}
+}
+
 func (p *purgeDDB) BatchWriteItem(ctx context.Context, params *dynamodb.BatchWriteItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.BatchWriteItemOutput, error) {
 	p.batchCalls++
 	reqs := params.RequestItems[p.table]

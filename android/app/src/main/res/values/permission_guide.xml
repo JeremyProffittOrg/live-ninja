@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="permission_guide_title">Choose optional permissions</string>
+    <string name="permission_guide_settings">Permissions</string>
+    <string name="permission_guide_intro">Enable only the features you want. You can skip all of these and still use screens such as Jobs and Memory. Reopen this guide in Settings → Account → Permissions. Android Settings lets you change or revoke access at any time.</string>
+    <string name="permission_guide_done">Done / skip for now</string>
+    <string name="permission_guide_enable">Enable %1$s</string>
+    <string name="permission_guide_open_settings">Android settings: %1$s</string>
+    <string name="permission_guide_allowed">Allowed by Android</string>
+    <string name="permission_guide_not_allowed">Not allowed — this feature stays optional</string>
+    <string name="permission_guide_unavailable">Camera hardware is unavailable on this device</string>
+    <string name="permission_guide_denied">Access was not granted. You can continue without it. If Android no longer offers a prompt, use this feature’s Android settings button.</string>
+    <string name="permission_guide_settings_unavailable">Android could not open that permission screen. You can continue, or open Android Settings → Apps → Live Ninja → Permissions manually.</string>
+    <string name="permission_guide_notifications_body">Optional alerts show when wake-word listening is active and when an app update needs your attention. Denying notifications can hide these alerts; it does not grant or revoke microphone access. Android may still show a running-service indicator.</string>
+    <string name="permission_guide_location_title">Approximate location</string>
+    <string name="permission_guide_location_body">Optional: when a live session starts, send the phone’s location to your Live Ninja service for local context. Reports are normally limited to once per 15 minutes; restarting the app can reset that interval. Approximate location is enough; this button does not ask for precise or background location. Existing precise grants stay under your control in Android Settings. Without access, you can tell the assistant your city instead.</string>
+    <string name="permission_guide_updates_title">Installing app updates</string>
+    <string name="permission_guide_updates_body">Installing a downloaded Live Ninja update may need Android’s “Allow from this source” setting. The updater explains this when an update is available; this guide does not request it. Android still asks you to confirm the installation. You can decline and keep using the installed version.</string>
+    <string name="permission_guide_handsfree_title">Optional hands-free access</string>
+    <string name="permission_guide_handsfree_body">Battery exemption can help wake-word listening keep running. Display-over-other-apps access enables the floating session bubble; onboarding offers these separately. Full-screen notification access can open the assistant over the lock screen where Android permits it. Opening the lock-screen settings below does not turn on wake-word listening. All of these are optional.</string>
+    <string name="permission_guide_fullscreen_settings">Android settings: lock-screen wake</string>
+</resources>

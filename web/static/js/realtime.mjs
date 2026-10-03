@@ -92,7 +92,7 @@
 // wss://generativelanguage.googleapis.com, also named explicitly in
 // `connect-src` (internal/webapp/pages_routes.go).
 
-import { authFetch, createToolDispatcher, ApiError } from './toolclient.mjs';
+import { authFetch, createToolDispatcher, ApiError, voiceBindingForResponse } from './toolclient.mjs';
 
 const SESSION_PATH = '/api/v1/realtime/session';
 const OPENAI_CALLS_URL = 'https://api.openai.com/v1/realtime/calls';
@@ -301,7 +301,7 @@ async function mintOnce(sessionPath) {
   } else if (!body || !body.clientSecret || !body.clientSecret.value) {
     throw new RealtimeError('mint_failed', 'The voice service returned an invalid session.');
   }
-  return { body, warning };
+  return { body, warning, authBinding:voiceBindingForResponse(resp) };
 }
 
 // Intent prefetch (latency plan #4.2): the session bootstrap is the longest
@@ -494,6 +494,7 @@ export class RealtimeSession extends EventTarget {
         this.#emit('devicetool', { tool, callId, args });
         return webDeviceToolResult(tool, callId);
       },
+      onSessionInvalidated: () => this.close(),
       onToolCall: (d) => this.#emit('toolcall', d),
       onToolResult: (d) => this.#emit('toolresult', d),
       // `d.error` is whatever createToolDispatcher's invoke caught — an
@@ -561,7 +562,8 @@ export class RealtimeSession extends EventTarget {
     const prefetched = takePrefetchedMint(this.sessionPath);
     if (prefetched) {
       try {
-        const { body, warning } = await prefetched;
+        const { body, warning, authBinding } = await prefetched;
+        this.#tools.bindSession(authBinding);
         if (warning) this.#emit('quotawarning', { message: warning });
         return body;
       } catch {
@@ -590,6 +592,7 @@ export class RealtimeSession extends EventTarget {
         }
         throw err; // RealtimeError / AuthLostError pass through
       }
+      this.#tools.bindSession(minted.authBinding);
       if (minted.warning) this.#emit('quotawarning', { message: minted.warning });
       return minted.body;
     }

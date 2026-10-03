@@ -23,6 +23,7 @@ class AutoUpdatePolicyTest {
         url = url,
         sha256 = sha256,
         sizeBytes = 1234,
+        certificateSha256 = "a".repeat(64),
     )
 
     private fun decide(

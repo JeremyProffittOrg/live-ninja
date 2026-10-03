@@ -34,7 +34,46 @@ const EXPIRY_SKEW_MS = 30_000;
 let accessToken = null;
 let accessExpiresAtMs = 0;
 let refreshInFlight = null;
+let pageIdentity = null;
+let pageSessionInvalidated = false;
 const authLostHandlers = new Set();
+// Kept out of model output, persisted transcripts and proposal JSON.
+const proposalBindings = new WeakMap();
+const responseBindings = new WeakMap();
+const voiceBindings = new WeakSet();
+export function voiceBindingForResponse(response) { return responseBindings.get(response) || null; }
+async function checkedVoiceToken(binding) {
+  if(!binding || !voiceBindings.has(binding))throw new Error('Start a new voice session before using Jobs.');
+  const token=await ensureAccessToken({force:true}), current=identity(token);
+  if(current.sub!==binding.sub||current.sid!==binding.sid)throw new Error('Your account changed. Start a new voice session.');
+  return token;
+}
+const pinnedBearer = Symbol('pinnedBearer');
+function identity(token) {
+  try {
+    const claims=JSON.parse(atob(token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+    if(typeof claims.sub!=='string'||!claims.sub||typeof claims.sid!=='string'||!claims.sid)throw new Error();
+    return {sub:claims.sub,sid:claims.sid};
+  } catch {throw new Error('The signed-in session could not be verified. Sign in again.');}
+}
+function bindProposal(body, token) {
+  const error=body?.error;
+  if(error?.code==='confirmation_required' && error.details && typeof error.details==='object') {
+    proposalBindings.set(error.details,{...identity(token),receivedAt:Date.now()});
+  }
+  for(const call of body?.toolCalls || [])bindProposal(call,token);
+}
+export function reviewedProposalRequest(details) {
+  const binding=proposalBindings.get(details);
+  if(!binding)throw new Error('This proposal has no verified session. Ask for a new proposal.');
+  return async(path,options={})=>{
+    const age=Date.now()-binding.receivedAt;
+    if(age<0||age>15*60*1000)throw new Error('This proposal expired. Ask for a new proposal.');
+    const token=await ensureAccessToken({force:true}), current=identity(token);
+    if(current.sub!==binding.sub||current.sid!==binding.sid)throw new Error('Your signed-in session changed. Ask for a new proposal.');
+    return apiJSON(path,{...options,[pinnedBearer]:token,retryOn401:false});
+  };
+}
 
 /** Typed error for any non-2xx /api/v1 response, carrying the parsed error
  * envelope from api_routes.go. Two envelope shapes are accepted: the canonical
@@ -122,6 +161,7 @@ async function parseJsonSafe(resp) {
  * a burst of 401s can't stampede the rotate-on-use refresh endpoint (a
  * double rotate would trip the reuse-detection family revoke). */
 function refreshAccessToken() {
+  if(pageSessionInvalidated)return Promise.reject(new AuthLostError());
   if (refreshInFlight) return refreshInFlight;
   refreshInFlight = (async () => {
     const headers = { 'X-LN-Device-ID': getDeviceID() };
@@ -154,6 +194,13 @@ function refreshAccessToken() {
     if (!body || typeof body.accessToken !== 'string' || body.accessToken === '') {
       throw new ApiError(resp.status, body, 'Malformed refresh response.');
     }
+    let nextIdentity=null;
+    try { nextIdentity=identity(body.accessToken); } catch { /* Opaque local preview credentials have no account claims. */ }
+    if(pageIdentity && (!nextIdentity || nextIdentity.sub!==pageIdentity.sub || nextIdentity.sid!==pageIdentity.sid)) {
+      pageSessionInvalidated=true;accessToken=null;accessExpiresAtMs=0;
+      emitAuthLost();throw new AuthLostError();
+    }
+    if(nextIdentity)pageIdentity=nextIdentity;
     accessToken = body.accessToken;
     accessExpiresAtMs = (Number(body.expiresAt) || 0) * 1000;
     return accessToken;
@@ -166,6 +213,7 @@ function refreshAccessToken() {
 /** Return a currently-valid access JWT, refreshing if absent/near expiry.
  * `force: true` bypasses the cache (the 401-retry path). */
 export function ensureAccessToken({ force = false } = {}) {
+  if(pageSessionInvalidated)return Promise.reject(new AuthLostError());
   if (!force && accessToken && Date.now() < accessExpiresAtMs - EXPIRY_SKEW_MS) {
     return Promise.resolve(accessToken);
   }
@@ -198,6 +246,7 @@ export async function authFetch(path, options = {}) {
       ...headers,
       Authorization: 'Bearer ' + token,
       'X-LN-Device-ID': getDeviceID(),
+      'X-LN-Capabilities': [headers['X-LN-Capabilities'] || headers['x-ln-capabilities'] || '', 'jobs-review-v1'].filter(Boolean).join(','),
     };
     if (method !== 'GET' && method !== 'HEAD') {
       const csrf = readCsrfToken();
@@ -218,11 +267,15 @@ export async function authFetch(path, options = {}) {
     });
   };
 
-  let token = await ensureAccessToken();
+  if(options[pinnedBearer] && (!path.startsWith('/api/v1/') || path.includes('\\') || path.startsWith('//')))throw new Error('Invalid bound API path.');
+  let token = options[pinnedBearer] || await ensureAccessToken();
   let resp = await doFetch(token);
-  if (resp.status === 401 && retryOn401) {
+  if (resp.status === 401 && retryOn401 && !options[pinnedBearer]) {
     token = await ensureAccessToken({ force: true });
     resp = await doFetch(token);
+  }
+  if(path.startsWith('/api/v1/realtime/session')) {
+    try { const binding=identity(token); voiceBindings.add(binding);responseBindings.set(resp,binding); } catch { /* Jobs fails closed without a verified binding. */ }
   }
   return resp;
 }
@@ -230,10 +283,21 @@ export async function authFetch(path, options = {}) {
 /** authFetch + parse: resolves the parsed JSON body on 2xx, throws ApiError
  * (with the server's error envelope) on anything else. */
 export async function apiJSON(path, options = {}) {
-  const resp = await authFetch(path, options);
+  const proposalSource=path==='/api/v1/tools/invoke'||path==='/api/v1/fallback/turn';
+  const token=proposalSource ? options[pinnedBearer] || await ensureAccessToken() : null;
+  const resp = await authFetch(path, proposalSource ? {...options,[pinnedBearer]:token,retryOn401:false} : options);
   const parsed = await parseJsonSafe(resp);
+  if(proposalSource)bindProposal(parsed,token);
   if (!resp.ok) throw new ApiError(resp.status, parsed, undefined, resp.headers.get('X-LN-Txn') || '');
   return parsed;
+}
+
+// Sensitive archive reads verify this loaded page still owns the cookie session.
+export async function pageSessionJSON(path, options={}) {
+  const token=await ensureAccessToken({force:true});
+  const result=await apiJSON(path,{...options,[pinnedBearer]:token,retryOn401:false});
+  await ensureAccessToken({force:true});
+  return result;
 }
 
 function randomId() {
@@ -266,12 +330,14 @@ export function createToolDispatcher({
   onToolCall,
   onToolResult,
   onToolError,
+  onSessionInvalidated,
 } = {}) {
   if (typeof sendEvent !== 'function') {
     throw new TypeError('createToolDispatcher requires a sendEvent(obj) function');
   }
 
   const inFlight = new Set();
+  let sessionBinding=null;
 
   async function dispatch({ name, callId, argsJson }) {
     if (!callId || inFlight.has(callId)) return; // duplicate .done events
@@ -289,6 +355,7 @@ export function createToolDispatcher({
     }
 
     if (args !== null) {
+      let jobToken=null;
       try {
         if (onToolCall) onToolCall({ tool: name, callId, args });
         // Device-local tools are still advertised by the server's canonical
@@ -298,16 +365,29 @@ export function createToolDispatcher({
           typeof invokeLocal === 'function'
             ? await invokeLocal({ tool: name, callId, args })
             : undefined;
+        if(localResult===undefined && name.startsWith('job_')) {
+          try { jobToken=await checkedVoiceToken(sessionBinding); }
+          catch(error){onSessionInvalidated?.();throw error;}
+        }
         const result =
           localResult !== undefined
             ? localResult
             : await apiJSON(invokePath, {
                 method: 'POST',
                 json: { tool: name, args, idempotencyKey: randomId(), callId },
+                ...(jobToken?{[pinnedBearer]:jobToken,retryOn401:false}:{}),
               });
+        if(jobToken) {
+          try { await checkedVoiceToken(sessionBinding); }
+          catch(error){onSessionInvalidated?.();throw error;}
+        }
         output = result;
         if (onToolResult) onToolResult({ tool: name, callId, result });
       } catch (err) {
+        if(jobToken) {
+          try { await checkedVoiceToken(sessionBinding); }
+          catch(sessionError){onSessionInvalidated?.();err=sessionError;}
+        }
         output =
           err instanceof ApiError
             ? { error: err.code || 'tool_failed', message: err.message, txId: err.txId || undefined,
@@ -343,5 +423,5 @@ export function createToolDispatcher({
     return false;
   }
 
-  return { dispatch, handleEvent };
+  return { dispatch, handleEvent, bindSession(binding){sessionBinding=voiceBindings.has(binding)?binding:null;} };
 }

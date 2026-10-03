@@ -58,6 +58,7 @@ import (
 // workstream owns. Called once from cmd/web/main.go after Deps is built,
 // behind the app-wide ExtractAuthContext/CSRFProtect middleware.
 func RegisterAPIRoutes(app *fiber.App, deps *Deps) {
+	RegisterGhostWorkRoutes(app, deps)
 	registry := buildAPIToolsRegistry(deps)
 
 	api := app.Group("/api/v1", RequireAuth())
@@ -605,18 +606,20 @@ func buildAPIToolsRegistry(deps *Deps) *tools.Registry {
 	}
 
 	toolDeps := &tools.Deps{
-		Store:            deps.Store,
-		DDB:              dynamodb.NewFromConfig(awsCfg),
-		TableName:        deps.Cfg.TableName,
-		Log:              deps.Log,
-		SQS:              deps.SQS,
-		EmailQueueURL:    deps.SQSEmailURL,
-		OwnerEmail:       os.Getenv("OWNER_EMAIL"),
-		Scheduler:        scheduler.NewFromConfig(awsCfg),
-		SchedulerGroup:   os.Getenv("SCHEDULER_GROUP"),
-		SchedulerRoleARN: os.Getenv("SCHEDULER_ROLE_ARN"),
-		Reauthorize:      apiReauthorize(deps),
-		AgentMemory:      tools.NewAgentMemoryService(deps.AgentMemory),
+		Store:                 deps.Store,
+		DDB:                   dynamodb.NewFromConfig(awsCfg),
+		TableName:             deps.Cfg.TableName,
+		Log:                   deps.Log,
+		SQS:                   deps.SQS,
+		EmailQueueURL:         deps.SQSEmailURL,
+		OwnerEmail:            os.Getenv("OWNER_EMAIL"),
+		Scheduler:             scheduler.NewFromConfig(awsCfg),
+		SchedulerGroup:        os.Getenv("SCHEDULER_GROUP"),
+		SchedulerRoleARN:      os.Getenv("SCHEDULER_ROLE_ARN"),
+		Reauthorize:           apiReauthorize(deps),
+		AgentMemory:           tools.NewAgentMemoryService(deps.AgentMemory),
+		Jobs:                  deps.Jobs,
+		JobsSchedulingEnabled: deps.JobsSchedulingEnabled,
 
 		// Voice-driven code updates. Same wiring lesson as the memory seam
 		// below: without these three lines template.yaml can set every env var
@@ -782,6 +785,9 @@ func handleToolsInvoke(deps *Deps, registry *tools.Registry) fiber.Handler {
 		}
 		if strings.TrimSpace(body.Tool) == "" {
 			return apiBadRequest(c, "tool is required")
+		}
+		if denied := jobsCompatibilityDenial(c, body.Tool, body.CallID); denied != nil {
+			return c.Status(fiber.StatusUpgradeRequired).JSON(denied)
 		}
 
 		res := registry.Invoke(c.Context(), tools.Invocation{
@@ -1076,6 +1082,8 @@ func handleFallbackTurn(deps *Deps, registry *tools.Registry) fiber.Handler {
 				Role: Role(c),
 				Mode: "fallback-turn", TxID: TxID(c), UserID: userID, Surface: surface, DeviceID: deviceID,
 				Persona: personaRef, Payload: payload,
+				Capabilities:  parseClientCapabilities(c.Get("X-LN-Capabilities")),
+				ClientVersion: c.Get("X-LN-Client"),
 			})
 		}
 
@@ -1151,6 +1159,9 @@ func handleFallbackTurn(deps *Deps, registry *tools.Registry) fiber.Handler {
 // conversationally, mirroring the live datachannel dispatcher's posture.
 func executeFallbackToolCall(c *fiber.Ctx, registry *tools.Registry, tc brokerChatToolCall,
 	iter, idx int, userID, sessionID, surface, deviceID string) *tools.Result {
+	if denied := jobsCompatibilityDenial(c, tc.Name, tc.ID); denied != nil {
+		return denied
+	}
 	var args map[string]any
 	if strings.TrimSpace(tc.Arguments) != "" {
 		if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
@@ -1282,7 +1293,7 @@ func handleFallbackTTS(deps *Deps) fiber.Handler {
 // whitespace are dropped; an absent header yields nil, which the broker reads
 // as "declares nothing" and therefore "gets no Azure engine".
 func parseClientCapabilities(raw string) []string {
-	if strings.TrimSpace(raw) == "" {
+	if len(raw) > 2048 || strings.TrimSpace(raw) == "" {
 		return nil
 	}
 	parts := strings.Split(raw, ",")

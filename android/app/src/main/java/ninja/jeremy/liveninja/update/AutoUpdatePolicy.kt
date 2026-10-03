@@ -62,8 +62,6 @@ sealed class UpdateDecision {
 }
 
 object UpdateDecider {
-    private val SHA256_HEX = Regex("^[0-9a-fA-F]{64}$")
-
     fun decide(
         latest: AndroidLatestDto,
         installedVersionCode: Int,
@@ -71,18 +69,7 @@ object UpdateDecider {
         declinedVersionCode: Long,
         trigger: UpdateTrigger,
     ): UpdateDecision {
-        if (latest.packageName != AndroidReleasePolicy.PACKAGE_NAME) {
-            return UpdateDecision.Rejected("package ${latest.packageName} is not this app")
-        }
-        if (!AndroidReleasePolicy.isTrustedApkUrl(latest.url)) {
-            return UpdateDecision.Rejected("untrusted APK URL")
-        }
-        if (!SHA256_HEX.matches(latest.sha256)) {
-            return UpdateDecision.Rejected("malformed sha256")
-        }
-        if (!AndroidReleasePolicy.sha256MatchesUrl(latest.url, latest.sha256)) {
-            return UpdateDecision.Rejected("APK URL is not content-addressed")
-        }
+        AndroidReleasePolicy.metadataError(latest)?.let { return UpdateDecision.Rejected(it) }
         if (!AndroidReleasePolicy.isNewer(latest.versionCode, installedVersionCode)) {
             return UpdateDecision.UpToDate
         }
