@@ -60,6 +60,9 @@ jobs:
   instrumented-tests:
     name: Instrumented tests (emulator)
     runs-on: ubuntu-latest
+    # A green run takes ~5 minutes. Without a bound, a test that wedges the instrumentation
+    # (e.g. failing while the Compose main clock is paused) holds the job for the 6-hour default.
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
