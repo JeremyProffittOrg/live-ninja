@@ -48,10 +48,15 @@ fun GhostExplorerContent(state: GhostExplorerState, onEvent: (GhostExplorerEvent
     androidx.activity.compose.BackHandler { if (state.nodeId != null || state.archive.scope != null) onEvent(GhostExplorerEvent.Back) else onBack() }
     Scaffold(Modifier.fillMaxSize().testTag("ghost-explorer")) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            Row(Modifier.fillMaxWidth().heightIn(min = SETTINGS_TAB_SIZE * 2).padding(start = SETTINGS_TAB_SIZE + 8.dp, end = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = { if (state.nodeId != null || state.archive.scope != null) onEvent(GhostExplorerEvent.Back) else onBack() }) { Text(stringResource(R.string.ghost_back)) }
-                Text(stringResource(R.string.ghost_title), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f).padding(top = 12.dp).semantics { heading() })
-                TextButton(onClick = { onEvent(GhostExplorerEvent.Refresh) }, enabled = !state.loading && !state.sessionsLoading && !state.archive.loading && !state.denied) { Text(stringResource(R.string.jobs_refresh)) }
+            // The title sits on its own line: sharing a Row with both buttons squeezed it to zero
+            // width on a 320dp screen at 2x font, and its one-glyph-per-line height pushed the
+            // whole list off screen.
+            Column(Modifier.fillMaxWidth().heightIn(min = SETTINGS_TAB_SIZE * 2).padding(start = SETTINGS_TAB_SIZE + 8.dp, end = 8.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    TextButton(onClick = { if (state.nodeId != null || state.archive.scope != null) onEvent(GhostExplorerEvent.Back) else onBack() }) { Text(stringResource(R.string.ghost_back)) }
+                    TextButton(onClick = { onEvent(GhostExplorerEvent.Refresh) }, enabled = !state.loading && !state.sessionsLoading && !state.archive.loading && !state.denied) { Text(stringResource(R.string.jobs_refresh)) }
+                }
+                Text(stringResource(R.string.ghost_title), style = MaterialTheme.typography.titleLarge, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 8.dp).semantics { heading() })
             }
             HorizontalDivider()
             LazyColumn(Modifier.fillMaxSize().testTag("ghost-content"), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
