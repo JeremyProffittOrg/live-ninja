@@ -61,6 +61,8 @@ class GhostExplorerComposeTest {
     @Test fun archivePreservesFullTextAndMissingTimestampAndGapNotices() {
         val archive = GhostArchiveState(scope = GhostHistoryScope("fixture-account", "FIXTURE-OFFICEPC", "fixture-provider-session"), events = listOf(GhostHistoryEventDto("fixture-event", "001", kind = "tool_result", text = "Retained fixture output. ".repeat(700) + "FULL FIXTURE OUTPUT END", more = true)), gaps = listOf("Fixture missing object"), loaded = true, resumeCursor = "tail")
         show(GhostExplorerState(nodeId = "FIXTURE-OFFICEPC", archive = archive))
+        rule.onNodeWithTag("ghost-content").performScrollToNode(hasText("provider retains session archives for 90 days", substring = true))
+        rule.onNodeWithText("provider retains session archives for 90 days", substring = true).assertExists()
         rule.onNodeWithTag("ghost-content").performScrollToNode(hasText(text(R.string.ghost_time_unknown)))
         rule.onNodeWithText(text(R.string.ghost_time_unknown)).assertExists()
         capture("ghost-native-archive.png")

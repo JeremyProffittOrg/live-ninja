@@ -19,7 +19,7 @@
     <string name="ghost_no_binding">No authoritative provider-session link is available for this job. Select a session explicitly from its node archive.</string>
     <string name="ghost_schedule">Provider schedule</string>
     <string name="ghost_archive_title">Retained provider archive</string>
-    <string name="ghost_retention">Only previously retained visible text is available. Capture completeness is unknown; the provider retains session archives for 30 days. Missing, pruned, overwritten or never-uploaded records cannot be reconstructed. Attachments and hidden reasoning are not included.</string>
+    <string name="ghost_retention">Only previously retained visible text is available. Capture completeness is unknown; the provider retains session archives for 90 days. Missing, pruned, overwritten or never-uploaded records cannot be reconstructed. Attachments and hidden reasoning are not included.</string>
     <string name="ghost_rescan">Rescan archive from beginning</string>
     <string name="ghost_gap">Provider gap notice: %1$s</string>
     <string name="ghost_time_unknown">Original timestamp unavailable</string>

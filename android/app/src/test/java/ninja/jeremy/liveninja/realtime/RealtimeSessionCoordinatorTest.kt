@@ -239,7 +239,10 @@ class RealtimeSessionCoordinatorTest {
     fun signedOutCannotBootstrap() = runBlocking {
         val coord = coordinator()
         authState.value = ninja.jeremy.liveninja.auth.AuthState.SignedOut()
-        assertTrue(runCatching { coord.start() }.exceptionOrNull() is RealtimeSessionException)
+        val failure = runCatching { coord.start() }.exceptionOrNull() as RealtimeSessionException
+        assertEquals("not_authenticated", failure.kind)
+        assertEquals(401, failure.httpCode)
+        assertEquals("Sign in before starting a conversation.", failure.message)
         coVerify(exactly = 0) { sessionApi.fetchSession(any()) }
         assertEquals(0, transport.prepareCalls)
     }

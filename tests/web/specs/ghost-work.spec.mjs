@@ -87,7 +87,7 @@ test('CONTRACT FIXTURES: empty event pages, full UTF-8 fragments, source order, 
   await expect(rows(page).nth(0)).toContainText('Fragment 1 (continues)');await expect(rows(page).nth(1)).toContainText('Fragment 2');
   await expect(rows(page).nth(2)).toContainText('Source time unavailable');await expect(rows(page).nth(2)).toContainText(literal);
   await expect(rows(page).locator('img')).toHaveCount(0);expect(await page.evaluate(()=>window.fixtureExecuted)).toBeUndefined();
-  await expect(page.locator('#ghostWorkWorkspace')).toContainText('unsupported records: 1');await expect(page.locator('#ghostWorkWorkspace')).toContainText('30 days');
+  await expect(page.locator('#ghostWorkWorkspace')).toContainText('unsupported records: 1');await expect(page.locator('#ghostWorkWorkspace')).toContainText('90 days');
   await expect(page.locator('#ghostWorkWorkspace')).toContainText('capture completeness is unknown');
   expect(calls.filter(c=>c.endpoint==='events').map(c=>c.cursor)).toEqual([null,'first-content','empty-between','tail']);
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);

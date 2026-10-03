@@ -70,7 +70,7 @@ Virtualize rendering, not retained client content. Pagination failure never
 means history is complete.
 
 Coverage is always retained_only; capture completeness is unknown. The existing
-30-day provider lifecycle remains in force. Missing, expired, never-uploaded or
+90-day provider lifecycle is deployed in Ghost revision `b0e4f0a0e68e2e8703a0e10ea2f8e0fd4cf69997`. Missing, expired, never-uploaded or
 overwritten bytes cannot be reconstructed. Gaps and existing redactions remain
 visible. Thinking, hidden prompts and arbitrary metadata are excluded upstream;
 this text projection does not preserve images or attachments.

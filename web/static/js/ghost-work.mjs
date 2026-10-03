@@ -51,7 +51,7 @@ export function createGhostHistory(request, changed=()=>{}, denied=()=>{}) {
 export function mountGhostWork(host,{request}) {
   const el=(tag,text,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;return n;};
   const heading=el('h2','Ghost work & retained conversations');
-  const boundary=el('p','Owner access only. Select an actual node and provider session. The archive retains up to 30 days; capture may be incomplete, and missing history cannot be reconstructed. Scheduled jobs do not currently expose a reliable provider-session binding.','jobs-runs-intro');
+  const boundary=el('p','Owner access only. Select an actual node and provider session. The archive retains up to 90 days; capture may be incomplete, and missing history cannot be reconstructed. Scheduled jobs do not currently expose a reliable provider-session binding.','jobs-runs-intro');
   const status=el('p','','jobs-history-status');status.setAttribute('role','status');
   const bar=el('div',null,'jobs-history-toolbar');const refresh=el('button','Refresh Ghost work','ln-btn ln-btn--ghost');refresh.type='button';bar.append(refresh);
   const nodeLabel=el('label','Node');const nodes=el('select',null,'ln-select');nodes.id='ghostNode';nodeLabel.htmlFor=nodes.id;
@@ -86,7 +86,7 @@ export function mountGhostWork(host,{request}) {
     }
     more.disabled=state.busy||!state.next;more.textContent=state.scanning?'Continue rescan':'Load next page';
     historyStatus.textContent=state.error||(state.busy?'Reading retained source pages.':`${state.events.length} fragments loaded. ${state.next?'More pages remain.':state.reachedEnd?'Current end of retained archive reached; capture completeness is unknown.':'Choose a provider session.'}`);
-    gaps.textContent=state.gaps.length?'Archive gaps: '+state.gaps.join('; '):'Retained text only. Images, attachments and hidden reasoning are not represented. Older than 30 days may have expired.';
+    gaps.textContent=state.gaps.length?'Archive gaps: '+state.gaps.join('; '):'Retained text only. Images, attachments and hidden reasoning are not represented. Older than 90 days may have expired.';
   },clearPrivate);
   function authError(error){if([401,403].includes(error?.status)||error?.name==='AuthLostError'){clearPrivate();loader.clear();return true;}return false;}
   async function loadSessions(append=false){

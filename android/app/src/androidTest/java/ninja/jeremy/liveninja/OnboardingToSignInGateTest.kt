@@ -64,7 +64,7 @@ class OnboardingToSignInGateTest {
          * app process AND one SharedPreferences file, so a class that flips a
          * global and walks away changes what the tests after it see — which is
          * exactly what happened: this leak made
-         * [TapToTalkConnectingStateTest] fail intermittently depending on the
+         * the earlier tap-to-talk test fail intermittently depending on the
          * order the runner picked, and the failure surfaced as an unrelated
          * "assertExists" on the conversation screen.
          *
