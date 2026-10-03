@@ -180,7 +180,8 @@ func forgetDefinition() *Definition {
 	return &Definition{
 		Name: "forget",
 		Description: "Permanently delete one memory entity (and its search index entry) at the " +
-			"user's request. Only call this when the user explicitly asks you to forget something.",
+			"user's request. Only call this when the user explicitly asks you to forget something. " +
+			"Report the returned cleanup status and warning: this does not erase retained sources or open-session context.",
 		SideEffecting: true,
 		Params: []ParamSpec{
 			{Name: "entityId", Type: "string", Required: true, MinLen: 1, MaxLen: maxEntityIDLen,
@@ -359,14 +360,16 @@ func handleForget(ctx context.Context, deps *Deps, inv Invocation, args map[stri
 	if !deleted {
 		return nil, toolErrf(CodeNotFound, "no such entity (or it belongs to another user)")
 	}
-	out := map[string]any{"status": "forgotten", "entityId": entityID}
+	out := map[string]any{"status": "entity_removed", "entityId": entityID, "entityRemoved": true, "learnedCleanup": "not_attempted", "warning": "The saved entity was removed. Related learned facts, source conversations and context already in an open session may remain; this is not complete topic erasure."}
 	if name != "" {
 		// agentcore-memory: drop the extracted records that name the entity
-		// too, so a forgotten person does not come back through the
+		// too; matching cannot guarantee suppression of future extraction or the
 		// REMEMBERED block. Best-effort; reported in the result.
 		if n, ferr := deps.AgentMemory.ForgetMatching(ctx, inv.UserID, name); ferr != nil {
+			out["learnedCleanup"] = "failed"
 			deps.Log.Warn("tools: forget agentcore records failed", "error", ferr.Error())
-		} else if n > 0 {
+		} else {
+			out["learnedCleanup"] = "best_effort"
 			out["rememberedForgotten"] = n
 		}
 	}

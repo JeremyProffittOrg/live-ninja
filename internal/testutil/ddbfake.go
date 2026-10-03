@@ -391,8 +391,8 @@ func (f *FakeDynamo) UpdateItem(ctx context.Context, params *dynamodb.UpdateItem
 	return out, nil
 }
 
-// TransactWriteItems implements the Update + ConditionCheck transactional
-// surface used by refresh rotation and device/session binding: all
+// TransactWriteItems implements conditional Update, Put, Delete and
+// ConditionCheck operations for the production transaction shapes: all
 // conditions are checked first, then all updates are applied; any failed
 // condition cancels the whole transaction.
 func (f *FakeDynamo) TransactWriteItems(ctx context.Context, params *dynamodb.TransactWriteItemsInput, optFns ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
@@ -425,8 +425,22 @@ func (f *FakeDynamo) TransactWriteItems(ctx context.Context, params *dynamodb.Tr
 				}
 				failed = true
 			}
+		case ti.Put != nil:
+			existing := f.items[itemKey(ti.Put.Item)]
+			if ti.Put.ConditionExpression != nil && !evalCondition(*ti.Put.ConditionExpression, existing,
+				ti.Put.ExpressionAttributeNames, ti.Put.ExpressionAttributeValues) {
+				reasons[i] = types.CancellationReason{Code: aws.String("ConditionalCheckFailed")}
+				failed = true
+			}
+		case ti.Delete != nil:
+			existing := f.items[keyOfKey(ti.Delete.Key)]
+			if ti.Delete.ConditionExpression != nil && !evalCondition(*ti.Delete.ConditionExpression, existing,
+				ti.Delete.ExpressionAttributeNames, ti.Delete.ExpressionAttributeValues) {
+				reasons[i] = types.CancellationReason{Code: aws.String("ConditionalCheckFailed")}
+				failed = true
+			}
 		default:
-			panic("testutil: only Update and ConditionCheck transact items are supported")
+			panic("testutil: unsupported transaction item")
 		}
 	}
 	if failed {
@@ -437,6 +451,14 @@ func (f *FakeDynamo) TransactWriteItems(ctx context.Context, params *dynamodb.Tr
 	}
 
 	for _, ti := range params.TransactItems {
+		if ti.Put != nil {
+			f.items[itemKey(ti.Put.Item)] = copyItem(ti.Put.Item)
+			continue
+		}
+		if ti.Delete != nil {
+			delete(f.items, keyOfKey(ti.Delete.Key))
+			continue
+		}
 		if ti.Update == nil {
 			continue
 		}

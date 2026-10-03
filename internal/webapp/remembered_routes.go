@@ -56,6 +56,6 @@ func handleForgetRemembered(deps *Deps) fiber.Handler {
 			return errorJSON(c, fiber.StatusNotFound, "not_found", "No such remembered fact.")
 		}
 		deps.Log.Info("api: remembered record forgotten", slog.String("userId", userID), slog.String("recordId", id))
-		return c.JSON(fiber.Map{"ok": true, "id": id})
+		return c.JSON(fiber.Map{"ok": true, "id": id, "status": "record_deleted", "warning": "This learned record was deleted. Retained source conversations can produce related facts again; this is not complete topic erasure. Start a new conversation to clear preloaded context."})
 	}
 }

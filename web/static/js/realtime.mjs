@@ -508,7 +508,8 @@ export class RealtimeSession extends EventTarget {
           tool: d.tool,
           callId: d.callId,
           args: d.args || {},
-          error: { message, code, txId: (err && err.txId) || '' },
+          error: { message, code, txId: (err && err.txId) || '',
+            ...(code === 'confirmation_required' && err?.body?.error?.details ? { details: err.body.error.details } : {}) },
         });
       },
     });

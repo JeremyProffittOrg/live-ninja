@@ -28,18 +28,22 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/codeupdate"
+	userstore "github.com/JeremyProffittOrg/live-ninja/internal/store"
+	"github.com/JeremyProffittOrg/live-ninja/internal/testutil"
 )
 
 // progressDDB is a minimal in-memory table supporting the token row's GetItem
 // and its conditional post-count claim.
 type progressDDB struct {
-	mu     sync.Mutex
-	items  map[string]map[string]ddbtypes.AttributeValue
-	getErr error
+	*testutil.FakeDynamo
+	profileErr error
+	mu         sync.Mutex
+	items      map[string]map[string]ddbtypes.AttributeValue
+	getErr     error
 }
 
 func newProgressDDB() *progressDDB {
-	return &progressDDB{items: map[string]map[string]ddbtypes.AttributeValue{}}
+	return &progressDDB{FakeDynamo: testutil.NewFakeDynamo(), items: map[string]map[string]ddbtypes.AttributeValue{}}
 }
 
 func progressKey(m map[string]ddbtypes.AttributeValue) string {
@@ -61,6 +65,9 @@ func (f *progressDDB) PutItem(_ context.Context, in *dynamodb.PutItemInput, _ ..
 func (f *progressDDB) GetItem(_ context.Context, in *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
 	if f.getErr != nil {
 		return nil, f.getErr
+	}
+	if f.profileErr != nil && strings.HasSuffix(progressKey(in.Key), "|PROFILE") {
+		return nil, f.profileErr
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -161,8 +168,15 @@ func progressHarness(t *testing.T) (*fiber.App, string, *progressSQS, *progressD
 		t.Fatalf("PutToken: %v", err)
 	}
 
+	users := userstore.NewWithClient(db, "live-ninja")
+	if err := users.CreateUser(context.Background(), &userstore.User{
+		UserID: "user-1", AmazonUserID: "amazon-user-1", Status: userstore.UserStatusActive, Role: userstore.RoleOwner,
+	}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	deps := &Deps{
+		Store:      users,
 		Log:        log,
 		CodeUpdate: store,
 		CodeUpdateDispatcher: &codeupdate.Dispatcher{
@@ -362,5 +376,43 @@ func TestProgressUnconfiguredIs503(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+}
+
+// A correct bearer token cannot outlive the account's authority. This also
+// covers token rows left outside USER# after account deletion.
+func TestProgressRechecksActiveOwnerBeforeParsingOrClaiming(t *testing.T) {
+	for _, state := range []string{"disabled", "deleting", "suspended", "missing", "member", "lookup-error"} {
+		t.Run(state, func(t *testing.T) {
+			app, token, q, db := progressHarness(t)
+			profile := db.items["USER#user-1|PROFILE"]
+			switch state {
+			case "missing":
+				delete(db.items, "USER#user-1|PROFILE")
+			case "member":
+				profile["role"] = &ddbtypes.AttributeValueMemberS{Value: userstore.RoleMember}
+			case "lookup-error":
+				db.profileErr = errors.New("profile lookup unavailable")
+			default:
+				profile["status"] = &ddbtypes.AttributeValueMemberS{Value: state}
+			}
+			// Invalid JSON must not disclose that the token was otherwise valid.
+			resp := postProgress(t, app, "Bearer "+token, "{")
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401", resp.StatusCode)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			if string(body) != `{"error":"unauthorized"}` {
+				t.Fatalf("unexpected authorization response: %s", body)
+			}
+			if len(q.sent()) != 0 {
+				t.Fatal("inactive account sent mail")
+			}
+			requestID, _, _ := codeupdate.ParseToken(token)
+			row := db.items["CODEUPD#"+requestID+"|TOKEN"]
+			if count, ok := row["postCount"].(*ddbtypes.AttributeValueMemberN); ok && count.Value != "0" {
+				t.Fatalf("inactive account consumed post allowance: %s", count.Value)
+			}
+		})
 	}
 }

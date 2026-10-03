@@ -310,7 +310,8 @@ export function createToolDispatcher({
       } catch (err) {
         output =
           err instanceof ApiError
-            ? { error: err.code || 'tool_failed', message: err.message, txId: err.txId || undefined }
+            ? { error: err.code || 'tool_failed', message: err.message, txId: err.txId || undefined,
+                ...(err.code === 'confirmation_required' && err.body?.error?.details ? { details: err.body.error.details } : {}) }
             : { error: 'tool_failed', message: 'The tool call failed.' };
         if (onToolError) onToolError({ tool: name, callId, args: args || {}, error: err });
       }

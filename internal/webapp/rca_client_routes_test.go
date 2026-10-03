@@ -137,3 +137,45 @@ func TestRCAClientEventDefaultsMissingCodeAndBoundsBody(t *testing.T) {
 		t.Fatalf("oversized status = %d, want 413", resp.StatusCode)
 	}
 }
+
+// Older conversation clients submit every tool error with original args. A
+// normal review requirement must never forward private proposal text to RCA.
+func TestRCAClientEventIgnoresReviewProposalsBeforeInspectingArgs(t *testing.T) {
+	for _, configured := range []bool{true, false} {
+		for _, tool := range []string{"rule_save", "rule_delete", "code_update_start"} {
+			t.Run(tool+"/configured="+map[bool]string{true: "yes", false: "no"}[configured], func(t *testing.T) {
+				queue := &fakeSQS{}
+				deps := &Deps{Log: testLogger()}
+				if configured {
+					deps.SQS, deps.SQSRcaURL = queue, "https://sqs.example/live-ninja-rca"
+				}
+				app := newClientRCAApp(deps)
+				// The array is intentionally not a diagnostic args object: the
+				// expected review response is ignored before args validation too.
+				encoded, err := json.Marshal(map[string]any{
+					"tool":  tool,
+					"args":  []string{"private proposal text must not enter RCA"},
+					"error": map[string]string{"code": " confirmation_required ", "message": "review is needed"},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for range 2 {
+					req := httptest.NewRequest(http.MethodPost, "/api/v1/rca/client-event", strings.NewReader(string(encoded)))
+					req.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+					resp, err := app.Test(req)
+					if err != nil {
+						t.Fatal(err)
+					}
+					resp.Body.Close()
+					if resp.StatusCode != http.StatusAccepted {
+						t.Fatalf("proposal status = %d, want 202", resp.StatusCode)
+					}
+				}
+				if len(queue.calls()) != 0 {
+					t.Fatal("routine review proposal was sent to RCA")
+				}
+			})
+		}
+	}
+}

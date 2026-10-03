@@ -29,6 +29,47 @@ import kotlinx.serialization.json.JsonObject
  * resource routes under `/api/v1/` per contracts/api.md.
  */
 interface LiveNinjaApi {
+    // ---- Durable Jobs: authenticated personal UI, never model approval ----
+
+    @GET("api/v1/jobs/")
+    suspend fun listJobs(
+        @Query("cursor") cursor: String? = null,
+        @Query("limit") limit: Int? = null,
+    ): JobsListResponse
+
+    @GET("api/v1/jobs/{id}")
+    suspend fun getJob(@Path("id") id: String): JobResponse
+
+    @POST("api/v1/jobs/")
+    suspend fun createJob(@Body body: JobSaveRequest): JobResponse
+
+    @PATCH("api/v1/jobs/{id}")
+    suspend fun updateJob(@Path("id") id: String, @Body body: JobSaveRequest): JobResponse
+
+    @POST("api/v1/jobs/{id}/{action}")
+    suspend fun jobAction(
+        @Path("id") id: String,
+        @Path("action") action: String,
+        @Body body: JobActionRequest,
+    ): JobResponse
+
+    @GET("api/v1/jobs/{id}/runs")
+    suspend fun listJobRuns(
+        @Path("id") id: String,
+        @Query("cursor") cursor: String? = null,
+        @Query("limit") limit: Int? = null,
+    ): JobRunsResponse
+
+    @POST("api/v1/jobs/{id}/run")
+    suspend fun runJob(@Path("id") id: String, @Body body: JobActionRequest): JobRunResponse
+
+    @POST("api/v1/jobs/{id}/runs/{runId}/{action}")
+    suspend fun jobRunAction(
+        @Path("id") id: String,
+        @Path("runId") runId: String,
+        @Path("action") action: String,
+        @Body body: JobActionRequest,
+    ): JobRunResponse
 
     /** Android Custom-Tabs + PKCE code exchange -> first token grant. */
     @POST("auth/lwa/exchange")

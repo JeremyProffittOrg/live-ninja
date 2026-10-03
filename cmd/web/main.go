@@ -39,10 +39,12 @@ import (
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/agentmemory"
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
+	"github.com/JeremyProffittOrg/live-ninja/internal/codeapproval"
 	"github.com/JeremyProffittOrg/live-ninja/internal/codeupdate"
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
 	"github.com/JeremyProffittOrg/live-ninja/internal/deliv"
 	"github.com/JeremyProffittOrg/live-ninja/internal/ghost"
+	"github.com/JeremyProffittOrg/live-ninja/internal/jobs"
 	"github.com/JeremyProffittOrg/live-ninja/internal/memory"
 	"github.com/JeremyProffittOrg/live-ninja/internal/observ"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
@@ -147,6 +149,9 @@ func main() {
 	app.Use(webapp.CSRFProtect())
 	webapp.RegisterAuthRoutes(app, deps)
 	webapp.RegisterAPIRoutes(app, deps)
+	webapp.RegisterJobsRoutes(app, deps)
+	webapp.RegisterCodeApprovalRoutes(app, deps)
+	webapp.RegisterRuleReviewRoutes(app, deps)
 	webapp.RegisterAccountRoutes(app, deps)
 	webapp.RegisterSettingsRoutes(app, deps)
 	webapp.RegisterIoTRoutes(app, deps)
@@ -250,6 +255,12 @@ func buildDeps(ctx context.Context, cfg config.App, logger *slog.Logger) (*webap
 		AndroidAssetLinksKey:   os.Getenv("ANDROID_ASSETLINKS_KEY"),
 		CodeUpdateQueueURL:     os.Getenv("CODE_UPDATE_QUEUE_URL"),
 	}
+	jobStore, err := jobs.NewDynamoStore(ctx, cfg.TableName)
+	if err != nil {
+		return nil, err
+	}
+	deps.Jobs = jobs.NewService(jobStore)
+	deps.JobsSchedulingEnabled = os.Getenv("JOBS_SCHEDULING_ENABLED") == "true"
 	// agentcore-memory: nil when AGENTCORE_MEMORY_ID is unset or the mode is
 	// off; every caller treats nil as "not configured". The counter feeds the
 	// per-user day row usage-rollup sums (plan.md cost-guard).
@@ -284,6 +295,7 @@ func buildDeps(ctx context.Context, cfg config.App, logger *slog.Logger) (*webap
 	} else {
 		logger.Warn("voice code updates disabled (GHOST_COMMAND_FUNCTION_ARN not set)")
 	}
+	deps.CodeApprovals = codeapproval.NewService(codeapproval.NewDynamoStoreWithClient(ddbClient, cfg.TableName), deps.Ghost)
 	if deps.TelemetryStreamName == "" {
 		logger.Warn("telemetry lake disabled (TELEMETRY_FIREHOSE_STREAM_NAME not set)")
 	}

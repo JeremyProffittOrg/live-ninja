@@ -13,6 +13,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -25,6 +28,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/google/uuid"
 )
 
 // Rule limits (single source of truth for the store, the rule_* tools, and
@@ -428,4 +432,287 @@ func (s *Store) seedDefaultRule(ctx context.Context, userID string) error {
 		return fmt.Errorf("store: seed default rule: %w", err)
 	}
 	return nil
+}
+
+// RuleReviewSnapshot is the exact effective rule shown before a deliberate
+// approval. Matching content as well as version/time prevents a legacy
+// delete/recreate (whose version can reset to 1) from approving changed text.
+type RuleReviewSnapshot struct {
+	Description string `json:"description"`
+	Body        string `json:"body"`
+	Enabled     bool   `json:"enabled"`
+}
+
+const RuleReviewWindow = 15 * time.Minute
+
+// One minute tolerates small client clock differences; age is always checked
+// against the server clock and is independent of DynamoDB TTL cleanup.
+const ruleReviewClockSkew = time.Minute
+
+type RuleReview struct {
+	RequestID         string
+	ReviewedAt        string
+	Operation         string
+	ExpectedVersion   int
+	ExpectedUpdatedAt string
+	ExpectedRule      *RuleReviewSnapshot
+	Proposed          Rule
+}
+
+type RuleReviewResult struct {
+	Status   string `json:"status"`
+	Rule     *Rule  `json:"rule,omitempty"`
+	ReviewID string `json:"reviewId"`
+}
+
+var (
+	ErrRuleReviewConflict       = errors.New("store: reviewed rule changed; reload and review again")
+	ErrRuleReviewForbidden      = errors.New("store: rule review account is not authorized")
+	ErrRuleReviewAlreadyApplied = errors.New("store: this review request has already been applied")
+	ErrRuleReviewExpired        = errors.New("store: review expired; open a fresh review")
+)
+
+// ApplyRuleReview is for trusted UI approval only, never a model tool's
+// confirmation boolean. It binds the write, active profile, selected member
+// grant, exact prior contents, and a single-use audit receipt atomically.
+// Request IDs cannot be reused after deletion, and the short review window
+// rejects an unchanged old request even after its 30-day receipt expires.
+// Legacy CRUD methods remain available for compatibility.
+func (s *Store) ApplyRuleReview(ctx context.Context, uid string, review RuleReview) (*RuleReviewResult, error) {
+	now := time.Now().UTC()
+	requestID, err := uuid.Parse(review.RequestID)
+	if err != nil || requestID == uuid.Nil {
+		return nil, fmt.Errorf("%w: requestId must be a nonzero UUID", ErrInvalidRule)
+	}
+	reviewedAt, err := time.Parse(time.RFC3339Nano, review.ReviewedAt)
+	if err != nil {
+		return nil, fmt.Errorf("%w: reviewedAt must be an RFC3339 timestamp", ErrInvalidRule)
+	}
+	if now.Sub(reviewedAt) > RuleReviewWindow || reviewedAt.Sub(now) > ruleReviewClockSkew {
+		return nil, ErrRuleReviewExpired
+	}
+	receiptDigest := sha256.Sum256([]byte(uid + "\x00" + requestID.String()))
+	reviewID := hex.EncodeToString(receiptDigest[:])
+	r := review.Proposed
+	r.UserID, r.Source = uid, RuleSourceUser
+	r.Name = strings.TrimSpace(r.Name)
+	if uid == "" || !ValidRuleName(r.Name) || review.ExpectedVersion < 0 || review.ExpectedVersion >= 1_000_000_000 {
+		return nil, fmt.Errorf("%w: invalid rule name or expectedVersion", ErrInvalidRule)
+	}
+	if review.Operation != "save" && review.Operation != "delete" {
+		return nil, fmt.Errorf("%w: operation must be save or delete", ErrInvalidRule)
+	}
+	if review.ExpectedVersion == 0 {
+		if review.Operation != "save" || review.ExpectedUpdatedAt != "" || review.ExpectedRule != nil {
+			return nil, fmt.Errorf("%w: creation requires no previous rule snapshot", ErrInvalidRule)
+		}
+	} else if review.ExpectedUpdatedAt == "" || review.ExpectedRule == nil {
+		return nil, fmt.Errorf("%w: expectedUpdatedAt and expectedRule are required", ErrInvalidRule)
+	}
+	if review.Operation == "save" {
+		if err := validateRule(&r); err != nil {
+			return nil, err
+		}
+	}
+	checks, err := s.ruleReviewAuthorization(ctx, uid)
+	if err != nil {
+		return nil, err
+	}
+	prior, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(s.table), Key: keyOf(userPK(uid), "RULEREVIEW#"+reviewID), ConsistentRead: aws.Bool(true),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if prior != nil && len(prior.Item) > 0 {
+		return nil, ErrRuleReviewAlreadyApplied
+	}
+	existing, err := s.getRuleRaw(ctx, uid, r.Name)
+	if err != nil {
+		return nil, err
+	}
+	if review.ExpectedVersion == 0 {
+		if existing != nil {
+			return nil, ErrRuleReviewConflict
+		}
+		count, err := s.countRules(ctx, uid)
+		if err != nil {
+			return nil, err
+		}
+		if count >= MaxRules {
+			return nil, ErrRuleLimit
+		}
+	} else if existing == nil || existing.Version != review.ExpectedVersion ||
+		existing.UpdatedAt != review.ExpectedUpdatedAt ||
+		existing.Description != review.ExpectedRule.Description ||
+		existing.Body != review.ExpectedRule.Body || existing.Enabled != review.ExpectedRule.Enabled {
+		return nil, ErrRuleReviewConflict
+	}
+
+	condition := "attribute_not_exists(pk)"
+	var names map[string]string
+	var values map[string]types.AttributeValue
+	if existing != nil {
+		condition = "#ver = :ver AND #upd = :upd AND #desc = :desc AND #body = :body AND #enabled = :enabled"
+		names = map[string]string{"#ver": "version", "#upd": "updatedAt", "#desc": "description", "#body": "body", "#enabled": "enabled"}
+		values = map[string]types.AttributeValue{
+			":ver":     &types.AttributeValueMemberN{Value: fmt.Sprint(review.ExpectedVersion)},
+			":upd":     &types.AttributeValueMemberS{Value: review.ExpectedUpdatedAt},
+			":desc":    &types.AttributeValueMemberS{Value: review.ExpectedRule.Description},
+			":body":    &types.AttributeValueMemberS{Value: review.ExpectedRule.Body},
+			":enabled": &types.AttributeValueMemberBOOL{Value: review.ExpectedRule.Enabled},
+		}
+	}
+	ruleIndex := len(checks)
+	result := &RuleReviewResult{ReviewID: reviewID}
+	if review.Operation == "delete" {
+		checks = append(checks, types.TransactWriteItem{Delete: &types.Delete{
+			TableName: aws.String(s.table), Key: keyOf(userPK(uid), ruleSK(r.Name)),
+			ConditionExpression: aws.String(condition), ExpressionAttributeNames: names, ExpressionAttributeValues: values,
+		}})
+		result.Status = "deleted"
+	} else {
+		r.Version, r.UpdatedAt = review.ExpectedVersion+1, now.Format(time.RFC3339Nano)
+		r.CreatedAt = r.UpdatedAt
+		if existing != nil {
+			r.CreatedAt = existing.CreatedAt
+		}
+		item, err := attributevalue.MarshalMap(r)
+		if err != nil {
+			return nil, err
+		}
+		item["pk"], item["sk"] = &types.AttributeValueMemberS{Value: userPK(uid)}, &types.AttributeValueMemberS{Value: ruleSK(r.Name)}
+		checks = append(checks, types.TransactWriteItem{Put: &types.Put{
+			TableName: aws.String(s.table), Item: item,
+			ConditionExpression: aws.String(condition), ExpressionAttributeNames: names, ExpressionAttributeValues: values,
+		}})
+		result.Status, result.Rule = "saved", &r
+	}
+	audit := map[string]any{
+		"pk": userPK(uid), "sk": "RULEREVIEW#" + result.ReviewID, "reviewId": result.ReviewID,
+		"operation": review.Operation, "ruleName": r.Name, "expectedVersion": review.ExpectedVersion,
+		"reviewedAt": reviewedAt.UTC().Format(time.RFC3339Nano), "approvedAt": now.Format(time.RFC3339Nano),
+		"requestId": requestID.String(), "payloadHash": ruleReviewPayloadHash(review, r, reviewedAt),
+		"source": "trusted-ui", "ttl": now.Add(30 * 24 * time.Hour).Unix(),
+	}
+	if existing != nil {
+		audit["beforeHash"] = ruleReviewHash(existing)
+	}
+	if result.Rule != nil {
+		audit["afterHash"] = ruleReviewHash(result.Rule)
+		audit["resultingVersion"] = r.Version
+	}
+	auditItem, err := attributevalue.MarshalMap(audit)
+	if err != nil {
+		return nil, err
+	}
+	checks = append(checks, types.TransactWriteItem{Put: &types.Put{
+		TableName: aws.String(s.table), Item: auditItem, ConditionExpression: aws.String("attribute_not_exists(pk)"),
+	}})
+	_, err = s.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: checks})
+	if err != nil {
+		var cancelled *types.TransactionCanceledException
+		if errors.As(err, &cancelled) {
+			for i, reason := range cancelled.CancellationReasons {
+				if i < ruleIndex && aws.ToString(reason.Code) == "ConditionalCheckFailed" {
+					return nil, ErrRuleReviewForbidden
+				}
+			}
+			receiptIndex := len(checks) - 1
+			if receiptIndex < len(cancelled.CancellationReasons) && aws.ToString(cancelled.CancellationReasons[receiptIndex].Code) == "ConditionalCheckFailed" {
+				return nil, ErrRuleReviewAlreadyApplied
+			}
+			for _, reason := range cancelled.CancellationReasons {
+				if aws.ToString(reason.Code) == "ConditionalCheckFailed" {
+					return nil, ErrRuleReviewConflict
+				}
+			}
+		}
+		return nil, fmt.Errorf("store: apply reviewed rule: %w", err)
+	}
+	return result, nil
+}
+
+// Hash only the exact effective request fields, not server-generated result
+// timestamps or caller-supplied Rule metadata that this API never accepts.
+func ruleReviewPayloadHash(review RuleReview, r Rule, reviewedAt time.Time) string {
+	var proposed *RuleReviewSnapshot
+	if review.Operation == "save" {
+		proposed = &RuleReviewSnapshot{Description: r.Description, Body: r.Body, Enabled: r.Enabled}
+	}
+	b, _ := json.Marshal(struct {
+		Operation         string
+		Name              string
+		ExpectedVersion   int
+		ExpectedUpdatedAt string
+		ExpectedRule      *RuleReviewSnapshot
+		Proposed          *RuleReviewSnapshot
+		ReviewedAt        string
+	}{review.Operation, r.Name, review.ExpectedVersion, review.ExpectedUpdatedAt, review.ExpectedRule, proposed, reviewedAt.UTC().Format(time.RFC3339Nano)})
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func ruleReviewHash(r *Rule) string {
+	b, _ := json.Marshal(RuleReviewSnapshot{Description: r.Description, Body: r.Body, Enabled: r.Enabled})
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// Fence both the current identity and the specific owner/member grant in the
+// same transaction as the rule. A purge or revocation winning the race prevents
+// both the write and its audit receipt from resurrecting user data.
+func (s *Store) ruleReviewAuthorization(ctx context.Context, uid string) ([]types.TransactWriteItem, error) {
+	key := keyOf(userPK(uid), skProfile)
+	out, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{TableName: aws.String(s.table), Key: key, ConsistentRead: aws.Bool(true)})
+	if err != nil {
+		return nil, err
+	}
+	if out == nil || len(out.Item) == 0 {
+		return nil, ErrRuleReviewForbidden
+	}
+	var u User
+	if err := attributevalue.UnmarshalMap(out.Item, &u); err != nil {
+		return nil, err
+	}
+	if u.Status != UserStatusActive {
+		return nil, ErrRuleReviewForbidden
+	}
+	check := &types.ConditionCheck{
+		TableName: aws.String(s.table), Key: key,
+		ConditionExpression:       aws.String("attribute_exists(pk) AND #status = :status AND #role = :role"),
+		ExpressionAttributeNames:  map[string]string{"#status": "status", "#role": "role"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{":status": &types.AttributeValueMemberS{Value: UserStatusActive}, ":role": &types.AttributeValueMemberS{Value: u.Role}},
+	}
+	checks := []types.TransactWriteItem{{ConditionCheck: check}}
+	if u.Role == RoleOwner {
+		return checks, nil
+	}
+	for _, field := range []string{"amazonUserId", "email"} {
+		name, value := "#"+field, ":"+field
+		check.ExpressionAttributeNames[name] = field
+		if raw, exists := out.Item[field]; exists {
+			check.ExpressionAttributeValues[value] = raw
+			check.ConditionExpression = aws.String(aws.ToString(check.ConditionExpression) + " AND " + name + " = " + value)
+		} else {
+			check.ConditionExpression = aws.String(aws.ToString(check.ConditionExpression) + " AND attribute_not_exists(" + name + ")")
+		}
+	}
+	for _, value := range []string{u.AmazonUserID, u.Email} {
+		value = normalizeAllowKey(value)
+		if value == "" {
+			continue
+		}
+		grantKey := keyOf(pkConfig, allowSK(value))
+		grant, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{TableName: aws.String(s.table), Key: grantKey, ConsistentRead: aws.Bool(true)})
+		if err != nil {
+			return nil, err
+		}
+		if grant != nil && len(grant.Item) > 0 {
+			return append(checks, types.TransactWriteItem{ConditionCheck: &types.ConditionCheck{
+				TableName: aws.String(s.table), Key: grantKey, ConditionExpression: aws.String("attribute_exists(pk)"),
+			}}), nil
+		}
+	}
+	return nil, ErrRuleReviewForbidden
 }

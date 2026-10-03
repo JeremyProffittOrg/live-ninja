@@ -10,22 +10,15 @@ package tools
 //	"<what to change>"             → read back, then code_update_start(...)
 //	"how's that going?"            → code_update_status()
 //
-// code_update_start does NOT launch anything itself. It validates, enqueues, and
-// returns in well under a second, because the Opus rewrite that follows takes
-// 30–90 s and the web function's timeout is 30 s. The queue is also what makes
-// the request survive the owner hanging up mid-sentence — see
-// cmd/codeupdate-dispatch.
+// code_update_start only returns a review proposal. There is no trusted,
+// user-bound launch approval connected to this tool yet, so model arguments
+// cannot launch a coding agent. Existing records remain readable by status.
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
-	"time"
-
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/sqs"
-	"github.com/google/uuid"
+	"unicode/utf8"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/codeupdate"
 	"github.com/JeremyProffittOrg/live-ninja/internal/ghost"
@@ -36,18 +29,14 @@ import (
 // in it, few enough that the model can hold them while they talk.
 const defaultRepoLimit = 20
 
-// maxCandidates bounds the disambiguation list handed back when a spoken name
-// matches more than one repository. Reading six options aloud is already too
-// many; four is the point where the owner re-words instead of listening.
-const maxCandidates = 4
-
 // ---------------------------------------------------------------------------
 // code_update_repos
 // ---------------------------------------------------------------------------
 
 func codeUpdateReposDefinition() *Definition {
 	return &Definition{
-		Name: "code_update_repos",
+		Name:      "code_update_repos",
+		OwnerOnly: true,
 		Description: "List the user's GitHub repositories so they can pick which application to " +
 			"update. With no query this returns the 20 most recently worked-on repositories — " +
 			"start here when the user asks to update an application. Pass query to search the " +
@@ -122,13 +111,13 @@ func handleCodeUpdateRepos(ctx context.Context, deps *Deps, _ Invocation, args m
 
 func codeUpdateStartDefinition() *Definition {
 	return &Definition{
-		Name: "code_update_start",
-		Description: "Start a coding session on one of the user's computers to update an " +
-			"application. Confirm the repository AND what you are about to ask for out loud " +
-			"first, then call this with confirm=true. The session runs immediately; the user " +
-			"gets an email when it starts, progress emails while it works, and a summary when " +
-			"it finishes.",
-		SideEffecting: true,
+		Name:      "code_update_start",
+		OwnerOnly: true,
+		Description: "Prepare a coding-job proposal for the account owner to review. This tool " +
+			"does not queue or start work: trusted user-bound launch approval is not connected " +
+			"yet. No model argument, including confirm=true, authorizes execution or deployment. " +
+			"Return the proposed repository, computer and instructions, and explain that nothing " +
+			"was started. Use code_update_status only to inspect existing runs.",
 		Params: []ParamSpec{
 			{Name: "repo", Type: "string", Required: true, MinLen: 3, MaxLen: 140,
 				Description: "The exact 'owner/name' from code_update_repos. Never invent one."},
@@ -140,205 +129,75 @@ func codeUpdateStartDefinition() *Definition {
 				Description: "Which coding CLI to run: claude (default) or codex. Only change " +
 					"this if the user asks for it by name."},
 			{Name: "node", Type: "string", MaxLen: 128,
-				Description: "Which computer to run on. Defaults to the office PC."},
+				Description: "Proposed computer. Defaults to the office PC; no connection or availability is verified."},
 			{Name: "preprocess", Type: "boolean",
-				Description: "Have Opus expand the instructions into a fuller brief before the " +
-					"session starts. Defaults to TRUE — set false ONLY if the user says not to " +
-					"rewrite or refine their wording."},
+				Description: "Propose refining the instructions before a future approved launch. " +
+					"Defaults to true; no refinement is performed by this proposal."},
 			{Name: "deploy", Type: "boolean",
-				Description: "Let the session push its work, which deploys to production in these " +
-					"repositories. Defaults to TRUE — finished work is expected to ship. Set " +
-					"false ONLY if the user says not to push, or asks for the work to be " +
-					"committed locally, staged, held back, or left for them to review."},
+				Description: "Legacy argument. Deployment cannot be authorized here. " +
+					"Every proposal has deploy=false and nothing is queued or started."},
 			{Name: "model", Type: "string", MaxLen: 128,
 				Description: "Optional model override for the coding session."},
 			{Name: "effort", Type: "string", MaxLen: 32,
 				Description: "Optional reasoning-effort override for the coding session."},
-			{Name: "confirm", Type: "boolean", Required: true,
-				Description: "Set true only after you have told the user which repository and " +
-					"what change you are about to start, and they agreed."},
+			{Name: "confirm", Type: "boolean",
+				Description: "Legacy argument, ignored. Model-supplied confirmation cannot " +
+					"authorize a coding agent launch."},
 		},
 		Handler: handleCodeUpdateStart,
 	}
 }
 
-func handleCodeUpdateStart(ctx context.Context, deps *Deps, inv Invocation, args map[string]any) (map[string]any, *ToolError) {
-	if deps.Ghost == nil || !deps.Ghost.Ready() {
-		return nil, toolErrf(CodeNotConfigured, "the code-update integration is not configured")
+// This handler deliberately has no dependency access. Restoring a launch path
+// requires a separately reviewed, user-bound approval contract, not a new flag
+// or an environment-variable escape hatch. The normal user audit is retained.
+func handleCodeUpdateStart(_ context.Context, _ *Deps, _ Invocation, args map[string]any) (map[string]any, *ToolError) {
+	repo, _ := args["repo"].(string)
+	repo = strings.TrimSpace(repo)
+	owner, name, found := strings.Cut(repo, "/")
+	if !found || owner == "" || name == "" || strings.Contains(name, "/") || len(strings.Fields(repo)) != 1 {
+		return nil, toolErrf(CodeInvalidArgs, "repo must be the exact owner/name from code_update_repos")
 	}
-	if deps.SQS == nil || deps.CodeUpdateQueueURL == "" {
-		return nil, toolErrf(CodeNotConfigured, "the code-update queue is not configured")
-	}
-
-	// Starting a coding agent on the owner's machine is not something to infer
-	// from an ambiguous sentence. The model must have said the repo and the
-	// change out loud first; this is the same shape send_email's confirmation
-	// gate uses.
-	if confirmed, _ := args["confirm"].(bool); !confirmed {
-		return nil, toolErrf(CodeConfirmationRequired,
-			"tell the user which repository you are about to update and what you will ask for, "+
-				"get their agreement, then call again with confirm=true")
-	}
-
-	repoArg, _ := args["repo"].(string)
 	instructions, _ := args["instructions"].(string)
-
-	// The repo must be one that actually exists. Resolving it against the live
-	// listing is what stops a model-invented "owner/name" from reaching a
-	// launch, and lets an almost-right name come back as candidates instead of
-	// a flat failure.
-	repos, err := deps.Ghost.ListRepos(ctx)
-	if err != nil {
-		return nil, ghostToolError(err)
+	instructions = strings.TrimSpace(instructions)
+	if utf8.RuneCountInString(instructions) < 10 || utf8.RuneCountInString(instructions) > codeupdate.MaxInstructionChars {
+		return nil, toolErrf(CodeInvalidArgs, "instructions must contain 10 to %d characters", codeupdate.MaxInstructionChars)
 	}
-	repo, ok := ghost.Find(repos, repoArg)
-	if !ok {
-		if cands := ghost.Candidates(ghost.Rank(repos, repoArg), maxCandidates); len(cands) > 0 {
-			names := make([]string, 0, len(cands))
-			for _, c := range cands {
-				names = append(names, c.Repo)
-			}
-			return nil, toolErrf(CodeNotFound,
-				"no repository named %q; did you mean one of: %s? Ask the user which, then "+
-					"call again with the exact name", repoArg, strings.Join(names, ", "))
-		}
-		return nil, toolErrf(CodeNotFound,
-			"no repository named %q — call code_update_repos to see what is available", repoArg)
-	}
-
 	agent := codeupdate.DefaultCLI
-	if v, ok := args["agent"].(string); ok && v != "" {
-		agent = v
+	if value, ok := args["agent"].(string); ok && value != "" {
+		agent = value
 	}
 	if !codeupdate.ValidCLI(agent) {
-		return nil, toolErrf(CodeInvalidArgs, "agent must be one of: %s",
-			strings.Join(codeupdate.SupportedCLIs, ", "))
+		return nil, toolErrf(CodeInvalidArgs, "agent must be one of: %s", strings.Join(codeupdate.SupportedCLIs, ", "))
 	}
-
 	node := codeupdate.DefaultNode
-	if v, ok := args["node"].(string); ok && strings.TrimSpace(v) != "" {
-		node = strings.TrimSpace(v)
+	if value, ok := args["node"].(string); ok && strings.TrimSpace(value) != "" {
+		node = strings.TrimSpace(value)
 	}
-
-	// Preprocessing is ON unless the model explicitly turned it off, which is
-	// what "use opus to pre-process the prompt, unless told not to" means. An
-	// absent argument must therefore read as true, not as the zero value.
 	preprocess := true
-	if v, present := args["preprocess"]; present {
-		if b, isBool := v.(bool); isBool {
-			preprocess = b
+	if value, ok := args["preprocess"].(bool); ok {
+		preprocess = value
+	}
+	proposed := map[string]any{
+		"repo": repo, "node": node, "instructions": instructions,
+		"agent": agent, "preprocess": preprocess, "deploy": false,
+	}
+	for _, key := range []string{"model", "effort"} {
+		if value, ok := args[key].(string); ok && strings.TrimSpace(value) != "" {
+			proposed[key] = strings.TrimSpace(value)
 		}
 	}
-	// Deploy defaults ON, same shape as preprocess above: an absent argument
-	// must read as true, not as the zero value.
-	//
-	// Owner decision 2026-08-01, reversing the original closed-by-default gate.
-	// That gate cost more than it saved: a run would do the work, verify it, and
-	// stop with everything committed but unpushed, and the owner had to come
-	// back and say "push" by hand — which is a second decision point on a change
-	// they had already asked for and already approved once. Unshipped work sat
-	// on a machine they were not looking at.
-	//
-	// What it protected against was a MISHEARD sentence shipping to production.
-	// That risk is real but it is not carried here: code_update_start already
-	// requires an explicit `confirm` (the model must state the repo and the
-	// change and get agreement first), so nothing reaches this line without the
-	// owner having heard it back and said yes. The deploy flag was a second lock
-	// on a door that already has one, and it locked the wrong side.
-	deploy := true
-	if v, present := args["deploy"]; present {
-		if b, isBool := v.(bool); isBool {
-			deploy = b
-		}
+	return nil, &ToolError{
+		Code: CodeConfirmationRequired,
+		Message: "No coding job was queued or started. This tool only prepares a proposal. " +
+			"Trusted user-bound launch approval is not connected yet; confirm=true cannot authorize " +
+			"execution. Deployment is unavailable through this tool. Do not report this proposal as running.",
+		Details: map[string]any{
+			"operation": "propose_code_update", "executionAvailable": false,
+			"launchApproval": "not_connected", "repositoryVerified": false, "nodeVerified": false,
+			"proposed": proposed,
+		},
 	}
-
-	requestID := uuid.Must(uuid.NewV7()).String()
-	model, _ := args["model"].(string)
-	effort, _ := args["effort"].(string)
-
-	req := codeupdate.Request{
-		Version:      codeupdate.QueueMessageVersion,
-		RequestID:    requestID,
-		UserID:       inv.UserID,
-		SessionID:    inv.SessionID,
-		Repo:         repo.Repo,
-		Instructions: strings.TrimSpace(instructions),
-		Node:         node,
-		CLI:          agent,
-		Model:        strings.TrimSpace(model),
-		Effort:       strings.TrimSpace(effort),
-		Preprocess:   preprocess,
-		Deploy:       deploy,
-		RequestedAt:  time.Now().UTC().Format(time.RFC3339),
-	}
-
-	// The record lands BEFORE the queue message, so code_update_status can
-	// always answer — a message that outran its own row would make a request the
-	// owner just made look like it never happened.
-	if deps.CodeUpdate != nil {
-		if err := deps.CodeUpdate.Put(ctx, codeupdate.Record{
-			RequestID: requestID,
-			UserID:    inv.UserID,
-			Status:    codeupdate.StatusQueued,
-			Repo:      repo.Repo,
-			Node:      node,
-			CLI:       agent,
-			Model:     req.Model,
-			Deploy:    deploy,
-			// The owner's own words, from the same trimmed value the queue
-			// message carries — so the row and the request can never disagree
-			// about what was asked for. See Record.Instructions for why.
-			Instructions: req.Instructions,
-		}); err != nil {
-			deps.Log.Error("tools: code_update_start record write failed", "error", err.Error())
-			return nil, toolErrf(CodeUpstreamError, "could not record the update request")
-		}
-	}
-
-	body, err := json.Marshal(req)
-	if err != nil {
-		return nil, toolErrf(CodeUpstreamError, "could not prepare the update request")
-	}
-	if _, err := deps.SQS.SendMessage(ctx, &sqs.SendMessageInput{
-		QueueUrl:    aws.String(deps.CodeUpdateQueueURL),
-		MessageBody: aws.String(string(body)),
-	}); err != nil {
-		deps.Log.Error("tools: code_update_start enqueue failed", "error", err.Error())
-		return nil, toolErrf(CodeUpstreamError, "could not queue the update request")
-	}
-
-	return map[string]any{
-		"status":     codeupdate.StatusQueued,
-		"requestId":  requestID,
-		"repo":       repo.Repo,
-		"node":       node,
-		"agent":      agent,
-		"preprocess": preprocess,
-		"deploy":     deploy,
-		"note": "Queued. " + startedNote(preprocess, deploy) +
-			" The user will get an email when the session starts, progress emails while it " +
-			"works, and a summary when it finishes.",
-	}, nil
-}
-
-// startedNote is what the model should say out loud. It states the two things
-// the owner cannot see for themselves and would be surprised by.
-func startedNote(preprocess, deploy bool) string {
-	var parts []string
-	if preprocess {
-		parts = append(parts, "Opus is expanding the instructions first, so the session starts in about a minute")
-	} else {
-		parts = append(parts, "starting with the exact wording given")
-	}
-	// Deploying is now the default, so the line that has to be said out loud is
-	// the HOLD — that is the one the owner would otherwise be surprised by,
-	// having asked for a change and not gotten it shipped.
-	if deploy {
-		parts = append(parts, "and it will deploy when it is done")
-	} else {
-		parts = append(parts, "and it will commit locally WITHOUT deploying, as you asked")
-	}
-	return strings.Join(parts, ", ") + "."
 }
 
 // ---------------------------------------------------------------------------
@@ -347,13 +206,14 @@ func startedNote(preprocess, deploy bool) string {
 
 func codeUpdateStatusDefinition() *Definition {
 	return &Definition{
-		Name: "code_update_status",
+		Name:      "code_update_status",
+		OwnerOnly: true,
 		Description: "Check how a code update is going. With no arguments this reports the most " +
 			"recent one. Use when the user asks whether their update has started, what it is " +
 			"doing, or whether it finished.",
 		Params: []ParamSpec{
 			{Name: "requestId", Type: "string", MaxLen: 64,
-				Description: "Optional: the requestId returned by code_update_start. Omit for the most recent."},
+				Description: "Optional: an existing coding run requestId. Omit for the most recent. Proposals have no requestId."},
 		},
 		Handler: handleCodeUpdateStatus,
 	}

@@ -20,10 +20,12 @@ import (
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/agentmemory"
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
+	"github.com/JeremyProffittOrg/live-ninja/internal/codeapproval"
 	"github.com/JeremyProffittOrg/live-ninja/internal/codeupdate"
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
 	"github.com/JeremyProffittOrg/live-ninja/internal/deliv"
 	"github.com/JeremyProffittOrg/live-ninja/internal/ghost"
+	"github.com/JeremyProffittOrg/live-ninja/internal/jobs"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 )
 
@@ -59,6 +61,10 @@ type S3GetObjectAPI interface {
 // directly, so Deps carries the two real types instead of a phantom
 // wrapper.
 type Deps struct {
+	CodeApprovals         *codeapproval.Service
+	Jobs                  *jobs.Service
+	JobsSchedulingEnabled bool
+
 	Store   *store.Store
 	LWA     *auth.LWAClient
 	Signer  *auth.Signer

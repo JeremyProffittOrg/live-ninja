@@ -93,6 +93,8 @@ var pageMetas = map[string]pageMeta{
 	"pages/downloads":    {Title: "Downloads — Live Ninja", Path: "/downloads"},
 	"pages/memory":       {Title: "Memory — Live Ninja", Path: "/memory"},
 	"pages/personas":     {Title: "Personas — Live Ninja", Path: "/personas"},
+	"pages/approvals":    {Title: "Approvals - Live Ninja", Path: "/approvals"},
+	"pages/jobs":         {Title: "Jobs - Live Ninja", Path: "/jobs"},
 	"pages/history":      {Title: "History — Live Ninja", Path: "/history"},
 	"pages/error":        {Title: "Live Ninja"},
 }
@@ -220,6 +222,8 @@ func RegisterPageRoutes(app *fiber.App, deps *Deps) {
 	app.Get("/conversation", handleConversationPage(deps))
 	app.Get("/downloads", handleDownloadsPage(deps))
 	app.Get("/memory", handleClientDataPage(deps, "pages/memory"))
+	app.Get("/approvals", handleClientDataPage(deps, "pages/approvals"))
+	app.Get("/jobs", handleClientDataPage(deps, "pages/jobs"))
 	app.Get("/history", handleClientDataPage(deps, "pages/history"))
 	app.Get("/personas", handleClientDataPage(deps, "pages/personas"))
 }

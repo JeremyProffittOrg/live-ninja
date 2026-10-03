@@ -295,7 +295,9 @@ func TestForget(t *testing.T) {
 	inv.IdempotencyKey = "f1"
 	res := r.Invoke(context.Background(), inv)
 	require.True(t, res.OK, "error: %+v", res.Error)
-	assert.Equal(t, "forgotten", res.Output["status"])
+	assert.Equal(t, "entity_removed", res.Output["status"])
+	assert.Equal(t, true, res.Output["entityRemoved"])
+	assert.NotEmpty(t, res.Output["warning"])
 	assert.Equal(t, []string{"ent-1"}, fake.forgotten)
 
 	inv = invocation("forget", map[string]any{"entityId": "ent-404"})

@@ -77,3 +77,34 @@ func TestUpdateItemReturnValues(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, out.Attributes)
 }
+
+func TestTransactionPutDeleteAreAtomicWhenAnyConditionFails(t *testing.T) {
+	f := NewFakeDynamo()
+	ctx := context.Background()
+	key := func(sk string) map[string]types.AttributeValue {
+		return map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: "USER#alice"}, "sk": &types.AttributeValueMemberS{Value: sk},
+		}
+	}
+	f.SeedItem(key("RULE#old"))
+	changes := []types.TransactWriteItem{
+		{Put: &types.Put{Item: key("AUDIT#new"), ConditionExpression: aws.String("attribute_not_exists(pk)")}},
+		{Delete: &types.Delete{Key: key("RULE#old"), ConditionExpression: aws.String("attribute_exists(pk)")}},
+		{ConditionCheck: &types.ConditionCheck{Key: key("PROFILE"), ConditionExpression: aws.String("attribute_exists(pk)")}},
+	}
+	_, err := f.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: changes})
+	var cancelled *types.TransactionCanceledException
+	require.ErrorAs(t, err, &cancelled)
+	require.Equal(t, "ConditionalCheckFailed", aws.ToString(cancelled.CancellationReasons[2].Code))
+	require.Nil(t, f.RawItem("USER#alice", "AUDIT#new"), "failed final check rolls back earlier Put")
+	require.NotNil(t, f.RawItem("USER#alice", "RULE#old"), "failed final check rolls back earlier Delete")
+	f.SeedItem(key("PROFILE"))
+	_, err = f.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: changes})
+	require.NoError(t, err)
+	require.NotNil(t, f.RawItem("USER#alice", "AUDIT#new"))
+	require.Nil(t, f.RawItem("USER#alice", "RULE#old"))
+	_, err = f.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: changes})
+	require.ErrorAs(t, err, &cancelled)
+	require.Equal(t, "ConditionalCheckFailed", aws.ToString(cancelled.CancellationReasons[0].Code))
+	require.Equal(t, "ConditionalCheckFailed", aws.ToString(cancelled.CancellationReasons[1].Code))
+}

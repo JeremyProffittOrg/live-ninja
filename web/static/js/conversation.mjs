@@ -53,6 +53,7 @@ import {
 import { createDeferredDeviceActionGate } from './deviceactions.mjs';
 import { startLiveEvents, presenceStateFor } from './liveevents.mjs';
 import { openToolDetails } from './tooldetails.mjs';
+import { isReviewProposal, openProposalReview } from './approval-review.mjs';
 
 const SETTINGS_PATH = '/api/v1/settings?effective=true';
 const VOICES_PATH = '/api/v1/realtime/voices';
@@ -670,7 +671,8 @@ function attachTranscriptRendering(session) {
     // before /tools/invoke reached the registry. The server re-derives the
     // identity; failure to report diagnostics is intentionally silent.
     const detail = e.detail || {};
-    void authFetch('/api/v1/rca/client-event', {
+    // Human review proposals are normal outcomes, not diagnostic failures.
+    if (detail.error?.code !== 'confirmation_required') void authFetch('/api/v1/rca/client-event', {
       method: 'POST',
       json: {
         tool: detail.tool || '',
@@ -681,7 +683,7 @@ function attachTranscriptRendering(session) {
         error: detail.error || { code: 'client_tool_error', message: 'The tool call failed.' },
       },
     }).catch(() => {});
-    if (!showToolCalls()) return;
+    if (!showToolCalls() && !isReviewProposal(entry.error)) return;
     renderToolCard(entry);
   });
   const deferredDeviceAction = createDeferredDeviceActionGate((action) => {
@@ -941,15 +943,17 @@ function renderToolCard(entry) {
   if (!entry || entry.rendered) return;
   entry.rendered = true;
   const failed = !!entry.failed;
+  const review = isReviewProposal(entry.error);
   transcript.appendToolResultCard({
     icon: '🛠',
     title: toolTitle(entry.tool),
-    badge: failed ? 'Failed' : 'Done',
-    badgeVariant: failed ? 'error' : 'teal',
+    badge: review ? 'Needs your review' : failed ? 'Failed' : 'Done',
+    badgeVariant: failed && !review ? 'error' : 'teal',
     fields: failed
       ? [['Status', toolErrorMessage(entry.error) || 'The tool call failed — the assistant was told.']]
       : [...toolInputFields(entry.args), ...toolFields(unwrapToolOutput(entry.result))],
-    onDetails: () =>
+    detailsLabel: review ? "Review proposal" : "Details",
+    onDetails: () => review ? openProposalReview(entry.error.details) :
       openToolDetails({
         tool: entry.tool,
         callId: entry.callId,
@@ -1356,7 +1360,7 @@ function renderFallbackToolCalls(calls) {
   if (!Array.isArray(calls) || calls.length === 0) return;
   for (const call of calls) {
     const entry = bufferFallbackCall(call);
-    if (showToolCalls()) renderToolCard(entry);
+    if (showToolCalls() || isReviewProposal(entry.error)) renderToolCard(entry);
   }
 }
 

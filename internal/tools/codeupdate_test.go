@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -16,6 +17,8 @@ import (
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/codeupdate"
 	"github.com/JeremyProffittOrg/live-ninja/internal/ghost"
+	"github.com/JeremyProffittOrg/live-ninja/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 // cuGhost replays a fixed repo listing.
@@ -55,7 +58,8 @@ const cuRepoListing = `{"repos":[
 // cuDDB captures the CODEUPD# rows the store writes. Only PutItem is modelled
 // with any care — the rest exist to satisfy codeupdate.DDB.
 type cuDDB struct {
-	puts []map[string]ddbtypes.AttributeValue
+	lookup map[string]ddbtypes.AttributeValue
+	puts   []map[string]ddbtypes.AttributeValue
 }
 
 func (f *cuDDB) PutItem(_ context.Context, in *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
@@ -63,8 +67,16 @@ func (f *cuDDB) PutItem(_ context.Context, in *dynamodb.PutItemInput, _ ...func(
 	return &dynamodb.PutItemOutput{}, nil
 }
 
-func (f *cuDDB) GetItem(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
-	return &dynamodb.GetItemOutput{}, nil
+func (f *cuDDB) GetItem(_ context.Context, in *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+	// Only answer for the requested user partition and exact record.
+	if f.lookup != nil {
+		for _, key := range []string{"pk", "sk"} {
+			if in.Key[key].(*ddbtypes.AttributeValueMemberS).Value != f.lookup[key].(*ddbtypes.AttributeValueMemberS).Value {
+				return &dynamodb.GetItemOutput{}, nil
+			}
+		}
+	}
+	return &dynamodb.GetItemOutput{Item: f.lookup}, nil
 }
 
 func (f *cuDDB) UpdateItem(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
@@ -107,18 +119,6 @@ func startArgs(overrides map[string]any) map[string]any {
 		args[k] = v
 	}
 	return args
-}
-
-func decodeQueued(t *testing.T, q *cuSQS) codeupdate.Request {
-	t.Helper()
-	if len(q.bodies) == 0 {
-		t.Fatal("nothing was enqueued")
-	}
-	var req codeupdate.Request
-	if err := json.Unmarshal([]byte(q.bodies[len(q.bodies)-1]), &req); err != nil {
-		t.Fatalf("unmarshal queue message: %v", err)
-	}
-	return req
 }
 
 // ---------------------------------------------------------------------------
@@ -203,224 +203,150 @@ func TestCodeUpdateReposNotConfigured(t *testing.T) {
 // code_update_start
 // ---------------------------------------------------------------------------
 
-func TestCodeUpdateStartEnqueuesWithDefaults(t *testing.T) {
-	g, q := &cuGhost{body: cuRepoListing}, &cuSQS{}
-	out, terr := handleCodeUpdateStart(context.Background(), cuDeps(g, q), cuInvocation(), startArgs(nil))
-	if terr != nil {
-		t.Fatalf("handler error: %v", terr)
-	}
-	if out["status"] != codeupdate.StatusQueued {
-		t.Errorf("status = %v, want queued", out["status"])
-	}
-
-	req := decodeQueued(t, q)
-	if req.Version != codeupdate.QueueMessageVersion {
-		t.Errorf("version = %d, want %d", req.Version, codeupdate.QueueMessageVersion)
-	}
-	if req.Node != codeupdate.DefaultNode {
-		t.Errorf("node = %q, want the office PC default %q", req.Node, codeupdate.DefaultNode)
-	}
-	if req.CLI != codeupdate.DefaultCLI {
-		t.Errorf("cli = %q, want %q", req.CLI, codeupdate.DefaultCLI)
-	}
-	if req.UserID != "user-1" {
-		t.Errorf("userId = %q — it must come from verified claims, not the body", req.UserID)
-	}
-	if req.RequestID == "" || req.RequestedAt == "" {
-		t.Error("the queued request is missing its id or timestamp")
-	}
-}
-
-// Owner decision 2026-07-31: the CODEUPD# row keeps what was asked for. The row
-// is written before the queue message, and it must carry the SAME trimmed text
-// the message does — a row that disagrees with the request it describes is worse
-// than no row, because it would be believed during an incident.
-func TestStartRecordsWhatTheOwnerAskedFor(t *testing.T) {
-	q, db := &cuSQS{}, &cuDDB{}
-	deps := cuDepsWithStore(&cuGhost{body: cuRepoListing}, q, db)
-
-	if _, err := handleCodeUpdateStart(context.Background(), deps, cuInvocation(),
-		startArgs(map[string]any{"instructions": "  tighten the retry logic on the Bedrock client  "})); err != nil {
-		t.Fatalf("code_update_start: %v", err)
-	}
-	if len(db.puts) != 1 {
-		t.Fatalf("wrote %d rows, want 1", len(db.puts))
-	}
-	got, ok := db.puts[0]["instructions"].(*ddbtypes.AttributeValueMemberS)
-	if !ok {
-		t.Fatal("the row does not carry the owner's instructions")
-	}
-	want := decodeQueued(t, q).Instructions
-	if got.Value != want {
-		t.Errorf("row instructions = %q, queued instructions = %q — they must not diverge",
-			got.Value, want)
-	}
-	if got.Value != "tighten the retry logic on the Bedrock client" {
-		t.Errorf("instructions = %q, want the trimmed spoken text", got.Value)
-	}
-	// Bounded by the row's own TTL, which is the whole privacy argument.
-	if _, ok := db.puts[0]["ttl"].(*ddbtypes.AttributeValueMemberN); !ok {
-		t.Error("the row carrying the owner's words has no ttl")
+// The model cannot authorize itself to start a coding agent, including when
+// every integration is configured and it supplies a valid owner's context.
+func TestCodeUpdateProposalCannotLaunchWithAnyModelConfirmation(t *testing.T) {
+	for confirmName, confirm := range map[string]any{"omitted": nil, "true": true, "false": false} {
+		for deployName, deploy := range map[string]any{"omitted": nil, "true": true, "false": false} {
+			t.Run("confirm-"+confirmName+"/deploy-"+deployName, func(t *testing.T) {
+				deps, fake := newTestDepsWithFake()
+				g, q, db := &cuGhost{body: cuRepoListing}, &cuSQS{}, &cuDDB{}
+				remote := cuDepsWithStore(g, q, db)
+				deps.Ghost, deps.SQS, deps.CodeUpdate = remote.Ghost, remote.SQS, remote.CodeUpdate
+				deps.CodeUpdateQueueURL = remote.CodeUpdateQueueURL
+				args := startArgs(nil)
+				delete(args, "confirm")
+				if confirm != nil {
+					args["confirm"] = confirm
+				}
+				if deploy != nil {
+					args["deploy"] = deploy
+				}
+				inv := invocation("code_update_start", args)
+				inv.Role = store.RoleOwner
+				inv.IdempotencyKey = "same-proposal"
+				registry := newTestRegistry(t, deps)
+				for range 2 {
+					res := registry.Invoke(context.Background(), inv)
+					require.False(t, res.OK)
+					require.False(t, res.Duplicate)
+					require.Equal(t, CodeConfirmationRequired, res.Error.Code)
+					require.Contains(t, res.Error.Message, "No coding job was queued or started")
+					require.Contains(t, res.Error.Message, "not connected yet")
+					require.Equal(t, false, res.Error.Details["executionAvailable"])
+					require.Equal(t, "not_connected", res.Error.Details["launchApproval"])
+					proposed := res.Error.Details["proposed"].(map[string]any)
+					require.Equal(t, false, proposed["deploy"])
+					require.NotContains(t, res.Error.Details, "requestId")
+					require.NotContains(t, res.Error.Details, "runId")
+				}
+				require.Zero(t, g.calls, "proposal must not contact the fleet")
+				require.Empty(t, q.bodies, "proposal must not enqueue execution")
+				require.Empty(t, db.puts, "proposal must not create a coding record")
+				require.Nil(t, fake.RawItem("IDEMP#user-1#same-proposal", "IDEMP"))
+			})
+		}
 	}
 }
 
-// "use opus to pre-process the prompt, unless told not to": an ABSENT argument
-// must read as true, not as Go's zero value.
-func TestPreprocessDefaultsOnAndCanBeTurnedOff(t *testing.T) {
-	cases := map[string]struct {
-		args map[string]any
-		want bool
-	}{
-		"absent":         {startArgs(nil), true},
-		"explicit true":  {startArgs(map[string]any{"preprocess": true}), true},
-		"explicit false": {startArgs(map[string]any{"preprocess": false}), false},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			g, q := &cuGhost{body: cuRepoListing}, &cuSQS{}
-			if _, terr := handleCodeUpdateStart(context.Background(), cuDeps(g, q), cuInvocation(), tc.args); terr != nil {
-				t.Fatalf("handler error: %v", terr)
-			}
-			if got := decodeQueued(t, q).Preprocess; got != tc.want {
-				t.Errorf("preprocess = %v, want %v", got, tc.want)
-			}
-		})
-	}
+func TestCodeUpdateProposalCarriesExactReviewFieldsWithoutDiagnosticLeak(t *testing.T) {
+	deps := newTestDeps()
+	var diagnostics bytes.Buffer
+	deps.Log = slog.New(slog.NewTextHandler(&diagnostics, nil))
+	inv := invocation("code_update_start", startArgs(map[string]any{
+		"repo": "  some-owner/unverified-repo  ", "node": "  REVIEWPC  ",
+		"instructions": "  Private change request.\nPreserve this second line.  ",
+		"agent":        "codex", "model": " proposed-model ", "effort": " high ", "preprocess": false,
+	}))
+	inv.Role = store.RoleOwner
+	res := newTestRegistry(t, deps).Invoke(context.Background(), inv)
+	require.False(t, res.OK)
+	require.Equal(t, CodeConfirmationRequired, res.Error.Code)
+	require.Equal(t, false, res.Error.Details["repositoryVerified"])
+	require.Equal(t, false, res.Error.Details["nodeVerified"])
+	require.Equal(t, map[string]any{
+		"repo": "some-owner/unverified-repo", "node": "REVIEWPC",
+		"instructions": "Private change request.\nPreserve this second line.",
+		"agent":        "codex", "model": "proposed-model", "effort": "high", "preprocess": false, "deploy": false,
+	}, res.Error.Details["proposed"])
+	require.NotContains(t, res.Error.Error(), "Private change request")
+	require.NotContains(t, diagnostics.String(), "Private change request")
 }
 
-// Deploy defaults ON (owner decision 2026-08-01): work the owner already
-// confirmed is expected to ship, so an absent argument must read as true rather
-// than as the zero value. Holding a change is the opt-OUT, and it must still be
-// honoured exactly when it is asked for — a "don't push" that silently deployed
-// would be far worse than the reverse.
-func TestDeployDefaultsOnAndHonoursAnExplicitOptOut(t *testing.T) {
-	cases := map[string]struct {
-		args map[string]any
-		want bool
-	}{
-		"absent":         {startArgs(nil), true},
-		"explicit false": {startArgs(map[string]any{"deploy": false}), false},
-		"explicit true":  {startArgs(map[string]any{"deploy": true}), true},
-		// A non-boolean must not be read as an opt-out by accident; it falls
-		// back to the default, same as the preprocess flag above.
-		"wrong type": {startArgs(map[string]any{"deploy": "no"}), true},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			g, q := &cuGhost{body: cuRepoListing}, &cuSQS{}
-			if _, terr := handleCodeUpdateStart(context.Background(), cuDeps(g, q), cuInvocation(), tc.args); terr != nil {
-				t.Fatalf("handler error: %v", terr)
-			}
-			if got := decodeQueued(t, q).Deploy; got != tc.want {
-				t.Errorf("deploy = %v, want %v", got, tc.want)
-			}
-		})
-	}
+func TestCodeUpdateProposalDefaultsWithoutAnyIntegrationAccess(t *testing.T) {
+	_, terr := handleCodeUpdateStart(context.Background(), nil, cuInvocation(), startArgs(nil))
+	require.NotNil(t, terr)
+	require.Equal(t, CodeConfirmationRequired, terr.Code)
+	proposed := terr.Details["proposed"].(map[string]any)
+	require.Equal(t, codeupdate.DefaultNode, proposed["node"])
+	require.Equal(t, codeupdate.DefaultCLI, proposed["agent"])
+	require.Equal(t, true, proposed["preprocess"])
+	require.Equal(t, false, proposed["deploy"])
 }
 
-// Starting a coding agent on the owner's machine is not something to infer from
-// an ambiguous sentence.
-func TestStartRequiresConfirmation(t *testing.T) {
-	for _, args := range []map[string]any{
-		startArgs(map[string]any{"confirm": false}),
-		{"repo": "JeremyProffittOrg/live-ninja", "instructions": "tighten the retry logic"},
+func TestCodeUpdateProposalRejectsInvalidArgumentsWithoutIntegrationAccess(t *testing.T) {
+	for name, overrides := range map[string]map[string]any{
+		"unsupported CLI":   {"agent": "grok"},
+		"invalid repo":      {"repo": "unqualified-repository"},
+		"blank brief":       {"instructions": strings.Repeat(" ", 20)},
+		"malformed deploy":  {"deploy": "yes"},
+		"invented approval": {"approvalToken": "model-created-value"},
 	} {
-		g, q := &cuGhost{body: cuRepoListing}, &cuSQS{}
-		_, terr := handleCodeUpdateStart(context.Background(), cuDeps(g, q), cuInvocation(), args)
-		if terr == nil || terr.Code != CodeConfirmationRequired {
-			t.Fatalf("err = %v, want confirmation_required", terr)
-		}
-		if len(q.bodies) != 0 {
-			t.Error("an unconfirmed request was enqueued")
-		}
+		t.Run(name, func(t *testing.T) {
+			deps := newTestDeps()
+			inv := invocation("code_update_start", startArgs(overrides))
+			inv.Role = store.RoleOwner
+			res := newTestRegistry(t, deps).Invoke(context.Background(), inv)
+			require.False(t, res.OK)
+			require.Equal(t, CodeInvalidArgs, res.Error.Code)
+		})
 	}
 }
 
-// A model-invented repo must never reach a launch — and an almost-right name
-// should come back as candidates the model can read out.
-func TestStartRejectsUnknownRepoWithCandidates(t *testing.T) {
+// The registry must enforce ownership before any integration access or claim.
+func TestCodeUpdateToolsRequireOwner(t *testing.T) {
+	for _, def := range []*Definition{codeUpdateReposDefinition(), codeUpdateStartDefinition(), codeUpdateStatusDefinition()} {
+		t.Run(def.Name, func(t *testing.T) {
+			require.True(t, def.OwnerOnly)
+			for _, role := range []string{store.RoleMember, "", "admin"} {
+				deps, fake := newTestDepsWithFake()
+				g, q := &cuGhost{body: cuRepoListing}, &cuSQS{}
+				deps.Ghost = cuDeps(g, q).Ghost
+				deps.SQS = q
+				deps.CodeUpdateQueueURL = "https://sqs/code-update"
+				args := map[string]any{}
+				if def.Name == "code_update_start" {
+					args = startArgs(nil)
+				}
+				inv := invocation(def.Name, args)
+				inv.Role = role
+				inv.IdempotencyKey = "denied"
+				res := newTestRegistry(t, deps).Invoke(context.Background(), inv)
+				require.False(t, res.OK)
+				require.Equal(t, CodeForbidden, res.Error.Code)
+				require.Zero(t, g.calls)
+				require.Empty(t, q.bodies)
+				require.Nil(t, fake.RawItem("IDEMP#user-1#denied", "IDEMP"))
+			}
+		})
+	}
+}
+
+func TestCodeUpdateOwnerCanStillDiscoverRepositories(t *testing.T) {
+	deps := newTestDeps()
 	g, q := &cuGhost{body: cuRepoListing}, &cuSQS{}
-	_, terr := handleCodeUpdateStart(context.Background(), cuDeps(g, q), cuInvocation(),
-		startArgs(map[string]any{"repo": "JeremyProffittOrg/ghost"}))
-	if terr == nil || terr.Code != CodeNotFound {
-		t.Fatalf("err = %v, want not_found", terr)
-	}
-	if !strings.Contains(terr.Message, "ghost-cli") {
-		t.Errorf("the error does not offer candidates: %q", terr.Message)
-	}
-	if len(q.bodies) != 0 {
-		t.Error("an unknown repo was enqueued")
-	}
+	deps.Ghost = cuDeps(g, q).Ghost
+	inv := invocation("code_update_repos", map[string]any{})
+	inv.Role = store.RoleOwner
+	res := newTestRegistry(t, deps).Invoke(context.Background(), inv)
+	require.True(t, res.OK, "%+v", res.Error)
+	require.Len(t, res.Output["repos"], 4)
+	require.Equal(t, 1, g.calls)
 }
 
-func TestStartRejectsFabricatedRepo(t *testing.T) {
-	g, q := &cuGhost{body: cuRepoListing}, &cuSQS{}
-	_, terr := handleCodeUpdateStart(context.Background(), cuDeps(g, q), cuInvocation(),
-		startArgs(map[string]any{"repo": "someone-else/private-thing"}))
-	if terr == nil || terr.Code != CodeNotFound {
-		t.Fatalf("err = %v, want not_found", terr)
-	}
-	if len(q.bodies) != 0 {
-		t.Error("a fabricated repo was enqueued")
-	}
-}
-
-// ghost-cli accepts grok/opencode/antigravity; this voice surface does not, and
-// the extra ones must not slip through.
-func TestStartRejectsUnsupportedAgent(t *testing.T) {
-	g, q := &cuGhost{body: cuRepoListing}, &cuSQS{}
-	_, terr := handleCodeUpdateStart(context.Background(), cuDeps(g, q), cuInvocation(),
-		startArgs(map[string]any{"agent": "grok"}))
-	if terr == nil || terr.Code != CodeInvalidArgs {
-		t.Fatalf("err = %v, want invalid_args", terr)
-	}
-	if len(q.bodies) != 0 {
-		t.Error("an unsupported agent was enqueued")
-	}
-}
-
-func TestStartAcceptsCodex(t *testing.T) {
-	g, q := &cuGhost{body: cuRepoListing}, &cuSQS{}
-	if _, terr := handleCodeUpdateStart(context.Background(), cuDeps(g, q), cuInvocation(),
-		startArgs(map[string]any{"agent": "codex"})); terr != nil {
-		t.Fatalf("handler error: %v", terr)
-	}
-	if got := decodeQueued(t, q).CLI; got != "codex" {
-		t.Errorf("cli = %q, want codex", got)
-	}
-}
-
-// A denied principal must read as forbidden, not as a generic upstream blip —
-// the wording is what tells the owner the allowlist needs seeding.
-func TestStartSurfacesAuthorizationFailure(t *testing.T) {
-	g, q := &cuGhost{status: 403, body: `{"error":"forbidden"}`}, &cuSQS{}
-	_, terr := handleCodeUpdateStart(context.Background(), cuDeps(g, q), cuInvocation(), startArgs(nil))
-	if terr == nil || terr.Code != CodeForbidden {
-		t.Fatalf("err = %v, want forbidden", terr)
-	}
-}
-
-func TestStartNotConfiguredWithoutQueue(t *testing.T) {
-	g := &cuGhost{body: cuRepoListing}
-	deps := cuDeps(g, &cuSQS{})
-	deps.CodeUpdateQueueURL = ""
-	_, terr := handleCodeUpdateStart(context.Background(), deps, cuInvocation(), startArgs(nil))
-	if terr == nil || terr.Code != CodeNotConfigured {
-		t.Fatalf("err = %v, want not_configured", terr)
-	}
-}
-
-// The tool must be marked side-effecting so the router demands an idempotency
-// key and guards it with an IDEMP# claim — a duplicate delivery must not start
-// two coding sessions.
-func TestStartIsSideEffecting(t *testing.T) {
-	if !codeUpdateStartDefinition().SideEffecting {
-		t.Fatal("code_update_start is not marked SideEffecting; a retry could launch twice")
-	}
-	for _, def := range []*Definition{codeUpdateReposDefinition(), codeUpdateStatusDefinition()} {
-		if def.SideEffecting {
-			t.Errorf("%s is marked SideEffecting but only reads", def.Name)
-		}
+func TestCodeUpdateToolsDoNotClaimMutationIdempotencyKeys(t *testing.T) {
+	for _, def := range []*Definition{codeUpdateReposDefinition(), codeUpdateStartDefinition(), codeUpdateStatusDefinition()} {
+		require.False(t, def.SideEffecting, "%s only reads or proposes", def.Name)
 	}
 }
 
@@ -450,4 +376,26 @@ func TestCodeUpdateToolsAreRegistered(t *testing.T) {
 			t.Errorf("%s is not in definitions()", want)
 		}
 	}
+}
+
+func TestCodeUpdateStatusPreservesLegacyDeploymentAndDoesNotInferCompletion(t *testing.T) {
+	ctx := context.Background()
+	db := &cuDDB{}
+	deps := newTestDeps()
+	deps.CodeUpdate = codeupdate.NewStore(db, "test", nil)
+	require.NoError(t, deps.CodeUpdate.Put(ctx, codeupdate.Record{
+		RequestID: "legacy-run", UserID: "user-1", Repo: "JeremyProffittOrg/live-ninja",
+		Status: codeupdate.StatusLaunched, Deploy: true, RunID: "run-1",
+	}))
+	db.lookup = db.puts[0]
+	out, terr := handleCodeUpdateStatus(ctx, deps, cuInvocation(), map[string]any{"requestId": "legacy-run"})
+	require.Nil(t, terr)
+	require.Equal(t, true, out["deploy"], "old runs must not be relabeled as review-only")
+	require.Equal(t, codeupdate.StatusLaunched, out["status"])
+	require.NotContains(t, out, "runStatus", "missing provider outcomes must not imply success")
+	inv := cuInvocation()
+	inv.UserID = "someone-else"
+	_, terr = handleCodeUpdateStatus(ctx, deps, inv, map[string]any{"requestId": "legacy-run"})
+	require.NotNil(t, terr)
+	require.Equal(t, CodeNotFound, terr.Code)
 }

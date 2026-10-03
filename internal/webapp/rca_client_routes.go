@@ -44,11 +44,6 @@ type clientRCAEvent struct {
 
 func handleRCAClientEvent(deps *Deps) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		enqueuer := rca.NewSQSEnqueuer(deps.SQS, deps.SQSRcaURL)
-		if enqueuer == nil {
-			return errorJSON(c, fiber.StatusServiceUnavailable, tools.CodeNotConfigured,
-				"Client failure reporting is not configured.")
-		}
 		if len(c.Body()) > maxClientRCABodyBytes {
 			return errorJSON(c, fiber.StatusRequestEntityTooLarge, "payload_too_large",
 				"Client failure report is too large.")
@@ -59,8 +54,21 @@ func handleRCAClientEvent(deps *Deps) fiber.Handler {
 			return apiBadRequest(c, "body must be valid JSON")
 		}
 
-		tool := strings.TrimSpace(body.Tool)
+		// A review proposal is an expected control-flow response, not a tool
+		// failure. Older clients still report these with their original args.
+		// Ignore them before inspecting private args, constructing a failure or
+		// even requiring RCA configuration, so no proposal is sent to analysis.
 		code := strings.TrimSpace(body.Error.Code)
+		if code == tools.CodeConfirmationRequired {
+			return c.SendStatus(fiber.StatusAccepted)
+		}
+
+		enqueuer := rca.NewSQSEnqueuer(deps.SQS, deps.SQSRcaURL)
+		if enqueuer == nil {
+			return errorJSON(c, fiber.StatusServiceUnavailable, tools.CodeNotConfigured,
+				"Client failure reporting is not configured.")
+		}
+		tool := strings.TrimSpace(body.Tool)
 		message := strings.TrimSpace(body.Error.Message)
 		if tool == "" || message == "" {
 			return apiBadRequest(c, "tool and error message are required")

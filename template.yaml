@@ -7,6 +7,11 @@ Description: >
   pipeline, IoT baseline, CloudFront + Route 53 edge, alarms and budgets.
 
 Parameters:
+  JobsSchedulingEnabled:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Enable the Jobs scheduler only after reviewed deployment.
   DomainName:
     Type: String
     Default: live.jeremy.ninja
@@ -272,6 +277,7 @@ Globals:
         LOG_LEVEL: debug
 
 Conditions:
+  JobsSchedulerEnabled: !Equals [!Ref JobsSchedulingEnabled, 'true']
   # Empty IotAuthorizerSigningPublicKey keeps SigningDisabled true on the
   # existing authorizer live-ninja-iot. Do not set that parameter: AWS IoT
   # cannot change SigningDisabled in place. The signed authorizer is separate.
@@ -356,6 +362,7 @@ Resources:
           AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
           PORT: "8080"
           RUST_LOG: info
+          JOBS_SCHEDULING_ENABLED: !Ref JobsSchedulingEnabled
           DOMAIN_NAME: !Ref DomainName
           EMAIL_QUEUE_URL: !Ref EmailQueue
           JWT_KMS_KEY_ID: !GetAtt JwtKey.Arn
@@ -998,6 +1005,42 @@ Resources:
           Resource:
           - !GetAtt Table.Arn
           - !Sub "${Table.Arn}/index/*"
+
+  JobsWorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: JobsSchedulerEnabled
+    Properties:
+      LogGroupName: /live-ninja/lambda/jobs-worker
+      RetentionInDays: 5
+
+  JobsWorkerFunction:
+    Type: AWS::Serverless::Function
+    Condition: JobsSchedulerEnabled
+    Properties:
+      FunctionName: live-ninja-jobs-worker
+      Description: Produces durable in-app reminder receipts and human review checkpoints.
+      CodeUri: .build/jobs-worker/
+      Timeout: 30
+      ReservedConcurrentExecutions: 1
+      LoggingConfig:
+        LogGroup: !Ref JobsWorkerLogGroup
+      Environment:
+        Variables:
+          JOBS_WORKER_ENABLED: !Ref JobsSchedulingEnabled
+      Events:
+        DueJobs:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+            Enabled: true
+      Policies:
+      - Statement:
+        - Effect: Allow
+          Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:TransactWriteItems, dynamodb:PutItem, dynamodb:ConditionCheckItem, dynamodb:UpdateItem]
+          Resource: !GetAtt Table.Arn
+        - Effect: Allow
+          Action: dynamodb:Query
+          Resource: !Sub '${Table.Arn}/index/GSI2'
 
   EmailDispatchFunction:
     Type: AWS::Serverless::Function

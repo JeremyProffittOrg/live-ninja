@@ -1,0 +1,64 @@
+{{define "head"}}
+<link rel="stylesheet" href="{{asset "/static/css/jobs.css"}}">
+<script type="module" src="{{asset "/static/js/jobs.mjs"}}"></script>
+{{end}}
+{{define "body"}}
+{{template "nav" .}}
+<main class="jobs-shell" id="main">
+  <header class="jobs-heading">
+    <div><p class="jobs-eyebrow">Your personal work</p><h1>Jobs</h1><p class="ln-muted">A place for commitments, schedules, and what actually happened.</p></div>
+    <button class="ln-btn ln-btn--primary" type="button" id="jobNew" disabled>New job</button>
+  </header>
+  <div class="jobs-notice" id="jobsNotice" role="status" aria-live="polite" hidden></div>
+  <section class="jobs-capabilities" aria-label="Available job capabilities">
+    <span class="jobs-capability" id="jobsCapability">Checking availability…</span>
+    <details><summary>What can a job do?</summary><p id="jobsCapabilityDetails">Availability is checked when your jobs load.</p><p>Reminders create an in-app receipt. Review jobs hold a human checkpoint. Jobs do not yet send email, run AI tasks, write code, or control a browser or desktop.</p></details>
+  </section>
+  <section class="jobs-summary" aria-label="Job counts">
+    <div><strong id="jobsActive">—</strong><span id="jobsActiveLabel">Active</span></div>
+    <div><strong id="jobsPaused">—</strong><span id="jobsPausedLabel">Paused</span></div>
+    <div><strong id="jobsTotal">—</strong><span>Total jobs</span></div>
+  </section>
+  <div class="jobs-workspace">
+    <section class="jobs-board" aria-labelledby="jobsListHeading">
+      <div class="jobs-toolbar"><h2 id="jobsListHeading">Your jobs</h2><button class="ln-btn ln-btn--ghost" type="button" id="jobsRefresh">Refresh</button></div>
+      <div class="ln-field"><label for="jobsFilter">Show</label><select class="ln-select" id="jobsFilter"><option value="all">All jobs</option><option value="active">Active</option><option value="paused">Paused</option><option value="cancelled">Cancelled</option></select></div>
+      <p class="jobs-loading" id="jobsLoading" role="status">Loading your jobs…</p>
+      <div class="jobs-state jobs-state--error" id="jobsError" role="alert" hidden><h3>Jobs could not be loaded</h3><p id="jobsErrorText"></p><button class="ln-btn ln-btn--ghost" id="jobsTryAgain" type="button">Try again</button></div>
+      <div class="jobs-state" id="jobsEmpty" hidden><div class="jobs-empty-mark" aria-hidden="true">✓</div><h3 id="jobsEmptyTitle">Make room for what matters</h3><p id="jobsEmptyText">Create a reminder or a review checkpoint. Each run keeps a receipt here.</p><button class="ln-btn ln-btn--primary" id="jobsEmptyNew" type="button">Create your first job</button></div>
+      <ul class="jobs-list" id="jobsList" aria-label="Jobs"></ul>
+    </section>
+    <section class="jobs-detail" id="jobDetail" aria-labelledby="jobDetailHeading" tabindex="-1">
+      <div class="jobs-state jobs-placeholder" id="jobPlaceholder"><h2 id="jobDetailHeading">Every job has a story</h2><p>Select a job to see its schedule, progress, and run receipts.</p></div>
+      <div id="jobContent" hidden></div>
+    </section>
+  </div>
+  <p class="jobs-footer">A receipt describes the recorded outcome. A queued job has not completed its work.</p>
+</main>
+<dialog class="jobs-dialog" id="jobEditor" aria-labelledby="jobEditorTitle">
+  <form id="jobForm">
+    <div class="jobs-dialog-head"><h2 id="jobEditorTitle">New job</h2><button class="ln-btn ln-btn--ghost" id="jobEditorClose" type="button" aria-label="Close job editor">Close</button></div>
+    <p class="ln-muted">Give a commitment a time and a place to follow up.</p>
+    <div class="ln-field"><label for="jobTitle">Job title</label><input class="ln-input" id="jobTitle" name="title" maxlength="160" required autocomplete="off" placeholder="Review the weekly priorities"></div>
+    <div class="ln-field"><label for="jobInstructions">Notes</label><textarea class="ln-textarea" id="jobInstructions" name="instructions" maxlength="2000" required rows="4" placeholder="What would you like to remember or review?"></textarea></div>
+    <div class="ln-field"><label for="jobKind">Job type</label><select class="ln-select" id="jobKind" name="kind"><option value="reminder">Reminder</option><option value="review">Human review</option></select><p class="ln-hint" id="jobKindHint">Creates an in-app reminder receipt when it runs.</p></div>
+    <fieldset class="jobs-schedule"><legend>Schedule</legend>
+      <div class="jobs-form-grid">
+        <div class="ln-field"><label for="jobSchedule">Repeat</label><select class="ln-select" id="jobSchedule" name="schedule"><option value="manual">Manual only</option><option value="once">Once</option><option value="daily">Every day</option><option value="weekdays">Weekdays</option><option value="weekly">Every week</option></select></div>
+        <div class="ln-field"><label for="jobTimezone">Timezone</label><input class="ln-input" id="jobTimezone" name="timezone" list="jobTimezones" required autocomplete="off" spellcheck="false" aria-describedby="jobTimezoneHint"><datalist id="jobTimezones"></datalist><p class="ln-hint" id="jobTimezoneHint">For example, America/New_York or Europe/London.</p></div>
+        <div class="ln-field" id="jobOnceField"><label for="jobAt">Date and time</label><input class="ln-input" id="jobAt" name="at" type="datetime-local" required aria-describedby="jobAtHint"><p class="ln-hint" id="jobAtHint">In the timezone selected above.</p></div>
+        <div class="ln-field" id="jobTimeField" hidden><label for="jobTime">Time</label><input class="ln-input" id="jobTime" name="time" type="time" value="09:00" disabled></div>
+        <div class="ln-field" id="jobWeekdayField" hidden><label for="jobWeekday">Day of week</label><select class="ln-select" id="jobWeekday" name="weekday" disabled><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="0">Sunday</option></select></div>
+      </div>
+      <p class="ln-hint">The saved job shows the next run time. Editing, pausing, or cancelling also cancels pending reviews. Recurrence skips nonexistent clock-change times and uses the first occurrence of a repeated time.</p>
+    </fieldset>
+    <div class="jobs-form-error" id="jobFormError" role="alert" hidden></div>
+    <button class="ln-btn ln-btn--ghost" id="jobReloadLatest" type="button" hidden>Load latest version (replaces your edits)</button>
+    <div class="jobs-dialog-actions"><button class="ln-btn ln-btn--ghost" id="jobEditorCancel" type="button">Cancel</button><button class="ln-btn ln-btn--primary" id="jobSave" type="submit">Create job</button></div>
+  </form>
+</dialog>
+<dialog class="jobs-dialog jobs-dialog--small" id="jobConfirm" aria-labelledby="jobConfirmTitle">
+  <h2 id="jobConfirmTitle">Confirm action</h2><p id="jobConfirmText"></p><pre class="jobs-receipt" id="jobConfirmDetails" hidden></pre><p class="jobs-form-error" id="jobConfirmError" role="alert" hidden></p>
+  <div class="jobs-dialog-actions"><button class="ln-btn ln-btn--ghost" id="jobConfirmBack" type="button">Go back</button><button class="ln-btn ln-btn--primary" id="jobConfirmYes" type="button">Confirm</button></div>
+</dialog>
+{{end}}

@@ -6,10 +6,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Mic
@@ -62,6 +64,7 @@ import ninja.jeremy.liveninja.ui.screens.ConversationScreen
 import ninja.jeremy.liveninja.ui.screens.FilesScreen
 import ninja.jeremy.liveninja.ui.screens.HistoryScreen
 import ninja.jeremy.liveninja.ui.screens.LogViewerScreen
+import ninja.jeremy.liveninja.ui.screens.JobsScreen
 import ninja.jeremy.liveninja.ui.screens.MemoryScreen
 import ninja.jeremy.liveninja.ui.settings.DEFAULT_EXPANDED_SETTINGS_SECTION
 import ninja.jeremy.liveninja.ui.settings.SettingsSection
@@ -85,6 +88,12 @@ enum class TopLevelDestination(
         labelRes = R.string.destination_history,
         selectedIcon = Icons.Filled.History,
         unselectedIcon = Icons.Outlined.History,
+    ),
+    JOBS(
+        route = "jobs",
+        labelRes = R.string.destination_jobs,
+        selectedIcon = Icons.Filled.Checklist,
+        unselectedIcon = Icons.Outlined.Checklist,
     ),
     MEMORY(
         route = "memory",
@@ -228,6 +237,7 @@ fun LiveNinjaRoot(assistTriggers: SharedFlow<AssistTrigger> = MutableSharedFlow(
             ) {
                 composable(TopLevelDestination.CONVERSATION.route) { ConversationScreen() }
                 composable(TopLevelDestination.HISTORY.route) { HistoryScreen() }
+                composable(TopLevelDestination.JOBS.route) { JobsScreen() }
                 composable(TopLevelDestination.MEMORY.route) { MemoryScreen() }
                 composable(TopLevelDestination.FILES.route) { FilesScreen() }
                 // Internal route reached from Settings › Privacy › Diagnostics.

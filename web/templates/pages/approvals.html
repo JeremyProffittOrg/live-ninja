@@ -1,0 +1,23 @@
+{{define "head"}}
+<link rel="stylesheet" href="{{asset "/static/css/jobs.css"}}">
+<link rel="stylesheet" href="{{asset "/static/css/approvals.css"}}">
+<script type="module" src="{{asset "/static/js/approvals.mjs"}}"></script>
+{{end}}
+{{define "body"}}
+{{template "nav" .}}
+<main class="jobs-shell" id="main">
+  <header class="jobs-heading"><div><p class="jobs-eyebrow">Your decisions</p><h1>Approvals</h1><p>Review the exact work and keep a receipt of your decision.</p></div><button class="ln-btn ln-btn--ghost" id="approvalRefresh" type="button">Refresh</button></header>
+  <p class="jobs-capabilities">Coding execution is unavailable. Approval records your decision only; nothing launches, deploys, or sends a message. Future execution requires a new approval.</p>
+  <p id="approvalNotice" role="status" aria-live="polite">Loading approval history…</p>
+  <section class="approval-card" aria-labelledby="proposalTitle"><h2 id="proposalTitle">Prepare a coding review</h2><p id="approvalCatalog">Checking repository and machine availability…</p>
+    <form id="approvalForm" class="approval-form">
+      <label>Repository<select id="approvalRepo" class="ln-select" required disabled></select></label>
+      <label>Machine<select id="approvalNode" class="ln-select" required disabled></select></label>
+      <label>Instructions<textarea id="approvalInstructions" class="ln-input" required maxlength="12000" placeholder="Describe the change you want reviewed."></textarea></label>
+      <button class="ln-btn ln-btn--primary" type="submit" id="approvalPrepare" disabled>Review proposal</button>
+    </form>
+  </section>
+  <section aria-labelledby="approvalHistoryTitle"><h2 id="approvalHistoryTitle">Saved reviews and receipts</h2><div id="approvalList" class="approval-list"></div><button class="ln-btn ln-btn--ghost" id="approvalMore" type="button" hidden>Load more reviews</button></section>
+  <p>Rule proposals appear in Conversation with a Review proposal button. An approved rule change is saved in Memory. Human review jobs are managed in <a href="/jobs">Jobs</a>.</p>
+</main>
+{{end}}

@@ -37,6 +37,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/codeupdate"
+	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 )
 
 // maxProgressSummary bounds one report. Longer summaries are TRUNCATED rather
@@ -72,7 +73,7 @@ func handleCodeUpdateProgress(deps *Deps) fiber.Handler {
 			log = slog.Default()
 		}
 
-		if deps.CodeUpdate == nil || deps.CodeUpdateDispatcher == nil {
+		if deps.CodeUpdate == nil || deps.CodeUpdateDispatcher == nil || deps.Store == nil {
 			// Not configured is not the caller's fault, and must not read as a
 			// credential failure.
 			return c.Status(fiber.StatusServiceUnavailable).
@@ -97,6 +98,17 @@ func handleCodeUpdateProgress(deps *Deps) fiber.Handler {
 		}
 		if err := codeupdate.VerifySecret(secret, row.TokenHash); err != nil {
 			log.Warn("code update progress: token mismatch", "request_id", requestID)
+			return progressUnauthorized(c)
+		}
+
+		// Token rows outlive account deletion because they sit outside USER#.
+		// Recheck the owning account on every callback, after token verification
+		// and before parsing a body, claiming a post or sending any notification.
+		user, err := deps.Store.GetUser(c.UserContext(), row.UserID)
+		if err != nil || user == nil || user.Status != store.UserStatusActive || user.Role != store.RoleOwner {
+			if err != nil {
+				log.Error("code update progress: account lookup failed", "error", err.Error())
+			}
 			return progressUnauthorized(c)
 		}
 

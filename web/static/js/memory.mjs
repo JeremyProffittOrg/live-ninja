@@ -338,9 +338,10 @@ function confirmForget(e, trigger) {
       if (!resp.ok && resp.status !== 404) {
         throw new ApiError(resp.status, await resp.json().catch(() => null));
       }
+      const deletion = resp.status === 404 ? {} : await resp.json().catch(() => ({}));
       entities = entities.filter((x) => x.id !== e.id);
       renderEntities();
-      showToast(`Forgot ${e.name}.`);
+      showToast(deletion.warning || `Removed saved memory ${e.name}. Related learned facts may remain.`);
     } catch (err) {
       restore();
       showToast(apiErrorMessage(err, `Couldn't forget ${e.name} — try again.`), { error: true });
@@ -1131,7 +1132,7 @@ function buildLearnedRow(item) {
       return;
     }
     li.remove();
-    showToast('Forgotten.');
+    showToast('Learned record deleted. Related facts can be learned again from retained conversations. Start a new conversation to clear existing context.');
     if (!learnedListEl.children.length) setLearnedState('empty');
   });
   li.appendChild(btn);

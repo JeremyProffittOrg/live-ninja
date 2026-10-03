@@ -367,7 +367,7 @@ func handleForgetEntity(deps *Deps) fiber.Handler {
 		if ent == nil {
 			return apiNotFound(c)
 		}
-		return c.JSON(fiber.Map{"ok": true})
+		return c.JSON(fiber.Map{"ok": true, "entityRemoved": true, "status": "entity_removed", "learnedCleanup": "not_attempted", "warning": "Saved memory removed. Related learned facts and source conversations may remain. Review Learned from conversations separately; open-session context is not erased."})
 	}
 }
 

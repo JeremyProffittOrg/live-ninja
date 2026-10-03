@@ -106,6 +106,11 @@ type ToolError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 	TxID    string `json:"txId,omitempty"`
+
+	// Details is client-facing structured data, such as a proposal to review.
+	// Keep private proposal text out of Message: diagnostics log Message, and
+	// Error() deliberately does not include Details.
+	Details map[string]any `json:"details,omitempty"`
 }
 
 func (e *ToolError) Error() string { return e.Code + ": " + e.Message }
