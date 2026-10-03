@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "test": "playwright test",
-    "lighthouse": "lhci autorun"
+    "lighthouse": "lhci autorun",
+    "test:local": "playwright test --config playwright.local.config.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.10.1",

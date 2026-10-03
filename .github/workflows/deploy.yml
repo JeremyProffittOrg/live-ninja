@@ -721,6 +721,31 @@ jobs:
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 
+      - name: Set up Go for isolated workflow tests
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Start isolated Jobs and Approvals backend
+        working-directory: .
+        run: |
+          set -eu
+          go build -o "$RUNNER_TEMP/live-ninja-preview" ./cmd/jobs-preview
+          nohup "$RUNNER_TEMP/live-ninja-preview" -listen 127.0.0.1:8795 -data "$RUNNER_TEMP/live-ninja-ci-jobs.json" > "$RUNNER_TEMP/live-ninja-preview.log" 2>&1 < /dev/null &
+          echo "$!" > "$RUNNER_TEMP/live-ninja-preview.pid"
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8795/healthz >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/live-ninja-preview.log"
+          exit 1
+
+      - name: Isolated Jobs and Approvals browser tests
+        env:
+          LN_JOBS_BASE_URL: http://127.0.0.1:8795
+          LN_APPROVALS_BASE_URL: http://127.0.0.1:8795
+        run: npm run test:local
+
       - name: Wait for the deployed origin to answer
         run: |
           for i in $(seq 1 30); do
@@ -744,6 +769,14 @@ jobs:
           name: web-quality-reports
           path: |
             tests/web/playwright-report
+            tests/web/playwright-local-report
             tests/web/lighthouse-report
           retention-days: 14
           if-no-files-found: ignore
+
+      - name: Stop isolated workflow test backend
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/live-ninja-preview.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/live-ninja-preview.pid")" 2>/dev/null || true
+          fi

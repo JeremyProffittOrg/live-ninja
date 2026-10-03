@@ -44,3 +44,15 @@ feature cards were `h3` directly under the `h1`) and 0.90 SEO (no meta
 description). Both were fixed in the page rather than by lowering the bar, so
 the threshold reflects a real, currently-passing state and any regression trips
 it. Performance is `warn` only, since it measures a third-party network path.
+
+
+## Jobs and Approvals local suite
+
+The default Playwright configuration checks the deployed origin and excludes
+`jobs.spec.mjs` and `approvals.spec.mjs`. Those tests create local records and
+must use the separate `npm run test:local` configuration. Start
+`cmd/jobs-preview` on loopback with a fresh private data path, then set both
+`LN_JOBS_BASE_URL` and `LN_APPROVALS_BASE_URL` to its origin (CI uses
+`http://127.0.0.1:8795`). Each suite rejects non-loopback origins. The deployment
+workflow builds this real preview service with a fresh ephemeral FileStore,
+runs the local suite, and stops its process; it does not use AWS or Ghost.
