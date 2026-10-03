@@ -109,14 +109,17 @@ jobs:
           working-directory: android
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
-          script: ./gradlew connectedDebugAndroidTest --no-daemon
+          script: bash scripts/run-instrumented-ci.sh
 
-      - name: Upload instrumented test report on failure
-        if: failure()
+      - name: Upload instrumented test report and progress diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: instrumented-test-results
-          path: android/app/build/reports/androidTests/connected/
+          path: |
+            android/app/build/reports/androidTests/connected/
+            android/app/build/outputs/androidTest-results/connected/
+            android/app/build/outputs/instrumentation-diagnostics/
 
   build-and-publish:
     # Manual releases only (see the top-level `on:` comment) — a push to main must never
