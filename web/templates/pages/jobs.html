@@ -5,8 +5,8 @@
 {{define "body"}}
 {{template "nav" .}}
 <main class="jobs-shell" id="main">
-  <header class="jobs-heading">
-    <div><p class="jobs-eyebrow">Your personal work</p><h1>Jobs</h1><p class="ln-muted">A place for commitments, schedules, and what actually happened.</p></div>
+  <header class="jobs-heading jobs-heading--compact">
+    <h1 class="jobs-sr-only">Jobs</h1>
     <button class="ln-btn ln-btn--primary" type="button" id="jobNew" disabled>New job</button>
   </header>
   <nav class="jobs-history-toolbar" aria-label="Work sources"><button type="button" class="ln-btn ln-btn--primary" id="localJobsMode" aria-pressed="true">Personal jobs</button><button type="button" class="ln-btn ln-btn--ghost" id="ghostWorkMode" aria-pressed="false">Ghost work</button></nav>

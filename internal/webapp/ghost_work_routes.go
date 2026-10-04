@@ -1,13 +1,34 @@
 package webapp
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"strings"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/ghost"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	"github.com/gofiber/fiber/v2"
 )
+
+// ghostWorkPageBodyLimit bounds a POST archive-page read. A valid body holds a
+// node (<=128), a session ID and a cursor (<=2048 bytes, validated again by
+// ghost.historyQuery); 8 KiB leaves room for JSON escaping without accepting
+// arbitrarily large bodies.
+const ghostWorkPageBodyLimit = 8 << 10
+
+var errGhostWorkPageTooLarge = errors.New("ghost work: page request too large")
+
+// ghostWorkPageRequest is the strict JSON body of a POST page read. These are
+// read-only archive queries: POST only keeps the opaque cursor out of the
+// request line; nothing is created, changed or queued.
+type ghostWorkPageRequest struct {
+	NodeID    string
+	SessionID string
+	Cursor    string
+}
 
 // The Lambda integration has one pinned Ghost principal, not a per-member
 // identity mapping. Only a freshly verified Live Ninja owner may use it.
@@ -69,20 +90,101 @@ func RegisterGhostWorkAPI(app *fiber.App, client *ghost.Client, authorize func(c
 		}
 		return c.JSON(fiber.Map{"events": events, "source": "ghost", "runHistoryLimit": 10, "providerSessionBindingAvailable": false, "coverage": "authorized_nodes_only"})
 	})
+	// GET page reads remain for Android and other existing clients.
 	api.Get("/sessions", func(c *fiber.Ctx) error {
-		page, e := client.HistorySessions(c.UserContext(), c.Query("node_id"), c.Query("cursor"), TxID(c))
-		if e != nil {
-			return ghostWorkError(c, e)
-		}
-		return c.JSON(page)
+		return ghostWorkSessions(c, client, c.Query("node_id"), c.Query("cursor"))
 	})
 	api.Get("/events", func(c *fiber.Ctx) error {
-		page, e := client.HistoryEvents(c.UserContext(), c.Query("node_id"), c.Query("session_id"), c.Query("cursor"), TxID(c))
-		if e != nil {
-			return ghostWorkError(c, e)
-		}
-		return c.JSON(page)
+		return ghostWorkEvents(c, client, c.Query("node_id"), c.Query("session_id"), c.Query("cursor"))
 	})
+	// POST page reads carry the opaque cursor in a bounded JSON body instead of
+	// the request line. Same owner/scope/surface checks; CSRF is enforced by the
+	// global CSRFProtect middleware for cookie-bearing sessions.
+	api.Post("/sessions", func(c *fiber.Ctx) error {
+		req, e := decodeGhostWorkPage(c)
+		if e == nil && req.SessionID != "" {
+			e = ghost.ErrInvalidRequest
+		}
+		if e != nil {
+			return ghostWorkPageError(c, e)
+		}
+		return ghostWorkSessions(c, client, req.NodeID, req.Cursor)
+	})
+	api.Post("/events", func(c *fiber.Ctx) error {
+		req, e := decodeGhostWorkPage(c)
+		if e != nil {
+			return ghostWorkPageError(c, e)
+		}
+		return ghostWorkEvents(c, client, req.NodeID, req.SessionID, req.Cursor)
+	})
+}
+
+func ghostWorkSessions(c *fiber.Ctx, client *ghost.Client, node, cursor string) error {
+	page, e := client.HistorySessions(c.UserContext(), node, cursor, TxID(c))
+	if e != nil {
+		return ghostWorkError(c, e)
+	}
+	return c.JSON(page)
+}
+
+func ghostWorkEvents(c *fiber.Ctx, client *ghost.Client, node, session, cursor string) error {
+	page, e := client.HistoryEvents(c.UserContext(), node, session, cursor, TxID(c))
+	if e != nil {
+		return ghostWorkError(c, e)
+	}
+	return c.JSON(page)
+}
+
+// decodeGhostWorkPage accepts exactly one JSON object of string fields
+// node_id/session_id/cursor. Unknown fields, nulls, non-strings, trailing data,
+// encoded or non-JSON bodies, and bodies over the limit are rejected.
+func decodeGhostWorkPage(c *fiber.Ctx) (ghostWorkPageRequest, error) {
+	var out ghostWorkPageRequest
+	raw := c.Request().Body()
+	if len(raw) > ghostWorkPageBodyLimit {
+		return out, errGhostWorkPageTooLarge
+	}
+	mediaType, _, _ := strings.Cut(c.Get(fiber.HeaderContentType), ";")
+	if !strings.EqualFold(strings.TrimSpace(mediaType), fiber.MIMEApplicationJSON) || c.Get(fiber.HeaderContentEncoding) != "" {
+		return out, ghost.ErrInvalidRequest
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return out, ghost.ErrInvalidRequest
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	var fields map[string]json.RawMessage
+	if decoder.Decode(&fields) != nil {
+		return out, ghost.ErrInvalidRequest
+	}
+	if _, e := decoder.Token(); !errors.Is(e, io.EOF) {
+		return out, ghost.ErrInvalidRequest
+	}
+	for name, value := range fields {
+		var target *string
+		switch name {
+		case "node_id":
+			target = &out.NodeID
+		case "session_id":
+			target = &out.SessionID
+		case "cursor":
+			target = &out.Cursor
+		default:
+			return ghostWorkPageRequest{}, ghost.ErrInvalidRequest
+		}
+		v := bytes.TrimSpace(value)
+		if len(v) == 0 || v[0] != '"' || json.Unmarshal(v, target) != nil {
+			return ghostWorkPageRequest{}, ghost.ErrInvalidRequest
+		}
+	}
+	return out, nil
+}
+
+func ghostWorkPageError(c *fiber.Ctx, e error) error {
+	if errors.Is(e, errGhostWorkPageTooLarge) {
+		return errorJSON(c, fiber.StatusRequestEntityTooLarge, "request_too_large", "This archive page request is larger than Live Ninja accepts. Reload the page and retry.")
+	}
+	return ghostWorkError(c, e)
 }
 
 func ghostWorkError(c *fiber.Ctx, e error) error {

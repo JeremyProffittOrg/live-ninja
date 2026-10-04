@@ -233,3 +233,74 @@ body { background-color:var(--jobs-bg); background-image:radial-gradient(ellipse
   .jobs-shell :focus-visible,.jobs-dialog :focus-visible { outline:2px solid Highlight; }
   .jobs-card[aria-current="true"] { outline:2px solid Highlight; outline-offset:-3px; }
 }
+
+/* Ghost work: one continuous retained log, scoped so personal Jobs and receipts keep their cards. */
+.jobs-sr-only { position:absolute!important; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0 0 0 0); clip-path:inset(50%); white-space:nowrap; border:0; }
+.jobs-heading--compact { justify-content:flex-end; margin-bottom:12px; }
+.ghost-selectors { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,2fr); gap:16px; align-items:start; margin-bottom:12px; }
+.ghost-field { display:flex; flex-direction:column; gap:8px; min-width:0; }
+.ghost-session-box { padding:12px; border:1px solid var(--ln-border); border-radius:4px; background:var(--ln-surface-raised); }
+.ghost-label { font-size:var(--ln-fs-sm); font-weight:650; color:var(--jobs-silver); }
+.ghost-node { width:100%; min-width:0; min-height:44px; }
+.ghost-combo { position:relative; min-width:0; }
+.ghost-combo-button { position:relative; display:flex; flex-direction:column; gap:2px; min-height:44px; padding:8px 40px 8px 12px; border:1px solid var(--ln-border-strong); border-radius:4px; background:var(--ln-input-bg); color:var(--ln-text); cursor:pointer; overflow-wrap:anywhere; line-height:1.4; }
+.ghost-combo-button::after { content:""; position:absolute; right:16px; top:50%; width:8px; height:8px; border-right:2px solid currentColor; border-bottom:2px solid currentColor; transform:translateY(-70%) rotate(45deg); }
+.ghost-combo-button[aria-expanded=true]::after { transform:translateY(-20%) rotate(-135deg); }
+.ghost-combo-button[aria-disabled=true] { cursor:not-allowed; color:var(--ln-text-muted); }
+.ghost-combo-button:focus { border-color:var(--jobs-accent); }
+.ghost-combo-placeholder { color:var(--ln-text-muted); }
+.ghost-listbox { position:absolute; z-index:20; left:0; right:0; top:calc(100% + 4px); max-height:min(50vh,360px); overflow-y:auto; overscroll-behavior:contain; margin:0; padding:4px; list-style:none; border:1px solid var(--ln-border-strong); border-radius:4px; background:var(--ln-surface-raised); box-shadow:0 12px 32px rgba(0,0,0,.28); }
+.ghost-listbox[hidden] { display:none; }
+.ghost-option { display:flex; flex-direction:column; gap:2px; min-height:44px; padding:10px 12px; border-radius:4px; cursor:pointer; overflow-wrap:anywhere; line-height:1.4; }
+.ghost-option:hover,.ghost-option.is-active { background:var(--ln-accent-tint); outline:1px solid var(--ln-accent-ink); outline-offset:-1px; }
+.ghost-option[aria-selected=true] { box-shadow:inset 3px 0 0 var(--ln-accent-ink); }
+.ghost-opt-desc { font-weight:650; }
+.ghost-opt-id,.ghost-opt-time { font-size:var(--ln-fs-xs); color:var(--ln-text-muted); }
+.ghost-opt-id { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; }
+.ghost-more { align-self:flex-start; }
+.ghost-session-foot { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; margin-top:4px; }
+.ghost-check { display:inline-flex; align-items:center; gap:10px; min-height:44px; font-size:var(--ln-fs-sm); cursor:pointer; }
+.ghost-check input { width:20px; height:20px; margin:0; accent-color:var(--ln-accent-ink); }
+.ghost-refresh { margin-left:auto; display:inline-flex; align-items:center; gap:8px; padding:0 14px; }
+.ghost-refresh[aria-disabled=true] { opacity:.6; cursor:progress; }
+.ghost-status { margin-top:0; }
+.ghost-scheduled { margin:8px 0 4px; }
+.ghost-scheduled-title { font-size:var(--ln-fs-sm); color:var(--jobs-silver); letter-spacing:.04em; margin:0 0 4px; }
+.ghost-jobs { list-style:none; margin:0; padding:0; display:grid; gap:6px; }
+.ghost-jobs:empty { display:none; }
+.ghost-job details { border-left:2px solid var(--ln-border); padding-left:10px; }
+.ghost-job-summary { cursor:pointer; min-height:32px; display:list-item; font-size:var(--ln-fs-sm); overflow-wrap:anywhere; }
+.ghost-job-name { font-weight:650; margin-right:8px; }
+.ghost-job-status { color:var(--ln-text-muted); }
+.ghost-job-detail { margin-top:8px; font-size:var(--ln-fs-xs); }
+.ghost-conversation { margin-top:20px; padding-top:20px; }
+.ghost-log-head { display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between; gap:8px 16px; margin-bottom:8px; }
+.ghost-log-title { margin:0; min-width:0; flex:1 1 260px; line-height:1.4; }
+.ghost-log-name { display:block; color:var(--jobs-accent); font-size:var(--ln-fs-lg); letter-spacing:.02em; }
+.ghost-log-meta { display:block; margin-top:2px; font-size:var(--ln-fs-sm); font-weight:400; color:var(--ln-text-muted); overflow-wrap:anywhere; }
+.ghost-log-meta:empty { display:none; }
+.ghost-log-tools { display:flex; gap:6px; flex:none; margin-left:auto; }
+.ghost-icon-btn { display:inline-grid; place-items:center; width:44px; height:44px; padding:0; border:1px solid var(--ln-border); border-radius:4px; background:var(--ln-surface); color:var(--ln-text); font-size:20px; line-height:1; cursor:pointer; }
+.ghost-icon-btn:hover { border-color:var(--ln-border-strong); background:var(--ln-accent-tint); }
+.ghost-icon-btn[aria-disabled=true] { opacity:.5; cursor:not-allowed; }
+.ghost-viewport { padding:8px 12px; }
+.ghost-viewport[aria-busy=true] { cursor:progress; }
+.ghost-log { list-style:none; margin:0; padding:0; min-width:0; }
+.ghost-log-line { display:grid; grid-template-columns:32px minmax(0,1fr); gap:12px; align-items:start; padding:6px 0; min-width:0; }
+/* Offscreen rendering is skipped only for long logs (ghost-work.mjs GHOST_RENDER_SKIP_MIN).
+   Short logs always render so their real height is known and every capture shows text;
+   long logs keep responsiveness and are pinned to the end by a ResizeObserver after Latest. */
+.ghost-log[data-render-skip=true]>.ghost-log-line { content-visibility:auto; contain-intrinsic-size:auto 56px; }
+.ghost-log[data-render-skip=true]>.ghost-log-line:focus-within { content-visibility:visible; }
+.ghost-role { display:grid; place-items:center; width:32px; height:32px; padding:0; border:1px solid var(--ln-border-strong); border-radius:50%; background:var(--ln-surface); color:var(--jobs-silver); font-family:inherit; font-size:13px; font-weight:700; line-height:1; cursor:help; }
+.ghost-role--user { color:var(--ln-accent-ink); border-color:var(--ln-accent-ink); background:var(--ln-accent-tint); }
+.ghost-role--tool_call,.ghost-role--tool_result { color:var(--ln-warn-ink,var(--jobs-silver)); border-style:dashed; }
+.ghost-role--command { color:var(--ln-warn-ink,var(--jobs-silver)); border-radius:4px; }
+.ghost-role--event,.ghost-role--unknown { color:var(--ln-text-muted); border-style:dotted; }
+.ghost-log-body { min-width:0; padding-top:5px; }
+.ghost-log-line[data-kind=tool_call] .ghost-log-text,.ghost-log-line[data-kind=tool_result] .ghost-log-text,.ghost-log-line[data-kind=command] .ghost-log-text { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:var(--ln-fs-xs); }
+.ghost-log-notice { margin:2px 0; font-size:var(--ln-fs-xs); font-style:italic; color:var(--ln-text-muted); }
+.ghost-tooltip { position:fixed; z-index:60; left:0; top:0; max-width:min(320px,calc(100vw - 16px)); padding:6px 10px; border-radius:4px; background:var(--jobs-text); color:var(--jobs-bg); font-size:var(--ln-fs-xs); line-height:1.45; overflow-wrap:anywhere; pointer-events:none; box-shadow:0 4px 16px rgba(0,0,0,.3); }
+.ghost-tooltip[hidden] { display:none; }
+@media(max-width:640px) { .ghost-selectors { grid-template-columns:minmax(0,1fr); } .ghost-log-line { grid-template-columns:28px minmax(0,1fr); gap:8px; } .ghost-role { width:28px; height:28px; } .ghost-viewport { padding:6px 8px; } }
+@media(forced-colors:active) { .ghost-session-box,.ghost-listbox,.ghost-combo-button,.ghost-icon-btn,.ghost-role { background:Canvas; color:CanvasText; border-color:CanvasText; } .ghost-option.is-active,.ghost-option:hover { outline:2px solid Highlight; } .ghost-tooltip { background:Canvas; color:CanvasText; border:1px solid CanvasText; } }
