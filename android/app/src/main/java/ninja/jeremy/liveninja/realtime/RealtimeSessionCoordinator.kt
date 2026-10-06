@@ -105,6 +105,11 @@ internal class DeviceActionSessionState {
  * (`POST /api/v1/tools/invoke` or local action → `function_call_output` →
  * `response.create`).
  *
+ * `play_media` is the one device-local tool that does NOT ask for a spoken
+ * continuation after success: once a media app/search has been handed off, the
+ * conversation mutes, sends its honest function output, and ends so the media
+ * can be heard.
+ *
  * Transport-level barge-in (response.cancel + 40 ms fade + jitter flush on
  * `input_audio_buffer.speech_started`) lives in [WebRtcTransport]; this class
  * only translates events for the UI.
@@ -124,6 +129,13 @@ class RealtimeSessionCoordinator @Inject constructor(
     private val transcriptUploader: TranscriptUploader,
     private val auth: AuthRepository,
 ) : RealtimeSessionController {
+
+    /**
+     * Device-local play_media executor. Field-injected (standard Hilt member
+     * injection) so existing direct constructor users keep compiling; when it
+     * is never set, play_media returns a structured not_supported error.
+     */
+    @Inject lateinit var deviceMediaTool: DeviceMediaToolExecutor
 
     /**
      * The transport for the *current* session, selected per the resolved
@@ -526,6 +538,7 @@ class RealtimeSessionCoordinator @Inject constructor(
             // device/storage result in the same Result shape as a backend tool.
             val deviceTool = DeviceSessionTool.forName(call.name)
             var shouldRespond = true
+            var mediaHandoff = false
             val output = when {
                 deviceTool != null -> {
                     if (!deviceActionState.setPending(deviceTool, generation)) return@launch
@@ -548,20 +561,28 @@ class RealtimeSessionCoordinator @Inject constructor(
                     delivery.output
                 }
 
+                call.name == PLAY_MEDIA_TOOL_NAME -> {
+                    // Single-flight per call id: a redelivered call reuses the
+                    // first result and never launches a second time.
+                    var launched = false
+                    val delivery = localToolResults.getOrExecute(call.callId) {
+                        val result = executePlayMedia(call, binding, generation)
+                        launched = result.launched
+                        result.output
+                    }
+                    shouldRespond = delivery.shouldRespond
+                    mediaHandoff = delivery.shouldRespond && launched
+                    delivery.output
+                }
+
                 else -> toolRouter.invoke(call, binding.authSessionId)
             }
+            if (mediaHandoff) {
+                finishMediaHandoff(call, output, binding, generation, sessionTransport)
+                return@launch
+            }
             if (!shouldRespond || !isCurrent(binding) || !deviceActionState.isCurrent(generation)) return@launch
-            sessionTransport.sendEvent(
-                JSONObject()
-                    .put("type", "conversation.item.create")
-                    .put(
-                        "item",
-                        JSONObject()
-                            .put("type", "function_call_output")
-                            .put("call_id", call.callId)
-                            .put("output", output),
-                    ),
-            )
+            sessionTransport.sendEvent(functionOutputEvent(call.callId, output))
             if (!isCurrent(binding)) return@launch
             sessionTransport.sendEvent(JSONObject().put("type", "response.create"))
 
@@ -575,6 +596,86 @@ class RealtimeSessionCoordinator @Inject constructor(
             emit(SessionUiEvent.ToolCall(itemId = call.callId, name = call.name, summary = summary))
         }
     }
+
+    private suspend fun executePlayMedia(
+        call: RealtimeEvent.FunctionCall,
+        binding: SessionBinding,
+        generation: Long,
+    ): DeviceMediaToolResult {
+        if (!::deviceMediaTool.isInitialized) {
+            return DeviceMediaToolResult(playMediaUnavailableOutput(call.callId), launched = false)
+        }
+        // The predicate is re-evaluated on the main thread right before every
+        // activity start, so a binding that went stale during the dispatcher
+        // hop (sign-out, stop, replacement session) cannot launch anything.
+        return deviceMediaTool.execute(call.callId, call.argumentsJson) {
+            isCurrent(binding) && deviceActionState.isCurrent(generation)
+        }
+    }
+
+    /**
+     * A media app/search was actually started. Silence this conversation at
+     * once, hand the model the honest result WITHOUT response.create (no voice
+     * over the launched media), then end only this bound session on the root
+     * scope — binding.tools is cancelled by that very teardown.
+     *
+     * The teardown is scheduled from a finally block so cancellation or an
+     * error while muting, stopping audio, sending the output or adding the
+     * chip can never skip it; such a CancellationException still propagates
+     * to the caller after the cleanup has been scheduled.
+     */
+    private fun finishMediaHandoff(
+        call: RealtimeEvent.FunctionCall,
+        output: String,
+        binding: SessionBinding,
+        generation: Long,
+        sessionTransport: RealtimeTransport,
+    ) {
+        try {
+            if (isCurrent(binding) && deviceActionState.isCurrent(generation)) {
+                bestEffort("mute after media handoff") { sessionTransport.setMicMuted(true) }
+                bestEffort("stop playback after media handoff") { sessionTransport.stopPlayback() }
+                bestEffort("media function output") {
+                    sessionTransport.sendEvent(functionOutputEvent(call.callId, output))
+                }
+                if (isCurrent(binding)) {
+                    val summary = playMediaChipSummary(output)
+                    transcriptStore.addToolChip(itemId = call.callId, name = call.name, summary = summary)
+                    emit(SessionUiEvent.ToolCall(itemId = call.callId, name = call.name, summary = summary))
+                }
+            }
+        } finally {
+            // Root scope, not binding.tools: this must run even when the tool
+            // job is already cancelled.
+            scope.launch {
+                lifecycleMutex.withLock {
+                    // Never stop a replacement session.
+                    if (activeBinding === binding) closeBinding(binding, upload = isCurrent(binding))
+                }
+            }
+        }
+    }
+
+    private fun bestEffort(label: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            LNLog.w(LogCategory.REALTIME, TAG, "$label failed", e)
+        }
+    }
+
+    private fun functionOutputEvent(callId: String, output: String): JSONObject =
+        JSONObject()
+            .put("type", "conversation.item.create")
+            .put(
+                "item",
+                JSONObject()
+                    .put("type", "function_call_output")
+                    .put("call_id", callId)
+                    .put("output", output),
+            )
 
     /**
      * Inject a text turn and ask for a reply. Mirrors what realtime.mjs's

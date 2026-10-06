@@ -39,7 +39,8 @@ func TestGeminiMintBuildsConstrainedTokenAndSetup(t *testing.T) {
 		},
 	}
 
-	res, err := m.Mint(WithClientCapabilities(context.Background(), "web", []string{JobsReviewCapability}), "Puck", "You are terse.")
+	ctx := WithClientCapabilities(context.Background(), "web", []string{JobsReviewCapability})
+	res, err := m.Mint(ctx, "Puck", "You are terse.")
 	require.NoError(t, err)
 
 	// Token + windows.
@@ -67,17 +68,32 @@ func TestGeminiMintBuildsConstrainedTokenAndSetup(t *testing.T) {
 	assert.NotNil(t, cc.OutputAudioTranscription)
 	// D3 (was count-only: len(toolManifest) == len(cc.Tools[0].FunctionDeclarations),
 	// exactly the weak assertion form that let the manifest/registry drift
-	// (P2) survive undetected). Assert content: every manifest tool crosses
-	// the JSON round trip into the SDK-typed declarations in order, and one
-	// representative tool with every string constraint kind (file_create)
-	// carries its minLength/maxLength/pattern/required intact — proving
-	// genai.Schema really does model those keywords (gemini_mint.go
+	// (P2) survive undetected). Assert content: every client-filtered
+	// manifest tool crosses the JSON round trip into the SDK-typed
+	// declarations in order with its description and parameter schema intact,
+	// and one representative tool with every string constraint kind
+	// (file_create) carries its minLength/maxLength/pattern/required intact —
+	// proving genai.Schema really does model those keywords (gemini_mint.go
 	// geminiSchemaKeywords) and the D1 sanitizer left them untouched.
 	require.NotEmpty(t, cc.Tools)
 	gotDecls := cc.Tools[0].FunctionDeclarations
-	require.Len(t, gotDecls, len(toolManifest))
+	// The minted token carries the client-filtered catalog: a web client never
+	// receives the Android-only play_media declaration.
+	wantManifest := FilterClientTools(ctx, toolManifest)
+	wantDecls := FilterClientTools(ctx, geminiToolDeclarations())
+	require.Len(t, wantDecls, len(wantManifest))
+	require.Len(t, gotDecls, len(wantManifest))
 	for i, d := range gotDecls {
-		assert.Equal(t, toolManifest[i]["name"], d.Name, "declaration %d name", i)
+		assert.Equal(t, wantManifest[i]["name"], d.Name, "declaration %d name", i)
+		assert.Equal(t, wantDecls[i]["name"], d.Name, "declaration %d gemini name", i)
+		assert.NotEqual(t, playMediaToolName, d.Name, "a web token must never lock play_media")
+		wantDesc, _ := wantDecls[i]["description"].(string)
+		assert.Equal(t, wantDesc, d.Description, "declaration %v description", d.Name)
+		rawParams, err := json.Marshal(wantDecls[i]["parameters"])
+		require.NoError(t, err)
+		var wantParams *genai.Schema
+		require.NoError(t, json.Unmarshal(rawParams, &wantParams))
+		assert.Equal(t, wantParams, d.Parameters, "declaration %v parameters", d.Name)
 	}
 
 	var fileCreate *genai.FunctionDeclaration

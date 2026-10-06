@@ -35,8 +35,12 @@ object ClientId {
      * OpenAI host.
      *
      * `voice-live-direct` is declared now that [ninja.jeremy.liveninja.realtime.VoiceLiveTransport] ships.
+     *
+     * `android-media-v1` declares that this build can handle the `play_media`
+     * tool call. It is a compatibility signal only, never an identity or a
+     * permission grant: older builds omit it and are never offered the tool.
      */
-    const val CAPABILITIES: String = "azure-direct,voice-live-direct,jobs-review-v1"
+    const val CAPABILITIES: String = "azure-direct,voice-live-direct,jobs-review-v1,android-media-v1"
 }
 
 /**

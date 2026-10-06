@@ -25,6 +25,7 @@ import ninja.jeremy.liveninja.assistant.AssistantEvents
 import ninja.jeremy.liveninja.assistant.KeyguardGate
 import ninja.jeremy.liveninja.assistant.LiveNinjaSession
 import ninja.jeremy.liveninja.auth.AuthRepository
+import ninja.jeremy.liveninja.realtime.ResumedMainActivityRegistry
 import ninja.jeremy.liveninja.realtime.SessionOrchestrator
 import ninja.jeremy.liveninja.ui.LiveNinjaRoot
 import ninja.jeremy.liveninja.ui.conversation.ConversationViewModel
@@ -61,6 +62,13 @@ class MainActivity : ComponentActivity() {
      * is disabled — it binds the AssistantEvents/WakeEvents collectors on init.
      */
     @Inject lateinit var sessionOrchestrator: SessionOrchestrator
+
+    /**
+     * Weak reference to this activity while (and only while) it is RESUMED.
+     * The play_media tool launches media apps exclusively from a resumed,
+     * unlocked foreground activity; attached in onResume, detached in onPause.
+     */
+    @Inject lateinit var resumedActivityRegistry: ResumedMainActivityRegistry
 
     /**
      * Activity-scoped conversation session state (same instance the
@@ -148,6 +156,18 @@ class MainActivity : ComponentActivity() {
         appUpdateCoordinator.onAppForegrounded()
     }
 
+    override fun onResume() {
+        super.onResume()
+        resumedActivityRegistry.attach(this)
+    }
+
+    override fun onPause() {
+        // Detach before the pause completes so no media launch can target a
+        // non-resumed activity.
+        resumedActivityRegistry.detach(this)
+        super.onPause()
+    }
+
     /**
      * Re-assert the user's persisted always-listening intent whenever the app comes to the
      * foreground.
@@ -184,6 +204,11 @@ class MainActivity : ComponentActivity() {
         super.onStop()
         appUpdateCoordinator.onAppBackgrounded()
         conversationViewModel.onAppBackgrounded()
+    }
+
+    override fun onDestroy() {
+        resumedActivityRegistry.detach(this)
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {

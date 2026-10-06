@@ -1285,6 +1285,7 @@
           <li><strong>Plan coding work</strong> with a local review scope, look up repositories, or check an existing run’s status. Open Approvals to verify a proposal and record your decision. Coding execution remains unavailable: approval does not launch work, and a fresh approval will be needed before future execution. A conversation cannot authorize a launch or deployment.</li>
           <li><strong>Make files for you</strong> — notes, documents and bundles that show up under Downloads.</li>
           <li><strong>Control the device it's running on</strong> where that's supported, including volume, camera and photos.</li>
+          <li><strong>Play music</strong> or <strong>play a video</strong> on your phone with the updated Android app. “Play some Miles Davis” goes to YouTube Music; “play a video about sourdough” goes to YouTube, using your words as the search. It works with the OpenAI Realtime, Azure OpenAI Realtime and Gemini Flash Live voice engines, including messages you type while one of those voice conversations is active. The phone must be unlocked with Live Ninja open on screen. Live Ninja requests playback or opens the app’s search — it can’t guarantee playback starts or confirm anything is playing, and you may need to pick a result, sign in, or have a subscription. A successful handoff ends the current voice conversation; say the wake word when you want to talk again. If the app can’t take the request, a web search may open instead — that doesn’t mean the app is uninstalled — and if there is no browser to open it in, you’ll see an error explaining what happened. It can’t pause, skip or otherwise control the app afterwards. Not available with Nova or Azure Voice Live, on the web, on the M5Stack, or in older versions of the Android app.</li>
           <li><strong>Start a fresh conversation</strong> or <strong>stop listening</strong>, just by saying so — “stop listening” or “Jarvis stop listening” ends the live conversation and waits for the wake word. Always listening stays on.</li>
         </ul>
         <p class="ln-hint">Turn on <em>Show tool calls</em> under the persona picker in the rail to watch these actions happen in the transcript.</p>
@@ -1371,7 +1372,7 @@
             about the same as the OpenAI one.
             <em>Azure Voice Live</em> and <em>Azure Voice Live Lite</em> talk to Microsoft Voice Live
             on a separate Azure resource with a short-lived token. They run from this browser and
-            from the Android app.
+            from the Android app, but can't play music or videos on your phone.
             If an engine is briefly unavailable, the conversation
             falls back to the default and tells you so rather than failing.</dd>
           <dt>Turn detection</dt>
@@ -1407,6 +1408,7 @@
           <li><strong>It cuts you off mid-sentence?</strong> Switch turn detection to Semantic VAD, or lower the mic pickup sensitivity.</li>
           <li><strong>Changed persona or voice mid-conversation?</strong> That applies to the next conversation — start a new one to hear it.</li>
           <li><strong>Told it to stop listening?</strong> The conversation ended. Say the wake word when you want to talk again — always listening stays on unless you switch it off in Settings.</li>
+          <li><strong>Music or a video didn't start?</strong> Live Ninja hands the request to YouTube Music or YouTube; it can't confirm playback or press play for you. Pick a result in the app, check you're signed in, and note some music needs a subscription. Make sure the phone was unlocked with Live Ninja on screen and you're using OpenAI Realtime, Azure OpenAI Realtime or Gemini Flash Live. If a web search opened instead, the app couldn't take the request — that doesn't necessarily mean it isn't installed.</li>
           <li><strong>Android asked for permissions at launch?</strong> The permission guide explains optional microphone/camera access, notifications and approximate session location. Skip any permission and continue using other features; reopen Permissions in Settings. Update-install access is requested only when installing an update.</li>
           <li><strong>Voice preview didn't play?</strong> Check your connection and try again. The sample is a short extra request, not the live conversation.</li>
           <li><strong>Settings look different on another device?</strong> Most settings are per device on purpose. Use <em>Device settings</em> in a section to apply it everywhere.</li>

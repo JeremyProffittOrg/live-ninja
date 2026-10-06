@@ -68,6 +68,17 @@
             <action android:name="android.settings.SETTINGS" />
         </intent>
         <package android:name="com.android.settings" />
+
+        <!-- play_media (realtime/DeviceMediaTools.kt): resolve-before-start for
+             exactly the two fixed media apps, plus an HTTPS browser resolver for
+             the honest web-search fallback. No QUERY_ALL_PACKAGES. -->
+        <package android:name="com.google.android.apps.youtube.music" />
+        <package android:name="com.google.android.youtube" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
     </queries>
 
     <application

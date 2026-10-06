@@ -312,8 +312,8 @@ type Definition struct {
 	SideEffecting bool
 	// DeviceLocal marks a tool whose work happens on the user's device (stopping
 	// the microphone, recycling a realtime session, changing a local audio stream,
-	// or capturing camera media) and which the client is expected to intercept
-	// before it reaches this router.
+	// capturing camera media, or handing a media request to an installed app)
+	// and which the client is expected to intercept before it reaches this router.
 	// It still appears in the manifest — that is what tells the model the capability
 	// exists — but reaching the server Handler means a surface that cannot perform
 	// it called it anyway.
@@ -642,6 +642,10 @@ func definitions() []*Definition {
 		// through the authenticated deliverables upload-intent surface.
 		takePhotoDefinition(),
 		recordVideoDefinition(),
+		// Device-local media handoff: Android hands the user's query to YouTube
+		// Music or YouTube (devicemedia.go). Capability-gated per client by
+		// internal/realtime (android-media-v1).
+		playMediaDefinition(),
 	}
 }
 

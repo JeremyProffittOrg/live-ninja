@@ -37,14 +37,14 @@ func TestToolManifestAndInstructionsAreScopedToSurface(t *testing.T) {
 			assert.True(t, names["send_email"], "server tools stay available")
 			assert.Equal(t, tc.stop, names["stop_listening"])
 			assert.Equal(t, tc.startNew, names["start_new_conversation"])
-			for _, name := range []string{"set_volume", "take_photo", "record_video"} {
+			for _, name := range []string{"set_volume", "take_photo", "record_video", "play_media"} {
 				assert.Equal(t, tc.android, names[name], name)
 			}
 
 			instructions := InstructionsForSurface(ResolvePersona(""), tc.surface)
 			assert.Contains(t, instructions, "send_email")
 			assert.Equal(t, tc.stop, containsToolName(instructions, "stop_listening"))
-			for _, name := range []string{"set_volume", "take_photo", "record_video"} {
+			for _, name := range []string{"set_volume", "take_photo", "record_video", "play_media"} {
 				assert.Equal(t, tc.android, containsToolName(instructions, name), name)
 			}
 
@@ -79,6 +79,7 @@ func TestFallbackToolRequestUsesServerExecutionManifest(t *testing.T) {
 	assert.NotContains(t, request.Messages[0].Content, "stop_listening")
 	assert.NotContains(t, request.Messages[0].Content, "set_volume")
 	assert.NotContains(t, request.Messages[0].Content, "take_photo")
+	assert.NotContains(t, request.Messages[0].Content, "play_media")
 
 	names := map[string]bool{}
 	for _, tool := range request.Tools {
@@ -91,6 +92,7 @@ func TestFallbackToolRequestUsesServerExecutionManifest(t *testing.T) {
 		"set_volume",
 		"take_photo",
 		"record_video",
+		"play_media",
 	} {
 		assert.False(t, names[name], name)
 	}
@@ -114,6 +116,7 @@ func TestNovaSessionConfigUsesOnlyServerExecutableToolsAndStableDigest(t *testin
 		"set_volume",
 		"take_photo",
 		"record_video",
+		"play_media",
 	} {
 		assert.False(t, gotNames[local], local)
 	}

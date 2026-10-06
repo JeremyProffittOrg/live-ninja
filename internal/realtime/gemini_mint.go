@@ -605,18 +605,13 @@ func (m *GeminiMinter) MintForSurface(ctx context.Context, voice, instructions, 
 	uses := int32(1)
 	instructions = ClientInstructions(ctx, instructions)
 	setup := buildGeminiSetupForSurface(m.model, voice, instructions, surface)
-	setup["tools"] = []map[string]any{{"functionDeclarations": FilterJobsTools(geminiToolDeclarationsForSurface(surface), jobsReviewEnabled(ctx))}}
+	setup["tools"] = []map[string]any{{"functionDeclarations": FilterClientTools(ctx, geminiToolDeclarationsForSurface(surface))}}
 	constraints := buildGeminiConstraintsForSurface(m.model, voice, instructions, surface)
-	if !jobsReviewEnabled(ctx) {
-		for _, tool := range constraints.Config.Tools {
-			allowed := tool.FunctionDeclarations[:0]
-			for _, declaration := range tool.FunctionDeclarations {
-				if !strings.HasPrefix(declaration.Name, "job_") {
-					allowed = append(allowed, declaration)
-				}
-			}
-			tool.FunctionDeclarations = allowed
-		}
+	// The token-locked constraints and the raw setup frame pass through the
+	// same client-capability gates, so neither can declare a tool the other
+	// omits.
+	for _, tool := range constraints.Config.Tools {
+		tool.FunctionDeclarations = FilterClientFunctionDeclarations(ctx, tool.FunctionDeclarations)
 	}
 	setupJSON, err := json.Marshal(setup)
 	if err != nil {

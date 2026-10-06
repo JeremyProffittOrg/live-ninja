@@ -607,7 +607,10 @@ func (b *broker) handleVoiceLiveDirect(ctx context.Context, l *slog.Logger, req 
 	}
 	guideSuffix += b.rulesBlock(ctx, l, req)
 	persona := realtime.ResolvePersona(req.Persona)
-	instructions := realtime.ClientInstructions(ctx, realtime.InstructionsForSurface(persona, req.Surface)) + realtime.SessionDirectives + baseKnowledge + accentDirective + guideSuffix
+	// Voice Live sessions bind no tools, so the Android play_media guidance
+	// must never reach them, even for a media-capable Android client. Every
+	// other part of the composed prompt is left exactly as before.
+	instructions := realtime.WithoutAndroidMediaInstructions(realtime.ClientInstructions(ctx, realtime.InstructionsForSurface(persona, req.Surface))) + realtime.SessionDirectives + baseKnowledge + accentDirective + guideSuffix
 
 	start := time.Now()
 	tok, err := b.entraToken.Token(ctx, realtime.VoiceLiveScope)

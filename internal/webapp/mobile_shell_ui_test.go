@@ -159,6 +159,9 @@ func TestMobileSnapPanels(t *testing.T) {
 func TestBottomBarControlsAreNotDuplicatedAbove(t *testing.T) {
 	html := readAsset(t, "templates/pages/conversation.html")
 	css := readAsset(t, "static/css/app.css")
+	// Windows checkouts with Git autocrlf deliver app.css with CRLF line
+	// endings; normalize to LF so the multiline expectation below matches.
+	css = strings.ReplaceAll(css, "\r\n", "\n")
 
 	assert.Contains(t, html, `class="conv-rail__nav"`,
 		"the rail nav must survive in the markup (JS binds it)")
@@ -272,6 +275,9 @@ func TestConversationToolsContract(t *testing.T) {
 // the rotated word, so each tab is icon-only with a native `title` tooltip.
 func TestEdgeTabsSitInTheUpperLeft(t *testing.T) {
 	css := readAsset(t, "static/css/app.css")
+	// Windows checkouts with Git autocrlf deliver app.css with CRLF line
+	// endings; normalize to LF so the multiline expectation below matches.
+	css = strings.ReplaceAll(css, "\r\n", "\n")
 	html := readAsset(t, "templates/pages/conversation.html")
 
 	assert.Contains(t, css, "--ln-edge-tab: 40px;",
