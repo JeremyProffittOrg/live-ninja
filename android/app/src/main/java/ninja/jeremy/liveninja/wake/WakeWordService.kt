@@ -41,10 +41,37 @@ import ninja.jeremy.liveninja.assistant.LiveNinjaSession
 import ninja.jeremy.liveninja.audio.WakeWordEngine
 import ninja.jeremy.liveninja.log.LNLog
 import ninja.jeremy.liveninja.log.LogCategory
+import ninja.jeremy.liveninja.realtime.CarAudioPreferences
 import ninja.jeremy.liveninja.realtime.OpenAiRealtimeTransport
 import ninja.jeremy.liveninja.realtime.RealtimeTransport
 import ninja.jeremy.liveninja.realtime.SessionOrchestrator
 import ninja.jeremy.liveninja.ui.state.SettingsStore
+
+/** Wake-engine run mode; [CAR_AUDIO] keeps the recorder stopped while car audio is opted in. */
+internal enum class WakeRunMode { SESSION, CAR_AUDIO, MUTED, CONTINUOUS, DUTY_CYCLE }
+
+/**
+ * Pure run-mode decision. Car audio depends only on the preference, so focus
+ * regain, a session ending or a Bluetooth disconnect never restart the wake
+ * recorder while car audio stays enabled.
+ */
+internal fun decideWakeRunMode(
+    sessionActive: Boolean,
+    carAudioEnabled: Boolean,
+    muted: Boolean,
+    degradedPower: Boolean,
+): WakeRunMode = when {
+    // A live realtime session owns the mic (WebRTC/Gemini capture); the wake
+    // engine must pause and resumes the instant it ends.
+    sessionActive -> WakeRunMode.SESSION
+    carAudioEnabled -> WakeRunMode.CAR_AUDIO
+    muted -> WakeRunMode.MUTED
+    degradedPower -> WakeRunMode.DUTY_CYCLE
+    else -> WakeRunMode.CONTINUOUS
+}
+
+/** A detection racing the car-mode recorder stop is dropped: no wake event, no screen wake. */
+internal fun shouldForwardWakeDetection(carAudioEnabled: Boolean): Boolean = !carAudioEnabled
 
 /**
  * Always-listening wake-word foreground service (plan.md M4, Android §3.2/§3.3).
@@ -59,6 +86,8 @@ import ninja.jeremy.liveninja.ui.state.SettingsStore
  *   microphone-type FGS cannot launch straight from BOOT_COMPLETED — the receiver then posts a
  *   tap-to-resume notification instead).
  * - Detections fan out through [WakeEvents] for the realtime layer to open a session on wake.
+ * - While the local Car audio opt-in is enabled the wake recorder is stopped (not merely
+ *   suppressed): car conversations are started deliberately from the app.
  *
  * Engine selection is a Hilt multibinding map keyed by `settings.schema.json`'s `wakeEngine`
  * enum values — the optional Porcupine build contributes its own entry without this file
@@ -77,6 +106,9 @@ class WakeWordService : Service() {
 
     /** Voice-session lifecycle toggles (lockedSessions / wakeScreenOnWake). */
     @Inject lateinit var settingsStore: SettingsStore
+
+    /** Local Car audio opt-in; while enabled the wake recorder stays stopped. */
+    @Inject lateinit var carAudioPreferences: CarAudioPreferences
 
     /** WebRTC transport, pre-warmed at service start so wake→listening is faster (02-voice §D.3). */
     @Inject @OpenAiRealtimeTransport lateinit var realtimeTransport: RealtimeTransport
@@ -113,6 +145,9 @@ class WakeWordService : Service() {
 
     private fun activeEngine(): WakeWordEngine =
         engines[prefs.wakeEngine] ?: engines.getValue(WakePreferences.ENGINE_OPENWAKEWORD)
+
+    private fun carAudioEnabled(): Boolean =
+        ::carAudioPreferences.isInitialized && carAudioPreferences.isEnabled
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -234,7 +269,7 @@ class WakeWordService : Service() {
         super.onDestroy()
     }
 
-    // ---- controller: mute + power state -> engine run mode ----
+    // ---- controller: mute + power state + car audio -> engine run mode ----
 
     private fun startController() {
         // Pre-warm the WebRTC factory + audio device module now so the first
@@ -243,6 +278,9 @@ class WakeWordService : Service() {
         // Fan detections out app-wide, and wake the screen per the toggle.
         scope.launch {
             activeEngine().detections.collect {
+                // Car audio: the recorder is being stopped; a detection racing
+                // that stop must neither start a session nor wake the screen.
+                if (!shouldForwardWakeDetection(carAudioEnabled())) return@collect
                 wakeEvents.emit(it)
                 maybeWakeScreenOnDetection()
             }
@@ -260,19 +298,18 @@ class WakeWordService : Service() {
                 prefs.mutedFlow,
                 posture,
                 sessionOrchestrator.sessionActive,
-            ) { muted, postureNow, sessionActive ->
-                when {
-                    // A live realtime session owns the mic (WebRTC/Gemini capture);
-                    // the wake engine must pause and resumes the instant it ends.
-                    sessionActive -> Mode.SESSION
-                    muted -> Mode.MUTED
-                    postureNow != PowerPosture.CONTINUOUS -> Mode.DUTY_CYCLE
-                    else -> Mode.CONTINUOUS
-                }
+                carAudioPreferences.enabled,
+            ) { muted, postureNow, sessionActive, carAudio ->
+                decideWakeRunMode(
+                    sessionActive = sessionActive,
+                    carAudioEnabled = carAudio,
+                    muted = muted,
+                    degradedPower = postureNow != PowerPosture.CONTINUOUS,
+                )
             }.collectLatest { mode ->
                 LNLog.i(LogCategory.WAKE, TAG, "run mode -> $mode")
                 when (mode) {
-                    Mode.SESSION -> {
+                    WakeRunMode.SESSION -> {
                         // Stop wake capture and expand the FGS type so the session's
                         // mic + playback are covered on the already-running FGS.
                         stopEngine()
@@ -283,11 +320,18 @@ class WakeWordService : Service() {
                         // immediately (bypassing the 60 s post-loss retry).
                         awaitCancellation()
                     }
-                    Mode.MUTED -> {
+                    WakeRunMode.CAR_AUDIO -> {
+                        // Car audio opted in: the wake recorder stays stopped until
+                        // the preference is turned off. No retry loop runs here, so
+                        // focus regain or a car disconnect never restart capture.
                         stopEngine()
                         updateNotification()
                     }
-                    Mode.CONTINUOUS -> {
+                    WakeRunMode.MUTED -> {
+                        stopEngine()
+                        updateNotification()
+                    }
+                    WakeRunMode.CONTINUOUS -> {
                         updateNotification()
                         var failures = 0
                         while (true) {
@@ -307,7 +351,7 @@ class WakeWordService : Service() {
                             }
                         }
                     }
-                    Mode.DUTY_CYCLE -> {
+                    WakeRunMode.DUTY_CYCLE -> {
                         // Timings from the active posture; a posture change cancels
                         // this branch (collectLatest) and re-enters with the new one.
                         val active = posture.value.takeIf { it != PowerPosture.CONTINUOUS }
@@ -332,8 +376,6 @@ class WakeWordService : Service() {
         }
     }
 
-    private enum class Mode { SESSION, MUTED, CONTINUOUS, DUTY_CYCLE }
-
     /**
      * Re-assert foreground with `microphone|mediaPlayback` when a session begins
      * (02-voice §B1). Re-calling startForeground on the already-running FGS with
@@ -355,9 +397,10 @@ class WakeWordService : Service() {
      * ACTION_ASSIST (which shows over the keyguard). On API 34+ a full-screen
      * intent is used only when permitted; otherwise a high-priority heads-up
      * notification, with the audio-only session still proceeding via the
-     * orchestrator.
+     * orchestrator. Never in car-audio mode: no screen wake or assist launch.
      */
     private fun maybeWakeScreenOnDetection() {
+        if (carAudioEnabled()) return
         val settings = settingsStore.document.value
         if (!settings.wakeScreenOnWake) return
         val asleepOrLocked = !powerManager.isInteractive || keyguardManager.isKeyguardLocked
@@ -500,6 +543,7 @@ class WakeWordService : Service() {
     private fun buildNotification(): Notification {
         val sessionLive = sessionOrchestrator.sessionActive.value
         val muted = prefs.muted
+        val carAudio = carAudioEnabled()
         val failure = engineFailure.value
         val phrase = modelManager.headModel.value.wakeWordId.replace('-', ' ')
 
@@ -534,11 +578,13 @@ class WakeWordService : Service() {
         }
 
         val title = when {
+            carAudio -> "Wake word off for car audio"
             muted -> getString(R.string.wake_notification_muted_title)
             failure != null -> getString(R.string.wake_notification_error_title)
             else -> getString(R.string.wake_notification_listening_title, phrase)
         }
         val text = when {
+            carAudio -> "Car audio is on, so Live Ninja isn't listening for the wake word. Start conversations from the app."
             muted -> getString(R.string.wake_notification_muted_body)
             failure != null -> getString(R.string.wake_notification_error_body)
             // Surface the degraded duty-cycle state explicitly (02-voice §C).

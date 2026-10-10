@@ -27,6 +27,15 @@
          M23.2: a spoken round-trip proving the echo is actually gone, which needs
          a real voice and audible playback. -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Opt-in phone-based car audio (realtime/CarAudioSession.kt): use an
+         ALREADY connected car/headset's hands-free (HFP/SCO, BLE headset) for
+         the call audio. Runtime BLUETOOTH_CONNECT on API 31+ (requested by the
+         car-audio settings UI); legacy BLUETOOTH for SCO on API <= 30. No
+         BLUETOOTH_SCAN / ADMIN: the app never scans or pairs. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
@@ -177,6 +186,18 @@
             android:name=".realtime.CameraCaptureService"
             android:exported="false"
             android:foregroundServiceType="camera" />
+
+        <!-- Opt-in phone car audio (realtime/CarAudioForegroundService.kt).
+             Short-lived session service started only from an explicit start in
+             the visible app, for one car-audio conversation, with an ongoing
+             notification and End. Not sticky; never started at boot or on a
+             Bluetooth connection. stopWithTask=false so onTaskRemoved can end
+             the session deliberately. -->
+        <service
+            android:name=".realtime.CarAudioForegroundService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="microphone|mediaPlayback" />
 
         <!-- Log export share flow (04-logging §A7): grants read access to the
              zipped log bundle in filesDir/logs/ via a content:// URI. Paths in

@@ -82,6 +82,7 @@ import ninja.jeremy.liveninja.ui.conversation.ConversationViewModel
 import ninja.jeremy.liveninja.ui.conversation.MicUiState
 import ninja.jeremy.liveninja.ui.conversation.PeerPresence
 import ninja.jeremy.liveninja.ui.conversation.TranscriptTurn
+import ninja.jeremy.liveninja.ui.settings.CarAudioModeIndicator
 import ninja.jeremy.liveninja.ui.state.TranscriptRole
 import ninja.jeremy.liveninja.ui.theme.HalOrb
 import ninja.jeremy.liveninja.ui.theme.OrbState
@@ -133,6 +134,10 @@ fun ConversationScreen(modifier: Modifier = Modifier) {
             sessionLive = sessionLive(state.micState),
             onNewConversation = viewModel::startNewConversation,
             onSetMicEagerness = viewModel::setMicEagerness,
+        )
+        // Car-audio mode indicator; draws nothing when the mode is off.
+        CarAudioModeIndicator(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
         )
         state.sessionWarning?.let { warning ->
             SessionWarningBanner(

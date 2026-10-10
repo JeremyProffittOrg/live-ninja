@@ -100,6 +100,7 @@ import ninja.jeremy.liveninja.wake.WakeWordService
 import ninja.jeremy.liveninja.wake.decideWakeSwitchAction
 import ninja.jeremy.liveninja.wake.wakeSwitchDisplay
 import ninja.jeremy.liveninja.R
+import ninja.jeremy.liveninja.ui.settings.CarAudioSettings
 import ninja.jeremy.liveninja.ui.settings.CustomWakeJob
 import ninja.jeremy.liveninja.ui.permissions.PermissionSettingsButton
 import ninja.jeremy.liveninja.ui.settings.resolveWakePhrase
@@ -384,13 +385,17 @@ fun SettingsScreen(
                                 onSetAppStyle = viewModel::setAppStyle,
                                 onSetTheme = viewModel::setTheme,
                             )
-                            SettingsSection.MICROPHONE -> AudioSection(
-                                localControlsEnabled = viewingCurrentHost,
-                                micDeviceId = sectionDoc.micDeviceId,
-                                micDevices = state.micDevices,
-                                onSetMicDevice = viewModel::setMicDevice,
-                                onExpandMicDevices = viewModel::refreshMicDevices,
-                            )
+                            SettingsSection.MICROPHONE -> {
+                                AudioSection(
+                                    localControlsEnabled = viewingCurrentHost,
+                                    micDeviceId = sectionDoc.micDeviceId,
+                                    micDevices = state.micDevices,
+                                    onSetMicDevice = viewModel::setMicDevice,
+                                    onExpandMicDevices = viewModel::refreshMicDevices,
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                CarAudioSettings(localControlsEnabled = viewingCurrentHost)
+                            }
                             SettingsSection.PRIVACY -> {
                                 PrivacySection(
                                     localControlsEnabled = viewingCurrentHost,

@@ -63,6 +63,10 @@ import org.webrtc.audio.JavaAudioDeviceModule
  * audio arrives on the remote track and plays through the voice-call stream
  * (MODE_IN_COMMUNICATION, routed to the best available communication device).
  *
+ * Car audio: while [CarAudioRouteOwner.process] is claimed the car session owns
+ * mode and route, so this transport neither configures nor restores them, and
+ * gates mic/playout when the car session is interrupted.
+ *
  * Signaling: local SDP offer POSTed as `application/sdp` to
  * https://api.openai.com/v1/realtime/calls with the ephemeral client secret
  * as Bearer; the response body is the SDP answer (no trickle ICE — we wait
@@ -144,6 +148,13 @@ open class WebRtcTransport @Inject constructor(
 
     private var previousAudioMode = AudioManager.MODE_NORMAL
     private var previousSpeakerphone = false
+
+    /**
+     * True only while THIS transport changed mode/route (legacy routing). A
+     * release that never configured — an aborted prepare, a car-owned session
+     * — must not clear a route someone else owns.
+     */
+    private var legacyAudioConfigured = false
 
     override fun preWarm() {
         // Native factory + ADM init is the fixed cost of the first session
@@ -386,14 +397,19 @@ open class WebRtcTransport @Inject constructor(
         }
     }
 
+    /** Nominal, or silent while an interrupted car session awaits teardown. */
+    private fun playoutVolume(): Double =
+        if (CarAudioRouteOwner.process.isAudioSuppressed) 0.0 else NOMINAL_VOLUME
+
     private fun restoreVolume() {
         fadeJob?.cancel()
-        runCatching { remoteAudioTrack?.setVolume(NOMINAL_VOLUME) }
+        runCatching { remoteAudioTrack?.setVolume(playoutVolume()) }
     }
 
-    /** Mic is live only when not user-muted and not echo-gated. */
+    /** Mic is live only when not user-muted, not echo-gated, not car-suppressed. */
     private fun updateMicEnabled() {
-        val enabled = !userMuted && !echoGate.micSuppressed()
+        val enabled = !userMuted && !echoGate.micSuppressed() &&
+            !CarAudioRouteOwner.process.isAudioSuppressed
         runCatching { localAudioTrack?.setEnabled(enabled) }
     }
 
@@ -498,9 +514,17 @@ open class WebRtcTransport @Inject constructor(
     }
 
     private fun configureAudioForCall() {
+        if (CarAudioRouteOwner.process.audioPlan() == TransportAudioPlan.CAR_SESSION_OWNED) {
+            // The car session already set MODE_IN_COMMUNICATION and an observed
+            // hands-free route; touching either here would break it.
+            legacyAudioConfigured = false
+            LNLog.i(LogCategory.AUDIO, TAG, "call audio: car audio session owns mode and route")
+            return
+        }
         val am = context.getSystemService(AudioManager::class.java) ?: return
         previousAudioMode = am.mode
         am.mode = AudioManager.MODE_IN_COMMUNICATION
+        legacyAudioConfigured = true
         var route: AudioDeviceInfo? = null
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             // Prefer BT SCO → wired → speaker instead of forcing the built-in
@@ -528,6 +552,8 @@ open class WebRtcTransport @Inject constructor(
     }
 
     private fun restoreAudioMode() {
+        if (!legacyAudioConfigured) return
+        legacyAudioConfigured = false
         val am = context.getSystemService(AudioManager::class.java) ?: return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             am.clearCommunicationDevice()
@@ -609,7 +635,7 @@ open class WebRtcTransport @Inject constructor(
                 val track = transceiver?.receiver?.track()
                 if (track is AudioTrack) {
                     remoteAudioTrack = track
-                    runCatching { track.setVolume(NOMINAL_VOLUME) }
+                    runCatching { track.setVolume(playoutVolume()) }
                 }
             }
         }
@@ -619,7 +645,7 @@ open class WebRtcTransport @Inject constructor(
                 val track = receiver?.track()
                 if (track is AudioTrack) {
                     remoteAudioTrack = track
-                    runCatching { track.setVolume(NOMINAL_VOLUME) }
+                    runCatching { track.setVolume(playoutVolume()) }
                 }
             }
         }

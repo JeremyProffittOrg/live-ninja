@@ -88,6 +88,10 @@ internal fun novaAssistantTurnWasInterrupted(event: JSONObject): Boolean =
  * flushes local playback immediately; the following user `turn.start` reports
  * [RealtimeEvent.SpeechStarted] and remains a defensive second flush point.
  *
+ * Car audio: while [CarAudioRouteOwner.process] is claimed this transport
+ * leaves mode/route alone (no speaker forcing, no clearing) and drops mic and
+ * playback frames once the car session is interrupted.
+ *
  * Echo (WS-5 M21.2): this path has **no software APM at all** — raw `AudioRecord`
  * frames go straight onto the socket, so unlike [WebRtcTransport] there is no
  * AEC3 to fall back on and the platform's VOICE_COMMUNICATION pre-processing is
@@ -154,6 +158,9 @@ class NovaBridgeTransport @Inject constructor(
 
     private var previousAudioMode = AudioManager.MODE_NORMAL
     private var previousSpeakerphone = false
+
+    /** True only while THIS transport changed mode/route (legacy routing). */
+    private var legacyAudioConfigured = false
 
     // Per-item accumulators so a final transcript event can carry full text.
     private val assistantText = HashMap<String, String>()
@@ -486,8 +493,9 @@ class NovaBridgeTransport @Inject constructor(
         }
     }
 
-    /** Mic is live only when not user-muted and not echo-gated. */
-    private fun micLive(): Boolean = !userMuted && !echoGate.micSuppressed()
+    /** Mic is live only when not user-muted, not echo-gated, not car-suppressed. */
+    private fun micLive(): Boolean =
+        !userMuted && !echoGate.micSuppressed() && !CarAudioRouteOwner.process.isAudioSuppressed
 
     private fun startPlayback() {
         val minBuf = AudioTrack.getMinBufferSize(
@@ -519,6 +527,9 @@ class NovaBridgeTransport @Inject constructor(
         playbackJob = scope.launch(Dispatchers.IO) {
             for (chunk in playbackQueue) {
                 if (!isActive) break
+                // Interrupted car session: drop audio rather than let it reach
+                // the handset while teardown is queued.
+                if (CarAudioRouteOwner.process.isAudioSuppressed) continue
                 runCatching { track.write(chunk, 0, chunk.size) }
                 // Ground truth for the echo gate: audio just went to the speaker.
                 // `write` blocks until the buffer accepts it, so this is the closest
@@ -533,9 +544,15 @@ class NovaBridgeTransport @Inject constructor(
     // ---- audio focus / routing (mirror WebRtcTransport) ----
 
     private fun configureAudioForCall() {
+        if (CarAudioRouteOwner.process.audioPlan() == TransportAudioPlan.CAR_SESSION_OWNED) {
+            legacyAudioConfigured = false
+            LNLog.i(LogCategory.AUDIO, TAG, "call audio: car audio session owns mode and route")
+            return
+        }
         val am = context.getSystemService(AudioManager::class.java) ?: return
         previousAudioMode = am.mode
         am.mode = AudioManager.MODE_IN_COMMUNICATION
+        legacyAudioConfigured = true
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             am.availableCommunicationDevices
                 .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
@@ -548,6 +565,8 @@ class NovaBridgeTransport @Inject constructor(
     }
 
     private fun restoreAudioMode() {
+        if (!legacyAudioConfigured) return
+        legacyAudioConfigured = false
         val am = context.getSystemService(AudioManager::class.java) ?: return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             am.clearCommunicationDevice()

@@ -65,6 +65,10 @@ interface DeviceLockState {
  * Locked/asleep gate: when `lockedSessions = false`, wake triggers are dropped
  * while `!isInteractive || isKeyguardLocked` (screen-asleep counts even with no
  * secure lock configured).
+ *
+ * Car audio ([carAudioSelected]): wake triggers are ignored (the user starts a
+ * car session manually), and the orchestrator neither plays the earcon nor
+ * takes its own audio focus — [CarAudioSessionManager] owns focus and route.
  */
 class SessionOrchestratorCore(
     private val controller: RealtimeSessionController?,
@@ -74,11 +78,16 @@ class SessionOrchestratorCore(
     private val lockedSessionsAllowed: () -> Boolean,
     private val clock: () -> Long = { SystemClock.elapsedRealtime() },
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val carAudioSelected: () -> Boolean = { false },
 ) {
     private enum class Phase { IDLE, STARTING, ACTIVE }
 
     private val phaseLock = Any()
     private var phase = Phase.IDLE
+
+    /** Whether this orchestrator requested focus for the current session. */
+    @Volatile
+    private var focusRequested = false
 
     /** Timestamp of the last assist trigger handled — swallows replay=1 re-delivery. */
     @Volatile
@@ -102,6 +111,10 @@ class SessionOrchestratorCore(
     }
 
     private fun onWake(detection: WakeWordDetection) {
+        if (carAudioSelected()) {
+            LNLog.i(LogCategory.WAKE, TAG, "wake ignored: car audio selected; start the conversation manually")
+            return
+        }
         if (!lockedSessionsAllowed() && (!lockState.isInteractive || lockState.isKeyguardLocked)) {
             LNLog.i(LogCategory.WAKE, TAG, "wake ignored: locked/asleep and lockedSessions disabled")
             return
@@ -145,11 +158,19 @@ class SessionOrchestratorCore(
             synchronized(phaseLock) { phase = Phase.IDLE }
             return
         }
+        val carMode = carAudioSelected()
         _launchedWhileLocked.value = locked
         effects.acquireWakeLock()
         _sessionActive.value = true // pause the wake engine (WakeWordService observes)
-        effects.playEarcon()
-        effects.requestAudioFocus()
+        if (carMode) {
+            // The car-audio owner requests focus itself and requires GRANTED;
+            // a second request here would steal it and end the car session.
+            LNLog.i(LogCategory.REALTIME, TAG, "car audio selected: no orchestrator earcon/focus")
+        } else {
+            effects.playEarcon()
+            focusRequested = true
+            effects.requestAudioFocus()
+        }
         scope.launch {
             try {
                 c.start()
@@ -187,7 +208,10 @@ class SessionOrchestratorCore(
     }
 
     private fun teardown() {
-        effects.abandonAudioFocus()
+        if (focusRequested) {
+            focusRequested = false
+            effects.abandonAudioFocus()
+        }
         effects.releaseWakeLock()
         _sessionActive.value = false // resume wake engine immediately (bypasses 60 s retry)
         synchronized(phaseLock) { phase = Phase.IDLE }
@@ -221,6 +245,12 @@ class SessionOrchestrator @Inject constructor(
     private val settingsStore: SettingsStore,
     private val locationReporter: LocationReporter,
 ) {
+    /**
+     * Car-audio opt-in. Field-injected so the constructor is unchanged; until
+     * injected the orchestrator behaves as legacy (non-car).
+     */
+    @Inject lateinit var carAudioPreferences: CarAudioPreferences
+
     private val powerManager = context.getSystemService(PowerManager::class.java)
     private val audioManager = context.getSystemService(AudioManager::class.java)
     private val keyguardManager = context.getSystemService(KeyguardManager::class.java)
@@ -293,6 +323,7 @@ class SessionOrchestrator @Inject constructor(
         lockState = lockState,
         emitAssistTrigger = assistantEvents::emit,
         lockedSessionsAllowed = { settingsStore.document.value.lockedSessions },
+        carAudioSelected = { ::carAudioPreferences.isInitialized && carAudioPreferences.isEnabled },
     )
 
     /** True while a session is live — WakeWordService drives its SESSION mode from this. */

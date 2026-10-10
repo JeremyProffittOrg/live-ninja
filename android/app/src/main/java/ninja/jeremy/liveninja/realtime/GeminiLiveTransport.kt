@@ -220,6 +220,10 @@ private data class GeminiOpenedSocket(
  *     fetching a normal bootstrap would allocate a second quota/session
  *     identity while silently retaining the old transcript identity.
  *
+ * Car audio: while [CarAudioRouteOwner.process] is claimed this transport
+ * leaves mode/route alone and drops mic and playback frames once the car
+ * session is interrupted.
+ *
  * Echo (WS-5 M21.2): like [NovaBridgeTransport] and unlike [WebRtcTransport],
  * this path carries **no software APM** — raw `AudioRecord` frames are base64'd
  * straight onto the socket, so the platform's VOICE_COMMUNICATION pre-processing
@@ -303,6 +307,10 @@ class GeminiLiveTransport @Inject constructor(
 
     private var previousAudioMode = AudioManager.MODE_NORMAL
     private var previousSpeakerphone = false
+
+    /** True only while THIS transport changed mode/route (legacy routing). */
+    @Volatile
+    private var legacyAudioConfigured = false
 
     // Per-turn transcript accumulators (Gemini streams bare text deltas with
     // no item ids, so turns get synthetic ids for the common event schema).
@@ -904,8 +912,9 @@ class GeminiLiveTransport @Inject constructor(
         }
     }
 
-    /** Mic is live only when not user-muted and not echo-gated. */
-    private fun micLive(): Boolean = !userMuted && !echoGate.micSuppressed()
+    /** Mic is live only when not user-muted, not echo-gated, not car-suppressed. */
+    private fun micLive(): Boolean =
+        !userMuted && !echoGate.micSuppressed() && !CarAudioRouteOwner.process.isAudioSuppressed
 
     private fun startPlayback() {
         val minBuf = AudioTrack.getMinBufferSize(
@@ -937,6 +946,9 @@ class GeminiLiveTransport @Inject constructor(
         playbackJob = scope.launch(Dispatchers.IO) {
             for (chunk in playbackQueue) {
                 if (!isActive) break
+                // Interrupted car session: drop audio rather than let it reach
+                // the handset while teardown is queued.
+                if (CarAudioRouteOwner.process.isAudioSuppressed) continue
                 runCatching { track.write(chunk, 0, chunk.size) }
                 // Ground truth for the echo gate: audio just went to the speaker.
                 // `write` blocks until the buffer accepts it, so this is the closest
@@ -950,9 +962,15 @@ class GeminiLiveTransport @Inject constructor(
     // ---- audio focus / routing (mirror WebRtcTransport) ----
 
     private fun configureAudioForCall() {
+        if (CarAudioRouteOwner.process.audioPlan() == TransportAudioPlan.CAR_SESSION_OWNED) {
+            legacyAudioConfigured = false
+            LNLog.i(LogCategory.AUDIO, TAG, "call audio: car audio session owns mode and route")
+            return
+        }
         val am = context.getSystemService(AudioManager::class.java) ?: return
         previousAudioMode = am.mode
         am.mode = AudioManager.MODE_IN_COMMUNICATION
+        legacyAudioConfigured = true
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             // Prefer BT SCO → wired → speaker (mirror WebRtcTransport, 02-voice §B3).
             val devices = am.availableCommunicationDevices
@@ -967,6 +985,8 @@ class GeminiLiveTransport @Inject constructor(
     }
 
     private fun restoreAudioMode() {
+        if (!legacyAudioConfigured) return
+        legacyAudioConfigured = false
         val am = context.getSystemService(AudioManager::class.java) ?: return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             am.clearCommunicationDevice()

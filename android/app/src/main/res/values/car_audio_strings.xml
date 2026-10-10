@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Phone-based car audio (opt-in, local to this phone). Not Android Auto. -->
+    <string name="car_audio_title">Car audio (Bluetooth hands-free)</string>
+    <string name="car_audio_switch_label">Use car audio</string>
+    <string name="car_audio_switch_desc">Run the full assistant on this phone and talk through your car\'s Bluetooth hands-free microphone and speakers. Off by default; applies to this phone only.</string>
+    <string name="car_audio_explainer_route">Pair and connect the phone to your car for phone calls (hands-free / HFP). A car connected only for music (A2DP) is not enough. Live Ninja never scans for or pairs devices.</string>
+    <string name="car_audio_explainer_dashboard">This is not Android Auto and nothing appears on the car\'s screen. Wake-word listening is paused while car audio is on, so start conversations from Live Ninja on your phone while safely parked.</string>
+    <string name="car_audio_explainer_interruptions">A phone call, another app taking the audio, or the car disconnecting ends the conversation. It never restarts by itself; start it again when you are ready.</string>
+    <string name="car_audio_explainer_permissions">Turning this on asks for the microphone and, on Android 12 and newer, Nearby devices (Bluetooth) permission. If you decline, car audio stays off.</string>
+    <string name="car_audio_status_off">Off. Conversations use the phone\'s normal audio.</string>
+    <string name="car_audio_status_ready">On. A Bluetooth hands-free device is available.</string>
+    <string name="car_audio_status_needs_permission">On, but a required permission was removed. Car audio conversations cannot start until you allow it again.</string>
+    <string name="car_audio_status_busy">A conversation is starting or running. End it before changing car audio.</string>
+    <string name="car_audio_status_remote">Car audio is set on each phone. View this phone\'s settings to change it.</string>
+    <string name="car_audio_status_no_device">On, but no Bluetooth car or headset with a microphone is connected. Connect the car for phone calls in Android\'s Bluetooth settings, then start the conversation.</string>
+    <string name="car_audio_status_call_active">On, but a phone call or calling app is using call audio right now.</string>
+    <string name="car_audio_status_unavailable">On, but car audio is not ready right now.</string>
+    <string name="car_audio_allow">Allow permissions</string>
+    <string name="car_audio_msg_enabled">Car audio turned on. Start a conversation from the app when you are safely parked.</string>
+    <string name="car_audio_msg_disabled">Car audio turned off.</string>
+    <string name="car_audio_msg_busy">Can\'t change car audio while a conversation is starting or running. End the conversation first.</string>
+    <string name="car_audio_msg_remote">Car audio can only be changed while viewing this phone.</string>
+    <string name="car_audio_msg_denied">Permission not granted, so car audio stays off. Turn it on again to retry, or allow access in Android\'s app permission settings.</string>
+    <string name="car_audio_msg_granted">Permissions allowed.</string>
+    <string name="car_audio_msg_still_missing">Permission still not allowed. Car audio conversations cannot start until it is.</string>
+    <string name="car_audio_indicator_on">Car audio mode: Bluetooth hands-free call audio</string>
+    <string name="car_audio_indicator_needs_permission">Car audio mode: permission needed (Settings → Microphone)</string>
+    <string name="car_audio_indicator_no_device">Car audio mode: no hands-free car connected</string>
+    <string name="car_audio_indicator_unavailable">Car audio mode: not ready right now</string>
+    <string name="car_audio_notification_channel">Car audio conversation</string>
+    <string name="car_audio_notification_channel_desc">Shown while a conversation session uses car audio mode.</string>
+    <string name="car_audio_notification_title">Car audio session</string>
+    <string name="car_audio_notification_text">Car audio session in progress. Tap End to finish.</string>
+    <string name="car_audio_notification_ending">Ending.</string>
+    <string name="car_audio_notification_end">End</string>
+</resources>

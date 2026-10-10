@@ -8,8 +8,12 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
@@ -21,6 +25,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import ninja.jeremy.liveninja.ui.state.RealtimeSessionController
 import ninja.jeremy.liveninja.ui.state.SessionUiEvent
 import android.content.Context
@@ -96,6 +101,48 @@ internal class DeviceActionSessionState {
 }
 
 /**
+ * One short synchronous gate for every session-busy transition and every
+ * idle-only car-audio mode commit.
+ *
+ * A start marks busy and reads the selected mode under the same monitor a
+ * mode change uses to check idle and commit, so the two can never interleave:
+ * either the commit runs first and the start sees it, or the start marks busy
+ * first and the commit is rejected without writing. Callers must only run
+ * short, non-suspending work under it and must never acquire the coordinator's
+ * lifecycle mutex while holding it.
+ */
+internal class SessionBusyGate {
+    /** Dedicated monitor type so diagnostics can identify this lock. */
+    private class Monitor
+
+    private val lock = Monitor()
+    private val _sessionBusy = MutableStateFlow(false)
+    val busy: StateFlow<Boolean> = _sessionBusy.asStateFlow()
+
+    /** Marks busy, then reads [readStable] under the same lock. */
+    fun <T> markBusyAndRead(readStable: () -> T): T =
+        synchronized(lock) {
+            _sessionBusy.value = true
+            readStable()
+        }
+
+    fun set(busy: Boolean) {
+        synchronized(lock) { _sessionBusy.value = busy }
+    }
+
+    /** Runs [commit] only while idle, atomically with the idle check. */
+    fun runIfIdle(commit: () -> Unit): Boolean =
+        synchronized(lock) {
+            if (_sessionBusy.value) {
+                false
+            } else {
+                commit()
+                true
+            }
+        }
+}
+
+/**
  * The realtime workstream's implementation of the UI seam
  * [RealtimeSessionController] (ui/state/UiSeams.kt): one live GPT-Realtime
  * session — bootstrap via `GET /api/v1/realtime/session`, WebRTC media via
@@ -109,6 +156,15 @@ internal class DeviceActionSessionState {
  * continuation after success: once a media app/search has been handed off, the
  * conversation mutes, sends its honest function output, and ends so the media
  * can be heard.
+ *
+ * Car audio (opt-in, [CarAudioSessionManager]): when selected, a start from
+ * the visible app first runs the short-lived [CarAudioForegroundService]
+ * (microphone|mediaPlayback, ongoing notification with End) and waits,
+ * bounded, until it is verified foreground; only then are focus and an
+ * observed hands-free route acquired, for ALL providers, before any mic or
+ * network work. Any focus/route loss, notification End or task removal mutes
+ * and ends the session and never restarts it; the route and the service are
+ * released only after the transport has disconnected.
  *
  * Transport-level barge-in (response.cancel + 40 ms fade + jitter flush on
  * `input_audio_buffer.speech_started`) lives in [WebRtcTransport]; this class
@@ -138,6 +194,19 @@ class RealtimeSessionCoordinator @Inject constructor(
     @Inject lateinit var deviceMediaTool: DeviceMediaToolExecutor
 
     /**
+     * Shared car-audio owner. Field-injected for the same reason; when never
+     * set (direct construction in tests) sessions use legacy routing.
+     */
+    @Inject lateinit var carAudio: CarAudioSessionManager
+
+    /**
+     * The shared singleton car-audio preference (the source of truth the
+     * manager's selection reflects). Field-injected for the same reason; when
+     * never set, [tryChangeCarAudioMode] refuses every change.
+     */
+    @Inject lateinit var carAudioPreferences: CarAudioPreferences
+
+    /**
      * The transport for the *current* session, selected per the resolved
      * `voiceEngine` pin (FR-VE-03): WebRTC-to-OpenAI for `openai-direct`, the
      * Nova Sonic bridge for `nova-bridge`, client-direct Gemini Live for
@@ -157,21 +226,61 @@ class RealtimeSessionCoordinator @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaught)
     private val deviceActionState = DeviceActionSessionState()
     private val lifecycleMutex = Mutex()
-    private class SessionBinding(val authSessionId: String, val generation: Long) {
-        @Volatile var valid = true
-        var transport: RealtimeTransport? = null
-        val tools = SupervisorJob()
+
+    /** One start() call; End cancels exactly this attempt, never a newer one. */
+    private class PendingStart {
+        @Volatile var job: Job? = null
+        @Volatile var endedByUser = false
     }
-    @Volatile private var activeBinding: SessionBinding? = null
+
+    private class SessionBinding(
+        val authSessionId: String,
+        val generation: Long,
+        val pendingStart: PendingStart,
+    ) {
+        @Volatile var valid = true
+        @Volatile var transport: RealtimeTransport? = null
+        val tools = SupervisorJob()
+
+        /** Car-audio session (service + lease); null in legacy mode or once released. */
+        @Volatile var carSession: CarAudioSessionHandle? = null
+
+        /**
+         * Set synchronously by the car-audio callback (any thread). Checked by
+         * [requireCurrent] before `connected` is published, so an interruption
+         * that races a slow start under the lifecycle lock fails that start.
+         */
+        @Volatile var carInterruption: CarAudioFailure? = null
+
+        /** Notification End / task removal / service death for this session. */
+        @Volatile var carEndRequested = false
+
+        /** webRtcTransport.prepare() was called and not yet consumed or aborted. */
+        @Volatile var webRtcPrepared = false
+    }
+
+    /** Identity of the current session; mutes of the shared transports are gated on it. */
+    private val bindingGuard = SessionIdentityGuard<SessionBinding>()
+    private var activeBinding: SessionBinding?
+        get() = bindingGuard.current
+        set(value) {
+            bindingGuard.set(value)
+        }
 
     private fun currentAuthSessionId(): String? =
         (auth.state.value as? AuthState.SignedIn)?.sessionId?.takeIf { it.isNotBlank() }
 
-    private fun isCurrent(binding: SessionBinding): Boolean =
+    /** Bound to the current account, regardless of car interruption (upload decisions). */
+    private fun isAuthCurrent(binding: SessionBinding): Boolean =
         binding.valid && activeBinding === binding &&
             binding.authSessionId == currentAuthSessionId()
 
+    private fun isCurrent(binding: SessionBinding): Boolean =
+        isAuthCurrent(binding) && binding.carInterruption == null && !binding.carEndRequested
+
     private fun requireCurrent(binding: SessionBinding) {
+        if (binding.carEndRequested) throw CarAudioException(CarAudioFailure.ENDED_BY_USER)
+        binding.carInterruption?.let { throw CarAudioException(it) }
         if (!isCurrent(binding)) throw RealtimeSessionException(
             "session_changed", "Your sign-in session changed. Start a new conversation.", 401,
         )
@@ -187,8 +296,116 @@ class RealtimeSessionCoordinator @Inject constructor(
         }
     }
 
+    private fun carAudioSelected(): Boolean = ::carAudio.isInitialized && carAudio.isSelected
+
+    /**
+     * Idempotent. Callers must have disconnected (or aborted) the transport
+     * first: releases route/focus, then stops the session service.
+     */
+    private fun releaseCarAudio(binding: SessionBinding) {
+        val handle = binding.carSession ?: return
+        binding.carSession = null
+        try {
+            handle.release()
+        } catch (e: Exception) {
+            LNLog.w(LogCategory.AUDIO, TAG, "car audio release failed", e)
+        }
+    }
+
+    private fun silenceTransport(t: RealtimeTransport, reason: String) {
+        bestEffort("mute $reason") { t.setMicMuted(true) }
+        bestEffort("stop playback $reason") { t.stopPlayback() }
+    }
+
+    /** Mutes the shared transport only while [binding] is still the active session. */
+    private fun silenceIfActive(binding: SessionBinding, reason: String): Boolean =
+        bindingGuard.withCurrent(binding) {
+            binding.transport?.let { silenceTransport(it, reason) }
+            true
+        } ?: false
+
+    private fun scheduleClose(binding: SessionBinding) {
+        scope.launch {
+            lifecycleMutex.withLock {
+                // Never stop a replacement session.
+                if (activeBinding === binding) closeBinding(binding, upload = isAuthCurrent(binding))
+            }
+        }
+    }
+
+    /**
+     * Car focus/route loss. Runs synchronously on the platform callback thread.
+     * Identity first: a callback captured before its session was released must
+     * never mute the shared transport of a newer session. Then record the
+     * interruption (fails an in-flight start before it can publish
+     * `connected`), silence mic and playback at once, and end the session
+     * under the lifecycle lock. Never restarts.
+     */
+    private fun onCarAudioInterrupted(binding: SessionBinding, failure: CarAudioFailure) {
+        if (activeBinding !== binding || binding.carInterruption != null) return
+        val wasLive = _connected.value
+        binding.carInterruption = failure
+        LNLog.i(LogCategory.AUDIO, TAG, "car audio interrupted: ${failure.code}")
+        if (!silenceIfActive(binding, "after car audio ${failure.code}")) return
+        if (wasLive) emit(SessionUiEvent.SessionError(failure.userMessage))
+        scheduleClose(binding)
+    }
+
+    /**
+     * Notification End, task removal or service death for [binding]'s car
+     * session. Never waits for the lifecycle lock: an in-progress start is
+     * cancelled directly, a live session is muted and closed.
+     */
+    private fun onCarForegroundEnd(binding: SessionBinding) {
+        if (binding.carEndRequested) return
+        binding.carEndRequested = true
+        LNLog.i(LogCategory.AUDIO, TAG, "car audio session end requested")
+        silenceIfActive(binding, "after car audio end")
+        binding.pendingStart.endedByUser = true
+        binding.pendingStart.job?.cancel()
+        scheduleClose(binding)
+    }
+
     private val _connected = MutableStateFlow(false)
     override val connected: StateFlow<Boolean> = _connected.asStateFlow()
+
+    /** Owns every session-busy transition and every idle-only mode commit. */
+    private val busyGate = SessionBusyGate()
+
+    /**
+     * True from the moment a start() holds the lifecycle lock (set before its
+     * first suspension, under [busyGate]) until that session's teardown has
+     * fully completed — for every provider, car audio or not. Reset on every
+     * failed or cancelled start and every teardown. Local UI uses it for
+     * display; actual mode changes go through [tryChangeCarAudioMode].
+     */
+    val sessionBusy: StateFlow<Boolean> = busyGate.busy
+
+    /** Called only under lifecycleMutex, after cleanup has finished. */
+    private fun syncSessionBusy() {
+        busyGate.set(activeBinding != null)
+    }
+
+    /**
+     * Atomically changes the local car-audio mode only while no conversation
+     * is starting or live. The idle check and `setEnabled` run under the same
+     * short gate a start uses to mark itself busy and read the selected mode,
+     * so a start either sees this change or the change is rejected unwritten.
+     * Never suspends, never takes the lifecycle lock, never starts anything.
+     */
+    fun tryChangeCarAudioMode(enabled: Boolean): Boolean {
+        if (!::carAudioPreferences.isInitialized) return false
+        val preferences = carAudioPreferences
+        return runIfSessionIdle {
+            if (preferences.isEnabled != enabled) preferences.setEnabled(enabled)
+        }
+    }
+
+    /**
+     * Idle-only helper: runs [commit] (short, synchronous, non-suspending)
+     * under the busy gate only when no session is starting or live.
+     */
+    internal fun runIfSessionIdle(commit: () -> Unit): Boolean = busyGate.runIfIdle(commit)
 
     private val _events = MutableSharedFlow<SessionUiEvent>(extraBufferCapacity = 256)
     override val events: Flow<SessionUiEvent> = _events.asSharedFlow()
@@ -231,7 +448,7 @@ class RealtimeSessionCoordinator @Inject constructor(
                     }
                     return@collect
                 }
-                if (isCurrent(binding)) return@collect
+                if (isAuthCurrent(binding)) return@collect
                 // Invalidate before waiting for lifecycle cleanup. Every event
                 // and tool continuation also checks auth.state synchronously.
                 invalidate(binding, cleanup = false)
@@ -244,45 +461,75 @@ class RealtimeSessionCoordinator @Inject constructor(
 
     override suspend fun start() = startForSession()
 
+    /**
+     * The start runs in its own child scope so a car-audio End can cancel
+     * exactly this attempt promptly — including while it still waits for the
+     * lifecycle lock — without cancelling the caller.
+     */
     private suspend fun startForSession(expectedSessionId: String? = null) {
-        lifecycleMutex.withLock {
-            if (expectedSessionId != null && currentAuthSessionId() != expectedSessionId) return
-            activeBinding?.let {
-                if (_connected.value && isCurrent(it)) return
-                closeBinding(it, upload = false)
+        val pending = PendingStart()
+        try {
+            coroutineScope {
+                pending.job = this.coroutineContext[Job]
+                lifecycleMutex.withLock { startLocked(expectedSessionId, pending) }
             }
-            val authSessionId = currentAuthSessionId() ?: throw RealtimeSessionException(
-                "not_authenticated", "Sign in before starting a conversation.", 401,
-            )
+        } catch (e: CancellationException) {
+            if (pending.endedByUser && currentCoroutineContext().isActive) {
+                throw CarAudioException(CarAudioFailure.ENDED_BY_USER)
+            }
+            throw e
+        }
+    }
 
-            // Fresh conversation: clear the process-wide transcript so a UI
-            // attaching mid-session (screen-on) renders only this session.
-            deviceActionState.advanceGeneration()
-            val binding = SessionBinding(authSessionId, deviceActionState.currentGeneration())
-            activeBinding = binding
+    private suspend fun startLocked(expectedSessionId: String?, pending: PendingStart) {
+        if (expectedSessionId != null && currentAuthSessionId() != expectedSessionId) return
+        activeBinding?.let {
+            if (_connected.value && isCurrent(it)) return
+            closeBinding(it, upload = false)
+        }
+        val authSessionId = currentAuthSessionId() ?: throw RealtimeSessionException(
+            "not_authenticated", "Sign in before starting a conversation.", 401,
+        )
+
+        // Fresh conversation: clear the process-wide transcript so a UI
+        // attaching mid-session (screen-on) renders only this session.
+        deviceActionState.advanceGeneration()
+        val binding = SessionBinding(authSessionId, deviceActionState.currentGeneration(), pending)
+        activeBinding = binding
+
+        var published = false
+        try {
+            // Busy before this attempt's first suspension; reset by its cleanup.
+            // The selected mode is read under the SAME gate that marks busy, so
+            // an idle-only mode change either committed first (and is seen
+            // here) or is rejected; it cannot change until cleanup completes.
+            val useCarAudio = busyGate.markBusyAndRead { carAudioSelected() }
             localToolResults.reset()
             transcriptStore.clear()
+
+            // Car audio first: verified session foreground service, then focus +
+            // observed hands-free route, before any mic or network work. Its
+            // failure is the clearest error. No speaker fallback while opted in.
+            if (useCarAudio) {
+                binding.carSession = carAudio.startSession(
+                    onEnd = { onCarForegroundEnd(binding) },
+                    onInterrupted = { failure -> onCarAudioInterrupted(binding, failure) },
+                )
+                requireCurrent(binding)
+            }
 
             // Latency parallelization (02-voice §D.2): speculatively bootstrap
             // the WebRTC transport — factory + peer connection + offer + ICE
             // gathering, none of which needs the credential — concurrently with
             // the session fetch. The dominant openai-direct path joins the
             // prepared offer at the SDP POST inside connect(); the nova/gemini
-            // paths discard it via abortPrepare(). A fetch failure aborts it too
-            // so the error surface is identical to the serial path (the
-            // speculative bootstrap's own failure is swallowed here and only
-            // surfaces through connect() when the session actually resolves to
-            // WebRTC).
+            // paths discard it via abortPrepare(). Any failure before a
+            // transport is selected (including prepare() itself throwing)
+            // aborts it in [abortStart], before the car route is released.
+            binding.webRtcPrepared = true
             webRtcTransport.prepare()
 
-            val session = try {
-                sessionApi.fetchSession(binding.authSessionId).also { requireCurrent(binding) }
-            } catch (t: Throwable) {
-                webRtcTransport.abortPrepare()
-                invalidate(binding)
-                if (activeBinding === binding) activeBinding = null
-                throw t
-            }
+            val session = sessionApi.fetchSession(binding.authSessionId).also { requireCurrent(binding) }
 
             // Reset before the first turn can arrive: a stale total from the
             // previous session would otherwise be attributed to this one.
@@ -302,19 +549,19 @@ class RealtimeSessionCoordinator @Inject constructor(
             // are reused engine-agnostically: (credential, endpointUrl).
             val (credential, endpointUrl) = when (session.mode) {
                 RealtimeSession.MODE_NOVA_BRIDGE -> {
-                    webRtcTransport.abortPrepare()
+                    abortSpeculativePrepare(binding)
                     transport = novaBridgeTransport
                     session.bridgeToken.orEmpty() to session.wsUrl.orEmpty()
                 }
 
                 RealtimeSession.MODE_GEMINI_DIRECT -> {
-                    webRtcTransport.abortPrepare()
+                    abortSpeculativePrepare(binding)
                     transport = geminiLiveTransport
                     session.accessToken?.value.orEmpty() to session.geminiEndpoint.orEmpty()
                 }
 
                 RealtimeSession.MODE_VOICE_LIVE_DIRECT -> {
-                    webRtcTransport.abortPrepare()
+                    abortSpeculativePrepare(binding)
                     transport = voiceLiveTransport
                     session.accessToken?.value.orEmpty() to session.voiceLiveEndpoint.orEmpty()
                 }
@@ -346,15 +593,13 @@ class RealtimeSessionCoordinator @Inject constructor(
                     if (isCurrent(binding)) onTransportEvent(event, binding)
                 }
             }
-            try {
-                requireCurrent(binding)
-                sessionTransport.connect(credential, endpointUrl)
-                requireCurrent(binding)
-            } catch (t: Throwable) {
-                closeBinding(binding, upload = false)
-                throw t
-            }
+            requireCurrent(binding)
+            sessionTransport.connect(credential, endpointUrl)
+            requireCurrent(binding)
+            // A car interruption or End after this point is still handled:
+            // its callback queued a close behind this lock.
             _connected.value = true
+            published = true
             session.quotaWarning
                 ?.trim()
                 ?.takeIf { it.isNotEmpty() }
@@ -376,20 +621,9 @@ class RealtimeSessionCoordinator @Inject constructor(
                     // is what resumes the wake engine and lets a new session start.
                     lifecycleMutex.withLock {
                         if (!_connected.value || activeBinding !== binding) return@withLock
-                        eventsJob?.cancelAndJoin()
-                        eventsJob = null
-                        try {
-                            sessionTransport.disconnect()
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            LNLog.w(LogCategory.REALTIME, TAG, "disconnect after transport $state failed", e)
+                        withContext(NonCancellable) {
+                            teardownAfterTransportEnd(binding, sessionTransport, state)
                         }
-                        if (isCurrent(binding)) transcriptUploader.finish(costTracker.cost)
-                        else transcriptUploader.discard()
-                        invalidate(binding, clearTranscript = false)
-                        activeBinding = null
-                        _connected.value = false
                     }
                     if (state == TransportState.FAILED) {
                         _events.tryEmit(
@@ -398,39 +632,136 @@ class RealtimeSessionCoordinator @Inject constructor(
                     }
                 }
             }
+        } finally {
+            if (!published) withContext(NonCancellable) { abortStart(binding) }
+        }
+    }
+
+    /** RealtimeTransport.abortPrepare() suspends, so this must too. */
+    private suspend fun abortSpeculativePrepare(binding: SessionBinding) {
+        if (!binding.webRtcPrepared) return
+        binding.webRtcPrepared = false
+        webRtcTransport.abortPrepare()
+    }
+
+    /**
+     * Cleanup for a start that never published `connected`, on any failure or
+     * cancellation (runs NonCancellable). The car route and session service
+     * are released only after the transport (or the speculative prepare) is
+     * shut down.
+     */
+    private suspend fun abortStart(binding: SessionBinding) {
+        if (activeBinding === binding && binding.transport != null) {
+            closeBinding(binding, upload = false)
+            return
+        }
+        try {
+            if (binding.webRtcPrepared) {
+                // Suspending call: a plain try/catch, not the non-suspending
+                // bestEffort lambda. Any failure (including a cancellation
+                // thrown by the transport) is logged so the rest of the
+                // cleanup below always runs.
+                try {
+                    abortSpeculativePrepare(binding)
+                } catch (e: Exception) {
+                    LNLog.w(LogCategory.REALTIME, TAG, "abort speculative WebRTC prepare failed", e)
+                }
+            }
+            invalidate(binding)
+            if (activeBinding === binding) activeBinding = null
+        } finally {
+            releaseCarAudio(binding)
+            syncSessionBusy()
+        }
+    }
+
+    /** Transport FAILED/CLOSED teardown; called under lifecycleMutex, NonCancellable. */
+    private suspend fun teardownAfterTransportEnd(
+        binding: SessionBinding,
+        sessionTransport: RealtimeTransport,
+        state: TransportState,
+    ) {
+        try {
+            try {
+                eventsJob?.cancelAndJoin()
+            } finally {
+                eventsJob = null
+            }
+            try {
+                sessionTransport.disconnect()
+            } catch (e: Exception) {
+                LNLog.w(LogCategory.REALTIME, TAG, "disconnect after transport $state failed", e)
+                silenceTransport(sessionTransport, "after failed disconnect")
+            }
+        } finally {
+            releaseCarAudio(binding)
+            try {
+                if (isAuthCurrent(binding)) transcriptUploader.finish(costTracker.cost)
+                else transcriptUploader.discard()
+            } catch (e: Exception) {
+                LNLog.w(LogCategory.REALTIME, TAG, "transcript finalise after transport $state failed", e)
+            }
+            invalidate(binding, clearTranscript = false)
+            activeBinding = null
+            _connected.value = false
+            syncSessionBusy()
         }
     }
 
     override suspend fun stop() {
         lifecycleMutex.withLock {
-            activeBinding?.let { closeBinding(it, upload = isCurrent(it)) }
+            activeBinding?.let { closeBinding(it, upload = isAuthCurrent(it)) }
         }
     }
 
-    /** Called only under lifecycleMutex; an old teardown cannot close a new session. */
+    /**
+     * Called only under lifecycleMutex; an old teardown cannot close a new
+     * session. NonCancellable with a complete outer try/finally: a cancelled
+     * caller can never skip transport shutdown, lease release or the service
+     * stop.
+     */
     private suspend fun closeBinding(binding: SessionBinding, upload: Boolean) {
-        if (activeBinding !== binding) return
-        // Stop watching first so a deliberate teardown never reads as an error.
-        stateWatchJob?.cancel()
-        stateWatchJob = null
-        // The state watcher takes lifecycleMutex, so cancel it without joining.
-        eventsJob?.cancelAndJoin()
-        eventsJob = null
-        // A normal final flush retains this account's binding. Auth changes
-        // discard private buffered turns instead of uploading under new auth.
-        if (upload) transcriptUploader.finish(costTracker.cost) else transcriptUploader.discard()
-        invalidate(binding, clearTranscript = !upload)
-        try {
-            (binding.transport ?: transport).disconnect()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            LNLog.w(LogCategory.REALTIME, TAG, "disconnect during session cleanup failed", e)
-        } finally {
-            activeBinding = null
-            _connected.value = false
-            emittedChars.clear()
-            localToolResults.reset()
+        withContext(NonCancellable) {
+            if (activeBinding !== binding) {
+                // Already closed: only make sure its own car session is gone.
+                releaseCarAudio(binding)
+                syncSessionBusy()
+                return@withContext
+            }
+            try {
+                // Stop watching first so a deliberate teardown never reads as an error.
+                stateWatchJob?.cancel()
+                stateWatchJob = null
+                try {
+                    eventsJob?.cancelAndJoin()
+                } finally {
+                    eventsJob = null
+                }
+                // A normal final flush retains this account's binding. Auth changes
+                // discard private buffered turns instead of uploading under new auth.
+                try {
+                    if (upload) transcriptUploader.finish(costTracker.cost) else transcriptUploader.discard()
+                } catch (e: Exception) {
+                    LNLog.w(LogCategory.REALTIME, TAG, "transcript finalise during cleanup failed", e)
+                }
+                invalidate(binding, clearTranscript = !upload)
+                val sessionTransport = binding.transport ?: transport
+                try {
+                    sessionTransport.disconnect()
+                } catch (e: Exception) {
+                    LNLog.w(LogCategory.REALTIME, TAG, "disconnect during session cleanup failed", e)
+                    silenceTransport(sessionTransport, "after failed disconnect")
+                }
+            } finally {
+                activeBinding = null
+                _connected.value = false
+                emittedChars.clear()
+                localToolResults.reset()
+                // After the transport has released mic/playback: never expose a
+                // still-live stream on the restored handset route.
+                releaseCarAudio(binding)
+                syncSessionBusy()
+            }
         }
     }
 
@@ -647,12 +978,7 @@ class RealtimeSessionCoordinator @Inject constructor(
         } finally {
             // Root scope, not binding.tools: this must run even when the tool
             // job is already cancelled.
-            scope.launch {
-                lifecycleMutex.withLock {
-                    // Never stop a replacement session.
-                    if (activeBinding === binding) closeBinding(binding, upload = isCurrent(binding))
-                }
-            }
+            scheduleClose(binding)
         }
     }
 
