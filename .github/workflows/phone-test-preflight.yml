@@ -1,0 +1,87 @@
+name: Phone test preflight
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/phone-test-preflight.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check phone credentials and Twilio readiness without making calls
+        env:
+          TWILIO_ACCOUNT_SID: ${{ vars.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_API_KEY_SID: ${{ vars.TWILIO_API_KEY_SID }}
+          TWILIO_API_KEY_SECRET: ${{ secrets.TWILIO_API_KEY_SECRET }}
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+        shell: python
+        run: |
+          import base64
+          import json
+          import os
+          import re
+          import sys
+          import urllib.error
+          import urllib.request
+
+          names = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN",
+                   "TWILIO_API_KEY_SID", "TWILIO_API_KEY_SECRET",
+                   "AZURE_OPENAI_API_KEY"]
+          missing = []
+          for name in names:
+              present = bool(os.environ.get(name, "").strip())
+              print(name + ": " + ("configured" if present else "missing"))
+              if not present:
+                  missing.append(name)
+          if missing:
+              sys.exit(1)
+          account = os.environ["TWILIO_ACCOUNT_SID"]
+          key = os.environ["TWILIO_API_KEY_SID"]
+          if not re.fullmatch(r"AC[0-9a-fA-F]{32}", account):
+              print("Account SID format invalid.")
+              sys.exit(1)
+          if not re.fullmatch(r"SK[0-9a-fA-F]{32}", key):
+              print("API key SID format invalid.")
+              sys.exit(1)
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *args, **kwargs):
+                  return None
+
+          opener = urllib.request.build_opener(NoRedirect)
+          def get(path, username, password):
+              url = "https://api.twilio.com/2010-04-01/Accounts/" + account + path
+              auth = base64.b64encode((username + ":" + password).encode()).decode()
+              req = urllib.request.Request(url, headers={"Authorization": "Basic " + auth})
+              try:
+                  with opener.open(req, timeout=20) as response:
+                      return json.load(response)
+              except urllib.error.HTTPError as exc:
+                  print("Twilio read-only request failed: HTTP " + str(exc.code))
+                  sys.exit(1)
+              except Exception:
+                  print("Twilio read-only request failed; no credential or response body printed.")
+                  sys.exit(1)
+
+          details = get(".json", account, os.environ["TWILIO_AUTH_TOKEN"])
+          print("Twilio account active: " + str(details.get("status") == "active"))
+          print("Twilio account type: " + ("trial" if details.get("type") == "Trial" else "non-trial"))
+          numbers = get("/IncomingPhoneNumbers.json?PageSize=1000",
+                        key, os.environ["TWILIO_API_KEY_SECRET"])
+          voice = [n for n in numbers.get("incoming_phone_numbers", [])
+                   if n.get("capabilities", {}).get("voice")]
+          print("Voice-capable numbers on first page: " + str(len(voice)))
+          print("More number pages: " + str(bool(numbers.get("next_page_uri"))))
+          if details.get("status") != "active":
+              sys.exit(1)
+          if details.get("type") == "Trial":
+              print("Trial destination restrictions must be resolved before hotel calls.")
+              sys.exit(1)
+          print("PASS: credential presence and read-only Twilio access. No calls made.")
