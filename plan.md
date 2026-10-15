@@ -1,6 +1,6 @@
 # Plan
 
-Status: TODAY-PHONE-TRIAL ACTIVE; the broader app/car rollout remains a draft. Updated 2026-10-15.
+Status: TODAY-PHONE-TRIAL BLOCKED BY TWILIO 21216; the broader app/car rollout remains a draft. Updated 2026-10-15.
 
 Single active source: C:\dev\live-ninja\plan.md. Completed history: C:\dev\live-ninja\completed\plan-2026-10-15-history.md and earlier completed/ archives. Deferred work: C:\dev\live-ninja\backlog.md. The current plan covers telephony, Jobs, S3 recordings, car Bluetooth, Android Auto, and their acceptance tests.
 
@@ -783,6 +783,9 @@ Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat r
 
 - 2026-10-15 21:27 UTC — user confirmed: "Run the calls now". Earlier run 38741739636 failed before any call ID: HTTP 400; CONTROL attempted=0, one uncreated hotel-01 intent. Email failed before SES on float count. Repair normalizes email counts, emits only numeric provider error codes, and reconciles uncreated intents against Twilio history before retry. Unknown/nonempty provider history still blocks. 31 Python tests passed. Resume through main workflow immediately within today's open window; preserve budget, consent, one-call concurrency and no duplicate calls.
 
+
+- 2026-10-15 21:34 UTC — repair commit bfad48400858b01f6d59d0fe5c5bc7c76dfd0aba passed 31 Python tests, Go race/vet and real Azure probe; workflow 38810244191 deploy success. Provider-history reconciliation found no prior call. Trial returned "Trial terminal: 0/20 attempted. Trial interrupted: HTTP 400 provider code 21216. Reconcile before retry; do not redial." Twilio https://www.twilio.com/docs/api/errors/21216 describes an outbound provider restriction (possible customer-profile, regulatory, or destination restriction); exact account reason is not verified. Do not try other numbers to evade the restriction. Owner/Twilio must clear it. Email step succeeded with SES MessageId 010001a1417c8bd4-a714ede5-5056-4ff1-8bbf-7f00bd0ca1fb-000000; parent independently read job 116683299678 logs. Zero calls, zero recordings. Azure cleanup succeeded. Execution attempts=2; one bounded resume remains only after the restriction is cleared and within the authorized date. No automatic reschedule.
+
 ## today-phone-trial — execute the dated twenty-call run and report evidence
 depends on: verified trial credentials and real Azure audio probe
 
@@ -802,9 +805,9 @@ Definition of done: Phone trial 2026-10-15 workflow test and deploy jobs both su
 
 ### today-trial-calls — finish attempts and email actual outcomes
 depends on: today-trial-readiness
-- [~] trial-twenty-calls — GitHub run_trial.py waits for today's California window, verifies monthly Twilio usage and preserves $8 conservative infrastructure reserve, reserves $1.20 per call, and records actual/capped Azure usage. No call creation outside the dated window. Ambiguous creation or nonterminal prior call prevents retry.
+- [!] trial-twenty-calls — Twilio account owner/Support must resolve outbound restriction 21216 before any retry.  GitHub run_trial.py waits for today's California window, verifies monthly Twilio usage and preserves $8 conservative infrastructure reserve, reserves $1.20 per call, and records actual/capped Azure usage. No call creation outside the dated window. Ambiguous creation or nonterminal prior call prevents retry.
 - [ ] trial-recordings — consent first, validated Twilio recordings copied into private S3; bounded reconciliation must succeed before advancing an accepted recording. Declined/unanswered calls remain honest no-audio outcomes.
-- [ ] trial-email — delegated sender implementation send_report.py sends HTML via SES; parent verifies returned SES MessageId. Email includes hotel/source/results, call and recording status, and actual seven-day links only for ready recordings.
+- [x] trial-email — Blocked-results email accepted by SES on 2026-10-15; no recording links exist because no calls connected.  delegated sender implementation send_report.py sends HTML via SES; parent verifies returned SES MessageId. Email includes hotel/source/results, call and recording status, and actual seven-day links only for ready recordings.
 Definition of done: workflow trial job reaches success or an explicit actionable blocked result; exactly twenty attempted destinations are reconciled (or remaining count is explicitly reported), all existing recordings are ready or visibly failed, and SES MessageId proves delivery acceptance. Waiting/scheduled is not twenty completed calls.
 
 Jobs: local-test-job, delivery-job, controlled-call-job, recording-transfer-job. GitHub workflow concurrency serializes this run; six-hour trial-job ceiling; 09:00-17:00 California date guard. Track each Actions run ID. Failure signatures include error, failed, canceled, timeout and cost stop. Existing deployment ceiling three; transfers three; each hotel one call. On technical canary failure, stop remaining calls, fix first, resume only from verified terminal ledger without redial. No broad app feature or existing number routing change is authorized by the trial.
