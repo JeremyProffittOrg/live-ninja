@@ -773,8 +773,12 @@ Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat r
 
 - 2026-10-15 — today-phone-trial commit ffd2eae7b2800c6ab815250edff66d5b0ba92db6 started workflow 38733305985. Test job passed including race checks. Recorder deployment failed because the legacy artifact bucket is us-east-2 while Lambda is us-east-1. Fixed deploy_recorder.py to resolve the existing us-east-1 SAM SourceBucket, verify region, and recover only a failed trial stack whose retained table is proven empty. No calls started. Retry ceiling: deployment attempt 2 of 3. All 17 active AWS regions passed the mandatory 7-day log retention check.
 
+- 2026-10-15 — workflow 38734141507 completed recorder deployment; its unsigned /report returned 403 and an invalid download token returned 404. Azure environment creation outlived the 900-second CLI wait; the environment subsequently reached Succeeded with no deployment error. The next attempt reuses that ready environment instead of recreating it. Added failed-call/stream canary stops, complete recording length/SHA256 checks, and concise duplicate-safe email output before any calls. Focused verification: Go tests passed and 29 Python tests passed. Azure host retry 2 of 3; recorder already succeeded. No hotel call has started.
+
 ## today-phone-trial — execute the dated twenty-call run and report evidence
 depends on: verified trial credentials and real Azure audio probe
+
+All commands in this workstream run from C:\dev\live-ninja-phone-run, the isolated main checkout.
 
 Active scope authorized 2026-10-15: twenty distinct California hotel attempts using the friendly AI/recording permission request, one call at a time, 180-second hard call limit, no automatic redial, the $20/month rule and explicit new $5 grants when needed. Targets are tools/phone-trial/targets.json in clean checkout C:\dev\live-ninja-phone-run; original uncommitted work in C:\dev\live-ninja is preserved. Trial uses 09:00–17:00 America/Los_Angeles today, with a bounded GitHub job waiting before credentials are assumed. No local scheduled task.
 

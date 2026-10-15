@@ -71,3 +71,8 @@ For standalone assistant audio on API 29/30, investigate legacy HFP/SCO routing:
 ### Diagnosis gate for future implementation
 
 First build and run a failing two-way audio check in the parked target car, with known app artifact, engine, phone, and head-unit version. Capture selected input/output and spoken test phrase at each end. Only then test ranked possibilities: the pre-31 forced-speaker path; missing SCO/route lifecycle; model transport/capture format divergence; focus/wake-mic contention. Change one variable at a time. The future fix must turn the same failing check green and preserve handset/headset behavior. Investigation and runtime test phases are deferred because the operator requested research/planning, not implementation or test calls now.
+
+
+## Source-version correction recorded during trial preparation
+
+The original source inspection used the dirty codex/jobs-r1-20261003 worktree at f5b57a2c9970b00c509a0f59a9c5d7ce51204ef4. GitHub main at d00359166d1b8871103af4b0c50241e181917c26 already contains an opt-in car-audio feature (commit subject: Add opt-in phone car audio for assistant sessions), including CarAudioSession.kt and CarAudioSettings.kt. The earlier forced-speaker/manifest observations describe that older local source, not a confirmed defect in installed 0.3.15. Future car diagnosis must inspect the shipped car-audio setting and current source before changing routing. No car behavior was reproduced in this session.

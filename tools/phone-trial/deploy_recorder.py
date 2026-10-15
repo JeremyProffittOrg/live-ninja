@@ -88,7 +88,7 @@ def main():
     kwargs = dict(StackName=name, TemplateBody=json.dumps(template()),
                   Parameters=[{"ParameterKey": k, "ParameterValue": v} for k, v in params.items()],
                   Capabilities=["CAPABILITY_NAMED_IAM"],
-                  Tags=[{"Key": k, "Value": v} for k, v in {"Project": "live-ninja", "CostCenter": "voice-ai", "Environment": "prod", "ManagedBy": "cloudformation", "DeployedVia": "github-actions", "Owner": "jeremy"}.items()])
+                  Tags=[{"Key": k, "Value": v} for k, v in {"Project": "live-ninja", "CostCenter": "voice-ai", "Environment": "prod", "ManagedBy": "sam", "DeployedVia": "github-actions", "Owner": "jeremy"}.items()])
     try:
         current = cf.describe_stacks(StackName=name)["Stacks"][0]
         exists = True

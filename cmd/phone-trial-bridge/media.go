@@ -218,7 +218,7 @@ func (s *server) bridgeLoop(ctx context.Context, c *call, tw, az *websocket.Conn
 			case "session.updated":
 				if !configured {
 					configured = true
-					if reason := requestResponse("The person agreed to recording. Thank them briefly and ask what steps a guest must take to connect to the guest-room Wi-Fi."); reason != "" {
+					if reason := requestResponse("The person agreed to recording. This inquiry is specifically about " + c.Target.Name + " and its guest-room network, not only the lobby or a brand-wide policy. Thank them briefly and ask what steps a guest must take to connect to the guest-room Wi-Fi."); reason != "" {
 						return reason
 					}
 				}

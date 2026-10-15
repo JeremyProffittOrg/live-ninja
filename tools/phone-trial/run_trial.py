@@ -23,6 +23,8 @@ FIXED_RESERVE = Decimal("8")  # Includes registry/month, warm hosting, storage a
 CALL_RESERVE = Decimal("1.20")
 MAX_SECONDS = 180
 TERMINAL = {"completed", "failed", "busy", "no-answer", "canceled"}
+NORMAL_END_REASONS = {"research_finished", "remote_hangup", "twilio_disconnected", "conversation_idle",
+                      "duration_limit", "consent_withdrawn", "token_budget_limit"}
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -175,7 +177,7 @@ def main():
                           ExpressionAttributeValues={":r": "running", ":old": prior["status"], ":n": int(prior.get("executionAttempts", 1)) + 1, ":spent": spent})
     else:
         spent = FIXED_RESERVE + existing_month_cost()
-        table.put_item(Item={**ledger_key, "status": "running", "authorizedCalls": 20, "startedAt": int(time.time()),
+        table.put_item(Item={**ledger_key, "status": "running", "authorizedCalls": 20, "startedAt": int(time.time()), "gitSha": os.environ.get("GITHUB_SHA", "unknown"),
                             "executionAttempts": 1, "reservedInfrastructureUSD": FIXED_RESERVE, "spentUSD": spent},
                        ConditionExpression="attribute_not_exists(PK)")
     attempts = len(attempted_ids)
@@ -225,6 +227,8 @@ def main():
                 raise RuntimeError("Provider call end is not confirmed; remaining calls stopped")
             event(sid, target, "call_ended", status=details.get("status"), duration=details.get("duration"),
                   providerPrice=details.get("price"), providerCurrency=details.get("price_unit"))
+            if details.get("status") == "failed":
+                raise RuntimeError("Provider reported a failed call; remaining destinations held for diagnosis")
             copied = False
             for retry in range(3):
                 recordings = twilio("/Calls/" + sid + "/Recordings.json").get("recordings", [])
@@ -266,7 +270,9 @@ def main():
             table.update_item(Key=ledger_key, UpdateExpression="SET spentUSD=:s, attempted=:a", ExpressionAttributeValues={":s": spent, ":a": attempts})
             table.update_item(Key=attempt_key, UpdateExpression="SET settled=:yes, costUSD=:cost", ExpressionAttributeValues={":yes": True, ":cost": cost})
             print("Attempt complete; conservative month allocation USD " + str(spent.quantize(Decimal("0.01"))), flush=True)
-            technical = [e for e in report["events"] if e.get("data", {}).get("callSid") == sid and e.get("data", {}).get("type") == "error"]
+            technical = [e for e in related if e.get("type") == "error" or
+                         (e.get("type") == "call_ended" and e.get("data", {}).get("reason") and
+                          e["data"]["reason"] not in NORMAL_END_REASONS)]
             if technical:
                 failure = "Technical error in canary call; remaining calls held for repair."
                 break

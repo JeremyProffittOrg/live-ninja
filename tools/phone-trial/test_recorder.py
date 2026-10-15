@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import recorder as r
 import send_report
+from email.message import EmailMessage
 
 CALL = "CA" + "1" * 32
 REC = "RE" + "2" * 32
@@ -45,13 +46,16 @@ class S3:
     def __init__(self):
         self.data = b""
         self.ttl = None
+        self.metadata = {}
 
     def put_object(self, **kwargs):
         assert kwargs["ServerSideEncryption"] == "AES256"
         self.data = kwargs["Body"].read()
+        assert kwargs["ChecksumSHA256"] == base64.b64encode(hashlib.sha256(self.data).digest()).decode()
+        self.metadata = kwargs["Metadata"]
 
     def head_object(self, **kwargs):
-        return {"ContentLength": len(self.data)}
+        return {"ContentLength": len(self.data), "Metadata": self.metadata}
 
     def generate_presigned_url(self, operation, **kwargs):
         self.ttl = kwargs["ExpiresIn"]
@@ -272,6 +276,97 @@ class RecorderTests(unittest.TestCase):
         self.assertIn("0 provider-completed calls", send_report.build_report(report, "")[0])
         report["events"].append({"data": {"callSid": CALL, "type": "call_ended", "data": {"status": "completed"}}})
         self.assertIn("1 provider-completed calls", send_report.build_report(report, "")[0])
+
+    def test_email_compact_results_links_and_escaping(self):
+        call = {"callSid": CALL, "targetId": "hotel", "consentStatus": "granted", "recordingStatus": "ready", "recordingLink": {"url": "https://api.example/download?token=actual", "expiresAt": 700000}}
+        summary = {"summary": "Password & accept <button>", "evidence": "staff_report_only"}
+        report = {"calls": [call], "events": [{"data": {"callSid": CALL, "type": "summary", "data": summary}}], "control": {"gitSha": "abc123"}}
+        _, body = send_report.build_report(report, "{{SHA}} {{HEAD_SHA}} {{ITEM}}", [{"id": "hotel", "name": "Hotel <One>", "city": "Los Angeles"}])
+        self.assertIn("Hotel &lt;One&gt; — Los Angeles", body)
+        self.assertIn("Password &amp; accept &lt;button&gt;", body)
+        self.assertLess(body.index("Listen to or download"), body.index("AI summary"))
+        self.assertIn("abc123 abc123", body)
+        self.assertIn("not VPN-tested", body)
+        self.assertIn("full interaction logs remain in DynamoDB", body)
+        self.assertNotIn('"events":', body)
+        call.update(recordingStatus="absent", consentStatus="declined", recordingReason="consent_declined")
+        report["events"] = []
+        _, body = send_report.build_report(report, "")
+        self.assertNotIn("download?token=", body)
+        self.assertIn("consent_declined", body)
+        self.assertIn("requirements remain unknown", body)
+
+    def test_email_transcript_excerpt_is_staff_only(self):
+        report = {"calls": [{"callSid": CALL}], "events": [
+            {"data": {"callSid": CALL, "type": "transcript", "data": {"speaker": "hotel", "text": "Accept <terms>"}}},
+            {"data": {"callSid": CALL, "type": "transcript", "data": {"speaker": "assistant", "text": "Unverified assistant claim"}}}]}
+        _, body = send_report.build_report(report, "")
+        self.assertIn("Staff transcript excerpt", body)
+        self.assertIn("Accept &lt;terms&gt;", body)
+        self.assertNotIn("Unverified assistant claim", body)
+
+    def test_email_send_once_and_unknown_delivery(self):
+        control = {"status": "completed", "attempted": 20}
+        report = {"runId": "trial", "control": control}
+        class MailTable:
+            def __init__(self):
+                self.item = dict(control)
+            def get_item(self, **kwargs):
+                return {"Item": dict(self.item)}
+            def update_item(self, **kwargs):
+                values = kwargs["ExpressionAttributeValues"]
+                if ":id" in values:
+                    self.item.update(mailState="sent", sesMessageId=values[":id"])
+                else:
+                    self.item.update(mailState="sending", mailOutcome=values[":outcome"])
+        table = MailTable()
+        ses = unittest.mock.Mock()
+        ses.send_raw_email.return_value = {"MessageId": "test-id"}
+        message = EmailMessage()
+        message.set_content("Test", subtype="html")
+        self.assertEqual(send_report.send_once(table, ses, report, message), ("test-id", True))
+        self.assertEqual(send_report.send_once(table, ses, report, message), ("test-id", False))
+        self.assertEqual(ses.send_raw_email.call_count, 1)
+        table = MailTable()
+        ses.send_raw_email.side_effect = TimeoutError()
+        with self.assertRaisesRegex(RuntimeError, "outcome is unknown"):
+            send_report.send_once(table, ses, report, message)
+        self.assertEqual(table.item["mailState"], "sending")
+        with self.assertRaisesRegex(RuntimeError, "outcome is unknown"):
+            send_report.send_once(table, ses, report, message)
+        self.assertEqual(ses.send_raw_email.call_count, 2)
+
+    def test_twenty_call_email_omits_large_transcript_logs(self):
+        calls, events = [], []
+        for number in range(20):
+            sid = "CA" + f"{number:032x}"
+            calls.append({"callSid": sid, "targetId": "hotel-" + str(number), "recordingStatus": "absent"})
+            for _ in range(10):
+                events.append({"data": {"callSid": sid, "type": "transcript", "data": {"speaker": "hotel", "text": "A" * 2000}}})
+        _, body = send_report.build_report({"calls": calls, "events": events}, "")
+        self.assertLess(len(body.encode()), 60000)
+        self.assertEqual(body.count("Staff transcript excerpt"), 20)
+
+    def test_audio_declared_length_and_checksum_integrity(self):
+        for length in ("10", "-1", "not-a-number", "0", "2"):
+            source = Audio(b"MP3")
+            source.headers["Content-Length"] = length
+            opener = unittest.mock.Mock()
+            opener.open.return_value = source
+            with self.subTest(length=length), patch.object(r.urllib.request, "build_opener", return_value=opener):
+                with self.assertRaises(ValueError):
+                    r.copy_audio(CALL, REC)
+            self.assertEqual(r._s3.data, b"")
+        source = Audio(b"MP3")
+        source.headers["Content-Length"] = "3"
+        opener.open.return_value = source
+        with patch.object(r.urllib.request, "build_opener", return_value=opener):
+            r.copy_audio(CALL, REC)
+        self.assertEqual(r._s3.metadata["sha256"], hashlib.sha256(b"MP3").hexdigest())
+        opener.open.return_value = Audio(b"MP3")
+        with patch.object(r.urllib.request, "build_opener", return_value=opener), patch.object(r._s3, "head_object", return_value={"ContentLength": 3, "Metadata": {"sha256": "mismatch"}}):
+            with self.assertRaisesRegex(ValueError, "S3 verification failed"):
+                r.copy_audio(CALL, REC)
 
 
 if __name__ == "__main__":

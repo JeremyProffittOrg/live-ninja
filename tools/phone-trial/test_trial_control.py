@@ -46,6 +46,7 @@ class RunnerTests(unittest.TestCase):
         self.created = []
         self.month = run_trial.Decimal("2")
         self.fail_create = False
+        self.provider_status = "completed"
         self.targets = [{"id": "hotel-" + str(i), "name": "Synthetic Hotel", "phone": "+1555000" + str(1000 + i), "city": "Test", "source": "https://example.invalid"} for i in range(20)]
         self.patches = [
             patch.dict(run_trial.os.environ, {"GITHUB_ACTIONS": "true", "EXECUTE_PHONE_TRIAL": run_trial.RUN, "BRIDGE_URL": "https://example.invalid"}),
@@ -66,7 +67,7 @@ class RunnerTests(unittest.TestCase):
             if self.fail_create:
                 raise RuntimeError("Ambiguous create timeout")
             self.created.append(dict(form))
-            return {"sid": "CA" + str(len(self.created)).zfill(32), "status": "completed", "duration": "10"}
+            return {"sid": "CA" + str(len(self.created)).zfill(32), "status": self.provider_status, "duration": "10"}
         if path.endswith("/Recordings.json"):
             return {"recordings": []}
         return {"status": "completed", "duration": "10"}
@@ -88,6 +89,19 @@ class RunnerTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.run_silently()
         self.assertEqual(self.created, [])
+
+    def test_failed_provider_canary_stops_remaining_destinations(self):
+        self.provider_status = "failed"
+        with self.assertRaises(SystemExit):
+            self.run_silently()
+        self.assertEqual(len(self.created), 1)
+
+    def test_stream_rejection_stops_remaining_destinations(self):
+        report = {"calls": [], "events": [{"SK": "error", "data": {"callSid": "CA" + str(1).zfill(32), "type": "call_ended", "data": {"reason": "stream_rejected"}}}]}
+        with patch.object(run_trial, "invoke", return_value=report):
+            with self.assertRaises(SystemExit):
+                self.run_silently()
+        self.assertEqual(len(self.created), 1)
 
     def test_ambiguous_creation_blocks_automatic_retry(self):
         self.fail_create = True

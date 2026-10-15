@@ -30,8 +30,21 @@ def main():
     tag = os.environ["GITHUB_SHA"]
     az("acr", "build", "--registry", registry, "--image", "phone-trial:" + tag,
        "--file", "containers/phone-trial-bridge/Dockerfile", "--no-logs", ".")
-    environment = az("containerapp", "env", "create", "--name", cfg["azureEnvironmentName"],
-                     "--resource-group", group, "--location", region, "--logs-destination", "none")
+    try:
+        environment = az("containerapp", "env", "show", "--name", cfg["azureEnvironmentName"], "--resource-group", group)
+    except RuntimeError:
+        environment = az("containerapp", "env", "create", "--name", cfg["azureEnvironmentName"],
+                         "--resource-group", group, "--location", region, "--logs-destination", "none")
+    for attempt in range(20):
+        state = environment["properties"].get("provisioningState")
+        if state == "Succeeded":
+            break
+        if state in {"Failed", "Canceled"}:
+            raise RuntimeError("Azure environment provisioning failed")
+        time.sleep(15)
+        environment = az("containerapp", "env", "show", "--name", cfg["azureEnvironmentName"], "--resource-group", group)
+    else:
+        raise RuntimeError("Azure environment is not ready; no calls started")
     domain = environment["properties"]["defaultDomain"]
     base = "https://" + cfg["azureAppName"] + "." + domain
     registry_info = az("acr", "show", "--name", registry, "--resource-group", group)
@@ -86,5 +99,9 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except subprocess.TimeoutExpired as exc:
+        raise SystemExit("Azure command timed out: " + " ".join(exc.cmd[:3]))
+    except RuntimeError as exc:
+        raise SystemExit(str(exc))
     except Exception as exc:
         raise SystemExit("Azure deployment failed: " + type(exc).__name__)

@@ -147,9 +147,15 @@ def copy_audio(sid, recording):
     with urllib.request.build_opener(NoRedirect).open(req, timeout=20) as source, tempfile.TemporaryFile() as audio:
         if source.headers.get_content_type() not in {"audio/mpeg", "audio/mp3"}:
             raise ValueError("Unexpected audio type")
-        if int(source.headers.get("Content-Length", "0")) > MAX_AUDIO:
-            raise ValueError("Audio exceeds size limit")
+        declared_length = source.headers.get("Content-Length")
+        if declared_length is not None:
+            if not re.fullmatch(r"[0-9]+", declared_length):
+                raise ValueError("Invalid audio content length")
+            declared_length = int(declared_length)
+            if declared_length > MAX_AUDIO:
+                raise ValueError("Audio exceeds size limit")
         size = 0
+        checksum = hashlib.sha256()
         deadline = time.monotonic() + 30
         while True:
             if time.monotonic() >= deadline:
@@ -160,14 +166,20 @@ def copy_audio(sid, recording):
             size += len(block)
             if size > MAX_AUDIO:
                 raise ValueError("Audio exceeds size limit")
+            checksum.update(block)
             audio.write(block)
         if size == 0:
             raise ValueError("Empty audio")
+        if declared_length is not None and size != declared_length:
+            raise ValueError("Truncated audio content")
+        audio_hash = checksum.hexdigest()
         audio.seek(0)
         clients()[1].put_object(Bucket=os.environ["BUCKET"], Key=key, Body=audio,
-                               ContentLength=size, ContentType="audio/mpeg", ServerSideEncryption="AES256")
+                               ContentLength=size, ContentType="audio/mpeg", ServerSideEncryption="AES256",
+                               ChecksumSHA256=base64.b64encode(checksum.digest()).decode(),
+                               Metadata={"sha256": audio_hash})
     head = clients()[1].head_object(Bucket=os.environ["BUCKET"], Key=key)
-    if head["ContentLength"] != size:
+    if head["ContentLength"] != size or head.get("Metadata", {}).get("sha256") != audio_hash:
         raise ValueError("S3 verification failed")
     return key, size
 
