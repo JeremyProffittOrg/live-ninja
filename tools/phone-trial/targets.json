@@ -1,0 +1,170 @@
+{
+  "runId": "hotel-trial-2026-10-15",
+  "selection": "Purposive geographically varied California candidate pool from official hotel websites, not a statistical statewide random sample.",
+  "ordering": {
+    "method": "Sort ascending by SHA-256 hex digest of UTF-8(seed + literal backslash-n + official property name + literal backslash-n + E.164 phone).",
+    "seed": "live-ninja-california-hotel-candidates-2026-10-15-v1"
+  },
+  "hotels": [
+    {
+      "id": "hotel-01",
+      "name": "Hilton Santa Barbara Beachfront Resort",
+      "city": "Santa Barbara",
+      "phone": "+18055644333",
+      "source": "https://www.hilton.com/en-gb/hotels/sbafphh-hilton-santa-barbara-beachfront-resort/hotel-location/",
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "id": "hotel-02",
+      "name": "Monterey Marriott",
+      "city": "Monterey",
+      "phone": "+18316494234",
+      "source": "https://www.marriott.com/en-us/hotels/mryca-monterey-marriott/overview/",
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "id": "hotel-03",
+      "name": "Hilton Anaheim",
+      "city": "Anaheim",
+      "phone": "+17147504321",
+      "source": "https://www.hilton.com/en-gb/hotels/snaahhh-hilton-anaheim/hotel-location/",
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "id": "hotel-04",
+      "name": "The Fort Sutter Hotel, Tapestry Collection by Hilton",
+      "city": "Sacramento",
+      "phone": "+19166032301",
+      "source": "https://www.fortsutterhotel.com/",
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "id": "hotel-05",
+      "name": "Hotel Paradox, Autograph Collection",
+      "city": "Santa Cruz",
+      "phone": "+18314257100",
+      "source": "https://www.hotelparadox.com/",
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "id": "hotel-06",
+      "name": "The Padre Hotel",
+      "city": "Bakersfield",
+      "phone": "+16614274900",
+      "source": "https://www.thepadrehotel.com/",
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "id": "hotel-07",
+      "name": "Courtyard by Marriott Fresno Clovis",
+      "city": "Clovis",
+      "phone": "+15598908244",
+      "source": "https://www.marriott.com/en-us/hotels/fatcc-courtyard-fresno-clovis/overview/",
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "id": "hotel-08",
+      "name": "Hilton San Diego Bayfront",
+      "city": "San Diego",
+      "phone": "+16195643333",
+      "source": "https://www.hilton.com/en/hotels/sancchh-hilton-san-diego-bayfront/hotel-location/",
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "id": "hotel-09",
+      "name": "Hyatt Regency Monterey Hotel and Spa on Del Monte Golf Course",
+      "city": "Monterey",
+      "phone": "+18313721234",
+      "source": "https://www.hyatt.com/hyatt-regency/en-US/mrydm-hyatt-regency-monterey-hotel-and-spa-on-del-monte-golf-course/hotel-info",
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "id": "hotel-10",
+      "name": "Hyatt Regency Sacramento",
+      "city": "Sacramento",
+      "phone": "+19164431234",
+      "source": "https://www.hyatt.com/hyatt-regency/en-US/sacra-hyatt-regency-sacramento/meetings",
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "id": "hotel-11",
+      "name": "Apple Farm Inn",
+      "city": "San Luis Obispo",
+      "phone": "+18055442040",
+      "source": "https://www.applefarm.com/",
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "id": "hotel-12",
+      "name": "Courtyard by Marriott Los Angeles Hacienda Heights/Orange County",
+      "city": "Hacienda Heights",
+      "phone": "+16269651700",
+      "source": "https://www.marriott.com/en-us/hotels/laxhh-courtyard-los-angeles-hacienda-heights-orange-county/",
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "id": "hotel-13",
+      "name": "Courtyard by Marriott San Jose Airport",
+      "city": "San Jose",
+      "phone": "+14084520200",
+      "source": "https://www.marriott.com/en-us/hotels/sjcya-courtyard-san-jose-airport/overview/",
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "id": "hotel-14",
+      "name": "Carter House Inns",
+      "city": "Eureka",
+      "phone": "+17074448062",
+      "source": "https://carterhouse.com/",
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "id": "hotel-15",
+      "name": "The Beverly Hilton",
+      "city": "Beverly Hills",
+      "phone": "+13102747777",
+      "source": "https://www.hilton.com/en/hotels/laxbhhh-the-beverly-hilton/hotel-location/",
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "id": "hotel-16",
+      "name": "Hilton La Jolla Torrey Pines",
+      "city": "La Jolla",
+      "phone": "+18585581500",
+      "source": "https://www.hilton.com/en/hotels/santphh-hilton-la-jolla-torrey-pines/hotel-location/",
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "id": "hotel-17",
+      "name": "The Waterfront Beach Resort, a Hilton Hotel",
+      "city": "Huntington Beach",
+      "phone": "+17148458000",
+      "source": "https://www.hilton.com/en-gb/hotels/hubwhhf-the-waterfront-beach-resort/",
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "id": "hotel-18",
+      "name": "The Andreas Hotel & Spa",
+      "city": "Palm Springs",
+      "phone": "+17603275701",
+      "source": "https://andreashotel.com/",
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "id": "hotel-19",
+      "name": "Sheraton Redding Hotel at the Sundial Bridge",
+      "city": "Redding",
+      "phone": "+15303642800",
+      "source": "https://www.marriott.com/en-us/hotels/rddsi-sheraton-redding-hotel-at-the-sundial-bridge/overview/",
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "id": "hotel-20",
+      "name": "Hotel Drisco",
+      "city": "San Francisco",
+      "phone": "+14153462880",
+      "source": "https://hoteldrisco.com/contact/",
+      "timezone": "America/Los_Angeles"
+    }
+  ]
+}

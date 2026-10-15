@@ -1,0 +1,186 @@
+name: Phone trial 2026-10-15
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/phone-trial.yml'
+      - 'cmd/phone-trial-bridge/**'
+      - 'containers/phone-trial-bridge/**'
+      - 'tools/phone-trial/**'
+      - 'infra/phone-trial-config.json'
+  workflow_dispatch:
+
+concurrency:
+  group: phone-trial-2026-10-15
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  AZURE_EXTENSION_USE_DYNAMIC_INSTALL: yes_without_prompt
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - run: go test -race ./cmd/phone-trial-bridge -count=1
+      - run: go vet ./cmd/phone-trial-bridge
+      - run: python -B -m unittest discover -s tools/phone-trial -p 'test_*.py' -v
+      - run: python -m py_compile tools/phone-trial/deploy_recorder.py tools/phone-trial/deploy_azure.py tools/phone-trial/run_trial.py
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      bridge_url: ${{ steps.azure.outputs.bridge_url }}
+      recorder_url: ${{ steps.recorder.outputs.recorder_url }}
+    env:
+      TWILIO_ACCOUNT_SID: ${{ vars.TWILIO_ACCOUNT_SID }}
+      TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+      TWILIO_API_KEY_SID: ${{ vars.TWILIO_API_KEY_SID }}
+      TWILIO_API_KEY_SECRET: ${{ secrets.TWILIO_API_KEY_SECRET }}
+      AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+      CLOUDFORMATION_S3_BUCKET: ${{ vars.CLOUDFORMATION_S3_BUCKET }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - run: python -m pip install 'boto3>=1.40,<2'
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-phone-trial-${{ github.run_id }}
+          aws-region: us-east-1
+      - name: Deploy private S3 recorder
+        id: recorder
+        run: python -B tools/phone-trial/deploy_recorder.py
+      - name: Load public Azure deployment variables
+        id: config
+        shell: python
+        run: |
+          import json, os
+          c = json.load(open('infra/phone-trial-config.json'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('client=' + c['azureClientId'] + '\n')
+              output.write('tenant=' + c['azureTenantId'] + '\n')
+              output.write('subscription=' + c['azureSubscriptionId'] + '\n')
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ steps.config.outputs.client }}
+          tenant-id: ${{ steps.config.outputs.tenant }}
+          subscription-id: ${{ steps.config.outputs.subscription }}
+      - name: Deploy Azure bridge
+        id: azure
+        env:
+          RECORDER_URL: ${{ steps.recorder.outputs.recorder_url }}
+        run: python -B tools/phone-trial/deploy_azure.py
+      - name: Verify real Azure audio before any telephone call
+        env:
+          BRIDGE_URL: ${{ steps.azure.outputs.bridge_url }}
+          RECORDER_URL: ${{ steps.recorder.outputs.recorder_url }}
+        shell: python
+        run: |
+          import json, os, subprocess
+          c = json.load(open('infra/phone-trial-config.json'))
+          targets = json.load(open('tools/phone-trial/targets.json'))['hotels']
+          env = dict(os.environ)
+          env.update(PUBLIC_BASE_URL=env['BRIDGE_URL'], AZURE_OPENAI_ENDPOINT=c['modelEndpoint'],
+                     AZURE_OPENAI_DEPLOYMENT=c['modelDeployment'], RUN_ID='hotel-trial-2026-10-15',
+                     MAX_CALL_SECONDS='180', RECORDING_CALLBACK_URL=env['RECORDER_URL']+'/recording',
+                     EVENT_CALLBACK_URL=env['RECORDER_URL']+'/events',
+                     TARGETS_JSON=json.dumps([{'id':t['id'],'name':t['name'],'phone':t['phone']} for t in targets]))
+          subprocess.run(['go','run','./cmd/phone-trial-bridge','-probe'], env=env, check=True, timeout=45)
+
+  trial:
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TWILIO_ACCOUNT_SID: ${{ vars.TWILIO_ACCOUNT_SID }}
+      TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+      TWILIO_API_KEY_SID: ${{ vars.TWILIO_API_KEY_SID }}
+      TWILIO_API_KEY_SECRET: ${{ secrets.TWILIO_API_KEY_SECRET }}
+      TWILIO_FROM_NUMBER: ${{ vars.TWILIO_FROM_NUMBER }}
+      RECORDER_URL: ${{ needs.deploy.outputs.recorder_url }}
+      BRIDGE_URL: ${{ needs.deploy.outputs.bridge_url }}
+      EXECUTE_PHONE_TRIAL: hotel-trial-2026-10-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: python -m pip install 'boto3>=1.40,<2'
+      - name: Wait for the dated California calling window
+        shell: python
+        run: |
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          import time
+          while True:
+              now = datetime.now(ZoneInfo('America/Los_Angeles'))
+              if now.date().isoformat() != '2026-10-15' or now.hour >= 17:
+                  raise SystemExit('Authorized trial date/window ended; no calls made.')
+              if now.hour >= 9:
+                  break
+              print('Waiting for 09:00 California time; no calls placed.', flush=True)
+              time.sleep(60)
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-phone-trial-run-${{ github.run_id }}
+          role-duration-seconds: 7200
+          aws-region: us-east-1
+      - name: Run the dated 20-call trial within limits
+        id: calls
+        run: python -B tools/phone-trial/run_trial.py
+      - name: Refresh report delivery credentials
+        if: always() && steps.calls.outcome != 'skipped'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-phone-trial-mail-${{ github.run_id }}
+          aws-region: us-east-1
+      - name: Email measured results and seven-day recording links
+        if: always() && steps.calls.outcome != 'skipped'
+        run: python -B tools/phone-trial/send_report.py --function-name live-ninja-phone-trial-recorder --template tools/phone-trial/email-status.html
+      - name: Load cleanup identity
+        if: always()
+        id: cleanup
+        shell: python
+        run: |
+          import json, os
+          c = json.load(open('infra/phone-trial-config.json'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              for k in ['azureClientId','azureTenantId','azureSubscriptionId','azureResourceGroup','azureAppName']:
+                  out.write(k+'='+c[k]+'\n')
+      - uses: azure/login@v2
+        if: always() && steps.cleanup.outcome == 'success'
+        with:
+          client-id: ${{ steps.cleanup.outputs.azureClientId }}
+          tenant-id: ${{ steps.cleanup.outputs.azureTenantId }}
+          subscription-id: ${{ steps.cleanup.outputs.azureSubscriptionId }}
+      - name: Allow the idle bridge to scale to zero
+        if: always() && steps.cleanup.outcome == 'success'
+        env:
+          TRIAL_GROUP: ${{ steps.cleanup.outputs.azureResourceGroup }}
+          TRIAL_APP: ${{ steps.cleanup.outputs.azureAppName }}
+        run: az containerapp update --resource-group "$TRIAL_GROUP" --name "$TRIAL_APP" --min-replicas 0 --query name --output tsv

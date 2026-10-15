@@ -1,0 +1,77 @@
+# Completed Live Ninja plan history
+
+Archived 2026-10-15 from C:\dev\live-ninja\plan.md. These completed milestones and dated facts are historical, not current execution targets. Original identifiers and check results are preserved.
+
+## Historical verified facts
+
+- Repo `C:\dev\live-ninja`, GitHub `JeremyProffittOrg/live-ninja`, branch `main`. Module `github.com/JeremyProffittOrg/live-ninja`.
+- `88c808ff19c2dc15776c0634a6f8440f29d6f26f` is the plan-bypass commit. Deploy run `35716826005` succeeded.
+- `e6f52fea7590fcc2c3eee7512c617fdacc99bc35` documents eight voice engines and returns `tokenSignature` with `signingRequired: false`. Deploy run `35625518495` succeeded. The log printed `iot/authorizer_signing_private_key synced`.
+- Galaxy S9 serial `4633424442303098`, model `SM-G965U`, package `ninja.jeremy.liveninja`, versionName `0.3.12`, versionCode `18` (installed 2026-09-22 from the published APK). The previous install was `0.3.11` / `17`.
+- `internal/realtime/catalog.go` has `SupportedVoices` (default `cedar`) and `SupportedGeminiVoices`. `SupportedAzureRealtimeVoices` does not exist.
+- `GET /api/v1/realtime/voices` is `handleListVoices` in `internal/webapp/settings_routes.go`.
+- `cmd/realtime-broker/main.go` has `handleAzureDirect` and `handleVoiceLiveDirect`. Both Voice Live pins use `AZURE_VOICELIVE_MODEL`, default `gpt-4o-mini-realtime-preview`.
+- Authorizer resource in `template.yaml` is named `live-ninja-iot`. `SigningDisabled` is true while `IotAuthorizerSigningPublicKey` is empty. GitHub secret name `IOT_AUTHORIZER_SIGNING_PRIVATE_KEY` is set. The public half is a GitHub variable. Do not print either value.
+- Web `web/static/js/liveevents.mjs` `iotSocketUrl` and Android `android/app/src/main/java/ninja/jeremy/liveninja/net/IotUrl.kt` add the signature query only when `signingRequired` is true.
+- Help copy lives in `web/templates/pages/conversation.html`. A user-visible change updates it in the same commit. Guard: `go test ./internal/webapp/ -run TestHelpDrawer`.
+
+## ship-remaining — push the rest to production
+
+### voice-catalog — Azure native voice list
+
+Definition of done: `go test ./internal/realtime/ -run "Voice|Catalog"` passes, and a test asserts every shipped engine's default voice is in that engine's catalog.
+
+- [x] `voice-catalog` — add `SupportedAzureRealtimeVoices` for the `azure-realtime-native` voices, default `ava`, on `GET /api/v1/realtime/voices`, beside `SupportedGeminiVoices`. `gpt-live-azure` keeps `SupportedVoices` and `cedar`. Do not invent voice names. If the published list cannot be quoted from Microsoft docs, mark this `[!]` and name the page that is missing. Update Help in the same commit if the picker gains a new list. depends on: none
+
+### broker-route-close — prove the four Azure routes
+
+Definition of done: `go test ./cmd/realtime-broker/ -count=1` passes.
+
+- [x] `broker-route-close` — the four Azure engines already route in `cmd/realtime-broker/main.go`. Run the broker tests. If they pass, record that in the execution log. If they fail, fix the failure and re-push. depends on: none
+
+### iot-signed-authorizer — new authorizer for web and Android
+
+Definition of done: `aws iot describe-authorizer --authorizer-name live-ninja-iot` still shows signing disabled, a new authorizer exists and is active, and `go test ./internal/webapp/ -run IoT` passes.
+
+- [x] `iot-signed-authorizer` — create a new IoT authorizer with signing enabled. Do not change `live-ninja-iot`. Point web and Android at the new authorizer and set `signingRequired` true for those clients only. Tab5 keeps calling `live-ninja-iot` with no signature. The private key is already in SSM at `/live-ninja/prod/iot/authorizer_signing_private_key`. Never print it. depends on: none
+
+### android-signature-release — phone build that sends the signature
+
+Definition of done: `https://live.jeremy.ninja/v1/app/android/latest` shows a versionCode greater than 17, and `adb -s 4633424442303098 shell dumpsys package ninja.jeremy.liveninja` shows that versionName.
+
+- [x] `android-signature-release` — publish an Android build that sends the signature when `signingRequired` is true. The installed `0.3.11` ignores an unknown JSON field and does not send the signature. Publish with the `Android Release` workflow (`workflow_dispatch` on `main`), not a laptop build. depends on: `iot-signed-authorizer`
+
+### emb-retire — drop the embedding rows
+
+Definition of done: `grep -rn "EMB#\|Cosine(" internal/ cmd/` prints nothing and `go test ./...` passes.
+
+- [x] `emb-retire` — Remove `EMB#` writes, `ListEmbeddings`, the cosine path, and the Titan IAM statement. Rewrite `contracts/api.md` memory lines, `PRD.md` memory sections, and `docs/system-map.md`. `ENT#` rows stay. Operator moved this to 2026-09-22.
+
+## assistant-rules — saved rules and location-aware time
+
+Requested 2026-10-01: "add a rules capability, that I can have the llm save rules to its new rules tool, much like claude code rules, where the name/description governs its loading. For example, time, temperature and location should depend on the current location if available, and the home location if not. We're in EST most of the time, a direct command or gps coordinate can change that though."
+
+### rules-store-tools — RULE# rows, rule tools, mint index
+
+Definition of done: `go test ./internal/store/ ./internal/tools/ ./internal/realtime/ ./cmd/realtime-broker/ -count=1` passes.
+
+- [x] `rules-store-tools` — `RULE#<name>` rows; `rule_list`, `rule_load`, `rule_save`, `rule_delete` (save and delete need `confirm`); mint appends a RULES index of name and description only; seed rule `location-and-time`.
+
+### current-location — current location overrides home
+
+Definition of done: `go test ./internal/store/ ./internal/tools/ ./internal/realtime/ -count=1` passes.
+
+- [x] `current-location` — `profile.currentLocation`; `set_current_location` takes a place, GPS lat/lon, or `home=true`; clock and `get_weather` use current, then home, then `America/New_York`.
+
+### rules-ui-help — Memory page rules section and Help copy
+
+Definition of done: `go test ./internal/webapp/ -count=1` passes.
+
+- [x] `rules-ui-help` — `/api/v1/rules` routes, Memory page Rules section, Help drawer bullets.
+
+### android-autoupdate — self-update and start-up permissions, 0.3.13 (19)
+
+Definition of done: `https://live.jeremy.ninja/v1/app/android/latest` shows versionCode 19, and `adb -s 4633424442303098 shell dumpsys package ninja.jeremy.liveninja` shows versionName `0.3.13`.
+
+- [x] `android-autoupdate` — check on start (hourly throttle) and every 6 h by WorkManager; verified download; PackageInstaller commit. Start-up asks for mic, camera, notifications, location, then battery, install-unknown-apps, full-screen intent, overlay. Reports GPS to `POST /api/v1/location/current` at session start. depends on: `current-location`
+
