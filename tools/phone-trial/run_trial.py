@@ -38,7 +38,13 @@ def http(url, method="GET", body=None, headers=None):
         with urllib.request.build_opener(NoRedirect).open(req, timeout=20) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
-        raise RuntimeError("HTTP " + str(exc.code)) from None
+        try:
+            error = json.loads(exc.read(4096))
+            provider_code = error.get("code")
+        except Exception:
+            provider_code = None
+        suffix = " provider code " + str(provider_code) if isinstance(provider_code, int) else ""
+        raise RuntimeError("HTTP " + str(exc.code) + suffix) from None
     except Exception:
         raise RuntimeError("Request failed; outcome may be unknown") from None
 
@@ -152,6 +158,7 @@ def main():
     prior = table.get_item(Key=ledger_key, ConsistentRead=True).get("Item")
     ensure_window()
     attempted_ids = set()
+    reconciled_intents = set()
     if prior:
         if prior.get("status") == "completed":
             print("Trial already completed. No redial.")
@@ -166,7 +173,12 @@ def main():
             if row["SK"] == "CONTROL":
                 continue
             if not row.get("callSid"):
-                raise SystemExit("Ambiguous call creation must be reconciled with Twilio before resuming.")
+                query = urllib.parse.urlencode({"To": row["target"]["phone"], "From": prior["callerNumber"], "StartTime>=": DATE, "PageSize": 1000})
+                history = twilio("/Calls.json?" + query)
+                if history.get("next_page_uri") or "calls" not in history or history["calls"]:
+                    raise SystemExit("Ambiguous call creation has provider history; reconcile before resuming.")
+                reconciled_intents.add(row["SK"])
+                continue
             if twilio("/Calls/" + row["callSid"] + ".json").get("status") not in TERMINAL:
                 raise SystemExit("A prior call is not terminal; no calls made.")
             attempted_ids.add(row["SK"])
@@ -202,8 +214,12 @@ def main():
                 break
             url = os.environ["BRIDGE_URL"] + "/voice?" + urllib.parse.urlencode({"run": RUN, "target": target["id"]})
             attempt_key = {"PK": ledger_key["PK"], "SK": target["id"]}
-            table.put_item(Item={**attempt_key, "target": target, "createdAt": int(time.time()),
-                                "reserveUSD": CALL_RESERVE, "settled": False}, ConditionExpression="attribute_not_exists(PK)")
+            if target["id"] in reconciled_intents:
+                table.update_item(Key=attempt_key, UpdateExpression="SET lastAttemptAt=:now, noPriorCallVerifiedAt=:now",
+                                  ExpressionAttributeValues={":now": int(time.time())})
+            else:
+                table.put_item(Item={**attempt_key, "target": target, "createdAt": int(time.time()),
+                                    "reserveUSD": CALL_RESERVE, "settled": False}, ConditionExpression="attribute_not_exists(PK)")
             # A failed/ambiguous create is never retried. No recording until voice consent.
             created = twilio("/Calls.json", "POST", {"To": target["phone"], "From": caller, "Url": url,
                              "Method": "POST", "Timeout": 20, "TimeLimit": MAX_SECONDS})

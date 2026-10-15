@@ -112,6 +112,22 @@ class RunnerTests(unittest.TestCase):
             self.run_silently()
         self.assertEqual(self.created, [])
 
+    def test_verified_empty_provider_history_allows_uncreated_intent(self):
+        self.fail_create = True
+        with self.assertRaises(SystemExit):
+            self.run_silently()
+        self.fail_create = False
+        original = self.twilio
+        def reconciled(path, method="GET", form=None):
+            if path.startswith("/Calls.json?"):
+                return {"calls": [], "next_page_uri": None}
+            return original(path, method, form)
+        with patch.object(run_trial, "twilio", side_effect=reconciled):
+            self.run_silently()
+        self.assertEqual(len(self.created), 20)
+        first = self.table.rows[("TRIAL#" + run_trial.RUN, self.targets[0]["id"])]
+        self.assertIn("noPriorCallVerifiedAt", first)
+
     def test_missing_execution_flag_has_no_side_effect(self):
         with patch.dict(run_trial.os.environ, {"EXECUTE_PHONE_TRIAL": ""}):
             with self.assertRaises(SystemExit):

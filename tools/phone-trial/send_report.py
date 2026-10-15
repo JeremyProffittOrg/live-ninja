@@ -9,6 +9,13 @@ import time
 from email.message import EmailMessage
 
 
+def integer_count(value):
+    """Reports can encode DynamoDB integral numbers as JSON floats."""
+    if type(value) not in (int, float) or value < 0 or (isinstance(value, float) and not value.is_integer()):
+        raise ValueError("Report count must be a nonnegative integer")
+    return int(value)
+
+
 def build_report(report, template, targets=None):
     calls = report.get("calls", [])
     events = report.get("events", [])
@@ -16,8 +23,8 @@ def build_report(report, template, targets=None):
                         and e["data"].get("data", {}).get("status") == "completed" for e in events) for c in calls)
     ready = sum(c.get("recordingStatus") == "ready" for c in calls)
     control = report.get("control") or {}
-    attempted = control.get("attempted", len(calls))
-    authorized = control.get("authorizedCalls", 20)
+    attempted = integer_count(control.get("attempted", len(calls)))
+    authorized = integer_count(control.get("authorizedCalls", 20))
     outcome = f"{attempted}/{authorized} attempted; {completed} provider-completed calls; {ready} S3 recordings ready"
     if control.get("status") == "blocked":
         outcome = "Blocked: " + outcome
@@ -92,7 +99,8 @@ def send_once(table, ses, report, message):
     if control.get("status") not in {"completed", "blocked"}:
         raise RuntimeError("A terminal trial control record is required before email")
     key = {"PK": "TRIAL#" + report["runId"], "SK": "CONTROL"}
-    outcome_key = str(control["status"]) + ":" + str(control.get("attempted", 0))
+    attempted = integer_count(control.get("attempted", 0))
+    outcome_key = str(control["status"]) + ":" + str(attempted)
     current = table.get_item(Key=key, ConsistentRead=True).get("Item") or {}
     if current.get("mailState") == "sent" and current.get("mailOutcome") == outcome_key:
         return current["sesMessageId"], False
@@ -102,7 +110,7 @@ def send_once(table, ses, report, message):
         UpdateExpression="SET mailState=:sending, mailOutcome=:outcome, mailClaimedAt=:now",
         ConditionExpression="#status=:status AND attempted=:attempted AND (attribute_not_exists(mailState) OR (mailState=:sent AND mailOutcome<>:outcome))",
         ExpressionAttributeNames={"#status": "status"},
-        ExpressionAttributeValues={":sending": "sending", ":sent": "sent", ":outcome": outcome_key, ":now": int(time.time()), ":status": control["status"], ":attempted": control.get("attempted", 0)})
+        ExpressionAttributeValues={":sending": "sending", ":sent": "sent", ":outcome": outcome_key, ":now": int(time.time()), ":status": control["status"], ":attempted": attempted})
     try:
         sent = ses.send_raw_email(Source="jeremy@jeremy.ninja", Destinations=["proffitt.jeremy@gmail.com"], RawMessage={"Data": message.as_bytes()})
     except Exception:

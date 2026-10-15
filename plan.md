@@ -780,6 +780,9 @@ Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat r
 
 - 2026-10-15 13:30 UTC — run 38741739636 at a5988f2faced13cdca959308d724ddc4b320e142: test and deploy jobs success. Deploy job 116445331887 log: "2026/10/15 13:23:40 Azure audio probe passed". Trial job 116446902974 is waiting for 09:00 America/Los_Angeles (16:00 UTC / noon America/New_York); zero hotel calls and no report email yet. Normal Deploy run 38741739768 success. Independent official-source verification matches all 20 targets; SHA256 41b49f81001d36abcf4113679746c5387924afcdb96eac92b141252298e874fe matches tools/phone-trial/targets.json. Evidence: C:\dev\live-ninja-test-evidence\phone-plan-2026-10-15\hotel-target-verification.json. Monitor agent /root/phone_trial_recordings tracks calls, recording readiness, failure, and SES MessageId; parent retains repair responsibility. This is readiness evidence, not completed-call evidence.
 
+
+- 2026-10-15 21:27 UTC — user confirmed: "Run the calls now". Earlier run 38741739636 failed before any call ID: HTTP 400; CONTROL attempted=0, one uncreated hotel-01 intent. Email failed before SES on float count. Repair normalizes email counts, emits only numeric provider error codes, and reconciles uncreated intents against Twilio history before retry. Unknown/nonempty provider history still blocks. 31 Python tests passed. Resume through main workflow immediately within today's open window; preserve budget, consent, one-call concurrency and no duplicate calls.
+
 ## today-phone-trial — execute the dated twenty-call run and report evidence
 depends on: verified trial credentials and real Azure audio probe
 

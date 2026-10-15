@@ -306,7 +306,7 @@ class RecorderTests(unittest.TestCase):
         self.assertNotIn("Unverified assistant claim", body)
 
     def test_email_send_once_and_unknown_delivery(self):
-        control = {"status": "completed", "attempted": 20}
+        control = json.loads('{"status":"completed","attempted":20.0,"authorizedCalls":20.0}')
         report = {"runId": "trial", "control": control}
         class MailTable:
             def __init__(self):
@@ -315,6 +315,7 @@ class RecorderTests(unittest.TestCase):
                 return {"Item": dict(self.item)}
             def update_item(self, **kwargs):
                 values = kwargs["ExpressionAttributeValues"]
+                assert not any(isinstance(v, float) for v in values.values())
                 if ":id" in values:
                     self.item.update(mailState="sent", sesMessageId=values[":id"])
                 else:
@@ -325,6 +326,8 @@ class RecorderTests(unittest.TestCase):
         message = EmailMessage()
         message.set_content("Test", subtype="html")
         self.assertEqual(send_report.send_once(table, ses, report, message), ("test-id", True))
+        self.assertEqual(table.item["mailOutcome"], "completed:20")
+        control["attempted"] = 20
         self.assertEqual(send_report.send_once(table, ses, report, message), ("test-id", False))
         self.assertEqual(ses.send_raw_email.call_count, 1)
         table = MailTable()
@@ -335,6 +338,18 @@ class RecorderTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "outcome is unknown"):
             send_report.send_once(table, ses, report, message)
         self.assertEqual(ses.send_raw_email.call_count, 2)
+
+    def test_email_count_boundary_rejects_invalid_counts(self):
+        outcome, _ = send_report.build_report({"control": {"status": "blocked", "attempted": 0.0, "authorizedCalls": 20.0}}, "")
+        self.assertIn("0/20 attempted", outcome)
+        for value in (0.5, -1, float("nan"), float("inf"), True, "0", None):
+            with self.subTest(value=value):
+                table, ses = unittest.mock.Mock(), unittest.mock.Mock()
+                with self.assertRaisesRegex(ValueError, "nonnegative integer"):
+                    send_report.send_once(table, ses, {"runId": "trial", "control": {"status": "blocked", "attempted": value}}, EmailMessage())
+                table.get_item.assert_not_called()
+                table.update_item.assert_not_called()
+                ses.send_raw_email.assert_not_called()
 
     def test_twenty_call_email_omits_large_transcript_logs(self):
         calls, events = [], []
