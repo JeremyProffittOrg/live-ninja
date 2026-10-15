@@ -68,7 +68,14 @@ def main():
     sts = boto3.client("sts")
     if sts.get_caller_identity()["Account"] != "759775734231":
         raise SystemExit("Wrong AWS account.")
-    bucket = os.environ["CLOUDFORMATION_S3_BUCKET"]
+    cf = boto3.client("cloudformation")
+    # The repository's legacy CLOUDFORMATION_S3_BUCKET is in us-east-2.
+    # Reuse the same us-east-1 SAM artifact bucket as the main deployment.
+    bootstrap = cf.describe_stacks(StackName="aws-sam-cli-managed-default")["Stacks"][0]
+    bucket = next(o["OutputValue"] for o in bootstrap["Outputs"] if o["OutputKey"] == "SourceBucket")
+    location = boto3.client("s3").get_bucket_location(Bucket=bucket).get("LocationConstraint") or "us-east-1"
+    if location != os.environ.get("AWS_REGION", "us-east-1"):
+        raise SystemExit("Lambda artifact bucket is in the wrong region.")
     key = "phone-trial/" + os.environ["GITHUB_SHA"] + "/recorder.zip"
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
@@ -77,18 +84,34 @@ def main():
     params = {"CodeBucket": bucket, "CodeKey": key,
               "TwilioAccount": os.environ["TWILIO_ACCOUNT_SID"], "TwilioKeySid": os.environ["TWILIO_API_KEY_SID"],
               "TwilioAuth": os.environ["TWILIO_AUTH_TOKEN"], "TwilioKeySecret": os.environ["TWILIO_API_KEY_SECRET"]}
-    cf = boto3.client("cloudformation")
     name = "live-ninja-phone-trial"
     kwargs = dict(StackName=name, TemplateBody=json.dumps(template()),
                   Parameters=[{"ParameterKey": k, "ParameterValue": v} for k, v in params.items()],
                   Capabilities=["CAPABILITY_NAMED_IAM"],
                   Tags=[{"Key": k, "Value": v} for k, v in {"Project": "live-ninja", "CostCenter": "voice-ai", "Environment": "prod", "ManagedBy": "cloudformation", "DeployedVia": "github-actions", "Owner": "jeremy"}.items()])
     try:
-        cf.describe_stacks(StackName=name)
+        current = cf.describe_stacks(StackName=name)["Stacks"][0]
         exists = True
     except ClientError as exc:
         if "does not exist" not in str(exc):
             raise SystemExit("Could not inspect recorder stack.")
+        exists = False
+    if exists and current["StackStatus"] == "ROLLBACK_COMPLETE":
+        retained = [r for r in cf.describe_stack_resources(StackName=name)["StackResources"]
+                    if r.get("ResourceStatus") == "DELETE_SKIPPED"]
+        if any(r.get("ResourceType") != "AWS::DynamoDB::Table" or r.get("PhysicalResourceId") != "live-ninja-phone-trial" for r in retained):
+            raise SystemExit("Unexpected retained resource; refusing failed-stack cleanup.")
+        ddb = boto3.client("dynamodb")
+        for resource in retained:
+            # Deployment-only empty-table check, never a serving-path Scan.
+            check = ddb.scan(TableName=resource["PhysicalResourceId"], Limit=1, Select="COUNT", ConsistentRead=True)
+            if check.get("Count") or check.get("LastEvaluatedKey"):
+                raise SystemExit("Retained trial table contains data; refusing cleanup.")
+        cf.delete_stack(StackName=name)
+        cf.get_waiter("stack_delete_complete").wait(StackName=name)
+        for resource in retained:
+            ddb.delete_table(TableName=resource["PhysicalResourceId"])
+            ddb.get_waiter("table_not_exists").wait(TableName=resource["PhysicalResourceId"])
         exists = False
     try:
         if exists:

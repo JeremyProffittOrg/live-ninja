@@ -771,6 +771,8 @@ Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat r
 
 - 2026-10-15 — applied Claude planning rules from the global and repository CLAUDE.md files. Archived completed pre-telephony work as completed/plan-2026-10-15-history.md. Consolidated task/dependency map, acceptance gate interfaces, per-job watchers/restart ceilings, and root stop conditions. Added required S3 recording/app access and the $20 monthly/$5 daily grant control. Moved Play test distribution before physical Android Auto acceptance. Recorded all four operator replies verbatim; friendly recording permission and remaining hardware/access gaps are explicit. No feature code, build, deployment, or call started.
 
+- 2026-10-15 — today-phone-trial commit ffd2eae7b2800c6ab815250edff66d5b0ba92db6 started workflow 38733305985. Test job passed including race checks. Recorder deployment failed because the legacy artifact bucket is us-east-2 while Lambda is us-east-1. Fixed deploy_recorder.py to resolve the existing us-east-1 SAM SourceBucket, verify region, and recover only a failed trial stack whose retained table is proven empty. No calls started. Retry ceiling: deployment attempt 2 of 3. All 17 active AWS regions passed the mandatory 7-day log retention check.
+
 ## today-phone-trial — execute the dated twenty-call run and report evidence
 depends on: verified trial credentials and real Azure audio probe
 

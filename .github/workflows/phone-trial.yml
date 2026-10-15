@@ -54,7 +54,6 @@ jobs:
       TWILIO_API_KEY_SID: ${{ vars.TWILIO_API_KEY_SID }}
       TWILIO_API_KEY_SECRET: ${{ secrets.TWILIO_API_KEY_SECRET }}
       AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
-      CLOUDFORMATION_S3_BUCKET: ${{ vars.CLOUDFORMATION_S3_BUCKET }}
     steps:
       - uses: actions/checkout@v4
         with:
