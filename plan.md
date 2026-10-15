@@ -777,6 +777,9 @@ Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat r
 
 - 2026-10-15 — workflow 38738647654 deployed the recorder and healthy Azure bridge, but the real Azure-only probe returned no audio under its special 32-token limit, so the hotel-call job was skipped. Probe now uses the same 512-token bound as real calls and requires non-silent PCMU, a transcript, and a completed response; safe status/reason diagnostics remain on failure. Go regression tests passed. This is audio-probe attempt 2 of 3; infrastructure is already verified. No hotel call has started.
 
+
+- 2026-10-15 13:30 UTC — run 38741739636 at a5988f2faced13cdca959308d724ddc4b320e142: test and deploy jobs success. Deploy job 116445331887 log: "2026/10/15 13:23:40 Azure audio probe passed". Trial job 116446902974 is waiting for 09:00 America/Los_Angeles (16:00 UTC / noon America/New_York); zero hotel calls and no report email yet. Normal Deploy run 38741739768 success. Independent official-source verification matches all 20 targets; SHA256 41b49f81001d36abcf4113679746c5387924afcdb96eac92b141252298e874fe matches tools/phone-trial/targets.json. Evidence: C:\dev\live-ninja-test-evidence\phone-plan-2026-10-15\hotel-target-verification.json. Monitor agent /root/phone_trial_recordings tracks calls, recording readiness, failure, and SES MessageId; parent retains repair responsibility. This is readiness evidence, not completed-call evidence.
+
 ## today-phone-trial — execute the dated twenty-call run and report evidence
 depends on: verified trial credentials and real Azure audio probe
 
@@ -791,12 +794,12 @@ depends on: none
 - [x] trial-credentials — GitHub Phone test preflight verified all five configured names, active non-trial Twilio account, and two voice-capable numbers. No values printed.
 - [x] trial-oidc-binding — exact subject verified from GitHub: repo:JeremyProffittOrg@299835367/live-ninja@1303872500:ref:refs/heads/main. New Azure app live-ninja-phone-github has Contributor only on rg-liveninja-azure-prod; no client secret.
 - [x] trial-offline-tests — 20 Python recorder/runner tests passed; bridge go test/go vet/Linux build passed; workflow adds race tests.
-- [~] trial-deployment — push only isolated trial files on main; GitHub deploys AWS recorder and Azure bridge; run real Azure PCMU/audio probe before telephone calls.
+- [x] trial-deployment — push only isolated trial files on main; GitHub deploys AWS recorder and Azure bridge; run real Azure PCMU/audio probe before telephone calls.
 Definition of done: Phone trial 2026-10-15 workflow test and deploy jobs both succeed; go test -race ./cmd/phone-trial-bridge -count=1 and python -B -m unittest discover -s tools/phone-trial -p test_*.py -v exit 0; real -probe returns nonempty Azure audio.
 
 ### today-trial-calls — finish attempts and email actual outcomes
 depends on: today-trial-readiness
-- [ ] trial-twenty-calls — GitHub run_trial.py waits for today's California window, verifies monthly Twilio usage and preserves $8 conservative infrastructure reserve, reserves $1.20 per call, and records actual/capped Azure usage. No call creation outside the dated window. Ambiguous creation or nonterminal prior call prevents retry.
+- [~] trial-twenty-calls — GitHub run_trial.py waits for today's California window, verifies monthly Twilio usage and preserves $8 conservative infrastructure reserve, reserves $1.20 per call, and records actual/capped Azure usage. No call creation outside the dated window. Ambiguous creation or nonterminal prior call prevents retry.
 - [ ] trial-recordings — consent first, validated Twilio recordings copied into private S3; bounded reconciliation must succeed before advancing an accepted recording. Declined/unanswered calls remain honest no-audio outcomes.
 - [ ] trial-email — delegated sender implementation send_report.py sends HTML via SES; parent verifies returned SES MessageId. Email includes hotel/source/results, call and recording status, and actual seven-day links only for ready recordings.
 Definition of done: workflow trial job reaches success or an explicit actionable blocked result; exactly twenty attempted destinations are reconciled (or remaining count is explicitly reported), all existing recordings are ready or visibly failed, and SES MessageId proves delivery acceptance. Waiting/scheduled is not twenty completed calls.
