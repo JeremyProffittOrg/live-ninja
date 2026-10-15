@@ -47,14 +47,18 @@ func probeAzure(ctx context.Context, c config) error {
 func probeSession(ws *websocket.Conn) error {
 	cfg := sessionConfig()
 	sess := objectAt(cfg, "session")
-	sess["max_output_tokens"] = 32
+	// Match the real call budget: the reasoning model can consume a 32-token
+	// probe allowance before it reaches audio generation.
+	sess["max_output_tokens"] = 512
 	sess["instructions"] = "Say hello briefly."
 	sess["tools"] = []any{}
 	sess["tool_choice"] = "none"
 	if sendWS(ws, cfg) != nil {
 		return errors.New("Azure probe configuration write failed")
 	}
-	configured, heard := false, false
+	configured, nonSilent := false, false
+	samples := 0
+	transcript := ""
 	for {
 		var m map[string]any
 		if ws.ReadJSON(&m) != nil {
@@ -68,7 +72,7 @@ func probeSession(ws *websocket.Conn) error {
 			}
 			if !configured {
 				configured = true
-				if sendWS(ws, map[string]any{"type": "response.create", "response": map[string]any{"max_output_tokens": 32, "instructions": "Say hello."}}) != nil {
+				if sendWS(ws, map[string]any{"type": "response.create", "response": map[string]any{"max_output_tokens": 512, "instructions": "Say hello."}}) != nil {
 					return errors.New("Azure probe response write failed")
 				}
 			}
@@ -77,12 +81,19 @@ func probeSession(ws *websocket.Conn) error {
 			if e != nil {
 				return errors.New("Azure probe invalid audio")
 			}
-			heard = heard || len(raw) > 0
+			samples += len(raw)
+			for _, sample := range raw {
+				// PCMU has positive and negative zero encodings.
+				nonSilent = nonSilent || (sample != 0xff && sample != 0x7f)
+			}
+		case "response.output_audio_transcript.done":
+			transcript = strings.TrimSpace(stringAt(m, "transcript"))
 		case "response.done":
-			if configured && heard {
+			response := objectAt(m, "response")
+			if configured && nonSilent && samples >= 160 && transcript != "" && stringAt(response, "status") == "completed" {
 				return nil
 			}
-			return errors.New("Azure probe returned no audio")
+			return fmt.Errorf("Azure probe did not complete audible speech (status=%s reason=%s)", safeCode(stringAt(response, "status")), safeCode(stringAt(objectAt(response, "status_details"), "reason")))
 		case "error":
 			err := objectAt(m, "error")
 			return fmt.Errorf("Azure probe API error code=%s type=%s param=%s", safeCode(stringAt(err, "code")), safeCode(stringAt(err, "type")), safeCode(stringAt(err, "param")))

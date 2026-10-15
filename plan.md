@@ -775,6 +775,8 @@ Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat r
 
 - 2026-10-15 — workflow 38734141507 completed recorder deployment; its unsigned /report returned 403 and an invalid download token returned 404. Azure environment creation outlived the 900-second CLI wait; the environment subsequently reached Succeeded with no deployment error. The next attempt reuses that ready environment instead of recreating it. Added failed-call/stream canary stops, complete recording length/SHA256 checks, and concise duplicate-safe email output before any calls. Focused verification: Go tests passed and 29 Python tests passed. Azure host retry 2 of 3; recorder already succeeded. No hotel call has started.
 
+- 2026-10-15 — workflow 38738647654 deployed the recorder and healthy Azure bridge, but the real Azure-only probe returned no audio under its special 32-token limit, so the hotel-call job was skipped. Probe now uses the same 512-token bound as real calls and requires non-silent PCMU, a transcript, and a completed response; safe status/reason diagnostics remain on failure. Go regression tests passed. This is audio-probe attempt 2 of 3; infrastructure is already verified. No hotel call has started.
+
 ## today-phone-trial — execute the dated twenty-call run and report evidence
 depends on: verified trial credentials and real Azure audio probe
 

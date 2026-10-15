@@ -428,17 +428,48 @@ func TestProbeRequiresPCMUAndGeneratedAudio(t *testing.T) {
 			go func() { done <- probeSession(c) }()
 			cfg := receive(t, peer)
 			sess := objectAt(cfg, "session")
-			if sess["max_output_tokens"] != float64(32) {
+			if sess["max_output_tokens"] != float64(512) {
 				t.Fatal(sess)
 			}
 			peer.WriteJSON(map[string]any{"type": "session.updated", "session": sess})
 			receive(t, peer)
 			if audio {
-				peer.WriteJSON(map[string]any{"type": "response.output_audio.delta", "delta": "////"})
+				peer.WriteJSON(map[string]any{"type": "response.output_audio.delta", "delta": strings.Repeat("AAAA", 100)})
+				peer.WriteJSON(map[string]any{"type": "response.output_audio_transcript.done", "transcript": "Hello."})
 			}
-			peer.WriteJSON(map[string]any{"type": "response.done"})
+			status := "incomplete"
+			if audio {
+				status = "completed"
+			}
+			peer.WriteJSON(map[string]any{"type": "response.done", "response": map[string]any{"status": status, "status_details": map[string]any{"reason": "max_output_tokens"}}})
 			if e := <-done; (e == nil) != audio {
 				t.Fatalf("audio=%v error=%v", audio, e)
+			} else if !audio && !strings.Contains(e.Error(), "max_output_tokens") {
+				t.Fatalf("missing safe diagnostic: %v", e)
+			}
+		})
+	}
+}
+
+func TestProbeRejectsSilenceIncompleteAndMissingTranscript(t *testing.T) {
+	for _, tc := range []struct{ name, payload, transcript, status string }{
+		{"silence", strings.Repeat("////", 100), "Hello.", "completed"},
+		{"incomplete", strings.Repeat("AAAA", 100), "Hello.", "incomplete"},
+		{"no-transcript", strings.Repeat("AAAA", 100), "", "completed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, peer := wsPair(t)
+			c.SetReadDeadline(time.Now().Add(time.Second))
+			done := make(chan error, 1)
+			go func() { done <- probeSession(c) }()
+			sess := objectAt(receive(t, peer), "session")
+			peer.WriteJSON(map[string]any{"type": "session.updated", "session": sess})
+			receive(t, peer)
+			peer.WriteJSON(map[string]any{"type": "response.output_audio.delta", "delta": tc.payload})
+			peer.WriteJSON(map[string]any{"type": "response.output_audio_transcript.done", "transcript": tc.transcript})
+			peer.WriteJSON(map[string]any{"type": "response.done", "response": map[string]any{"status": tc.status}})
+			if err := <-done; err == nil {
+				t.Fatal("invalid speech proof accepted")
 			}
 		})
 	}

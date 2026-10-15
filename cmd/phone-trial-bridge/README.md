@@ -79,7 +79,7 @@ References:
 
 The Azure-only -probe mode uses the same validated environment, makes no telephone
 call, and must succeed before the first call. It authenticates a real WebSocket,
-checks the acknowledged PCMU input/output configuration, requests at most 32 output
+checks the acknowledged PCMU input/output configuration, requests at most 512 output
 tokens, and requires nonempty generated audio. Deadline is 20 seconds. Logs contain
 only success or sanitized error code/type/parameter, never audio or transcripts.
 
