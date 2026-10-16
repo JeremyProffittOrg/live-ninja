@@ -143,9 +143,10 @@ def send_once(table, ses, report, message):
 
 def batch_context(table, batch_id, targets):
     """Read the approved batch only; do not pull another batch's calls or links."""
-    if batch_id != "hotel-vpn-ten-2026-10-16":
+    owner = batch_id == "owner-rehearsal-2026-10-16"
+    if batch_id != "hotel-vpn-ten-2026-10-16" and not owner:
         raise ValueError("Unknown approved hotel batch")
-    approved = {"hotel-%02d" % n for n in range(2, 12)}
+    approved = {"take-%d" % n for n in range(1, 4)} if owner else {"hotel-%02d" % n for n in range(2, 12)}
     args = {"KeyConditionExpression": "PK=:pk", "ExpressionAttributeValues": {":pk": "TRIAL#" + batch_id}, "ConsistentRead": True}
     rows = []
     while True:
@@ -161,7 +162,12 @@ def batch_context(table, batch_id, targets):
         raise ValueError("Batch must have terminal control and the expected event run")
     # DynamoDB Decimal numbers become JSON numbers before existing report helpers.
     control = json.loads(json.dumps(control, default=float))
-    if integer_count(control.get("authorizedCalls", 0)) != 10:
+    authorized = integer_count(control.get("authorizedCalls", 0))
+    if owner:
+        if not 1 <= authorized <= 3:
+            raise ValueError("Owner rehearsal authorization is not one to three takes")
+        approved = {"take-%d" % n for n in range(1, authorized + 1)}
+    elif authorized != 10:
         raise ValueError("Batch authorization is not ten calls")
     calls = []
     for row in rows:
@@ -174,6 +180,9 @@ def batch_context(table, batch_id, targets):
             if not isinstance(sid, str) or not re.fullmatch(r"CA[0-9a-fA-F]{32}", sid) or sid in calls:
                 raise ValueError("Invalid or duplicate batch CallSid")
             calls.append(sid)
+    if owner:
+        # Takes share the bridge target; the report names it without the owner's number.
+        return control, calls, [{"id": "owner-rehearsal", "name": "Owner rehearsal (owner played the front desk)"}]
     selected = {target["id"]: target for target in (targets or []) if target["id"] in approved}
     for row in rows:
         if row["SK"] in approved:

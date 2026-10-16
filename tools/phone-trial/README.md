@@ -28,6 +28,16 @@ $20 threshold; an explicit owner $5 daily grant is required to continue beyond
 it. The trial never creates such a grant itself. The report labels this allocation
 as conservative, not an invoice.
 
+## Owner rehearsal
+
+`Owner hotel-call rehearsal 2026-10-16` (`phone-owner-rehearsal.yml`, manual dispatch,
+`takes` 1..3) runs the same runner, bridge, recorder and report with the owner playing the
+front desk. The only destination is the owner allowlisted number in the
+`OWNER_REHEARSAL_NUMBER` secret; the runner refuses any other number. Takes run strictly one
+after another with a 45 s pause; every per-call guard above still applies, except the hotel
+09:00-17:00 window. The workflow points the bridge at the owner target only for the run and
+restores the hotel targets afterwards.
+
 ## Recordings and report
 
 The AWS recorder validates signatures, call/recording bindings and media types,

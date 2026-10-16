@@ -23,6 +23,11 @@ FIXED_RESERVE = Decimal("8")  # Includes registry/month, warm hosting, storage a
 CALL_RESERVE = Decimal("1.40")
 MAX_SECONDS = 180
 TERMINAL = {"completed", "failed", "busy", "no-answer", "canceled"}
+OWNER_BATCH = "owner-rehearsal-2026-10-16"
+OWNER_DATE = "2026-10-16"
+OWNER_BRIDGE_TARGET = "owner-rehearsal"
+OWNER_TAKE_PAUSE = 45
+TEN_BATCH = "hotel-vpn-ten-2026-10-16"
 NORMAL_END_REASONS = {"research_finished", "remote_hangup", "twilio_disconnected", "conversation_idle",
                       "duration_limit", "consent_withdrawn", "token_budget_limit",
                       "navigation_limit", "unsupported_menu", "voicemail", "consent_declined"}
@@ -58,8 +63,13 @@ def twilio(path, method="GET", form=None):
                 {"Authorization": "Basic " + auth, "Content-Type": "application/x-www-form-urlencoded"})
 
 
+def bridge_target(target):
+    """The bridge knows each telephone number once; owner takes share one bridge target."""
+    return target.get("bridgeId", target["id"])
+
+
 def event(sid, target, kind, **data):
-    body = json.dumps({"runId": RUN, "callSid": sid, "targetId": target["id"], "type": kind,
+    body = json.dumps({"runId": RUN, "callSid": sid, "targetId": bridge_target(target), "type": kind,
                        "eventId": kind + "-" + target["id"], "data": data}, separators=(",", ":")).encode()
     signature = hmac.new(os.environ["TWILIO_AUTH_TOKEN"].encode(), body, hashlib.sha256).hexdigest()
     for attempt in range(3):
@@ -130,6 +140,24 @@ def ensure_window(date=DATE, start_hour=9):
         time.sleep(60)
 
 
+def ensure_date(date):
+    """Owner rehearsal: the owner's own phone, so no hotel hours; still one dated authorization."""
+    if datetime.now(ZoneInfo("America/Los_Angeles")).date().isoformat() != date:
+        raise RuntimeError("The authorized owner rehearsal date has ended")
+
+
+def owner_targets():
+    """Only the owner allowlisted number from the OWNER_REHEARSAL_NUMBER secret; never a file or input."""
+    number = os.environ.get("OWNER_REHEARSAL_NUMBER", "").strip()
+    if len(number) != 12 or not number.startswith("+1") or not number[2:].isdigit():
+        raise SystemExit("OWNER_REHEARSAL_NUMBER secret is missing or not an E.164 US number; no calls made.")
+    takes = os.environ.get("OWNER_REHEARSAL_TAKES", "3")
+    if takes not in {"1", "2", "3"}:
+        raise SystemExit("OWNER_REHEARSAL_TAKES must be 1, 2 or 3; no calls made.")
+    return [{"id": "take-%d" % n, "bridgeId": OWNER_BRIDGE_TARGET, "name": "Owner rehearsal take %d" % n,
+             "phone": number, "city": "", "source": "owner-rehearsal"} for n in range(1, int(takes) + 1)]
+
+
 def usage_charge(events, sid):
     charge = Decimal("0")
     seen = set()
@@ -152,21 +180,55 @@ def batch_profile():
     batch = os.environ.get("PHONE_TRIAL_BATCH", RUN)
     if batch == RUN:
         return batch, DATE, 9, None
-    if batch == "hotel-vpn-ten-2026-10-16":
+    if batch == TEN_BATCH:
         return batch, "2026-10-16", 0, ["hotel-%02d" % n for n in range(2, 12)]
+    if batch == OWNER_BATCH:
+        return batch, OWNER_DATE, None, None
     raise SystemExit("Unknown dated batch; no calls authorized.")
 
 
-def prior_budget_floor(table):
-    rows = table.query(KeyConditionExpression="PK=:pk", ExpressionAttributeValues={":pk": "TRIAL#" + RUN}, ConsistentRead=True)
+def ledger_floor(table, ledger):
+    rows = table.query(KeyConditionExpression="PK=:pk", ExpressionAttributeValues={":pk": "TRIAL#" + ledger}, ConsistentRead=True)
     if rows.get("LastEvaluatedKey"):
         raise RuntimeError("Prior budget ledger pagination requires reconciliation")
     control = next((r for r in rows["Items"] if r["SK"] == "CONTROL"), {})
-    floor = max(FIXED_RESERVE + existing_month_cost(), Decimal(str(control.get("spentUSD", FIXED_RESERVE))))
+    floor = Decimal(str(control.get("spentUSD", FIXED_RESERVE)))
     for row in rows["Items"]:
         if row["SK"] != "CONTROL" and not row.get("settled"):
             floor += max(CALL_RESERVE, Decimal(str(row.get("reserveUSD", CALL_RESERVE))))
     return floor
+
+
+def month_budget_key():
+    return {"PK": "PHONE#BUDGET#" + datetime.now(timezone.utc).strftime("%Y-%m"), "SK": "MONTH"}
+
+
+def prior_budget_floor(table, batch=None):
+    floor = max(FIXED_RESERVE + existing_month_cost(), ledger_floor(table, RUN))
+    if batch == OWNER_BATCH:
+        # Every earlier allocation this month counts: both hotel ledgers and owner phone messages.
+        floor = max(floor, ledger_floor(table, TEN_BATCH))
+        month = table.get_item(Key=month_budget_key(), ConsistentRead=True).get("Item", {})
+        floor = max(floor, Decimal(str(month.get("allocatedUSD", "0"))))
+    return floor
+
+
+def share_month_allocation(table, amount, replaces=None):
+    """Owner rehearsal publishes its allocation to the shared monthly budget used by owner messages.
+
+    It only raises the shared allocation, except that a settled take may replace exactly the
+    reservation this run wrote while it still holds the voice lock."""
+    key = month_budget_key()
+    old = table.get_item(Key=key, ConsistentRead=True).get("Item")
+    current = Decimal(str((old or {}).get("allocatedUSD", "0")))
+    if amount == current or (amount < current and current != replaces):
+        return
+    version = int((old or {}).get("version", 0))
+    if old:
+        table.update_item(Key=key, UpdateExpression="SET allocatedUSD=:a, version=:v", ConditionExpression="version=:old",
+                          ExpressionAttributeValues={":a": amount, ":v": version + 1, ":old": version})
+    else:
+        table.put_item(Item={**key, "allocatedUSD": amount, "version": 1}, ConditionExpression="attribute_not_exists(PK)")
 
 
 def main():
@@ -200,9 +262,13 @@ def main():
 def execute_batch(table, batch, date, start_hour, target_ids, state):
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("EXECUTE_PHONE_TRIAL") != batch:
         raise SystemExit("Explicit dated GitHub trial execution flag required.")
-    targets = json.loads(Path("tools/phone-trial/targets.json").read_text())["hotels"]
-    if len(targets) != 20 or len({t["phone"] for t in targets}) != 20:
-        raise SystemExit("Exactly 20 unique destinations required.")
+    owner = batch == OWNER_BATCH
+    if owner:
+        targets = owner_targets()
+    else:
+        targets = json.loads(Path("tools/phone-trial/targets.json").read_text())["hotels"]
+        if len(targets) != 20 or len({t["phone"] for t in targets}) != 20:
+            raise SystemExit("Exactly 20 unique destinations required.")
     if target_ids is not None:
         by_id = {t["id"]: t for t in targets}
         if len(by_id) != len(targets) or any(t not in by_id for t in target_ids):
@@ -211,7 +277,13 @@ def execute_batch(table, batch, date, start_hour, target_ids, state):
     count = len(targets)
     ledger_key = {"PK": "TRIAL#" + batch, "SK": "CONTROL"}
     prior = table.get_item(Key=ledger_key, ConsistentRead=True).get("Item")
-    ensure_window(date, start_hour)
+
+    def check_window():
+        if owner:
+            ensure_date(date)
+        else:
+            ensure_window(date, start_hour)
+    check_window()
     attempted_ids = set()
     reconciled_intents = set()
     if prior:
@@ -246,7 +318,7 @@ def execute_batch(table, batch, date, start_hour, target_ids, state):
                           ConditionExpression="#s=:old", ExpressionAttributeNames={"#s": "status"},
                           ExpressionAttributeValues={":r": "running", ":old": prior["status"], ":n": int(prior.get("executionAttempts", 1)) + 1, ":spent": spent})
     else:
-        spent = prior_budget_floor(table) if batch != RUN else FIXED_RESERVE + existing_month_cost()
+        spent = prior_budget_floor(table, batch) if batch != RUN else FIXED_RESERVE + existing_month_cost()
         table.put_item(Item={**ledger_key, "status": "running", "authorizedCalls": count, "eventRunId": RUN, "authorizedDate": date, "startedAt": int(time.time()), "gitSha": os.environ.get("GITHUB_SHA", "unknown"),
                             "executionAttempts": 1, "reservedInfrastructureUSD": FIXED_RESERVE, "spentUSD": spent},
                        ConditionExpression="attribute_not_exists(PK)")
@@ -263,7 +335,11 @@ def execute_batch(table, batch, date, start_hour, target_ids, state):
         for target in targets:
             if target["id"] in attempted_ids:
                 continue
-            ensure_window(date, start_hour)
+            if owner and attempts > len(attempted_ids):
+                # Strictly sequential takes: the previous take is terminal and settled; let the owner reset.
+                print("Pausing " + str(OWNER_TAKE_PAUSE) + " seconds before the next take.", flush=True)
+                time.sleep(OWNER_TAKE_PAUSE)
+            check_window()
             if spent + CALL_RESERVE > LIMIT:
                 failure = "Monthly $20 threshold reached; explicit $5 daily permission required."
                 break
@@ -271,7 +347,9 @@ def execute_batch(table, batch, date, start_hour, target_ids, state):
             if control.get("status") != "running":
                 failure = "Trial stopped by owner."
                 break
-            url = os.environ["BRIDGE_URL"] + "/voice?" + urllib.parse.urlencode({"run": RUN, "target": target["id"]})
+            if owner and (target["phone"] != os.environ.get("OWNER_REHEARSAL_NUMBER", "").strip() or bridge_target(target) != OWNER_BRIDGE_TARGET):
+                raise RuntimeError("Owner rehearsal refuses any destination other than the owner secret")
+            url = os.environ["BRIDGE_URL"] + "/voice?" + urllib.parse.urlencode({"run": RUN, "target": bridge_target(target)})
             attempt_key = {"PK": ledger_key["PK"], "SK": target["id"]}
             if target["id"] in reconciled_intents:
                 table.update_item(Key=attempt_key, UpdateExpression="SET lastAttemptAt=:now, noPriorCallVerifiedAt=:now",
@@ -279,6 +357,9 @@ def execute_batch(table, batch, date, start_hour, target_ids, state):
             else:
                 table.put_item(Item={**attempt_key, "target": target, "createdAt": int(time.time()),
                                     "reserveUSD": CALL_RESERVE, "settled": False}, ConditionExpression="attribute_not_exists(PK)")
+            if owner:
+                reserved = spent + CALL_RESERVE
+                share_month_allocation(table, reserved)
             # A failed/ambiguous create is never retried. No recording until voice consent.
             state["safe"] = False
             sid = None
@@ -347,6 +428,8 @@ def execute_batch(table, batch, date, start_hour, target_ids, state):
             spent += cost
             table.update_item(Key=ledger_key, UpdateExpression="SET spentUSD=:s, attempted=:a", ExpressionAttributeValues={":s": spent, ":a": attempts})
             table.update_item(Key=attempt_key, UpdateExpression="SET settled=:yes, costUSD=:cost", ExpressionAttributeValues={":yes": True, ":cost": cost})
+            if owner:
+                share_month_allocation(table, spent, replaces=reserved)
             print("Attempt complete; conservative month allocation USD " + str(spent.quantize(Decimal("0.01"))), flush=True)
             technical = [e for e in related if e.get("type") == "error" or
                          (e.get("type") == "call_ended" and e.get("data", {}).get("reason") and

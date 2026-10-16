@@ -445,6 +445,22 @@ class RecorderTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unexpected batch target"):
             send_report.batch_context(r._table, batch, targets)
 
+    def test_owner_rehearsal_batch_context_reports_takes_without_the_number(self):
+        batch = "owner-rehearsal-2026-10-16"
+        control = {"PK": "TRIAL#" + batch, "SK": "CONTROL", "status": "completed", "eventRunId": "hotel-trial-2026-10-15",
+                   "attempted": Decimal("2"), "authorizedCalls": Decimal("2"), "spentUSD": Decimal("19")}
+        r._table.put_item(Item=control)
+        owner = {"id": "take-1", "bridgeId": "owner-rehearsal", "name": "Owner rehearsal take 1", "phone": "+15550001111"}
+        r._table.put_item(Item={"PK": control["PK"], "SK": "take-1", "target": owner, "callSid": CALL})
+        selected_control, sids, selected_targets = send_report.batch_context(r._table, batch, None)
+        self.assertEqual(sids, [CALL])
+        self.assertEqual(send_report.integer_count(selected_control["authorizedCalls"]), 2)
+        self.assertEqual([t["id"] for t in selected_targets], ["owner-rehearsal"])
+        self.assertNotIn("+1555", json.dumps(selected_targets))
+        r._table.put_item(Item={"PK": control["PK"], "SK": "take-3", "target": {**owner, "id": "take-3"}, "callSid": "CA" + "8" * 32})
+        with self.assertRaisesRegex(ValueError, "Unexpected batch target"):
+            send_report.batch_context(r._table, batch, None)
+
     def test_transcript_attachment_contains_only_consented_turns_in_order(self):
         def event(second, kind, data):
             return {"createdAt": second, "data": {"callSid": CALL, "type": kind, "data": data}}

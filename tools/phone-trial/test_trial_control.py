@@ -213,6 +213,87 @@ class RunnerTests(unittest.TestCase):
             self.run_silently()
         self.assertEqual(len(self.created), 10)
 
+    OWNER = "+15550002222"
+
+    def owner_batch(self, takes="3", number=None):
+        return patch.dict(run_trial.os.environ, {"PHONE_TRIAL_BATCH": run_trial.OWNER_BATCH, "EXECUTE_PHONE_TRIAL": run_trial.OWNER_BATCH,
+                          "OWNER_REHEARSAL_NUMBER": self.OWNER if number is None else number, "OWNER_REHEARSAL_TAKES": takes})
+
+    def test_owner_rehearsal_dials_only_the_secret_number_sequentially(self):
+        with self.owner_batch(), patch.object(run_trial, "ensure_date") as dated:
+            self.run_silently()
+            self.run_silently()
+        self.assertEqual(len(self.created), 3, "At most three takes and never a redial")
+        self.assertEqual({x["To"] for x in self.created}, {self.OWNER})
+        self.assertTrue(all("target=owner-rehearsal" in x["Url"] and "run=" + run_trial.RUN in x["Url"] for x in self.created))
+        self.assertTrue(all(x["TimeLimit"] == 180 and "Record" not in x for x in self.created))
+        run_trial.ensure_window.assert_not_called()
+        dated.assert_called_with(run_trial.OWNER_DATE)
+        pauses = [c.args[0] for c in run_trial.time.sleep.call_args_list if c.args and c.args[0] == run_trial.OWNER_TAKE_PAUSE]
+        self.assertEqual(len(pauses), 2, "45-second pause only between takes")
+        control = self.table.rows[("TRIAL#" + run_trial.OWNER_BATCH, "CONTROL")]
+        self.assertEqual((control["status"], control["authorizedCalls"], control["attempted"]), ("completed", 3, 3))
+        self.assertNotIn("activeRequest", self.table.rows[("PHONE#CONTROL", "VOICE")])
+
+    def test_owner_rehearsal_takes_input_bounds_calls(self):
+        with self.owner_batch(takes="1"), patch.object(run_trial, "ensure_date"):
+            self.run_silently()
+        self.assertEqual(len(self.created), 1)
+        for bad in ("0", "4", "", "3; rm"):
+            self.setUp()
+            with self.owner_batch(takes=bad), patch.object(run_trial, "ensure_date"), self.assertRaises(SystemExit):
+                self.run_silently()
+            self.assertEqual(self.created, [])
+
+    def test_owner_rehearsal_refuses_missing_or_other_numbers(self):
+        for bad in ("", "5550002222", "+44 20 7946 0000", "+1555000100x"):
+            with self.owner_batch(number=bad), patch.object(run_trial, "ensure_date"), self.assertRaises(SystemExit):
+                self.run_silently()
+            self.assertEqual(self.created, [])
+        hotel = self.targets[0]
+        with self.owner_batch(), patch.object(run_trial, "ensure_date"),                 patch.object(run_trial, "owner_targets", return_value=[{**hotel, "id": "take-1", "bridgeId": "owner-rehearsal"}]),                 self.assertRaises(SystemExit):
+            self.run_silently()
+        self.assertEqual(self.created, [])
+
+    def test_owner_decline_or_hangup_still_runs_next_take(self):
+        def report(payload):
+            return {"calls": [], "events": [{"SK": "e" + str(len(self.created)), "data": {"callSid": "CA" + str(len(self.created)).zfill(32), "type": "call_ended",
+                    "data": {"reason": "consent_declined" if len(self.created) == 1 else "remote_hangup"}}}]}
+        with self.owner_batch(), patch.object(run_trial, "ensure_date"), patch.object(run_trial, "invoke", side_effect=report):
+            self.run_silently()
+        self.assertEqual(len(self.created), 3)
+
+    def test_owner_rehearsal_respects_shared_budget_and_threshold(self):
+        self.table.rows[("TRIAL#" + run_trial.TEN_BATCH, "CONTROL")] = {"PK": "TRIAL#" + run_trial.TEN_BATCH, "SK": "CONTROL", "spentUSD": run_trial.Decimal("17.78806")}
+        month = run_trial.month_budget_key()
+        self.table.rows[(month["PK"], month["SK"])] = {**month, "allocatedUSD": run_trial.Decimal("18.30"), "version": 2}
+        with self.owner_batch(), patch.object(run_trial, "ensure_date"), self.assertRaises(SystemExit):
+            self.run_silently()
+        # Each unconsented 10-second take settles at 0.2309: 18.53 and 18.76 leave room for one more
+        # 1.40 reservation only once, so take three is refused before dialing.
+        self.assertEqual(len(self.created), 2)
+        control = self.table.rows[("TRIAL#" + run_trial.OWNER_BATCH, "CONTROL")]
+        self.assertEqual(control["status"], "blocked")
+        self.assertIn("$20 threshold", control["detail"])
+        self.assertEqual(self.table.rows[(month["PK"], month["SK"])]["allocatedUSD"], control["spentUSD"])
+        self.table.rows[(month["PK"], month["SK"])]["allocatedUSD"] = run_trial.Decimal("19")
+        self.table.rows.pop(("TRIAL#" + run_trial.OWNER_BATCH, "CONTROL"))
+        for key in [k for k in self.table.rows if k[0] == "TRIAL#" + run_trial.OWNER_BATCH]:
+            self.table.rows.pop(key)
+        with self.owner_batch(), patch.object(run_trial, "ensure_date"), self.assertRaises(SystemExit):
+            self.run_silently()
+        self.assertEqual(len(self.created), 2, "No call when the shared month allocation leaves no room")
+
+    def test_hotel_batches_do_not_read_owner_secret_or_shared_budget(self):
+        month = run_trial.month_budget_key()
+        self.table.rows[(month["PK"], month["SK"])] = {**month, "allocatedUSD": run_trial.Decimal("19.5"), "version": 1}
+        with self.ten_batch(), patch.dict(run_trial.os.environ, {"OWNER_REHEARSAL_NUMBER": self.OWNER}):
+            self.run_silently()
+        self.assertEqual(len(self.created), 10)
+        self.assertNotIn(self.OWNER, {x["To"] for x in self.created})
+        self.assertEqual(self.table.rows[(month["PK"], month["SK"])]["allocatedUSD"], run_trial.Decimal("19.5"))
+        run_trial.ensure_window.assert_called_with("2026-10-16", 0)
+
     def test_bridge_event_types_match_recorder(self):
         import recorder
         root = Path(__file__).resolve().parents[2]

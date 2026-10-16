@@ -1,0 +1,164 @@
+name: Owner hotel-call rehearsal 2026-10-16
+
+# The owner plays the hotel front desk. Same runner, bridge, recorder and report as the
+# hotel batches; only the destination (OWNER_REHEARSAL_NUMBER secret) and take count differ.
+on:
+  workflow_dispatch:
+    inputs:
+      takes:
+        description: Sequential rehearsal calls (1-3)
+        type: choice
+        options: ['3', '2', '1']
+        default: '3'
+
+concurrency:
+  group: phone-trial-2026-10-15
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+  AZURE_EXTENSION_USE_DYNAMIC_INSTALL: yes_without_prompt
+  PHONE_TRIAL_BATCH: owner-rehearsal-2026-10-16
+  EXECUTE_PHONE_TRIAL: owner-rehearsal-2026-10-16
+
+jobs:
+  rehearsal:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      TWILIO_ACCOUNT_SID: ${{ vars.TWILIO_ACCOUNT_SID }}
+      TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+      TWILIO_API_KEY_SID: ${{ vars.TWILIO_API_KEY_SID }}
+      TWILIO_API_KEY_SECRET: ${{ secrets.TWILIO_API_KEY_SECRET }}
+      TWILIO_FROM_NUMBER: ${{ vars.TWILIO_FROM_NUMBER }}
+      AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+      OWNER_REHEARSAL_NUMBER: ${{ secrets.OWNER_REHEARSAL_NUMBER }}
+      OWNER_REHEARSAL_TAKES: ${{ inputs.takes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check the authorized date, take count and owner secret
+        id: config
+        shell: python
+        run: |
+          import json, os, re
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          if datetime.now(ZoneInfo('America/Los_Angeles')).date().isoformat() != '2026-10-16':
+              raise SystemExit('Authorized owner rehearsal date ended; no calls made.')
+          if os.environ['OWNER_REHEARSAL_TAKES'] not in {'1', '2', '3'}:
+              raise SystemExit('takes must be 1, 2 or 3; no calls made.')
+          if not re.fullmatch(r'\+1[0-9]{10}', os.environ.get('OWNER_REHEARSAL_NUMBER', '').strip()):
+              raise SystemExit('OWNER_REHEARSAL_NUMBER secret missing or invalid; no calls made.')
+          c = json.load(open('infra/phone-trial-config.json'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              for k in ['azureClientId', 'azureTenantId', 'azureSubscriptionId', 'azureResourceGroup', 'azureAppName']:
+                  out.write(k + '=' + c[k] + '\n')
+      - run: python -B -m unittest discover -s tools/phone-trial -p 'test_trial_control.py' -v
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - run: python -m pip install 'boto3>=1.40,<2'
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-owner-rehearsal-${{ github.run_id }}
+          role-duration-seconds: 7200
+          aws-region: us-east-1
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ steps.config.outputs.azureClientId }}
+          tenant-id: ${{ steps.config.outputs.azureTenantId }}
+          subscription-id: ${{ steps.config.outputs.azureSubscriptionId }}
+      - name: Point the existing bridge at the owner target only and warm it
+        id: bridge
+        shell: python
+        run: |
+          import boto3, json, os, subprocess, time, urllib.request
+          c = json.load(open('infra/phone-trial-config.json'))
+          group, app = c['azureResourceGroup'], c['azureAppName']
+          owner = [{'id': 'owner-rehearsal', 'name': 'Rehearsal Hotel', 'phone': os.environ['OWNER_REHEARSAL_NUMBER'].strip()}]
+          def az(*args):
+              # Output limited to names/states so no environment value is ever printed.
+              return subprocess.run(['az', *args, '--only-show-errors', '--output', 'tsv'], check=True, text=True,
+                                    stdout=subprocess.PIPE, timeout=300).stdout.strip()
+          az('containerapp', 'update', '--resource-group', group, '--name', app, '--min-replicas', '1',
+             '--set-env-vars', 'TARGETS_JSON=' + json.dumps(owner, separators=(',', ':')), '--query', 'name')
+          for attempt in range(36):
+              latest, ready = az('containerapp', 'show', '--resource-group', group, '--name', app, '--query',
+                                 '[properties.latestRevisionName, properties.latestReadyRevisionName]').split()
+              if latest == ready:
+                  break
+              time.sleep(10)
+          else:
+              raise SystemExit('Owner-target bridge revision did not become ready; no calls made.')
+          fqdn = az('containerapp', 'show', '--resource-group', group, '--name', app, '--query', 'properties.configuration.ingress.fqdn')
+          if not fqdn.endswith('.azurecontainerapps.io'):
+              raise SystemExit('Unexpected bridge host; no calls made.')
+          bridge = 'https://' + fqdn
+          outputs = boto3.client('cloudformation').describe_stacks(StackName='live-ninja-phone-trial')['Stacks'][0]['Outputs']
+          recorder = next(o['OutputValue'] for o in outputs if o['OutputKey'] == 'ServiceUrl').rstrip('/')
+          if not recorder.startswith('https://') or not recorder.endswith('.execute-api.us-east-1.amazonaws.com'):
+              raise SystemExit('Unexpected recorder host; no calls made.')
+          ready = False
+          for attempt in range(6):
+              try:
+                  with urllib.request.urlopen(bridge + '/health', timeout=30) as response:
+                      ready = json.load(response).get('ready') is True
+                  if ready:
+                      break
+              except Exception:
+                  pass
+              time.sleep(10)
+          if not ready:
+              raise SystemExit('Bridge failed bounded health check; no calls made.')
+          with open(os.environ['GITHUB_ENV'], 'a') as out:
+              out.write('BRIDGE_URL=' + bridge + '\nRECORDER_URL=' + recorder + '\n')
+      - name: Verify Azure audio before dialing
+        shell: python
+        run: |
+          import json, os, subprocess
+          c = json.load(open('infra/phone-trial-config.json'))
+          env = dict(os.environ)
+          env.update(PUBLIC_BASE_URL=env['BRIDGE_URL'], AZURE_OPENAI_ENDPOINT=c['modelEndpoint'],
+                     AZURE_OPENAI_DEPLOYMENT=c['modelDeployment'], RUN_ID='hotel-trial-2026-10-15',
+                     MAX_CALL_SECONDS='180', RECORDING_CALLBACK_URL=env['RECORDER_URL'] + '/recording',
+                     EVENT_CALLBACK_URL=env['RECORDER_URL'] + '/events',
+                     TARGETS_JSON=json.dumps([{'id': 'owner-rehearsal', 'name': 'Rehearsal Hotel', 'phone': env['OWNER_REHEARSAL_NUMBER'].strip()}]))
+          subprocess.run(['go', 'run', './cmd/phone-trial-bridge', '-probe'], env=env, check=True, timeout=120)
+      - name: Call the owner for each sequential take subject to the budget
+        id: calls
+        run: python -B tools/phone-trial/run_trial.py
+      - name: Refresh report delivery credentials
+        if: always() && steps.calls.outcome != 'skipped'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-owner-rehearsal-mail-${{ github.run_id }}
+          aws-region: us-east-1
+      - name: Email measured results and seven-day recording links
+        if: always() && steps.calls.outcome != 'skipped'
+        run: python -B tools/phone-trial/send_report.py --function-name live-ninja-phone-trial-recorder --batch-id owner-rehearsal-2026-10-16 --template tools/phone-trial/email-status.html
+      - uses: azure/login@v2
+        if: always() && steps.config.outcome == 'success'
+        with:
+          client-id: ${{ steps.config.outputs.azureClientId }}
+          tenant-id: ${{ steps.config.outputs.azureTenantId }}
+          subscription-id: ${{ steps.config.outputs.azureSubscriptionId }}
+      - name: Restore hotel targets and let the idle bridge scale to zero
+        if: always() && steps.config.outcome == 'success'
+        shell: python
+        run: |
+          import json, subprocess
+          c = json.load(open('infra/phone-trial-config.json'))
+          hotels = json.load(open('tools/phone-trial/targets.json'))['hotels']
+          targets = json.dumps([{'id': t['id'], 'name': t['name'], 'phone': t['phone']} for t in hotels], separators=(',', ':'))
+          subprocess.run(['az', 'containerapp', 'update', '--resource-group', c['azureResourceGroup'], '--name', c['azureAppName'],
+                          '--min-replicas', '0', '--set-env-vars', 'TARGETS_JSON=' + targets, '--query', 'name', '--output', 'tsv',
+                          '--only-show-errors'], check=True, timeout=300)
