@@ -860,6 +860,13 @@ depends on: ivr-delivery
 Definition of done: GitHub trial job exits0 for ten terminal attempts, or explicit budget/provider blocker with counted attempts; read durable batch CONTROL and call/event records and verify existing recordings.
 Retry policy: each hotel one call; job resumes only verified terminal prior calls and no ambiguous creation, maximum three batch executions. Deployment retry ceiling three; model/audio preflight must pass. No local scheduled automation.
 
+## owner-rehearsal — owner plays the hotel front desk on the hotel-call path
+Owner request 2026-10-16, verbatim: `okay, call me acting like a hotel and let's try the ocnversations`.
+Owner answers 2026-10-16 (AskUserQuestion, verbatim): number = owner allowlisted number, stored as secret OWNER_REHEARSAL_NUMBER (not committed); mode = `Several takes` — "Up to 3 calls in a row, so you can play different front-desk behaviours (refuse recording, transfer, IVR menu). Same caps per call."
+- [~] owner-rehearsal-runner — batch owner-rehearsal-2026-10-16 in tools/phone-trial/run_trial.py reuses the hotel runner: own CONTROL ledger, existing event namespace, voice lock, intent ledger, consent before recording, 180 s provider+bridge caps, one attempt per take, no redial. Destination comes only from the OWNER_REHEARSAL_NUMBER secret; any other number is refused. Takes 1..3 run strictly in sequence with a 45 s pause after a terminal take; a declined recording or hangup still lets the next take run. Hotel 09:00–17:00 window skipped for this batch only (owner's own phone); 2026-10-16 date guard kept. Budget floor also counts the ten-batch ledger and the shared PHONE#BUDGET month allocation, and each take publishes its reservation there; $20 threshold unchanged, no self-granted allowance.
+- [~] owner-rehearsal-workflow — .github/workflows/phone-owner-rehearsal.yml (workflow_dispatch, takes 1..3, default 3) points the existing Azure bridge TARGETS_JSON at the owner target only, runs the Azure audio probe, calls, emails the report through send_report.py --batch-id owner-rehearsal-2026-10-16, then restores the 20 hotel targets and min-replicas 0.
+Definition of done: python -B -m unittest discover -s tools/phone-trial -p 'test_*.py' exits 0; rehearsal workflow reaches a terminal result with each take's CallSid, status, duration, recording state and SES MessageId recorded here, or the exact blocker.
+
 ## mcp-owner-tools — expose phone messages, existing Jobs and memory
 depends on: none; phone-send enablement depends on hotel-ten-results
 ### mcp-oauth-login — browser sign-in through existing owner account
