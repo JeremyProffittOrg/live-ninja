@@ -420,7 +420,7 @@ def execute_batch(table, batch, date, start_hour, target_ids, state):
             if finals:
                 final = max(finals, key=lambda f: int(f.get("inputTokens", 0)) + int(f.get("outputTokens", 0)))
                 measured = max(measured, Decimal(str(final.get("inputTokens", 0))) * Decimal("0.000010") + Decimal(str(final.get("outputTokens", 0))) * Decimal("0.000020"))
-            cost = measured + minutes * Decimal("0.0209") + Decimal("0.21")
+            cost = measured + minutes * Decimal("0.0209") + Decimal("0.25")
             consented = any(e.get("type") == "consent" and e.get("data", {}).get("result") == "granted" for e in related)
             # Incomplete usage remains reserved, never silently charged as zero.
             if consented and not finals:

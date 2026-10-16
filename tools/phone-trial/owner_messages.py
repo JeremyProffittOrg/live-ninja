@@ -1,6 +1,7 @@
 """IAM-only, owner-bound messages to privately configured phone aliases."""
 import base64
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 import hashlib
 import hmac
@@ -150,6 +151,87 @@ def view(item, links=False):
     return payload
 
 
+def budget_clock(cfg):
+    name = cfg.get("timezone") or "America/New_York"
+    zone = ZoneInfo(name)
+    now = datetime.now(zone)
+    tomorrow = datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), tzinfo=zone)
+    return now.strftime("%Y-%m"), now.strftime("%Y-%m-%d"), name, int(tomorrow.timestamp())
+
+
+def budget_keys(month, day):
+    return ({"PK": "PHONE#BUDGET#" + month, "SK": "MONTH"},
+            {"PK": "PHONE#BUDGET#" + month, "SK": "DAY#" + day})
+
+
+def budget_status(cfg):
+    month, day, zone, expires = budget_clock(cfg)
+    month_key, day_key = budget_keys(month, day)
+    monthly, daily = r.get(month_key) or {}, r.get(day_key) or {}
+    floor = Decimal(str(cfg.get("budgetFloorUSD", "8"))) if cfg.get("budgetFloorMonth") == month else Decimal("8")
+    allocated = max(floor, Decimal(str(monthly.get("allocatedUSD", "0"))))
+    granted, spent = (Decimal(str(daily.get(k, "0"))) for k in ("grantedUSD", "spentUSD"))
+    lock = r.get(VOICE_KEY) or {}
+    stopped = bool(lock.get("activeRequest"))
+    extra = max(Decimal(0), allocated + RESERVE - max(LIMIT, allocated))
+    reason = "disabled" if cfg.get("enabled") is not True else "voice_stop_or_active_call" if stopped else "waiting_approval" if granted - spent < extra else ""
+    return {"month": month, "day": day, "timezone": zone, "allocatedUSD": str(allocated),
+            "monthlyLimitUSD": str(LIMIT), "dailyGrantedUSD": str(granted), "dailySpentUSD": str(spent),
+            "dailyRemainingUSD": str(max(Decimal(0), granted-spent)), "expiresAt": expires,
+            "pausedReason": reason, "pendingReservation": stopped}
+
+
+def budget_operation(event):
+    if event.get("operation") not in {"owner_budget_status", "owner_budget_grant"}:
+        return r.response(400, {"error": "Unknown budget operation"})
+    cfg = config(event.get("ownerUserId"))
+    if not cfg:
+        return r.response(403, {"error": "Owner budget is not configured for this identity"})
+    if event["operation"] == "owner_budget_status":
+        return r.response(200, budget_status(cfg))
+    request_id = event.get("requestId", "")
+    if not isinstance(request_id, str) or not REQUEST_ID.fullmatch(request_id):
+        return r.response(400, {"error": "Invalid requestId"})
+    month, day, zone, expires = budget_clock(cfg)
+    if event.get("expectedDay") != day:
+        return r.response(409, {"error": "Day changed; refresh the budget before approval"})
+    grant_key = {"PK": "OWNER#" + cfg["ownerUserId"], "SK": "BUDGET_GRANT#" + request_id}
+    _, day_key = budget_keys(month, day)
+    for _ in range(4):
+        previous = r.get(grant_key)
+        if previous:
+            if previous["day"] != day:
+                return r.response(409, {"error": "Approval request belongs to an expired day"})
+            return r.response(200, budget_status(cfg))
+        if budget_clock(cfg)[1] != day:
+            return r.response(409, {"error": "Day changed; refresh the budget before approval"})
+        old = r.get(day_key)
+        remaining = Decimal(str((old or {}).get("grantedUSD", "0"))) - Decimal(str((old or {}).get("spentUSD", "0")))
+        if remaining >= RESERVE:
+            return r.response(409, {"error": "Today's allowance can still admit a call; another approval is not needed"})
+        daily = {**(old or {}), **day_key, "version": int((old or {}).get("version", 0))+1,
+                 "grantedUSD": Decimal(str((old or {}).get("grantedUSD", "0")))+Decimal("5"),
+                 "spentUSD": Decimal(str((old or {}).get("spentUSD", "0"))), "expiresAt": expires, "timezone": zone}
+        config_check = {"TableName": os.environ["TABLE"], "Key": CONFIG_KEY,
+                        "ConditionExpression": "ownerUserId=:owner",
+                        "ExpressionAttributeNames": {"#zone": "timezone"},
+                        "ExpressionAttributeValues": {":owner": cfg["ownerUserId"]}}
+        if "timezone" in cfg:
+            config_check["ConditionExpression"] += " AND #zone=:zone"
+            config_check["ExpressionAttributeValues"][":zone"] = cfg["timezone"]
+        else:
+            config_check["ConditionExpression"] += " AND attribute_not_exists(#zone)"
+        try:
+            transact([put(daily, old), put({**grant_key, "day": day, "amountUSD": Decimal("5"),
+                      "createdAt": int(time.time()), "expiresAt": expires}),
+                      {"ConditionCheck": config_check}])
+            return r.response(200, budget_status(cfg))
+        except Exception as exc:
+            if not r.conditional(exc):
+                raise
+    return r.response(409, {"error": "Budget changed; retry the same approval request"})
+
+
 def reserve(owner, request_id, alias, message, cfg):
     usage = provider("/Usage/Records/ThisMonth.json?Category=totalprice")
     records = usage.get("usage_records", [])
@@ -159,7 +241,7 @@ def reserve(owner, request_id, alias, message, cfg):
     floor = Decimal(str(cfg.get("budgetFloorUSD", "8")))
     if not observed.is_finite() or observed < 0 or not floor.is_finite() or floor < 8:
         raise ValueError("Invalid monthly budget")
-    month = datetime.now(timezone.utc).strftime("%Y-%m")
+    month, day, zone, expires = budget_clock(cfg)
     floor_month = cfg.get("budgetFloorMonth")
     if floor_month is not None and (not isinstance(floor_month, str) or not re.fullmatch(r"[0-9]{4}-(0[1-9]|1[0-2])", floor_month)):
         raise ValueError("Invalid budget floor month")
@@ -167,7 +249,7 @@ def reserve(owner, request_id, alias, message, cfg):
         raise ValueError("A budget floor above $8 requires budgetFloorMonth")
     if floor_month != month:
         floor = Decimal("8")
-    budget_key = {"PK": "PHONE#BUDGET#" + month, "SK": "MONTH"}
+    budget_key, day_key = budget_keys(month, day)
     key = request_key(owner, request_id)
     callback_id = r.digest(("owner-message\n" + owner + "\n" + request_id).encode())
     lock_id = "owner:" + owner + ":" + request_id
@@ -180,15 +262,26 @@ def reserve(owner, request_id, alias, message, cfg):
             return prior, False
         old = r.get(budget_key)
         base = max(floor, Decimal("8") + observed, Decimal(str((old or {}).get("allocatedUSD", "0"))))
-        if base + RESERVE > LIMIT:
-            raise ValueError("Monthly $20 allowance reached; explicit owner permission required")
-        budget = {**budget_key, "allocatedUSD": base + RESERVE, "version": int((old or {}).get("version", 0)) + 1}
+        if budget_clock(cfg)[1] != day:
+            raise ValueError("Day changed; retry call admission")
+        daily_old = r.get(day_key)
+        extra = max(Decimal(0), base + RESERVE - max(LIMIT, base))
+        daily = None
+        if extra:
+            granted = Decimal(str((daily_old or {}).get("grantedUSD", "0")))
+            daily_spent = Decimal(str((daily_old or {}).get("spentUSD", "0")))
+            if not daily_old or int(daily_old.get("expiresAt", 0)) <= int(time.time()) or daily_spent + extra > granted:
+                raise ValueError("waiting_approval: Monthly $20 allowance reached; approve $5 for today")
+            daily = {**daily_old, "spentUSD": daily_spent + extra, "version": int(daily_old["version"])+1}
+        budget = {**(old or {}), **budget_key, "allocatedUSD": base + RESERVE,
+                  "observedProviderUSD": observed, "observedAt": int(time.time()),
+                  "version": int((old or {}).get("version", 0)) + 1}
         config_check = {"TableName": os.environ["TABLE"], "Key": CONFIG_KEY,
             "ConditionExpression": "#enabled=:enabled AND #owner=:owner AND #from=:from AND #destinations=:destinations",
             "ExpressionAttributeNames": {"#enabled": "enabled", "#owner": "ownerUserId", "#from": "fromNumber", "#destinations": "destinations"},
             "ExpressionAttributeValues": {":enabled": True, ":owner": owner, ":from": cfg["fromNumber"], ":destinations": cfg["destinations"]}}
         # A concurrent floor/month change must invalidate this budget reservation.
-        for name in ("budgetFloorUSD", "budgetFloorMonth"):
+        for name in ("budgetFloorUSD", "budgetFloorMonth", "timezone"):
             config_check["ExpressionAttributeNames"]["#" + name] = name
             if name in cfg:
                 config_check["ConditionExpression"] += " AND #" + name + "=:" + name
@@ -199,6 +292,9 @@ def reserve(owner, request_id, alias, message, cfg):
             {"Put": {"TableName": os.environ["TABLE"], "Item": {**VOICE_KEY, "activeRequest": lock_id}, "ConditionExpression": "attribute_not_exists(activeRequest)"}},
             put({"PK": "OWNER_CALLBACK#" + callback_id, "SK": "META", "ownerUserId": owner, "requestId": request_id}),
             {"ConditionCheck": config_check}]
+        if daily:
+            item["budgetExpiresAt"] = int(daily["expiresAt"])
+            operations.append(put(daily, daily_old))
         try:
             transact(operations)
             return item, True
@@ -249,9 +345,14 @@ def operation(event):
     base = os.environ["PUBLIC_BASE_URL"].rstrip("/") + "/owner-message/"
     token = item["callbackId"]
     twiml = '<Response><Say>' + html.escape(item["scriptTranscript"]) + '</Say><Redirect method="POST">' + html.escape(base + "played/" + token) + '</Redirect></Response>'
+    # Reserve ten seconds for the create request and twenty seconds for ringing.
+    call_seconds = min(90, int(item.get("budgetExpiresAt", int(time.time())+120))-int(time.time())-30)
+    if call_seconds <= 0:
+        item = change(key, {"providerStatus": "rejected"}, "budget_expired", {}, release=True)
+        return r.response(409, {"error": "Daily authority expires before a call can connect"})
     try:
         result = provider("/Calls.json", {"To": item["toNumber"], "From": item["fromNumber"], "Twiml": twiml,
-            "Timeout": 20, "TimeLimit": 90, "Record": "true", "RecordingChannels": "dual",
+            "Timeout": 20, "TimeLimit": call_seconds, "Record": "true", "RecordingChannels": "dual",
             "StatusCallback": base + "status/" + token, "StatusCallbackMethod": "POST",
             "StatusCallbackEvent": ["initiated", "ringing", "answered", "completed"],
             "RecordingStatusCallback": base + "recording/" + token, "RecordingStatusCallbackMethod": "POST",

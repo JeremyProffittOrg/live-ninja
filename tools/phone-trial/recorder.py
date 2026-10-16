@@ -326,9 +326,15 @@ def handler(event, context):
     # Only a principal with lambda:InvokeFunction can supply a direct outer event.
     # API Gateway always supplies requestContext/version, regardless of HTTP body.
     if "requestContext" not in event and "version" not in event:
+        if event.get("operation") in {"owner_recordings_list", "owner_recording_media"}:
+            import owner_recordings
+            return owner_recordings.operation(event)
         if event.get("operation") in {"owner_message_send", "owner_message_status"}:
             import owner_messages
             return owner_messages.operation(event)
+        if event.get("operation") in {"owner_budget_status", "owner_budget_grant"}:
+            import owner_messages
+            return owner_messages.budget_operation(event)
         if event.get("operation") == "internal_report":
             return report_post(json.dumps({"runId": event.get("runId")}).encode(), include_links=event.get("includeLinks", True) is True, call_sids=event.get("callSids"))
         if event.get("operation") == "internal_reconcile":

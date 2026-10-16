@@ -59,6 +59,8 @@ import (
 // behind the app-wide ExtractAuthContext/CSRFProtect middleware.
 func RegisterAPIRoutes(app *fiber.App, deps *Deps) {
 	RegisterGhostWorkRoutes(app, deps)
+	RegisterPhoneRecordingRoutes(app, deps)
+	RegisterPhoneBudgetRoutes(app, deps)
 	registry := buildAPIToolsRegistry(deps)
 	if mcpAuth, err := NewMCPAuth(deps); err == nil {
 		mcpAuth.Register(app)

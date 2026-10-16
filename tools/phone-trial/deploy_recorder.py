@@ -81,6 +81,7 @@ def main():
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
         z.write(Path(__file__).with_name("recorder.py"), "recorder.py")
         z.write(Path(__file__).with_name("owner_messages.py"), "owner_messages.py")
+        z.write(Path(__file__).with_name("owner_recordings.py"), "owner_recordings.py")
     boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=archive.getvalue(), ServerSideEncryption="AES256")
     params = {"CodeBucket": bucket, "CodeKey": key,
               "TwilioAccount": os.environ["TWILIO_ACCOUNT_SID"], "TwilioKeySid": os.environ["TWILIO_API_KEY_SID"],
@@ -128,6 +129,11 @@ def main():
     url = next(o["OutputValue"] for o in outputs if o["OutputKey"] == "ServiceUrl")
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
         out.write("recorder_url=" + url + "\n")
+    # Bind historical owner-requested trials only after verifying the canonical
+    # account, and without modifying the user's calling hold or any other field.
+    from owner_recordings import bind_legacy_recordings
+    database = boto3.resource("dynamodb")
+    bind_legacy_recordings(database.Table("live-ninja"), database.Table("live-ninja-phone-trial"), database.meta.client)
     print("Recorder stack ready.")
 
 

@@ -354,6 +354,14 @@
 
     <p class="ln-muted conv-drawer__intro">Changes save automatically for this named device. Open Device settings in any section to compare devices or apply that section elsewhere.</p>
 
+    <section class="ln-card" id="phoneBudgetPanel" aria-labelledby="phoneBudgetTitle">
+      <h2 id="phoneBudgetTitle">Phone budget</h2>
+      <p>Only the owner can authorize an extra $5 for the displayed day. This does not start or resume calls.</p>
+      <p data-budget-status role="status" aria-live="polite">Select Refresh budget to see the current allocation and call hold.</p>
+      <button class="ln-btn" type="button" data-budget-refresh>Refresh budget</button>
+      <button class="ln-btn" type="button" data-budget-grant disabled>Authorize $5 for this day</button>
+    </section>
+
     <!-- ============ About you (M15 Base Knowledge) ============
          These facts are injected into EVERY session's instructions
          server-side (internal/realtime/baseknowledge.go), which is why the
@@ -1298,7 +1306,7 @@
           <dt>MCP connections</dt>
           <dd>Connect a remote assistant such as Claude or ChatGPT to <a href="https://live.jeremy.ninja/mcp">https://live.jeremy.ninja/mcp</a> with browser sign-in. Sign in to your Live Ninja owner account and review the permissions before allowing access. Connected assistants can use your memory, inspect Jobs or propose job changes for review, and call your configured cells with a message. Jobs still require review for changes and do not run general AI workers. Disconnect through the client or use Log out everywhere to revoke access. If setup reports invalid_grant, start a fresh connection from the client and use its new permission page; do not submit an old Allow page again.</dd>
           <dt>History</dt>
-          <dd>Every conversation, tagged by topic. Filter by topic, device, or date, and see what each conversation cost.</dd>
+          <dd>Every conversation, tagged by topic. Filter by topic, device, or date, and see what each conversation cost. The owner can also open Phone recordings here to play, seek, and download stored call audio. Recordings are kept for 180 days; each playback or download link lasts five minutes. Revoking account access stops new links; a link already issued can work until it expires.</dd>
           <dt>Approvals</dt><dd>Verify coding proposals and inspect saved approval receipts. Recording approval does not start coding. Rule proposals can be reviewed and applied from the web conversation.</dd>
           <dt>Jobs</dt>
           <dd>Also available as a native Android tab. Create a reminder or human review checkpoint, choose a timezone and schedule, and see what happened in its run history. Pause or cancel future runs, run a job now, or approve a review after reading its exact contents. Reminders create in-app receipts; Jobs shows whether automatic scheduling is available. Open Jobs from the bottom bar. The activity timeline pages through all entries retained from this update onward, with older/latest navigation and full outputs. Earlier run receipts retain their stated limit. Add notes without changing execution instructions. Voice can list jobs and propose creating, starting, pausing, resuming, retrying or cancelling a job; review the exact proposal before a change is made. These controls require an updated client; Nova voice does not currently offer Jobs tools. Owners can switch to Ghost work, choose an actual node on the left and an actual provider session under <em>Session</em> on the right, and read that session's retained conversation history as one continuous log. An icon at the left of each entry marks a user message, assistant message, tool call, tool result, command or event; hover over, focus or tap it to see the entry's source time, which stays marked unknown when the archive has none. The log title shows the observed span between the earliest and latest retained times, those times, and the number of messages loaded; an observed span does not prove a session started or ended then, and pieces of one long entry count as one message. Icon buttons beside the title refresh newly retained entries, jump to the oldest loaded entry, read up to 20 more pages toward the latest retained entry, or rescan the history from the beginning. Each Session choice shows a short description taken from that session's own retained text only after you have opened it, its ID, and its observed times; anything not yet known is shown as unknown. <em>Show Authorized Scheduled Jobs Only</em> narrows the authorized scheduled jobs list, which shows each job's last-run status, to jobs bound to the selected Session; Ghost does not currently report that binding, so the narrowed list stays empty and says so instead of guessing. <em>Refresh Ghost work</em> is at the bottom right of the Session box. The archive currently retains up to 90 days and may have gaps; it is not automatically linked to local Jobs. If the integration or node permission is unavailable, the interface says so.</dd>
@@ -1347,6 +1355,8 @@
         <h3 class="ln-card__title" id="helpSettings">Settings explained</h3>
         <p class="ln-muted">Open the <em>⚙</em> tab in the top-left corner. Changes save automatically for the device you're on — open <em>Device settings</em> in any section to compare devices or copy that section elsewhere.</p>
         <dl class="conv-help__defs">
+          <dt>Phone budget</dt>
+          <dd>The owner can check the monthly call allocation and today’s extra allowance. After the $20 monthly limit, authorize $5 for the current day here. Unused daily permission expires at midnight in the displayed timezone. A budget approval does not resume stopped calls.</dd>
           <dt>About you</dt>
           <dd>What Live Ninja knows before you say anything — your name, your home and work places, and facts worth keeping. Picking a place from the list is what makes weather and local time reliable. Suggestions it makes while you talk wait here for your approval.</dd>
           <dt>Wake word</dt>
@@ -1417,7 +1427,7 @@
       <section class="ln-card set-section conv-help__section" aria-labelledby="helpTips">
         <h3 class="ln-card__title" id="helpTips">Tips and troubleshooting</h3>
         <ul class="conv-help__list">
-          <li><strong>Owner phone trials:</strong> Approved test calls can follow common English phone menus to the front desk or customer service before asking permission to record. Unknown menus and long holds end the call; check its result before requesting another attempt. Calls are still arranged separately from this app. Incoming calls and an in-app dialer are not available yet.</li>
+          <li><strong>Owner phone trials:</strong> Approved test calls use a clearer introduction voice and can follow common English phone menus to the front desk or customer service before asking permission to record. Unknown menus and long holds end the call; check its result before requesting another attempt. Calls are still arranged separately from this app. Incoming calls and an in-app dialer are not available yet.</li>
           <li><strong>It can't hear you?</strong> Choose <em>Mic test…</em> from the <em>Audio</em> picker in the bottom bar — it shows your live level and the exact steps to unblock the microphone in your browser.</li>
           <li><strong>Wake phrase not triggering?</strong> If <em>Use car audio</em> is on in the Android app, wake listening is paused on purpose — turn car audio off to use the wake word, or start a car conversation from the app. Otherwise, raise the wake sensitivity in Settings → Wake word, or pick a longer phrase. Very short phrases false-trigger and very quiet rooms need more sensitivity.</li>
           <li><strong>It wakes on almost anything?</strong> Lower the wake sensitivity in Settings → Wake word — sensitivity and the matching threshold move in opposite directions, so less sensitivity means a stricter match. If it still fires on unrelated speech, that phrase's detector is the weak part: switch to a different phrase and see whether it settles down.</li>

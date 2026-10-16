@@ -1,4 +1,5 @@
 {{define "head"}}
+<script type="module" src="{{asset "/static/js/recording-history.mjs"}}"></script>
 <script type="module" src="{{asset "/static/js/history.mjs"}}"></script>
 {{- /* Page-scoped styles (same rationale as downloads.html/memory.html).
        All data-driven markup is built by history.mjs with textContent —
@@ -208,6 +209,17 @@
       </label>
     </div>
   </div>
+
+  <section class="ln-card" id="phoneRecordingHistory" aria-labelledby="phoneRecordingHeading" hidden>
+    <h2 id="phoneRecordingHeading">Phone recordings</h2>
+    <p class="ln-muted">Play and download recorded calls. End any live conversation in other tabs before playback. Recordings expire after 180 days.</p>
+    <label for="phoneRecordingSource">Call source</label>
+    <select class="ln-select" id="phoneRecordingSource"><option value="messages">Owner phone messages</option></select>
+    <button class="ln-btn ln-btn--ghost" type="button" id="phoneRecordingRefresh">Refresh recordings</button>
+    <p id="phoneRecordingStatus" role="status"></p>
+    <div id="phoneRecordingList"></div>
+    <button class="ln-btn ln-btn--ghost" type="button" id="phoneRecordingMore" hidden>Load more recordings</button>
+  </section>
 
   <div id="histListView">
     {{- /* Shown by history.mjs while settings.privacy.storeTranscripts is

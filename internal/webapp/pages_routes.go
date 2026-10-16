@@ -384,7 +384,11 @@ func SecurityHeaders(assets *Assets) fiber.Handler {
 		ct := string(c.Response().Header.ContentType())
 		if strings.HasPrefix(ct, "text/html") {
 			if len(c.Response().Header.Peek(fiber.HeaderContentSecurityPolicy)) == 0 {
-				c.Set(fiber.HeaderContentSecurityPolicy, csp)
+				policy := csp
+				if c.Path() == "/history" {
+					policy = strings.Replace(policy, "media-src 'self' blob:", "media-src 'self' blob: https://live-ninja-deliverables-759775734231.s3.amazonaws.com https://live-ninja-deliverables-759775734231.s3.us-east-1.amazonaws.com", 1)
+				}
+				c.Set(fiber.HeaderContentSecurityPolicy, policy)
 			}
 			if len(c.Response().Header.Peek(fiber.HeaderCacheControl)) == 0 {
 				c.Set(fiber.HeaderCacheControl, "no-cache")

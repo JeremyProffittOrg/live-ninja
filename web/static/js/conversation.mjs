@@ -30,7 +30,8 @@
 //     when no session is connected (spec §2.5 "you can still type below");
 //   - wake-word toggle → WakeWordEngine lifecycle → mic.notifyWake().
 
-import { apiJSON, authFetch, ApiError } from './toolclient.mjs';
+import { apiJSON, authFetch, ApiError, pageSessionJSON, onAuthLost } from './toolclient.mjs';
+import { initPhoneBudget } from './phonebudget.mjs';
 import { prefetchSession } from './realtime.mjs';
 import { MicController, MicState } from './mic.mjs';
 import { createMicTest } from './mictest.mjs';
@@ -2220,6 +2221,7 @@ const drawerCostSub = $('drawerCostSub');
 let drawerCostFetchedAt = 0;
 
 const settingsDrawer = $('settingsDrawer');
+initPhoneBudget($('phoneBudgetPanel'), { apiJSON: pageSessionJSON, onAuthLost });
 const settingsDrawerBtn = $('settingsDrawerBtn');
 const settingsDrawerClose = $('settingsDrawerClose');
 const settingsTabBadge = $('settingsTabBadge');

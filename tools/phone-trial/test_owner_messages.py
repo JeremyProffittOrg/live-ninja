@@ -50,9 +50,15 @@ class OwnerMessageTests(unittest.TestCase):
                     value = operation["ConditionCheck"]
                     cfg = r.get(value["Key"])
                     values = value["ExpressionAttributeValues"]
+                    if value["ConditionExpression"].startswith("ownerUserId=:owner"):
+                        if not cfg or cfg.get("ownerUserId") != values[":owner"]:
+                            raise Conflict()
+                        if (":zone" in values and cfg.get("timezone") != values[":zone"]) or (":zone" not in values and "timezone" in cfg):
+                            raise Conflict()
+                        continue
                     if not cfg or cfg.get("enabled") is not True or cfg["ownerUserId"] != values[":owner"] or cfg["fromNumber"] != values[":from"] or cfg["destinations"] != values[":destinations"]:
                         raise Conflict()
-                    for name in ("budgetFloorUSD", "budgetFloorMonth"):
+                    for name in ("budgetFloorUSD", "budgetFloorMonth", "timezone"):
                         if (":" + name in values and cfg.get(name) != values[":" + name]) or (":" + name not in values and name in cfg):
                             raise Conflict()
                 else:
@@ -246,10 +252,10 @@ class OwnerMessageTests(unittest.TestCase):
         self.assertEqual(self.send()["statusCode"], 409)
         self.assertIsNone(r.get(m.request_key(OWNER, "request-one")))
         self.configure(budgetFloorUSD=Decimal("19.80"), budgetFloorMonth="2026-10")
-        with patch.object(m, "datetime") as clock:
-            clock.now.return_value.strftime.return_value = "2026-10"
+        with patch.object(m, "budget_clock") as clock:
+            clock.return_value = ("2026-10", "2026-10-31", "America/New_York", 9999999999)
             self.assertEqual(self.send()["statusCode"], 409)
-            clock.now.return_value.strftime.return_value = "2026-11"
+            clock.return_value = ("2026-11", "2026-11-01", "America/New_York", 9999999999)
             self.assertEqual(self.send()["statusCode"], 200)
         budget = r.get({"PK": "PHONE#BUDGET#2026-11", "SK": "MONTH"})
         self.assertEqual(budget["allocatedUSD"], Decimal("8.30"))
@@ -276,6 +282,128 @@ class OwnerMessageTests(unittest.TestCase):
         self.assertEqual(reply["providerStatus"], "in-progress")
         self.callback("status", CallStatus="ringing")
         self.assertEqual(r.get(m.request_key(OWNER, "request-one"))["providerStatus"], "in-progress")
+
+    def grant(self, **fields):
+        return m.budget_operation({"operation": "owner_budget_grant", "ownerUserId": OWNER,
+            "requestId": "grant-one", "expectedDay": m.budget_clock(self.configure())[1], **fields})
+
+    def test_grant_replay_and_reservation_charge_once(self):
+        self.setup_send()
+        month, day, _, _ = m.budget_clock(self.configure())
+        month_key, day_key = m.budget_keys(month, day)
+        r._table.put_item(Item={**month_key, "allocatedUSD": Decimal("20"), "version": 1})
+        self.assertEqual(self.send()["statusCode"], 409)
+        self.assertEqual(self.grant()["statusCode"], 200)
+        self.assertEqual(self.grant()["statusCode"], 200)
+        self.assertEqual(self.grant(requestId="prestack")["statusCode"], 409)
+        self.assertEqual(r.get(day_key)["grantedUSD"], Decimal("5"))
+        self.assertEqual(self.send()["statusCode"], 200)
+        self.assertEqual(self.send()["statusCode"], 200)
+        self.assertEqual(r.get(day_key)["spentUSD"], Decimal("0.30"))
+        self.assertEqual(len(self.forms), 1)
+
+    def test_budget_status_reports_crossing_reservation_hold(self):
+        self.setup_send()
+        cfg = self.configure()
+        month, day, _, expires = m.budget_clock(cfg)
+        month_key, day_key = m.budget_keys(month, day)
+        r._table.put_item(Item={**month_key, "allocatedUSD": Decimal("19.80"), "version": 1})
+        self.assertEqual(m.budget_status(cfg)["pausedReason"], "waiting_approval")
+        self.assertEqual(self.send()["statusCode"], 409)
+        self.assertEqual(self.forms, [])
+        r._table.put_item(Item={**day_key, "grantedUSD": Decimal("5"), "spentUSD": Decimal("4.91"), "version": 1, "expiresAt": expires})
+        self.assertEqual(m.budget_status(cfg)["pausedReason"], "waiting_approval")
+        r._table.put_item(Item={**day_key, "grantedUSD": Decimal("5"), "spentUSD": Decimal("4.90"), "version": 2, "expiresAt": expires})
+        self.assertEqual(m.budget_status(cfg)["pausedReason"], "")
+
+    def test_expired_grant_and_exhaustion_fail_closed(self):
+        self.setup_send()
+        month, day, _, expires = m.budget_clock(self.configure())
+        month_key, day_key = m.budget_keys(month, day)
+        r._table.put_item(Item={**month_key, "allocatedUSD": Decimal("20"), "version": 1})
+        r._table.put_item(Item={**day_key, "grantedUSD": Decimal("5"), "spentUSD": Decimal("4.80"), "version": 1, "expiresAt": expires})
+        self.assertEqual(self.send()["statusCode"], 409)
+        self.grant()
+        old = r.get(day_key)
+        r._table.put_item(Item={**old, "expiresAt": 1})
+        self.assertEqual(self.send()["statusCode"], 409)
+        self.assertEqual(self.forms, [])
+
+    def test_grant_does_not_clear_owner_stop_or_enable_calls(self):
+        self.setup_send()
+        self.configure(enabled=False)
+        r._table.put_item(Item={**m.VOICE_KEY, "activeRequest": "owner-stop"})
+        event = {"operation": "owner_budget_grant", "ownerUserId": OWNER, "requestId": "grant-stop",
+                 "expectedDay": m.budget_clock(r.get(m.CONFIG_KEY))[1]}
+        self.assertEqual(m.budget_operation(event)["statusCode"], 200)
+        self.assertFalse(r.get(m.CONFIG_KEY)["enabled"])
+        self.assertEqual(self.send()["statusCode"], 403)
+        self.configure(enabled=True)
+        self.assertEqual(self.send()["statusCode"], 409)
+        self.assertEqual(r.get(m.VOICE_KEY)["activeRequest"], "owner-stop")
+        self.assertEqual(self.forms, [])
+
+    def test_grant_owner_day_binding_and_concurrent_retry(self):
+        self.setup_send()
+        self.assertEqual(self.grant(ownerUserId=OTHER)["statusCode"], 403)
+        self.assertEqual(self.grant(expectedDay="2000-01-01")["statusCode"], 409)
+        calls = []
+        def competing(operations):
+            calls.append(1)
+            if len(calls) == 1:
+                # Another approval wins the same day-row CAS before this transaction.
+                item = copy.deepcopy(operations[0]["Put"]["Item"])
+                r._table.put_item(Item=item)
+                raise Conflict()
+            return self.transact(operations)
+        with patch.object(m, "transact", competing):
+            self.assertEqual(self.grant()["statusCode"], 409)
+        status = m.budget_status(r.get(m.CONFIG_KEY))
+        self.assertEqual(status["dailyGrantedUSD"], "5")
+        self.assertEqual(len(calls), 1)
+
+    def test_local_day_month_and_dst_expiry(self):
+        from datetime import datetime
+        for instant, month, day, hours in (("2026-11-01T00:00:00", "2026-11", "2026-11-01", 25),
+                                         ("2026-03-08T00:00:00", "2026-03", "2026-03-08", 23)):
+            now = datetime.fromisoformat(instant).replace(tzinfo=m.ZoneInfo("America/New_York"))
+            with patch.object(m, "datetime", wraps=datetime) as clock:
+                clock.now.return_value = now
+                result = m.budget_clock({})
+            self.assertEqual(result[:3], (month, day, "America/New_York"))
+            self.assertEqual(result[3]-int(now.timestamp()), hours*3600)
+
+    def test_midnight_expires_authority_and_replay_cannot_extend_it(self):
+        self.setup_send()
+        with patch.object(m, "budget_clock", return_value=("2026-10", "2026-10-30", "America/New_York", 9999999999)):
+            self.assertEqual(self.grant()["statusCode"], 200)
+        with patch.object(m, "budget_clock", return_value=("2026-10", "2026-10-31", "America/New_York", 9999999999)):
+            self.assertEqual(self.grant()["statusCode"], 409)
+            status = m.budget_status(r.get(m.CONFIG_KEY))
+            self.assertEqual(status["dailyRemainingUSD"], "0")
+            month_key, _ = m.budget_keys("2026-10", "2026-10-31")
+            r._table.put_item(Item={**month_key, "allocatedUSD": Decimal("20"), "version": 1})
+            self.assertEqual(self.send()["statusCode"], 409)
+        self.assertEqual(self.forms, [])
+
+    def test_daily_call_duration_stays_inside_midnight_authority(self):
+        self.setup_send()
+        month, day, _, _ = m.budget_clock(self.configure())
+        month_key, day_key = m.budget_keys(month, day)
+        r._table.put_item(Item={**month_key, "allocatedUSD": Decimal("20"), "version": 1})
+        r._table.put_item(Item={**day_key, "grantedUSD": Decimal("5"), "spentUSD": Decimal("0"), "version": 1, "expiresAt": 1060})
+        with patch.object(m.time, "time", return_value=1000):
+            self.assertEqual(self.send()["statusCode"], 200)
+        self.assertEqual(self.forms[0]["TimeLimit"], 30)
+
+    def test_grant_rejects_concurrent_timezone_change(self):
+        self.setup_send()
+        def change_zone(operations):
+            self.configure(timezone="America/Los_Angeles")
+            return self.transact(operations)
+        with patch.object(m, "transact", change_zone):
+            self.assertEqual(self.grant()["statusCode"], 409)
+        self.assertFalse(any(row["SK"].startswith("BUDGET_GRANT#") for row in r._table.items.values()))
 
 
 if __name__ == "__main__":

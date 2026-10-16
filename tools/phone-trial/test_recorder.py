@@ -113,6 +113,16 @@ class RecorderTests(unittest.TestCase):
         self.register()
         r.set_recording(CALL, REC, "ready", s3Key="phone-trial/trial/" + CALL + "/" + REC + ".mp3")
 
+    def test_budget_dispatch_is_iam_only(self):
+        with patch("owner_messages.budget_operation", return_value={"statusCode": 200}) as dispatch:
+            for operation in ("owner_budget_status", "owner_budget_grant"):
+                event = {"operation": operation}
+                self.assertEqual(r.handler(event, None)["statusCode"], 200)
+                dispatch.assert_called_with(event)
+                dispatch.reset_mock()
+                self.assertEqual(self.post("/budget", event)["statusCode"], 404)
+                dispatch.assert_not_called()
+
     def test_signatures_rejected_before_parsing(self):
         self.assertEqual(self.post("/events", {}, False)["statusCode"], 403)
         result = r.handler({"rawPath": "/recording", "requestContext": {"http": {"method": "POST"}}, "body": "", "headers": {}}, None)

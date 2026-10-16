@@ -163,7 +163,7 @@ func (s *server) navigate(w http.ResponseWriter, r *http.Request) {
 		case "request":
 			c.NavActions++
 			c.NavRequested = true
-			prefix = "<Say>Front desk or customer service, please.</Say>"
+			prefix = sayPrompt("Front desk or customer service, please.")
 		case "person":
 			c.Navigating = false
 		}

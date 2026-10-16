@@ -21,11 +21,11 @@ verified VPN compatibility. Transfers to new people end the trial call rather
 than silently recording an unconsented participant.
 
 The runner checks current-month Twilio usage, reserves $8 for infrastructure,
-and reserves $1.20 per call before dialing. Azure GlobalStandard retail rates
+and reserves $1.40 per call before dialing. Azure GlobalStandard retail rates
 are conservatively applied to all tokens as audio, with no cache/credit discount.
 Incomplete model accounting retains the reserve. New calls stop before the
 $20 threshold; an explicit owner $5 daily grant is required to continue beyond
-it. The trial never creates such a grant itself. The report labels this allocation
+it. The dated trial keeps its strict $20 cap and does not consume the owner-message daily grants. It never creates a grant itself. The report labels this allocation
 as conservative, not an invoice.
 
 ## Owner rehearsal

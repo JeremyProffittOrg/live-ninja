@@ -825,3 +825,85 @@ func TestMediaInvalidStartEmitsFailureImmediately(t *testing.T) {
 		t.Fatal("stream failure remained pending")
 	}
 }
+
+// Exercise actual handlers as well as text escaping: every pre-model prompt
+// must select the same neural voice without changing consent or recording.
+func TestTelephonePromptVoice(t *testing.T) {
+	for _, scenario := range []string{"introduction", "clarification", "navigation", "consented", "declined", "goodbye", "escaped"} {
+		t.Run(scenario, func(t *testing.T) {
+			s, c := fixture()
+			recordings := 0
+			s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(r.URL.Path, "/Recordings.json") {
+					recordings++
+				}
+				return &http.Response{StatusCode: 201, Body: io.NopCloser(strings.NewReader("{}"))}, nil
+			})
+			w := httptest.NewRecorder()
+			switch scenario {
+			case "introduction":
+				twiml(w, s.gather(c.Target, false))
+			case "clarification":
+				twiml(w, s.gather(c.Target, true))
+			case "navigation":
+				c.Navigating = true
+				c.NavDeadline = time.Now().Add(time.Minute)
+				s.navigate(w, request(s, c, "/navigate?run=trial&target=hotel&step=0", "Please say the department"))
+			case "consented":
+				s.consent(w, request(s, c, "/consent?run=trial&target=hotel", "yes"))
+			case "declined":
+				s.consent(w, request(s, c, "/consent?run=trial&target=hotel", "no"))
+			case "goodbye":
+				twiml(w, goodbye)
+			case "escaped":
+				twiml(w, sayPrompt("A & B <Record/> \"quote\""))
+			}
+			wantRecordings := 0
+			if scenario == "consented" {
+				wantRecordings = 1
+			}
+			if recordings != wantRecordings {
+				t.Fatalf("recordings=%d, want %d", recordings, wantRecordings)
+			}
+			d := xml.NewDecoder(strings.NewReader(w.Body.String()))
+			says := 0
+			for {
+				token, err := d.Token()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if start, ok := token.(xml.StartElement); ok {
+					if start.Name.Local == "Record" {
+						t.Fatal("unintended recording markup")
+					}
+					if start.Name.Local != "Say" {
+						continue
+					}
+					says++
+					attrs := map[string]string{}
+					for _, a := range start.Attr {
+						attrs[a.Name.Local] = a.Value
+					}
+					if attrs["voice"] != "Polly.Joanna-Neural" || attrs["language"] != "en-US" {
+						t.Fatalf("prompt attributes: %v", attrs)
+					}
+					if scenario == "escaped" {
+						var text string
+						if err := d.DecodeElement(&text, &start); err != nil {
+							t.Fatal(err)
+						}
+						if text != "A & B <Record/> \"quote\"" {
+							t.Fatalf("escaped text: %q", text)
+						}
+					}
+				}
+			}
+			if says == 0 {
+				t.Fatal("missing spoken prompt")
+			}
+		})
+	}
+}

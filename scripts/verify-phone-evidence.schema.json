@@ -1,0 +1,474 @@
+{
+  "version": 1,
+  "repository": "JeremyProffittOrg/live-ninja",
+  "awsAccount": "759775734231",
+  "azureSubscription": "adc40fff-bab3-4bd2-b961-1832d0375052",
+  "legacyDevice": "4633424442303098",
+  "milestones": {
+    "phone-verification-tools": {
+      "depends": [],
+      "items": [
+        "phone-evidence-tools",
+        "phone-evidence-schema",
+        "phone-run-manifest"
+      ],
+      "cases": [],
+      "checks": [
+        "powershell.exe -NoProfile -NonInteractive -File scripts/verify-phone-evidence.tests.ps1"
+      ],
+      "requiresLive": false
+    },
+    "phone-targets": {
+      "depends": [
+        "phone-verification-tools"
+      ],
+      "items": [
+        "phone-target-evidence",
+        "phone-contract-evidence",
+        "phone-run-lock"
+      ],
+      "cases": [],
+      "checks": [
+        "gh auth status",
+        "gh secret list --repo JeremyProffittOrg/live-ninja",
+        "account/resource identity and noninteractive access checks"
+      ],
+      "requiresLive": true
+    },
+    "phone-account-session": {
+      "depends": [
+        "phone-targets"
+      ],
+      "items": [
+        "phone-session-binding",
+        "phone-tool-filter"
+      ],
+      "cases": [],
+      "checks": [
+        "go test ./internal/realtime/ ./internal/tools/ ./internal/webapp/ ./cmd/realtime-broker/ -count=1"
+      ],
+      "requiresLive": true
+    },
+    "phone-azure-service": {
+      "depends": [
+        "phone-account-session"
+      ],
+      "items": [
+        "phone-host",
+        "phone-azure-workflow"
+      ],
+      "cases": [],
+      "checks": [
+        "go test ./cmd/phone-trial-bridge/ -count=1",
+        "GitHub run and deployed health/commit checks from deployment.json"
+      ],
+      "requiresLive": true
+    },
+    "phone-audio-loop": {
+      "depends": [
+        "phone-azure-service"
+      ],
+      "items": [
+        "phone-ingress-validation",
+        "phone-caller-auth",
+        "phone-stream-adapter",
+        "phone-call-cleanup"
+      ],
+      "cases": [],
+      "checks": [
+        "go test ./cmd/phone-trial-bridge/ -count=1",
+        "go test -race ./cmd/phone-trial-bridge/ -count=1"
+      ],
+      "requiresLive": true
+    },
+    "phone-number-routing": {
+      "depends": [
+        "phone-audio-loop",
+        "call-budget-gate"
+      ],
+      "items": [
+        "phone-number-config",
+        "phone-cost-verification"
+      ],
+      "cases": [],
+      "checks": [
+        "provider number ownership/capability/webhook checks against the locked account and deployed URLs"
+      ],
+      "requiresLive": true
+    },
+    "call-topology-proof": {
+      "depends": [
+        "phone-targets",
+        "phone-azure-service"
+      ],
+      "items": [
+        "call-transport-proof",
+        "call-cost-model"
+      ],
+      "cases": [
+        "call-transport-proof"
+      ],
+      "checks": [
+        "scripts\\verify-phone-evidence.bat run-case call-transport-proof"
+      ],
+      "requiresLive": true
+    },
+    "call-client": {
+      "depends": [
+        "call-topology-proof",
+        "phone-account-session"
+      ],
+      "items": [
+        "call-dialer",
+        "call-mic-ownership",
+        "call-participation"
+      ],
+      "cases": [],
+      "checks": [
+        "go test ./cmd/phone-trial-bridge/ ./internal/webapp/ -count=1",
+        "node --test tests/web/unit/*.test.mjs",
+        "Android gradlew.bat :app:testDebugUnitTest :app:lintDebug"
+      ],
+      "requiresLive": true
+    },
+    "assistant-call-task": {
+      "depends": [
+        "call-topology-proof",
+        "phone-number-routing",
+        "call-budget-gate"
+      ],
+      "items": [
+        "call-task-authorization",
+        "call-task-lifecycle",
+        "call-owner-control"
+      ],
+      "cases": [
+        "call-task-lifecycle"
+      ],
+      "checks": [
+        "go test ./internal/tools/ ./cmd/phone-trial-bridge/ -count=1",
+        "scripts\\verify-phone-evidence.bat run-case call-task-lifecycle"
+      ],
+      "requiresLive": true
+    },
+    "recording-capture": {
+      "depends": [
+        "phone-audio-loop",
+        "phone-account-session"
+      ],
+      "items": [
+        "recording-call-journal",
+        "recording-provider-capture",
+        "recording-state"
+      ],
+      "cases": [],
+      "checks": [
+        "go test ./cmd/phone-trial-bridge/ ./internal/store/ ./internal/webapp/ -count=1"
+      ],
+      "requiresLive": true
+    },
+    "recording-app-access": {
+      "depends": [
+        "recording-s3-ingest",
+        "call-client"
+      ],
+      "items": [
+        "recording-call-history",
+        "recording-authorized-media",
+        "recording-client-safety",
+        "recording-help"
+      ],
+      "cases": [],
+      "checks": [
+        "go test ./internal/webapp/ ./internal/deliv/ -count=1",
+        "node --test tests/web/unit/*.test.mjs",
+        "Android gradlew.bat :app:testDebugUnitTest :app:lintDebug"
+      ],
+      "requiresLive": true
+    },
+    "phone-acceptance": {
+      "depends": [
+        "phone-number-routing",
+        "recording-app-access"
+      ],
+      "items": [
+        "phone-help",
+        "phone-live-call",
+        "phone-release"
+      ],
+      "cases": [
+        "phone-live-call"
+      ],
+      "checks": [
+        "go test ./internal/webapp/ -run TestHelpDrawer -count=1",
+        "go test ./... -count=1",
+        "scripts\\verify-phone-evidence.bat run-case phone-live-call"
+      ],
+      "requiresLive": true
+    },
+    "call-modes-acceptance": {
+      "depends": [
+        "phone-acceptance",
+        "call-client",
+        "assistant-call-task",
+        "recording-app-access"
+      ],
+      "items": [
+        "call-help-modes",
+        "call-live-matrix",
+        "call-expanded-release"
+      ],
+      "cases": [
+        "call-live-matrix"
+      ],
+      "checks": [
+        "go test ./... -count=1",
+        "node --test tests/web/unit/*.test.mjs",
+        "scripts\\verify-phone-evidence.bat run-case call-live-matrix"
+      ],
+      "requiresLive": true
+    },
+    "hotel-task-provider": {
+      "depends": [
+        "assistant-call-task",
+        "phone-targets",
+        "call-budget-gate"
+      ],
+      "items": [
+        "hotel-job-contract",
+        "hotel-call-ledger",
+        "hotel-run-control",
+        "hotel-conversation-agent"
+      ],
+      "cases": [],
+      "checks": [
+        "go test ./internal/jobs/ ./cmd/phone-trial-bridge/ ./internal/tools/ ./internal/webapp/ ./cmd/jobs-worker/ -count=1"
+      ],
+      "requiresLive": true
+    },
+    "hotel-results": {
+      "depends": [
+        "hotel-task-provider",
+        "call-modes-acceptance",
+        "recording-app-access"
+      ],
+      "items": [
+        "hotel-result-summary",
+        "hotel-help-update",
+        "hotel-acceptance-run"
+      ],
+      "cases": [
+        "hotel-acceptance-run"
+      ],
+      "checks": [
+        "go test ./internal/webapp/ -run TestHelpDrawer -count=1",
+        "node --test tests/web/unit/jobs.test.mjs",
+        "scripts\\verify-phone-evidence.bat run-case hotel-acceptance-run"
+      ],
+      "requiresLive": true
+    },
+    "car-usb-access": {
+      "depends": [
+        "phone-verification-tools"
+      ],
+      "items": [
+        "car-phone-control",
+        "car-artifact-match"
+      ],
+      "cases": [],
+      "checks": [
+        "\"C:\\Users\\Jeremy\\AppData\\Local\\Android\\Sdk\\platform-tools\\adb.exe\" -s 4633424442303098 get-state",
+        "installed artifact/commit match"
+      ],
+      "requiresLive": true
+    },
+    "car-repro": {
+      "depends": [
+        "car-usb-access"
+      ],
+      "items": [
+        "car-baseline",
+        "car-cause"
+      ],
+      "cases": [
+        "car-baseline"
+      ],
+      "checks": [
+        "scripts\\verify-phone-evidence.bat run-case car-baseline",
+        "the gate passes only when a valid red-capable baseline is recorded, not when missing hardware is mislabeled as a reproduced bug"
+      ],
+      "requiresLive": true
+    },
+    "car-route-fix": {
+      "depends": [
+        "car-repro"
+      ],
+      "items": [
+        "car-legacy-route",
+        "car-modern-route",
+        "car-audio-ownership",
+        "car-regression-proof"
+      ],
+      "cases": [
+        "car-regression-proof"
+      ],
+      "checks": [
+        "Android gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:connectedDebugAndroidTest with ANDROID_SERIAL=4633424442303098",
+        "scripts\\verify-phone-evidence.bat run-case car-regression-proof"
+      ],
+      "requiresLive": true
+    },
+    "auto-platform-gate": {
+      "depends": [
+        "phone-targets"
+      ],
+      "items": [
+        "auto-eligibility",
+        "auto-release-access",
+        "auto-phone-support"
+      ],
+      "cases": [],
+      "checks": [
+        "read-only Play/device/category eligibility checks using the locked package, account and recorded newer-phone serial"
+      ],
+      "requiresLive": true
+    },
+    "auto-call-integration": {
+      "depends": [
+        "auto-platform-gate",
+        "car-route-fix",
+        "call-client",
+        "assistant-call-task"
+      ],
+      "items": [
+        "auto-telecom",
+        "auto-car-ui",
+        "auto-session-continuity"
+      ],
+      "cases": [],
+      "checks": [
+        "Android gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleDebug",
+        "scoped connected tests for Telecom lifecycle"
+      ],
+      "requiresLive": true
+    },
+    "auto-test-distribution": {
+      "depends": [
+        "auto-call-integration"
+      ],
+      "items": [
+        "auto-test-artifact",
+        "auto-test-install"
+      ],
+      "cases": [],
+      "checks": [
+        "GitHub/Play artifact receipts and installed-device version/commit checks"
+      ],
+      "requiresLive": true
+    },
+    "car-test-matrix": {
+      "depends": [
+        "car-route-fix",
+        "auto-test-distribution",
+        "call-modes-acceptance",
+        "recording-app-access"
+      ],
+      "items": [
+        "car-unit-matrix",
+        "car-device-matrix",
+        "auto-dhu-matrix",
+        "car-real-call-matrix",
+        "car-failure-matrix",
+        "car-soak"
+      ],
+      "cases": [
+        "auto-dhu-matrix",
+        "car-real-call-matrix",
+        "car-failure-matrix",
+        "car-soak"
+      ],
+      "checks": [
+        "Android gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:connectedDebugAndroidTest",
+        "scripts\\verify-phone-evidence.bat run-case auto-dhu-matrix",
+        "scripts\\verify-phone-evidence.bat run-case car-real-call-matrix",
+        "scripts\\verify-phone-evidence.bat run-case car-failure-matrix",
+        "scripts\\verify-phone-evidence.bat run-case car-soak"
+      ],
+      "requiresLive": true
+    },
+    "car-release-proof": {
+      "depends": [
+        "car-test-matrix"
+      ],
+      "items": [
+        "car-help-release",
+        "car-ci-release",
+        "car-installed-acceptance"
+      ],
+      "cases": [
+        "car-installed-acceptance"
+      ],
+      "checks": [
+        "go test ./internal/webapp/ -run TestHelpDrawer -count=1",
+        "scripts\\verify-phone-evidence.bat run-case car-installed-acceptance",
+        "GitHub/Play/installed-version checks"
+      ],
+      "requiresLive": true
+    },
+    "recording-live-proof": {
+      "depends": [
+        "recording-app-access",
+        "call-modes-acceptance",
+        "hotel-results",
+        "car-release-proof"
+      ],
+      "items": [
+        "recording-live-matrix",
+        "recording-cost-proof",
+        "recording-release-proof"
+      ],
+      "cases": [
+        "recording-live-matrix"
+      ],
+      "checks": [
+        "scripts\\verify-phone-evidence.bat run-case recording-live-matrix",
+        "go test ./internal/webapp/ -run TestHelpDrawer -count=1",
+        "final GitHub/installed-artifact/S3 checks"
+      ],
+      "requiresLive": true
+    },
+    "call-budget-gate": {
+      "depends": [
+        "phone-targets"
+      ],
+      "items": [
+        "call-cost-ledger",
+        "call-spend-admission",
+        "call-daily-approval",
+        "call-budget-observability"
+      ],
+      "cases": [],
+      "checks": [
+        "go test ./cmd/phone-trial-bridge/ ./internal/jobs/ ./internal/tools/ ./internal/webapp/ -count=1"
+      ],
+      "requiresLive": true
+    },
+    "recording-s3-ingest": {
+      "depends": [
+        "recording-capture"
+      ],
+      "items": [
+        "recording-object-copy",
+        "recording-storage-index",
+        "recording-recovery",
+        "recording-data-lifecycle"
+      ],
+      "cases": [],
+      "checks": [
+        "go test ./internal/deliv/ ./internal/store/ ./internal/webapp/ ./cmd/account-purge/ -count=1",
+        "ingestion-worker integrity/retry tests"
+      ],
+      "requiresLive": true
+    }
+  }
+}

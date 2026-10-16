@@ -196,7 +196,15 @@ func twiml(w http.ResponseWriter, body string) {
 	io.WriteString(w, "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response>"+body+"</Response>")
 }
 
-const goodbye = "<Say>Thank you for your time. Goodbye!</Say><Hangup/>"
+const promptVoice = "Polly.Joanna-Neural"
+const promptSayOpen = `<Say voice="` + promptVoice + `" language="en-US">`
+const goodbye = promptSayOpen + "Thank you for your time. Goodbye!</Say><Hangup/>"
+
+// Explicit neural voice avoids account-default/basic synthesis. Plain text only:
+// callers cannot inject SSML or change the voice through a spoken prompt.
+func sayPrompt(text string) string {
+	return promptSayOpen + escape(text) + "</Say>"
+}
 
 func (s *server) gather(t target, clarify bool) string {
 	q := "Hi! I'm Jeremy's AI assistant, helping plan his world-domination tour, starting with hotel Wi-Fi his work VPN will tolerate. Could you help with a quick question? May I record our chat so Jeremy can listen later? Please say yes or press 1 if you agree."
@@ -204,7 +212,7 @@ func (s *server) gather(t target, clarify bool) string {
 		q = "May I record this conversation for Jeremy? Please say yes or press 1 to agree, or say no to end the call."
 	}
 	action := s.cfg.Base + "/consent?" + url.Values{"run": {s.cfg.Run}, "target": {t.ID}}.Encode()
-	return "<Gather input=\"speech dtmf\" numDigits=\"1\" timeout=\"6\" speechTimeout=\"auto\" actionOnEmptyResult=\"true\" method=\"POST\" action=\"" + escape(action) + "\"><Say>" + escape(q) + "</Say></Gather>" + goodbye
+	return "<Gather input=\"speech dtmf\" numDigits=\"1\" timeout=\"6\" speechTimeout=\"auto\" actionOnEmptyResult=\"true\" method=\"POST\" action=\"" + escape(action) + "\">" + sayPrompt(q) + "</Gather>" + goodbye
 }
 func (s *server) voice(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.authorize(w, r)
@@ -305,7 +313,7 @@ func (s *server) consent(w http.ResponseWriter, r *http.Request) {
 	}
 	stream := strings.Replace(s.cfg.Base, "https://", "wss://", 1) + "/media/" + c.Token
 	action := s.cfg.Base + "/media-ended?" + url.Values{"run": {s.cfg.Run}, "target": {c.Target.ID}, "stream": {c.Token}}.Encode()
-	twiml(w, "<Say>Thank you. Recording starts now.</Say><Connect action=\""+escape(action)+"\" method=\"POST\"><Stream url=\""+escape(stream)+"\"/></Connect>"+goodbye)
+	twiml(w, sayPrompt("Thank you. Recording starts now.")+"<Connect action=\""+escape(action)+"\" method=\"POST\"><Stream url=\""+escape(stream)+"\"/></Connect>"+goodbye)
 }
 func (s *server) twilio(c *call, suffix string, data url.Values) error {
 	uri := "https://api.twilio.com/2010-04-01/Accounts/" + url.PathEscape(s.cfg.Account) + "/Calls/" + c.SID + suffix

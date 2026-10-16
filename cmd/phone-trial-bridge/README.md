@@ -107,3 +107,31 @@ evidence writes. A cancelled response, abrupt disconnect, or unaccounted respons
 is incomplete. The recorder receives final totals before the provider hangup is
 requested. Missing final evidence means the runner must retain its full reservation.
 No bridge event claims a verified Twilio terminal status; provider callbacks own it.
+
+## Telephone prompt voice
+
+All fixed spoken prompts (IVR request, introduction, consent clarification,
+recording-start notice, and goodbye) explicitly use Polly.Joanna-Neural with
+en-US. This selects Twilio's supported conversational neural voice instead of
+inheriting an account default. There is no basic-voice fallback. Prompt words,
+consent decisions and recording timing are unchanged. Text remains XML-escaped;
+no caller-provided SSML is interpreted. Azure model audio is unchanged.
+
+Pricing checked 2026-10-16: neural synthesis is $0.0032 per 100 characters.
+The bounded normal path contains fewer than 700 spoken characters: four IVR
+requests, introduction, one clarification, recording notice and two goodbyes.
+Even rounding each of these nine utterances up to 100-character blocks gives
+less than $0.05. Include this in the runner's speech overhead, not just Gather
+charges; the per-call reservation remains $1.40. Provider retry billing is not
+a new call authorization and remains covered by the conservative reservation.
+
+Telephone transport and the model bridge still use 8 kHz PCMU; choosing a neural
+voice improves synthesis, not network bandwidth. Offline XML/consent tests prove
+voice selection and unchanged gates, not listener-rated audio quality. Calls
+remain stopped until the owner authorizes a listening test. No paid synthesis
+request is needed by these tests.
+
+Primary references:
+- https://www.twilio.com/docs/voice/twiml/say/text-speech?save_locale=en
+- https://www.twilio.com/en-us/changelog/-say--amazon-polly-neural-voices-in-conversational-speaking-styl
+- https://www.twilio.com/en-us/voice/pricing/us

@@ -61,7 +61,7 @@ Phone sends share a durable voice lock with the hotel runner. Unknown creation
 outcomes retain their lock and request record for reconciliation. Calls last at
 most 90 seconds; there is no automatic redial. Each message reserves $0.30 under
 the $20 monthly allocation. Additional daily spending needs explicit owner
-permission; the MCP tools cannot authorize it themselves. The allocation includes
+permission in the owner’s Phone budget panel; the MCP tools cannot authorize it themselves. Each grant adds $5 for the displayed local day. It expires at midnight and does not clear a stopped-call setting. A new grant is rejected while the remaining allowance can fund another owner message. The allocation includes
 the existing fixed reserve and a month-scoped floor carried from hotel trials.
 
 Owner-message recordings remain private in S3 with the existing 180-day lifecycle.
@@ -83,3 +83,22 @@ Sources:
 - https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization
 - https://modelcontextprotocol.io/specification/2025-11-25/server/tools
 - https://developers.openai.com/plugins/build/auth
+
+## Owner web phone controls
+
+The signed-in owner can read `GET /api/v1/phone/budget` and explicitly authorize
+`POST /api/v1/phone/budget/grant` with `{requestId, expectedDay}`. The server fixes
+the amount at $5 and derives the day from configured timezone (America/New_York
+by default). Grants require a fresh active owner, personal web session, and CSRF
+protection. Reuse the same requestId after an uncertain response. MCP and model
+tools cannot grant spending. The dated hotel runner retains its stricter $20 cap.
+
+History exposes `GET /api/v1/phone/recordings?source=messages&limit=25` with a
+bounded cursor, and `GET /api/v1/phone/recordings/{CallSid}/media` with source and
+disposition (`inline` or `attachment`). Every request rechecks the active owner.
+Legacy trial sources require a private explicit owner binding. Media links last
+five minutes, support byte ranges, and never expose Twilio credentials. Revocation
+prevents new links; issued S3 links remain usable until their short expiry.
+Recordings retain the existing 180-day lifecycle. Native Android downloads, Jobs
+links, and cross-tab microphone coordination are not yet verified. End conversations
+in other tabs before playing recordings.
