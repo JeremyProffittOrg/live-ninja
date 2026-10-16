@@ -36,7 +36,7 @@ def template():
                 "AssumeRolePolicyDocument": {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"}, "Action": "sts:AssumeRole"}]},
                 "Policies": [{"PolicyName": "phone-trial", "PolicyDocument": {"Version": "2012-10-17", "Statement": [
                     {"Effect": "Allow", "Action": ["logs:CreateLogStream", "logs:PutLogEvents"], "Resource": sub("arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/live-ninja-phone-trial-recorder:*")},
-                    {"Effect": "Allow", "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:TransactWriteItems", "dynamodb:UpdateItem"], "Resource": {"Fn::GetAtt": ["Table", "Arn"]}},
+                    {"Effect": "Allow", "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:TransactWriteItems", "dynamodb:ConditionCheckItem", "dynamodb:UpdateItem"], "Resource": {"Fn::GetAtt": ["Table", "Arn"]}},
                     {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject"], "Resource": "arn:aws:s3:::live-ninja-deliverables-759775734231/phone-trial/*"},
                 ]}}],
             }},
