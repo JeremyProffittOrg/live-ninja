@@ -7,7 +7,7 @@ Single active source: C:\dev\live-ninja\plan.md. Completed history: C:\dev\live-
 ## Locked decisions (user-confirmed; do not revisit)
 
 - 2026-10-16 — user: "yes" to adding menu navigation before consent, announced keypad choices, front-desk/customer-service requests, and limits on transfers and waiting.
-- 2026-10-16 — user: "Connect to the assistant, but ONLY if the phone number that called is 434 315 1386 or 434 315 1384 and connect to my current amazon session/login automatically". Inbound allowlist is +14343151386 and +14343151384. Existing owner/PIN requirement remains. Clarification pending: fresh owner conversation vs exact active-session handoff; no inbound routing change until resolved. Login with Amazon maps to the existing internal owner UUID; it is not Amazon retail or AWS Console access.
+- 2026-10-16 — inbound owner calling authorized for exactly two owner-supplied numbers. Exact user wording and E.164 allowlist are stored outside the public repository at C:\dev\live-ninja-test-evidence\inbound-owner-2026-10-16\locked-decisions.txt. Existing owner/PIN requirement remains. Clarification pending: fresh owner conversation vs exact active-session handoff. Login with Amazon refers to the existing internal owner account; no inbound routing change yet.
 
 
 1. **2026-09-22 — bypass spoken smokes.** Do not run F1 or the E4 spoken turn. Do not wait for a microphone. Quote: "let's bypass the smoke tests and make the plan about pushing everything out."
@@ -793,6 +793,9 @@ Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat r
 
 - 2026-10-16 — owner test CAb94e13e6e957caf39001548c9f8df45e completed for 19 seconds; recording ready in private S3. Separately authorized hotel call CA1bf192ae28df1e515261715c96fd2bca completed for 15 seconds; consent answer unknown, no recording or transcript, no Wi-Fi findings. Twilio restriction is cleared for these destinations. No general renewed 20-call authorization was inferred.
 - 2026-10-16 — ivr-navigation local verification: go test ./cmd/phone-trial-bridge -count=1 exit 0; go vet ./cmd/phone-trial-bridge exit 0; go test ./internal/webapp/ -run TestHelpDrawer -count=1 exit 0; python -B -m unittest discover -s tools/phone-trial -p test_*.py exit 0 (33 tests). Deployment pending; no new calls made by this workstream.
+
+
+- 2026-10-16 — IVR release 3dec66ba0d816c2d3e83ce2f9e04362529612190: CI tests and deployment completed; Azure-only probe attempt 1 returned handshake HTTP 0 before any HTTP response. Job retry 2 of 3 requested after backoff; no call job permitted on the expired trial date. Caller allowlist values moved out of the public plan into the private local decision record; original commit history is unchanged.
 
 ## today-phone-trial — execute the dated twenty-call run and report evidence
 depends on: verified trial credentials and real Azure audio probe
