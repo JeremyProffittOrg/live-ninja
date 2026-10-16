@@ -1,0 +1,140 @@
+name: Saved hotel recordings report 2026-10-16
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/phone-hotel-report.yml']
+  workflow_dispatch:
+concurrency:
+  group: phone-trial-2026-10-15
+  cancel-in-progress: false
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      AWS_REGION: us-east-1
+      EXECUTE_TRANSCRIPTION: hotel-vpn-ten-2026-10-16
+      AZURE_OPENAI_ENDPOINT: https://ln-aoai-eastus2.openai.azure.com
+      AZURE_OPENAI_DEPLOYMENT: gpt-realtime-2-1-mini
+      TWILIO_ACCOUNT_SID: ${{ vars.TWILIO_ACCOUNT_SID }}
+      TWILIO_API_KEY_SID: ${{ vars.TWILIO_API_KEY_SID }}
+      TWILIO_API_KEY_SECRET: ${{ secrets.TWILIO_API_KEY_SECRET }}
+      AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - run: go test -race ./cmd/phone-trial-transcribe -count=1
+      - run: go build -o "$RUNNER_TEMP/phone-trial-transcribe" ./cmd/phone-trial-transcribe
+      - run: python -m pip install 'boto3>=1.40,<2'
+      - uses: aws-actions/configure-aws-credentials@v4
+        id: credentials
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-hotel-report-${{ github.run_id }}
+          aws-region: us-east-1
+      - name: Transcribe only the two saved consented recordings
+        shell: python
+        run: |
+          import base64, boto3, hashlib, io, json, os, re, subprocess, tempfile, urllib.request, wave
+          from datetime import datetime
+          from decimal import Decimal
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+          if datetime.now(ZoneInfo('America/Los_Angeles')).date().isoformat() != '2026-10-16':
+              raise SystemExit('Dated transcription authorization expired.')
+          batch = 'hotel-vpn-ten-2026-10-16'
+          event_run = 'hotel-trial-2026-10-15'
+          bucket = 'live-ninja-deliverables-759775734231'
+          selected = {'hotel-06':'CA8158363f167b162913beb6648bdc8bf9', 'hotel-11':'CA95583b7e2416977bf7df642df3a4c881'}
+          table = boto3.resource('dynamodb').Table('live-ninja-phone-trial')
+          s3 = boto3.client('s3')
+          control_key = {'PK':'TRIAL#'+batch,'SK':'CONTROL'}
+          control = table.get_item(Key=control_key,ConsistentRead=True).get('Item',{})
+          if control.get('status') != 'completed' or int(control.get('attempted',0)) != 10:
+              raise SystemExit('Completed ten-call ledger required.')
+          already = control.get('transcriptionStatus') == 'completed'
+          if control.get('transcriptionStatus') and not already:
+              raise SystemExit('Prior transcription outcome requires review; no automatic model retry.')
+          calls = []
+          for target,sid in selected.items():
+              attempt = table.get_item(Key={'PK':'TRIAL#'+batch,'SK':target},ConsistentRead=True).get('Item',{})
+              call = table.get_item(Key={'PK':'RUN#'+event_run,'SK':'CALL#'+sid},ConsistentRead=True).get('Item',{})
+              recording = call.get('recordingSid','')
+              expected = 'phone-trial/'+event_run+'/'+sid+'/'+recording+'.mp3'
+              if attempt.get('callSid') != sid or not attempt.get('settled') or call.get('consentStatus') != 'granted' or call.get('recordingStatus') != 'ready' or not re.fullmatch(r'RE[0-9a-fA-F]{32}',recording) or call.get('s3Key') != expected:
+                  raise SystemExit('Consent, recording identity or batch binding failed.')
+              calls.append((sid,recording,expected))
+          if not already:
+              if Decimal(str(control['spentUSD'])) + Decimal('.20') > Decimal('20'):
+                  raise SystemExit('Transcription reserve exceeds monthly limit.')
+              table.update_item(Key=control_key,UpdateExpression='SET transcriptionStatus=:running, spentUSD=spentUSD+:reserve',ConditionExpression='attribute_not_exists(transcriptionStatus) AND spentUSD=:prior',ExpressionAttributeValues={':running':'running',':reserve':Decimal('.20'),':prior':control['spentUSD']})
+              try:
+                  for sid,recording,key in calls:
+                      with tempfile.TemporaryDirectory(prefix='private-hotel-asr-') as directory:
+                          directory=Path(directory)
+                          class NoRedirect(urllib.request.HTTPRedirectHandler):
+                              def redirect_request(self,*args,**kwargs):
+                                  return None
+                          account=os.environ['TWILIO_ACCOUNT_SID']
+                          if not re.fullmatch(r'AC[0-9a-fA-F]{32}',account):
+                              raise RuntimeError('Invalid account identifier')
+                          authorization=base64.b64encode((os.environ['TWILIO_API_KEY_SID']+':'+os.environ['TWILIO_API_KEY_SECRET']).encode()).decode()
+                          base='https://api.twilio.com/2010-04-01/Accounts/'+account+'/Recordings/'+recording
+                          opener=urllib.request.build_opener(NoRedirect)
+                          def provider_get(url,max_bytes):
+                              request=urllib.request.Request(url,headers={'Authorization':'Basic '+authorization})
+                              with opener.open(request,timeout=30) as response:
+                                  data=response.read(max_bytes+1)
+                                  if len(data)>max_bytes:
+                                      raise RuntimeError('Provider response exceeds size bound')
+                                  return data
+                          provider=json.loads(provider_get(base+'.json',65536))
+                          if provider.get('account_sid')!=account or provider.get('call_sid')!=sid or provider.get('sid')!=recording or provider.get('status')!='completed' or not 0<int(provider.get('duration',0))<=180:
+                              raise RuntimeError('Provider recording identity or duration mismatch')
+                          audio=provider_get(base+'.wav?RequestedChannels=2',6000000)
+                          with wave.open(io.BytesIO(audio),'rb') as wav:
+                              channels=wav.getnchannels()
+                              frames=wav.getnframes()
+                              if wav.getframerate()!=8000 or wav.getsampwidth()!=2 or wav.getcomptype()!='NONE' or channels!=2 or not 800<=frames<=180*8000:
+                                  raise RuntimeError('Provider WAV format or duration rejected')
+                              raw=wav.readframes(frames)
+                              if len(raw)!=frames*channels*2:
+                                  raise RuntimeError('Truncated WAV samples')
+                          s3.put_object(Bucket=bucket,Key=key[:-4]+'.source.wav',Body=audio,ContentType='audio/wav',ServerSideEncryption='AES256',ChecksumSHA256=base64.b64encode(hashlib.sha256(audio).digest()).decode(),Metadata={'sha256':hashlib.sha256(audio).hexdigest(),'call-sid':sid,'recording-sid':recording})
+                          results=[]
+                          for channel in range(channels):
+                              pcm=directory/('channel-'+str(channel)+'.pcm16')
+                              out=directory/('channel-'+str(channel)+'.json')
+                              samples=bytearray(frames*2)
+                              for frame in range(frames):
+                                  offset=(frame*channels+channel)*2
+                                  samples[frame*2:frame*2+2]=raw[offset:offset+2]
+                              pcm.write_bytes(samples)
+                              completed=subprocess.run([str(Path(os.environ['RUNNER_TEMP'])/'phone-trial-transcribe'),'-input',str(pcm),'-pcm16','-output',str(out)],capture_output=True,timeout=110)
+                              if completed.returncode != 0:
+                                  diagnostic=completed.stderr.decode('utf8',errors='replace').strip()
+                                  allowed={'audio duration outside 0.1..180 seconds','session configuration failed','transcription disconnected or timed out','Azure transcription rejected','unsolicited model response rejected','transcription format not confirmed','manual turn detection not confirmed','audio append failed','audio commit failed','unexpected audio commit','unexpected transcript','event ceiling reached','PCM16 duration or sample alignment rejected','Azure transcription connection failed','private result write failed'}
+                                  print('ASR failure: '+(diagnostic if diagnostic in allowed or re.fullmatch(r'Azure transcription rejected code=[a-zA-Z0-9_.-]{0,80} type=[a-zA-Z0-9_.-]{0,80} param=[a-zA-Z0-9_.-]{0,80}',diagnostic) else 'unclassified CLI failure'),flush=True)
+                                  raise RuntimeError('Bounded Azure transcription failed')
+                              value=json.loads(out.read_text())
+                              results.append({'channel':channel+1,'speaker':'unverified','text':value['text'],'status':value['status']})
+                          artifact={'callSid':sid,'recordingSid':recording,'source':'offline_asr','channelAssignment':'unverified','status':'completed','channels':results}
+                          body=json.dumps(artifact).encode()
+                          s3.put_object(Bucket=bucket,Key=key[:-4]+'.transcript.json',Body=body,ContentType='application/json',ServerSideEncryption='AES256',ChecksumSHA256=base64.b64encode(hashlib.sha256(body).digest()).decode())
+                          print('Saved private ASR artifact; channels='+str(channels),flush=True)
+                  table.update_item(Key=control_key,UpdateExpression='SET transcriptionStatus=:done',ExpressionAttributeValues={':done':'completed'})
+              except Exception as failure:
+                  print('ASR orchestration failure type='+type(failure).__name__,flush=True)
+                  table.update_item(Key=control_key,UpdateExpression='SET transcriptionStatus=:failed',ExpressionAttributeValues={':failed':'failed'})
+                  raise SystemExit('Saved-recording transcription failed; no automatic retry, private inputs removed.') from None
+          print('Transcription pass complete; no new calls made.')
+      - name: Send measured batch report with recording links and ASR attachments
+        if: always() && steps.credentials.outcome == 'success'
+        run: python -B tools/phone-trial/send_report.py --function-name live-ninja-phone-trial-recorder --batch-id hotel-vpn-ten-2026-10-16 --template tools/phone-trial/email-status.html --transcript-bucket live-ninja-deliverables-759775734231
