@@ -1,6 +1,6 @@
 # Plan
 
-Status: IVR NAVIGATION IMPLEMENTATION; inbound owner calls await session clarification. Updated 2026-10-16.
+Status: IVR NAVIGATION DEPLOYED; inbound owner calls await session clarification. Updated 2026-10-16.
 
 Single active source: C:\dev\live-ninja\plan.md. Completed history: C:\dev\live-ninja\completed\plan-2026-10-15-history.md and earlier completed/ archives. Deferred work: C:\dev\live-ninja\backlog.md. The current plan covers telephony, Jobs, S3 recordings, car Bluetooth, Android Auto, and their acceptance tests.
 
@@ -797,6 +797,9 @@ Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat r
 
 - 2026-10-16 — IVR release 3dec66ba0d816c2d3e83ce2f9e04362529612190: CI tests and deployment completed; Azure-only probe attempt 1 returned handshake HTTP 0 before any HTTP response. Job retry 2 of 3 requested after backoff; no call job permitted on the expired trial date. Caller allowlist values moved out of the public plan into the private local decision record; original commit history is unchanged.
 
+
+- 2026-10-16 10:16 UTC — ivr-navigation release verified: workflow 38885171231 attempt 2 deploy/test success; expired trial job skipped. Real Azure audio probe passed in job 116923238208. Normal app Deploy 38885171200 success. No additional hotel calls. Phone-menu flow remains live-call unverified; mock signed callbacks cover menu -> hold -> person -> consent -> recording, and all navigation bounds. Inbound setup is pending the user choice already asked: fresh owner conversation or exact active-session handoff. Caller numbers removed from latest public plan but remain in earlier commit history; history not rewritten.
+
 ## today-phone-trial — execute the dated twenty-call run and report evidence
 depends on: verified trial credentials and real Azure audio probe
 
@@ -830,8 +833,8 @@ depends on: today-trial-readiness
 - [x] ivr-listen-first — signed navigation callbacks listen before consent; choose only announced relevant digits; request front desk/customer service from voice menus; wait through hold/transfer announcements.
 - [x] ivr-navigation-bounds — 75-second wall-clock cap, eight gathers, four selections/requests; existing whole-call limit retained. Unknown menus/voicemail end without recording; no hotel redial or new calls in this implementation run.
 - [x] ivr-consent-evidence — prevent recording/model entry while navigating; record action evidence without pre-consent speech. Reports distinguish navigation failure from refusal. Per-call conservative reservation $1.40 includes at most ten Gather requests and existing model/telephony caps.
-- [x] ivr-verification — Local checks below exited 0; CI race and real voice checks pending. go test ./cmd/phone-trial-bridge -count=1; go vet ./cmd/phone-trial-bridge; go test ./internal/webapp/ -run TestHelpDrawer -count=1; python -B -m unittest discover -s tools/phone-trial -p test_*.py. CI runs Go race tests and real Azure-only voice probe. All must exit 0.
-- [~] ivr-delivery — commit only IVR-related bridge, recorder/report, budget, tests, Help, workflow and plan files to main; GitHub deploy and normal Deploy terminal success. Expired 2026-10-15 trial skips calls; deployment releases idle bridge to zero. No local deployment.
+- [x] ivr-verification — Local checks below exited 0; CI race and real Azure voice probe passed. go test ./cmd/phone-trial-bridge -count=1; go vet ./cmd/phone-trial-bridge; go test ./internal/webapp/ -run TestHelpDrawer -count=1; python -B -m unittest discover -s tools/phone-trial -p test_*.py. CI runs Go race tests and real Azure-only voice probe. All must exit 0.
+- [x] ivr-delivery — Verified release workflow 38885171231 attempt 2 success; normal code deployment 38885171200 success. commit only IVR-related bridge, recorder/report, budget, tests, Help, workflow and plan files to main; GitHub deploy and normal Deploy terminal success. Expired 2026-10-15 trial skips calls; deployment releases idle bridge to zero. No local deployment.
 
 Assumptions and limits: prompt matching is English and bounded; no universal IVR understanding, account/payment entry, bookings, voicemail messages, or post-consent transfer continuation. Live hotel IVR behavior is unverified until another explicitly authorized call. Incoming assistant calls are separate scope pending session clarification, not enabled by this workstream.
 
