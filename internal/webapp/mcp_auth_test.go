@@ -193,6 +193,13 @@ func TestMCPOAuthMetadataAndDCR(t *testing.T) {
 }
 func TestMCPOAuthBearerChallengeAndNoCookieAuthentication(t *testing.T) {
 	app, _, cookie := mcpOAuthTestApp(t)
+	req := httptest.NewRequest("POST", "/mcp", strings.NewReader("{}"))
+	req.Header.Set("Origin", "https://evil.example")
+	badOrigin, err := app.Test(req)
+	if err != nil || badOrigin.StatusCode != 403 {
+		t.Fatal("invalid origin must be rejected before bearer processing")
+	}
+	badOrigin.Body.Close()
 	for _, x := range []struct{ path, auth, cookie string }{{"/mcp", "", ""}, {"/mcp", "Bearer not-valid", ""}, {"/mcp", "", cookie}, {"/mcp?access_token=query-token", "", ""}} {
 		resp, _ := mcpOAuthRequest(t, app, "POST", x.path, "", x.cookie, "", x.auth)
 		if resp.StatusCode != 401 || !strings.Contains(resp.Header.Get("WWW-Authenticate"), "/.well-known/oauth-protected-resource/mcp") {

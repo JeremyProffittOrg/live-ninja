@@ -71,6 +71,9 @@ func (a *MCPAuth) Middleware() fiber.Handler {
 		if c.Path() != "/mcp" {
 			return c.SendStatus(403)
 		}
+		if origin := c.Get("Origin"); origin != "" && origin != mcpauth.Issuer {
+			return c.SendStatus(403)
+		}
 		raw := c.Get("Authorization")
 		if !strings.HasPrefix(raw, "Bearer ") || c.Query("access_token") != "" {
 			return a.challenge(c)
