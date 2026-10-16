@@ -48,6 +48,7 @@ jobs:
     outputs:
       bridge_url: ${{ steps.azure.outputs.bridge_url }}
       recorder_url: ${{ steps.recorder.outputs.recorder_url }}
+      calls_authorized: ${{ steps.config.outputs.calls_authorized }}
     env:
       TWILIO_ACCOUNT_SID: ${{ vars.TWILIO_ACCOUNT_SID }}
       TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
@@ -75,8 +76,12 @@ jobs:
         shell: python
         run: |
           import json, os
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          now = datetime.now(ZoneInfo('America/Los_Angeles'))
           c = json.load(open('infra/phone-trial-config.json'))
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('calls_authorized=' + str(now.date().isoformat() == '2026-10-15' and now.hour < 17).lower() + '\n')
               output.write('client=' + c['azureClientId'] + '\n')
               output.write('tenant=' + c['azureTenantId'] + '\n')
               output.write('subscription=' + c['azureSubscriptionId'] + '\n')
@@ -107,8 +112,17 @@ jobs:
                      TARGETS_JSON=json.dumps([{'id':t['id'],'name':t['name'],'phone':t['phone']} for t in targets]))
           subprocess.run(['go','run','./cmd/phone-trial-bridge','-probe'], env=env, check=True, timeout=45)
 
+      - name: Release idle bridge after deployment-only verification
+        if: always() && steps.azure.outcome == 'success' && steps.config.outputs.calls_authorized != 'true'
+        shell: python
+        run: |
+          import json, subprocess
+          c = json.load(open('infra/phone-trial-config.json'))
+          subprocess.run(['az','containerapp','update','--resource-group',c['azureResourceGroup'],'--name',c['azureAppName'],'--min-replicas','0','--query','name','--output','tsv'],check=True,timeout=180)
+
   trial:
     needs: deploy
+    if: needs.deploy.outputs.calls_authorized == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     permissions:

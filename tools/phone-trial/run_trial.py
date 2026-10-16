@@ -20,11 +20,12 @@ RUN = "hotel-trial-2026-10-15"
 DATE = "2026-10-15"
 LIMIT = Decimal("20")
 FIXED_RESERVE = Decimal("8")  # Includes registry/month, warm hosting, storage and tax margin.
-CALL_RESERVE = Decimal("1.20")
+CALL_RESERVE = Decimal("1.40")
 MAX_SECONDS = 180
 TERMINAL = {"completed", "failed", "busy", "no-answer", "canceled"}
 NORMAL_END_REASONS = {"research_finished", "remote_hangup", "twilio_disconnected", "conversation_idle",
-                      "duration_limit", "consent_withdrawn", "token_budget_limit"}
+                      "duration_limit", "consent_withdrawn", "token_budget_limit",
+                      "navigation_limit", "unsupported_menu", "voicemail"}
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -277,7 +278,7 @@ def main():
             if finals:
                 final = max(finals, key=lambda f: int(f.get("inputTokens", 0)) + int(f.get("outputTokens", 0)))
                 measured = max(measured, Decimal(str(final.get("inputTokens", 0))) * Decimal("0.000010") + Decimal(str(final.get("outputTokens", 0))) * Decimal("0.000020"))
-            cost = measured + minutes * Decimal("0.0209") + Decimal("0.05")
+            cost = measured + minutes * Decimal("0.0209") + Decimal("0.21")
             consented = any(e.get("type") == "consent" and e.get("data", {}).get("result") == "granted" for e in related)
             # Incomplete usage remains reserved, never silently charged as zero.
             if consented and not finals:

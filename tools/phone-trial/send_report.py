@@ -56,7 +56,7 @@ def build_report(report, template, targets=None):
             status = html.escape(str(call.get("recordingStatus", "unknown")))
             reason = html.escape(str(call.get("recordingReason", "No reason reported")))
             section += f'<p style="color:#0b0f19;background-color:#ffffff">No verified S3 recording is available for this call. Status: {status}; reason: {reason}.</p>'
-        summaries = [e.get("data", {}) for e in entries if e.get("type") == "summary"]
+        summaries = [e.get("data", {}) for e in entries if e.get("type") == "summary" and e.get("data", {}).get("phase") != "navigation"]
         summary = summaries[-1] if summaries else None
         if summary:
             finding = str(summary.get("summary", "No summary text reported"))

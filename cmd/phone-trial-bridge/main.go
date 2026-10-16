@@ -39,6 +39,10 @@ type call struct {
 	Target                                      target
 	Deadline                                    time.Time
 	Attempts                                    int
+	Navigating, NavRequested                    bool
+	NavStep, NavActions                         int
+	NavDeadline                                 time.Time
+	NavReply                                    string
 	Consented, Connected, Ended                 bool
 	ModelStarted, UsageComplete, EvidenceFailed bool
 	InputTokens, OutputTokens                   int64
@@ -119,6 +123,7 @@ func (s *server) routes() http.Handler {
 	})
 	m.HandleFunc("/voice", s.voice)
 	m.HandleFunc("/consent", s.consent)
+	m.HandleFunc("/navigate", s.navigate)
 	m.HandleFunc("/media/", s.media)
 	return m
 }
@@ -216,16 +221,24 @@ func (s *server) voice(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unavailable", 503)
 		return
 	}
-	c := &call{SID: sid, Token: hex.EncodeToString(token), Target: t, Deadline: time.Now().Add(s.cfg.Max)}
+	c := &call{SID: sid, Token: hex.EncodeToString(token), Target: t, Deadline: time.Now().Add(s.cfg.Max), Navigating: true, NavDeadline: time.Now().Add(navigationLimit)}
 	s.calls[sid] = c
 	s.mu.Unlock()
 	time.AfterFunc(s.cfg.Max, func() { s.finish(c, "duration_limit") })
+	time.AfterFunc(navigationLimit, func() {
+		s.mu.Lock()
+		navigating := c.Navigating && !c.Ended
+		s.mu.Unlock()
+		if navigating {
+			s.finish(c, "navigation_limit")
+		}
+	})
 	if !s.emit(c, "call_registered", map[string]any{"hotel": t.Name, "phone": t.Phone}) {
 		s.finish(c, "event_delivery_failed")
 		twiml(w, goodbye)
 		return
 	}
-	twiml(w, s.gather(t, false))
+	twiml(w, s.navigationGather(c, ""))
 }
 func consentAnswer(speech, digit string) string {
 	if digit == "1" {
@@ -250,7 +263,7 @@ func (s *server) consent(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	c := s.calls[r.PostForm.Get("CallSid")]
-	if c == nil || c.Target.ID != t.ID || c.Ended || c.Consented || time.Now().After(c.Deadline) {
+	if c == nil || c.Target.ID != t.ID || c.Ended || c.Consented || c.Navigating || time.Now().After(c.Deadline) {
 		s.mu.Unlock()
 		twiml(w, goodbye)
 		return

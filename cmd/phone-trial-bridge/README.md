@@ -28,6 +28,24 @@ and result email belong to the runner and recorder. This server does not replace
 those gates. The runner must never treat /health as a successful model or audio test.
 /health only confirms validated runtime configuration and an HTTP listener.
 
+## Phone-menu navigation
+
+Before consent, /voice listens and signed /navigate callbacks select an announced
+front-desk, reception, customer-service, guest-services or operator digit. English
+is selected only when no relevant service option is announced. Spoken menus receive
+"Front desk or customer service, please." Direct human greetings proceed to consent.
+This is bounded English prompt matching, not general-purpose IVR understanding.
+Unknown keypad menus and voicemail end without guessing digits or leaving messages.
+Hold/transfer announcements stay in navigation. Maximum: 75 seconds, eight listening
+turns and four selections/requests, within the provider's existing call limit.
+Recording and model conversation remain disabled until a likely human greeting and
+explicit recording consent. Navigation logs actions only, not unconsented speech.
+A transfer after consent still ends the call; new staff do not inherit consent.
+
+Twilio requires Play digits outside Gather. References:
+- https://www.twilio.com/docs/voice/twiml/play
+- https://www.twilio.com/docs/voice/twiml/gather
+
 ## Consent and evidence
 
 The introduction identifies the AI and asks permission to record. Only a short

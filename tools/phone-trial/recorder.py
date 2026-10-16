@@ -99,6 +99,9 @@ def event_post(raw):
         if (data["type"] == "call_ended" and status in {"no-answer", "busy", "canceled", "failed"}
                 and not new.get("consentStatus") and not new.get("recordingSid") and new["recordingStatus"] == "pending"):
             new.update(recordingStatus="absent", recordingReason="call_" + status)
+        if (data["type"] == "call_ended" and details.get("reason") in {"navigation_limit", "unsupported_menu", "voicemail"}
+                and not new.get("consentStatus") and not new.get("recordingSid") and new["recordingStatus"] == "pending"):
+            new.update(recordingStatus="absent", recordingReason=details["reason"])
         journal = {**journal_key, "createdAt": int(time.time()), "data": data}
         try:
             commit(old, new, journal)

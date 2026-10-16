@@ -232,6 +232,23 @@ class RecorderTests(unittest.TestCase):
             self.assertEqual(call["recordingStatus"], "absent")
             self.assertEqual(call["recordingReason"], "call_" + status)
 
+    def test_navigation_exit_has_no_recording_or_false_refusal(self):
+        for reason in ("navigation_limit", "unsupported_menu", "voicemail"):
+            r._table = Table()
+            self.register()
+            self.state_event("call_ended", reason=reason)
+            call = r.get(r.call_key(CALL))
+            self.assertEqual(call["recordingStatus"], "absent")
+            self.assertEqual(call["recordingReason"], reason)
+            self.assertNotIn("consentStatus", call)
+
+    def test_navigation_summary_is_not_a_wifi_finding(self):
+        import send_report
+        report = {"calls": [{"callSid": CALL}], "events": [{"SK": "navigation", "data": {"callSid": CALL, "type": "summary", "data": {"phase": "navigation", "action": "digits", "digit": "2"}}}]}
+        body = send_report.build_report(report, "")[1]
+        self.assertIn("requirements remain unknown", body)
+        self.assertNotIn("AI summary of staff-reported information", body)
+
     def test_ready_audio_preserved_and_final_usage_stored(self):
         self.ready()
         self.state_event("consent", result="declined")

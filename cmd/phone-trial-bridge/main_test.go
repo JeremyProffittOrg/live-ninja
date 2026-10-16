@@ -515,3 +515,141 @@ func TestProbeAPIFailure(t *testing.T) {
 		t.Fatalf("error %v", e)
 	}
 }
+
+func TestNavigationChoices(t *testing.T) {
+	for _, tc := range []struct {
+		speech, kind, value string
+		requested           bool
+	}{
+		{"For reservations press one. For the front desk press two.", "digits", "2", false},
+		{"Press 1 for reservations, press 3 for customer service.", "digits", "3", false},
+		{"For reception, dial zero.", "digits", "0", false},
+		{"Press one for reservations press two for front desk", "digits", "2", false},
+		{"For English press one. Para espanol press two.", "digits", "1", false},
+		{"Please say the department you want.", "request", "", false},
+		{"Please hold for the next available representative.", "wait", "", false},
+		{"Connecting you to the front desk.", "wait", "", false},
+		{"Hi, this is Amy at the front desk.", "person", "", false},
+		{"Front desk", "person", "", true},
+		{"How can I help you?", "request", "", false},
+		{"How can I help you?", "person", "", true},
+		{"Leave a message after the beep.", "voicemail", "", false},
+		{"To cancel a booking press nine.", "unsupported", "", false},
+		{"Enter your credit card number.", "request", "", false},
+		{"", "wait", "", false},
+	} {
+		t.Run(tc.speech, func(t *testing.T) {
+			got := navigationAction(tc.speech, tc.requested)
+			if got.kind != tc.kind || got.value != tc.value {
+				t.Fatalf("%+v", got)
+			}
+		})
+	}
+}
+func TestNavigationMenuHoldHumanConsent(t *testing.T) {
+	s, c := fixture()
+	c.Navigating = true
+	c.NavDeadline = time.Now().Add(navigationLimit)
+	records := 0
+	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(r.URL.Path, "/Recordings.json") {
+			records++
+		}
+		return &http.Response{StatusCode: 201, Body: io.NopCloser(strings.NewReader("{}"))}, nil
+	})
+	initial := s.navigationGather(c, "")
+	if strings.Contains(initial, "<Say>Hi!") || strings.Contains(initial, "<Connect>") {
+		t.Fatal(initial)
+	}
+	w := httptest.NewRecorder()
+	s.consent(w, request(s, c, "/consent?run=trial&target=hotel", "yes"))
+	if c.Consented || records != 0 {
+		t.Fatal("navigation bypassed")
+	}
+	inputs := []string{"For reservations press 1. For front desk press 2.", "Please hold. Transferring you.", "Hello, this is Amy speaking."}
+	for step, speech := range inputs {
+		path := fmt.Sprintf("/navigate?run=trial&target=hotel&step=%d", step)
+		w = httptest.NewRecorder()
+		s.navigate(w, request(s, c, path, speech))
+		body := w.Body.String()
+		if step == 0 && (!strings.Contains(body, "<Play digits=\"ww2\"/>") || strings.Index(body, "<Play") > strings.Index(body, "<Gather")) {
+			t.Fatal(body)
+		}
+		if step < 2 && strings.Contains(body, "/consent?") {
+			t.Fatal("consent asked of IVR")
+		}
+		if step == 2 && !strings.Contains(body, "/consent?") {
+			t.Fatal(body)
+		}
+		replay := httptest.NewRecorder()
+		s.navigate(replay, request(s, c, path, speech))
+		if replay.Body.String() != body || c.NavStep != step+1 {
+			t.Fatal("callback retry changed state")
+		}
+	}
+	if records != 0 || c.Consented || c.Navigating {
+		t.Fatal("recorded before human consent")
+	}
+	w = httptest.NewRecorder()
+	s.consent(w, request(s, c, "/consent?run=trial&target=hotel", "yes"))
+	if records != 1 || !strings.Contains(w.Body.String(), "<Connect>") {
+		t.Fatal(w.Body.String())
+	}
+}
+func TestNavigationLimitsAndUnsafeCallbacks(t *testing.T) {
+	for _, mode := range []string{"expired", "turns", "selections", "voicemail", "unsupported", "unsigned", "out-of-order"} {
+		t.Run(mode, func(t *testing.T) {
+			s, c := fixture()
+			c.Navigating = true
+			c.NavDeadline = time.Now().Add(navigationLimit)
+			speech := "Please hold"
+			switch mode {
+			case "expired":
+				c.NavDeadline = time.Now().Add(-time.Second)
+			case "turns":
+				c.NavStep = navigationTurns
+			case "selections":
+				c.NavActions = navigationSelections
+				speech = "For the front desk press 2."
+			case "voicemail":
+				speech = "Please leave a message after the tone"
+			case "unsupported":
+				speech = "Press 8 to make a payment"
+			}
+			step := c.NavStep
+			if mode == "out-of-order" {
+				step++
+			}
+			req := request(s, c, fmt.Sprintf("/navigate?run=trial&target=hotel&step=%d", step), speech)
+			if mode == "unsigned" {
+				req.Header.Del("X-Twilio-Signature")
+			}
+			w := httptest.NewRecorder()
+			s.navigate(w, req)
+			if c.Consented || strings.Contains(w.Body.String(), "<Connect>") {
+				t.Fatal("recording without consent")
+			}
+			if mode == "unsigned" || mode == "out-of-order" {
+				if w.Code < 400 || c.Ended {
+					t.Fatal("bad callback mutated call")
+				}
+			} else if !c.Ended {
+				t.Fatal("navigation limit not enforced")
+			}
+		})
+	}
+}
+func TestVoiceStartsWithNavigation(t *testing.T) {
+	s, c := fixture()
+	delete(s.calls, c.SID)
+	w := httptest.NewRecorder()
+	s.voice(w, request(s, c, "/voice?run=trial&target=hotel", ""))
+	if !strings.Contains(w.Body.String(), "/navigate?") || strings.Contains(w.Body.String(), "/consent?") {
+		t.Fatal(w.Body.String())
+	}
+	s.mu.Lock()
+	active := s.calls[c.SID]
+	active.Navigating = false
+	s.mu.Unlock()
+	s.finish(active, "test_finished")
+}

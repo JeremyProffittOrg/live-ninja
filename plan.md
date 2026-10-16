@@ -1,10 +1,14 @@
 # Plan
 
-Status: TODAY-PHONE-TRIAL BLOCKED BY TWILIO 21216; the broader app/car rollout remains a draft. Updated 2026-10-15.
+Status: IVR NAVIGATION IMPLEMENTATION; inbound owner calls await session clarification. Updated 2026-10-16.
 
 Single active source: C:\dev\live-ninja\plan.md. Completed history: C:\dev\live-ninja\completed\plan-2026-10-15-history.md and earlier completed/ archives. Deferred work: C:\dev\live-ninja\backlog.md. The current plan covers telephony, Jobs, S3 recordings, car Bluetooth, Android Auto, and their acceptance tests.
 
 ## Locked decisions (user-confirmed; do not revisit)
+
+- 2026-10-16 — user: "yes" to adding menu navigation before consent, announced keypad choices, front-desk/customer-service requests, and limits on transfers and waiting.
+- 2026-10-16 — user: "Connect to the assistant, but ONLY if the phone number that called is 434 315 1386 or 434 315 1384 and connect to my current amazon session/login automatically". Inbound allowlist is +14343151386 and +14343151384. Existing owner/PIN requirement remains. Clarification pending: fresh owner conversation vs exact active-session handoff; no inbound routing change until resolved. Login with Amazon maps to the existing internal owner UUID; it is not Amazon retail or AWS Console access.
+
 
 1. **2026-09-22 — bypass spoken smokes.** Do not run F1 or the E4 spoken turn. Do not wait for a microphone. Quote: "let's bypass the smoke tests and make the plan about pushing everything out."
 2. **2026-09-22 — push the rest.** A push to `main` is the production deploy. Never deploy from a laptop.
@@ -786,6 +790,10 @@ Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat r
 
 - 2026-10-15 21:34 UTC — repair commit bfad48400858b01f6d59d0fe5c5bc7c76dfd0aba passed 31 Python tests, Go race/vet and real Azure probe; workflow 38810244191 deploy success. Provider-history reconciliation found no prior call. Trial returned "Trial terminal: 0/20 attempted. Trial interrupted: HTTP 400 provider code 21216. Reconcile before retry; do not redial." Twilio https://www.twilio.com/docs/api/errors/21216 describes an outbound provider restriction (possible customer-profile, regulatory, or destination restriction); exact account reason is not verified. Do not try other numbers to evade the restriction. Owner/Twilio must clear it. Email step succeeded with SES MessageId 010001a1417c8bd4-a714ede5-5056-4ff1-8bbf-7f00bd0ca1fb-000000; parent independently read job 116683299678 logs. Zero calls, zero recordings. Azure cleanup succeeded. Execution attempts=2; one bounded resume remains only after the restriction is cleared and within the authorized date. No automatic reschedule.
 
+
+- 2026-10-16 — owner test CAb94e13e6e957caf39001548c9f8df45e completed for 19 seconds; recording ready in private S3. Separately authorized hotel call CA1bf192ae28df1e515261715c96fd2bca completed for 15 seconds; consent answer unknown, no recording or transcript, no Wi-Fi findings. Twilio restriction is cleared for these destinations. No general renewed 20-call authorization was inferred.
+- 2026-10-16 — ivr-navigation local verification: go test ./cmd/phone-trial-bridge -count=1 exit 0; go vet ./cmd/phone-trial-bridge exit 0; go test ./internal/webapp/ -run TestHelpDrawer -count=1 exit 0; python -B -m unittest discover -s tools/phone-trial -p test_*.py exit 0 (33 tests). Deployment pending; no new calls made by this workstream.
+
 ## today-phone-trial — execute the dated twenty-call run and report evidence
 depends on: verified trial credentials and real Azure audio probe
 
@@ -811,3 +819,24 @@ depends on: today-trial-readiness
 Definition of done: workflow trial job reaches success or an explicit actionable blocked result; exactly twenty attempted destinations are reconciled (or remaining count is explicitly reported), all existing recordings are ready or visibly failed, and SES MessageId proves delivery acceptance. Waiting/scheduled is not twenty completed calls.
 
 Jobs: local-test-job, delivery-job, controlled-call-job, recording-transfer-job. GitHub workflow concurrency serializes this run; six-hour trial-job ceiling; 09:00-17:00 California date guard. Track each Actions run ID. Failure signatures include error, failed, canceled, timeout and cost stop. Existing deployment ceiling three; transfers three; each hotel one call. On technical canary failure, stop remaining calls, fix first, resume only from verified terminal ledger without redial. No broad app feature or existing number routing change is authorized by the trial.
+
+## ivr-navigation — reach front desk before requesting recording consent
+depends on: today-trial-readiness
+
+### ivr-prompt-routing — navigate common English phone menus
+- [x] ivr-listen-first — signed navigation callbacks listen before consent; choose only announced relevant digits; request front desk/customer service from voice menus; wait through hold/transfer announcements.
+- [x] ivr-navigation-bounds — 75-second wall-clock cap, eight gathers, four selections/requests; existing whole-call limit retained. Unknown menus/voicemail end without recording; no hotel redial or new calls in this implementation run.
+- [x] ivr-consent-evidence — prevent recording/model entry while navigating; record action evidence without pre-consent speech. Reports distinguish navigation failure from refusal. Per-call conservative reservation $1.40 includes at most ten Gather requests and existing model/telephony caps.
+- [x] ivr-verification — Local checks below exited 0; CI race and real voice checks pending. go test ./cmd/phone-trial-bridge -count=1; go vet ./cmd/phone-trial-bridge; go test ./internal/webapp/ -run TestHelpDrawer -count=1; python -B -m unittest discover -s tools/phone-trial -p test_*.py. CI runs Go race tests and real Azure-only voice probe. All must exit 0.
+- [~] ivr-delivery — commit only IVR-related bridge, recorder/report, budget, tests, Help, workflow and plan files to main; GitHub deploy and normal Deploy terminal success. Expired 2026-10-15 trial skips calls; deployment releases idle bridge to zero. No local deployment.
+
+Assumptions and limits: prompt matching is English and bounded; no universal IVR understanding, account/payment entry, bookings, voicemail messages, or post-consent transfer continuation. Live hotel IVR behavior is unverified until another explicitly authorized call. Incoming assistant calls are separate scope pending session clarification, not enabled by this workstream.
+
+Restart policy: classify deterministic failures and fix before a new commit; at most three deployment repair attempts. Never retry phone calls as part of deployment. Stop only for the plan's existing stop conditions and required inbound-session clarification; independent IVR work continues.
+
+## Inbound discovery evidence — verified 2026-10-16
+- internal/auth/lwa.go and internal/auth/access.go: Login with Amazon profile maps to a separate Live Ninja user UUID.
+- internal/store/users.go GetOwner resolves the owner binding; internal/webapp/api_routes.go starts authenticated owner conversations and stores transcript/history.
+- cmd/realtime-broker/main.go creates fresh session IDs; cmd/nova-bridge/main.go redeems per-session tokens once. An active web token cannot be reused for phone login.
+- Nova uses PCM16 16 kHz input and 24 kHz output; Twilio uses PCMU 8 kHz. Inbound Nova needs explicit audio conversion and an authenticated phone entry point.
+- Required decision remains new conversation under same owner vs exact active-session takeover. No account identity inferred from caller ID alone.
