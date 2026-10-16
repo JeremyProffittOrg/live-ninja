@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
 	"encoding/base64"
 	"encoding/json"
 	"github.com/gorilla/websocket"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -50,8 +52,29 @@ func readWS(ctx context.Context, c *websocket.Conn, source string, ch chan<- wir
 		}
 	}
 }
+
+// Validate the URL configured in <Stream>, not the HTTP URL reconstructed by
+// Azure's TLS-terminating proxy. Both forms use the trusted configured origin;
+// neither Host nor Forwarded headers can choose what gets authenticated.
+func (s *server) signedMedia(r *http.Request) bool {
+	supplied := r.Header.Get("X-Twilio-Signature")
+	if supplied == "" {
+		return false
+	}
+	uri := strings.Replace(s.cfg.Base, "https://", "wss://", 1) + r.URL.RequestURI()
+	if hmac.Equal([]byte(signature(s.cfg.Auth, uri, nil)), []byte(supplied)) || hmac.Equal([]byte(signature(s.cfg.Auth, uri+"/", nil)), []byte(supplied)) {
+		return true
+	}
+	return s.signed(r, true)
+}
+func (s *server) mediaFailure(c *call, code string) {
+	log.Printf("media failure: %s", code)
+	s.emit(c, "error", map[string]any{"code": code})
+	s.finish(c, code)
+}
 func (s *server) media(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" || !s.signed(r, true) {
+	if r.Method != "GET" || !s.signedMedia(r) {
+		log.Print("media entry rejected: method_or_signature")
 		http.Error(w, "forbidden", 403)
 		return
 	}
@@ -67,15 +90,19 @@ func (s *server) media(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 	if c == nil {
+		log.Print("media entry rejected: call_state")
 		http.Error(w, "forbidden", 403)
 		return
 	}
 	up := websocket.Upgrader{HandshakeTimeout: 5 * time.Second, CheckOrigin: func(*http.Request) bool { return true }}
 	tw, e := up.Upgrade(w, r, nil)
 	if e != nil {
-		s.finish(c, "upgrade_failed")
+		s.mediaFailure(c, "upgrade_failed")
 		return
 	}
+	s.mu.Lock()
+	c.Close = func() { tw.Close() }
+	s.mu.Unlock()
 	defer tw.Close()
 	defer s.finish(c, "stream_closed")
 	tw.SetReadLimit(65536)
@@ -83,21 +110,28 @@ func (s *server) media(w http.ResponseWriter, r *http.Request) {
 	var first map[string]any
 	// Twilio sends connected, then start. Bind the actual stream to the signed call.
 	if tw.ReadJSON(&first) != nil {
+		s.mediaFailure(c, "media_start_missing")
 		return
 	}
 	if stringAt(first, "event") == "connected" {
 		if tw.ReadJSON(&first) != nil {
+			s.mediaFailure(c, "media_start_missing")
 			return
 		}
 	}
 	start := objectAt(first, "start")
 	format := objectAt(start, "mediaFormat")
 	if stringAt(first, "event") != "start" || stringAt(start, "accountSid") != s.cfg.Account || stringAt(start, "callSid") != c.SID || stringAt(format, "encoding") != "audio/x-mulaw" || format["sampleRate"] != float64(8000) || format["channels"] != float64(1) {
-		s.finish(c, "stream_rejected")
+		s.mediaFailure(c, "stream_rejected")
 		return
 	}
 	stream := stringAt(start, "streamSid")
 	if stream == "" {
+		s.mediaFailure(c, "stream_id_missing")
+		return
+	}
+	if !s.emit(c, "summary", map[string]any{"phase": "media", "action": "stream_authenticated"}) {
+		s.finish(c, "event_delivery_failed")
 		return
 	}
 	tw.SetReadDeadline(c.Deadline)
@@ -363,4 +397,30 @@ func (s *server) bridgeLoop(ctx context.Context, c *call, tw, az *websocket.Conn
 			}
 		}
 	}
+}
+
+// mediaEnded is the signed Connect action callback. It settles a call even when
+// the WebSocket never upgrades, instead of waiting for the outer call watchdog.
+func (s *server) mediaEnded(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.authorize(w, r)
+	if !ok {
+		return
+	}
+	s.mu.Lock()
+	c := s.calls[r.PostForm.Get("CallSid")]
+	if c == nil || c.Target.ID != t.ID || !c.Consented || !hmac.Equal([]byte(c.Token), []byte(r.URL.Query().Get("stream"))) {
+		s.mu.Unlock()
+		http.Error(w, "forbidden", 403)
+		return
+	}
+	ended, started := c.Ended, c.ModelStarted
+	s.mu.Unlock()
+	if !ended {
+		if !started {
+			s.mediaFailure(c, "media_ended_before_model")
+		} else {
+			s.finish(c, "media_ended")
+		}
+	}
+	twiml(w, goodbye)
 }

@@ -54,6 +54,12 @@ const (
 // JWT verification below.
 var (
 	publicExact = map[string]bool{
+		// MCP and OAuth validate their own scoped credentials in the web app.
+		"/mcp":                   true,
+		"/oauth/register":        true,
+		"/oauth/authorize":       true,
+		"/oauth/token":           true,
+		"/oauth/revoke":          true,
 		"/":                      true, // Fiber-rendered landing/login page
 		"/healthz":               true,
 		"/v1/app/android/latest": true,

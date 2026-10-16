@@ -247,6 +247,11 @@ func (r *authRoutes) callback(c *fiber.Ctx) error {
 	}
 
 	r.notifySignIn(c, user.Email, user.Name, store.SurfaceWeb, sess.SessionID)
+	// MCP return is a fixed internal path; the secure cookie references a
+	// short-lived request, and explicit consent is still required there.
+	if mcpReturnPending(c) {
+		return c.Redirect("/oauth/authorize", fiber.StatusFound)
+	}
 	return c.Redirect("/", fiber.StatusFound)
 }
 

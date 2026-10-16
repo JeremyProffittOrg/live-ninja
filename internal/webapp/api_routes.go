@@ -60,6 +60,13 @@ import (
 func RegisterAPIRoutes(app *fiber.App, deps *Deps) {
 	RegisterGhostWorkRoutes(app, deps)
 	registry := buildAPIToolsRegistry(deps)
+	if mcpAuth, err := NewMCPAuth(deps); err == nil {
+		mcpAuth.Register(app)
+		app.All("/mcp", mcpAuth.Middleware(), handleMCP(registry, "https://live.jeremy.ninja"))
+	} else {
+		deps.Log.Error("MCP authentication unavailable")
+		app.All("/mcp", func(c *fiber.Ctx) error { return c.SendStatus(fiber.StatusServiceUnavailable) })
+	}
 
 	api := app.Group("/api/v1", RequireAuth())
 
@@ -605,7 +612,12 @@ func buildAPIToolsRegistry(deps *Deps) *tools.Registry {
 		return nil
 	}
 
+	phone, phoneErr := newPhoneMessages(awsCfg, os.Getenv("PHONE_MESSAGES_FUNCTION_ARN"))
+	if phoneErr != nil {
+		deps.Log.Error("Owner phone configuration invalid")
+	}
 	toolDeps := &tools.Deps{
+		Phone:                 phone,
 		Store:                 deps.Store,
 		DDB:                   dynamodb.NewFromConfig(awsCfg),
 		TableName:             deps.Cfg.TableName,

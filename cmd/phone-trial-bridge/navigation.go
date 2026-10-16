@@ -46,6 +46,12 @@ func navigationAction(speech string, requested bool) navigationChoice {
 			return navigationChoice{"voicemail", ""}
 		}
 	}
+	// Some menus finish by transferring the call automatically. Do not send
+	// a previously announced digit or speak over that transfer.
+	if (strings.Contains(v, "please stay on the line") || strings.Contains(v, "please remain on the line")) &&
+		(strings.Contains(v, "your call is transferred") || strings.Contains(v, "your call is being transferred")) {
+		return navigationChoice{"wait", ""}
+	}
 	// Select only digits actually announced for a relevant destination.
 	best, digit := 99, ""
 	consider := func(label, spoken string) {

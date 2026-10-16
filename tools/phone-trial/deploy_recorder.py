@@ -80,6 +80,7 @@ def main():
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
         z.write(Path(__file__).with_name("recorder.py"), "recorder.py")
+        z.write(Path(__file__).with_name("owner_messages.py"), "owner_messages.py")
     boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=archive.getvalue(), ServerSideEncryption="AES256")
     params = {"CodeBucket": bucket, "CodeKey": key,
               "TwilioAccount": os.environ["TWILIO_ACCOUNT_SID"], "TwilioKeySid": os.environ["TWILIO_API_KEY_SID"],

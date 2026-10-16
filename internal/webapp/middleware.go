@@ -284,6 +284,10 @@ type amznRequestContext struct {
 // that the bridge calls.
 func ExtractAuthContext(deps *Deps) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		// Opaque MCP grants have a separate audience and must never become app JWTs.
+		if c.Path() == "/mcp" {
+			return c.Next()
+		}
 		token := bearerToken(c)
 		if raw := c.Get("x-amzn-request-context"); raw != "" {
 			var rc amznRequestContext
@@ -487,7 +491,7 @@ func CSRFProtect() fiber.Handler {
 		// web session hits this middleware with a plain HTML form POST that
 		// cannot send X-LN-CSRF (live repro: Tab5 pairing 403 csrf_failed,
 		// 2026-07-18).
-		if c.Path() == "/auth/device/pair/confirm" {
+		if c.Path() == "/auth/device/pair/confirm" || c.Path() == "/oauth/authorize" {
 			return c.Next()
 		}
 		if c.Cookies(RefreshCookieName) == "" {

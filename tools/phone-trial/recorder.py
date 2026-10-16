@@ -41,8 +41,8 @@ def get(key):
     return clients()[0].get_item(Key=key, ConsistentRead=True).get("Item")
 
 
-def call_key(sid):
-    return {"PK": "RUN#" + os.environ["RUN_ID"], "SK": "CALL#" + sid}
+def call_key(sid, run_id=None):
+    return {"PK": "RUN#" + (run_id or os.environ["RUN_ID"]), "SK": "CALL#" + sid}
 
 
 def conditional(exc):
@@ -114,9 +114,9 @@ def event_post(raw):
     return response(409, {"error": "Concurrent update; retry"})
 
 
-def set_recording(sid, recording, status, **fields):
+def set_recording(sid, recording, status, run_id=None, **fields):
     for _ in range(3):
-        old = get(call_key(sid))
+        old = get(call_key(sid, run_id))
         if not old or old.get("recordingSid", recording) != recording:
             raise ValueError("Recording binding mismatch")
         if old.get("recordingStatus") == "ready":
@@ -140,12 +140,12 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def copy_audio(sid, recording):
+def copy_audio(sid, recording, run_id=None):
     account = os.environ["TWILIO_ACCOUNT_SID"]
     url = f"https://api.twilio.com/2010-04-01/Accounts/{account}/Recordings/{recording}.mp3"
     auth = base64.b64encode((os.environ.get("TWILIO_API_KEY_SID", account) + ":" + os.environ.get("TWILIO_API_KEY_SECRET", os.environ["TWILIO_AUTH_TOKEN"])).encode()).decode()
     req = urllib.request.Request(url, headers={"Authorization": "Basic " + auth})
-    key = f"phone-trial/{os.environ['RUN_ID']}/{sid}/{recording}.mp3"
+    key = f"phone-trial/{run_id or os.environ['RUN_ID']}/{sid}/{recording}.mp3"
     # No redirects: provider credentials must never reach another host.
     with urllib.request.build_opener(NoRedirect).open(req, timeout=20) as source, tempfile.TemporaryFile() as audio:
         if source.headers.get_content_type() not in {"audio/mpeg", "audio/mp3"}:
@@ -246,9 +246,13 @@ def issue_link(call):
     return {"url": os.environ["PUBLIC_BASE_URL"].rstrip("/") + "/download?token=" + token, "expiresAt": metadata["expiresAt"]}
 
 
-def report_post(raw, include_links=True):
+def report_post(raw, include_links=True, call_sids=None):
     if json.loads(raw).get("runId") != os.environ["RUN_ID"]:
         return response(400)
+    if call_sids is not None and (not isinstance(call_sids, list) or len(call_sids) > 20
+            or any(not isinstance(sid, str) or not SID.fullmatch(sid) for sid in call_sids)
+            or len(set(call_sids)) != len(call_sids)):
+        return response(400, {"error": "callSids must be at most 20 distinct CallSids"})
     table = clients()[0]
     args = {"KeyConditionExpression": "PK = :pk", "ExpressionAttributeValues": {":pk": "RUN#" + os.environ["RUN_ID"]}, "ConsistentRead": True}
     items = []
@@ -261,11 +265,15 @@ def report_post(raw, include_links=True):
             break
         args["ExclusiveStartKey"] = page["LastEvaluatedKey"]
     calls = [i for i in items if i["SK"].startswith("CALL#")]
+    events = [i for i in items if i["SK"].startswith("EVENT#")]
+    if call_sids is not None:
+        calls = [call for call in calls if call["callSid"] in call_sids]
+        events = [event for event in events if event.get("data", {}).get("callSid") in call_sids]
     for call in calls:
         if include_links and call.get("recordingStatus") == "ready":
             call["recordingLink"] = issue_link(call)
     control = get({"PK": "TRIAL#" + os.environ["RUN_ID"], "SK": "CONTROL"})
-    return response(200, {"runId": os.environ["RUN_ID"], "calls": calls, "events": [i for i in items if i["SK"].startswith("EVENT#")], "control": control})
+    return response(200, {"runId": os.environ["RUN_ID"], "calls": calls, "events": events, "control": control})
 
 
 def download(query):
@@ -273,9 +281,11 @@ def download(query):
     if not re.fullmatch(r"[0-9a-f]{64}", token):
         return response(404)
     metadata = get({"PK": "TOKEN#" + hashlib.sha256(token.encode()).hexdigest(), "SK": "META"})
-    if not metadata or int(metadata["expiresAt"]) <= int(time.time()) or metadata["runId"] != os.environ["RUN_ID"]:
+    if not metadata or int(metadata["expiresAt"]) <= int(time.time()):
         return response(404)
-    call = get(call_key(metadata["callSid"]))
+    if metadata["runId"] != os.environ["RUN_ID"] and not re.fullmatch(r"owner-messages#[0-9a-f-]{36}", metadata["runId"]):
+        return response(404)
+    call = get(call_key(metadata["callSid"], metadata["runId"]))
     if not call or call.get("recordingStatus") != "ready" or any(call.get(k) != metadata[k] for k in ("runId", "recordingSid", "s3Key")):
         return response(404)
     ttl = min(900, int(metadata["expiresAt"]) - int(time.time()))
@@ -316,8 +326,11 @@ def handler(event, context):
     # Only a principal with lambda:InvokeFunction can supply a direct outer event.
     # API Gateway always supplies requestContext/version, regardless of HTTP body.
     if "requestContext" not in event and "version" not in event:
+        if event.get("operation") in {"owner_message_send", "owner_message_status"}:
+            import owner_messages
+            return owner_messages.operation(event)
         if event.get("operation") == "internal_report":
-            return report_post(json.dumps({"runId": event.get("runId")}).encode(), include_links=event.get("includeLinks", True) is True)
+            return report_post(json.dumps({"runId": event.get("runId")}).encode(), include_links=event.get("includeLinks", True) is True, call_sids=event.get("callSids"))
         if event.get("operation") == "internal_reconcile":
             return reconcile(event)
     raw = event.get("body") or ""
@@ -328,6 +341,9 @@ def handler(event, context):
     path = event.get("rawPath", "")
     method = event.get("requestContext", {}).get("http", {}).get("method", "")
     try:
+        if path.startswith("/owner-message/") and method == "POST":
+            import owner_messages
+            return owner_messages.callback(path, raw, headers)
         if path == "/recording" and method == "POST":
             return recording_post(raw, headers)
         if path == "/download" and method == "GET":

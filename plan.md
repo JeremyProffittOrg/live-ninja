@@ -1,6 +1,6 @@
 # Plan
 
-Status: IVR NAVIGATION DEPLOYED; inbound owner calls await session clarification. Updated 2026-10-16.
+Status: MCP OWNER TOOLS READY FOR DEPLOYMENT; ten-hotel batch completed, transcription/report pending. Updated 2026-10-16.
 
 Single active source: C:\dev\live-ninja\plan.md. Completed history: C:\dev\live-ninja\completed\plan-2026-10-15-history.md and earlier completed/ archives. Deferred work: C:\dev\live-ninja\backlog.md. The current plan covers telephony, Jobs, S3 recordings, car Bluetooth, Android Auto, and their acceptance tests.
 
@@ -855,7 +855,7 @@ Restart policy: classify deterministic failures and fix before a new commit; at 
 depends on: ivr-delivery
 ### hotel-ten-execution — call exactly the approved destinations within limits
 - [x] hotel-ten-runner — shared runner profile hotel-vpn-ten-2026-10-16, own CONTROL ledger, existing recorder event namespace; 40 offline tests pass, workflow Python syntax checked.
-- [~] hotel-ten-calls — GitHub workflow phone-hotel-ten.yml; one 180-second call at a time, 00:00–17:00 California date guard reflects user's explicit immediate request. Hold PHONE#CONTROL/VOICE activeRequest=batch:hotel-vpn-ten-2026-10-16 for the batch; release only after terminal provider states. Unknown creation holds lock for reconciliation.
+- [x] hotel-ten-calls — Workflow 38891213603 success; ten terminal attempts; two consented ready recordings, eight navigation exits. GitHub workflow phone-hotel-ten.yml; one 180-second call at a time, 00:00–17:00 California date guard reflects user's explicit immediate request. Hold PHONE#CONTROL/VOICE activeRequest=batch:hotel-vpn-ten-2026-10-16 for the batch; release only after terminal provider states. Unknown creation holds lock for reconciliation.
 - [ ] hotel-ten-results — reconcile all attempted CallSids, consent, transcript evidence and S3 recordings; report accurate results and unattempted count. A queued call never proves a conversation or VPN compatibility.
 Definition of done: GitHub trial job exits0 for ten terminal attempts, or explicit budget/provider blocker with counted attempts; read durable batch CONTROL and call/event records and verify existing recordings.
 Retry policy: each hotel one call; job resumes only verified terminal prior calls and no ambiguous creation, maximum three batch executions. Deployment retry ceiling three; model/audio preflight must pass. No local scheduled automation.
@@ -863,10 +863,23 @@ Retry policy: each hotel one call; job resumes only verified terminal prior call
 ## mcp-owner-tools — expose phone messages, existing Jobs and memory
 depends on: none; phone-send enablement depends on hotel-ten-results
 ### mcp-oauth-login — browser sign-in through existing owner account
-- [~] mcp-oauth-implementation — agent /root/phone_trial_bridge owns internal/mcpauth and webapp mcp_auth handlers; owner browser consent, PKCE, exact redirects, hashed opaque tokens and refresh rotation.
+- [x] mcp-oauth-implementation — Local tests and vet passed; deployment/browser connection pending. agent /root/phone_trial_bridge owns internal/mcpauth and webapp mcp_auth handlers; owner browser consent, PKCE, exact redirects, hashed opaque tokens and refresh rotation.
 Definition of done: go test ./internal/mcpauth ./internal/webapp -run 'TestMCP|TestOAuth' exits0; deployed metadata and unauthorized challenge verified.
 ### mcp-shared-tools — preserve existing authorization and side-effect controls
-- [~] mcp-transport — root owns narrow MCP tool adapter, registry phone definitions, route/IAM wiring, Help and docs. Existing job mutation proposals still require the Jobs review interface; no general background AI executor.
-- [~] mcp-phone-service — agent /root/phone_trial_recordings owns existing recorder Lambda IAM-only owner-message backend and tests; configured destination aliases only, durable idempotency, single-call lock, budget reservation, signed callbacks and private recordings. Runtime config remains absent/disabled until hotel batch is terminal; seed budgetFloorUSD from final batch allocation before enablement.
+- [x] mcp-transport — Local protocol, scope, registry memory, owner-phone and idempotency tests pass. root owns narrow MCP tool adapter, registry phone definitions, route/IAM wiring, Help and docs. Existing job mutation proposals still require the Jobs review interface; no general background AI executor.
+- [x] mcp-phone-service — 60 combined Python tests pass; configuration privately seeded after terminal batch with October $18 conservative floor. Deployment and one owner message smoke test pending. agent /root/phone_trial_recordings owns existing recorder Lambda IAM-only owner-message backend and tests; configured destination aliases only, durable idempotency, single-call lock, budget reservation, signed callbacks and private recordings. Runtime config remains absent/disabled until hotel batch is terminal; seed budgetFloorUSD from final batch allocation before enablement.
 Definition of done: focused Go/Python tests pass for scopes, owner boundaries, no duplicate calls, budget stop, recording and status; GitHub deployment passes; MCP initialize/tools/list/tools/call protocol verified. Actual Claude/ChatGPT connection requires owner browser sign-in and cannot be claimed from mocked tests.
 Scope: no inbound call session-handoff implementation, no arbitrary phone destinations, no general task worker, no local scheduling. Pending inbound session choice remains separate.
+
+### mcp-release-verification — deploy and verify actual service behavior
+depends on: mcp-oauth-login, mcp-shared-tools
+- [~] mcp-production-deploy — publish main through existing GitHub pipeline; add focused race checks. Verify metadata and 401 challenge, reject invalid origin/token, verify private owner phone message callback and S3 recording. Actual Claude/ChatGPT browser sign-in remains owner action, not inferred from API tests.
+- [ ] hotel-asr-report — publish phone-hotel-report.yml separately only after recorder changes deploy; convert canonical dual-channel WAV for the same two consented RecordingSids using standard libraries (no FFmpeg/dependency). Bound to four channels of at most 180 seconds, reserve $0.20 once, no generated model response. Store WAV/ASR privately beside existing MP3, label speakers unverified, email links+transcript attachment through existing SES sender; verify SES MessageId. No new hotel call.
+Definition of done: deployment workflows terminal success; live metadata and unauthorized rejection confirmed; phone-message provider status/playback/recording measured; report workflow terminal and SES MessageId verified or precise operator blocker reported.
+
+### mcp-execution-evidence — retain facts for a cold reader
+- 2026-10-16 — all ten calls in batch hotel-vpn-ten-2026-10-16 settled; spentUSD 17.58806 is conservative allocation, not invoice. hotel-06 and hotel-11 consented recordings ready; other seven unsupported_menu and one navigation_limit. Neither consented call generated live transcript/model usage, so no completed interview or VPN findings verified.
+- 2026-10-16 — private CONFIG/OWNER_MESSAGES and PHONE#BUDGET#2026-10 seeded transactionally after verifying no shared voice lock; two user-approved destination aliases, existing active owner UUID, budgetFloorUSD=18.00 and budgetFloorMonth=2026-10. No private numbers committed.
+- 2026-10-16 — media fix: independent WSS signature vector reproduced HTTP403 before fix; accept trusted configured WSS origin and existing HTTPS proxy form. Signed, call-bound Connect completion records failed model entry immediately. Proven in tests; original deployed logs lacked handshake details, so causal diagnosis remains consistent with symptoms rather than live-proven.
+- 2026-10-16 — actual Marriott request-inspector trace announced that transfer was already underway; IVR now waits before considering menu digits. Hilton voice-menu prompt still requests front desk. No automatic hotel redial.
+- 2026-10-16 — go test ./internal/tools ./internal/webapp ./internal/mcpauth ./cmd/authorizer ./cmd/phone-trial-bridge ./cmd/phone-trial-transcribe -count=1 passed; corresponding go vet passed; python -B -m unittest discover -s tools/phone-trial -p test_*.py passed 60 tests. Existing app Help updated in same release.

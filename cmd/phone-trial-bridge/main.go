@@ -125,6 +125,7 @@ func (s *server) routes() http.Handler {
 	m.HandleFunc("/consent", s.consent)
 	m.HandleFunc("/navigate", s.navigate)
 	m.HandleFunc("/media/", s.media)
+	m.HandleFunc("/media-ended", s.mediaEnded)
 	return m
 }
 func signature(token, uri string, p url.Values) string {
@@ -301,7 +302,8 @@ func (s *server) consent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stream := strings.Replace(s.cfg.Base, "https://", "wss://", 1) + "/media/" + c.Token
-	twiml(w, "<Say>Thank you. Recording starts now.</Say><Connect><Stream url=\""+escape(stream)+"\"/></Connect>"+goodbye)
+	action := s.cfg.Base + "/media-ended?" + url.Values{"run": {s.cfg.Run}, "target": {c.Target.ID}, "stream": {c.Token}}.Encode()
+	twiml(w, "<Say>Thank you. Recording starts now.</Say><Connect action=\""+escape(action)+"\" method=\"POST\"><Stream url=\""+escape(stream)+"\"/></Connect>"+goodbye)
 }
 func (s *server) twilio(c *call, suffix string, data url.Values) error {
 	uri := "https://api.twilio.com/2010-04-01/Accounts/" + url.PathEscape(s.cfg.Account) + "/Calls/" + c.SID + suffix

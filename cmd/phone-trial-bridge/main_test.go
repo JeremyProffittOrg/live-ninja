@@ -114,7 +114,7 @@ func TestConsentRecordingOnlyAfterYesAndOnce(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		w := httptest.NewRecorder()
 		s.consent(w, request(s, c, "/consent?run=trial&target=hotel", "yes"))
-		if i == 0 && !strings.Contains(w.Body.String(), "<Connect>") {
+		if i == 0 && !strings.Contains(w.Body.String(), "<Connect") {
 			t.Fatal(w.Body.String())
 		}
 	}
@@ -130,7 +130,7 @@ func TestConsentAmbiguousClarifiesOnceThenEnds(t *testing.T) {
 		if strings.Contains(w.Body.String(), "<Gather") != (i == 0) {
 			t.Fatal(w.Body.String())
 		}
-		if strings.Contains(w.Body.String(), "<Connect>") {
+		if strings.Contains(w.Body.String(), "<Connect") {
 			t.Fatal("unconsented connection")
 		}
 	}
@@ -148,7 +148,7 @@ func TestConsentNoDoesNotRecord(t *testing.T) {
 	})
 	w := httptest.NewRecorder()
 	s.consent(w, request(s, c, "/consent?run=trial&target=hotel", "no"))
-	if !c.Ended || strings.Contains(w.Body.String(), "<Connect>") {
+	if !c.Ended || strings.Contains(w.Body.String(), "<Connect") {
 		t.Fatal("decline not respected")
 	}
 }
@@ -163,7 +163,7 @@ func TestRecordingFailureEndsCall(t *testing.T) {
 	})
 	w := httptest.NewRecorder()
 	s.consent(w, request(s, c, "/consent?run=trial&target=hotel", "yes"))
-	if strings.Contains(w.Body.String(), "<Connect>") {
+	if strings.Contains(w.Body.String(), "<Connect") {
 		t.Fatal("continued without recording")
 	}
 }
@@ -306,7 +306,7 @@ func TestExpiredConsentDenied(t *testing.T) {
 	c.Deadline = time.Now().Add(-time.Second)
 	w := httptest.NewRecorder()
 	s.consent(w, request(s, c, "/consent?run=trial&target=hotel", "yes"))
-	if c.Consented || strings.Contains(w.Body.String(), "<Connect>") {
+	if c.Consented || strings.Contains(w.Body.String(), "<Connect") {
 		t.Fatal("accepted expired consent")
 	}
 }
@@ -558,7 +558,7 @@ func TestNavigationMenuHoldHumanConsent(t *testing.T) {
 		return &http.Response{StatusCode: 201, Body: io.NopCloser(strings.NewReader("{}"))}, nil
 	})
 	initial := s.navigationGather(c, "")
-	if strings.Contains(initial, "<Say>Hi!") || strings.Contains(initial, "<Connect>") {
+	if strings.Contains(initial, "<Say>Hi!") || strings.Contains(initial, "<Connect") {
 		t.Fatal(initial)
 	}
 	w := httptest.NewRecorder()
@@ -592,7 +592,7 @@ func TestNavigationMenuHoldHumanConsent(t *testing.T) {
 	}
 	w = httptest.NewRecorder()
 	s.consent(w, request(s, c, "/consent?run=trial&target=hotel", "yes"))
-	if records != 1 || !strings.Contains(w.Body.String(), "<Connect>") {
+	if records != 1 || !strings.Contains(w.Body.String(), "<Connect") {
 		t.Fatal(w.Body.String())
 	}
 }
@@ -626,7 +626,7 @@ func TestNavigationLimitsAndUnsafeCallbacks(t *testing.T) {
 			}
 			w := httptest.NewRecorder()
 			s.navigate(w, req)
-			if c.Consented || strings.Contains(w.Body.String(), "<Connect>") {
+			if c.Consented || strings.Contains(w.Body.String(), "<Connect") {
 				t.Fatal("recording without consent")
 			}
 			if mode == "unsigned" || mode == "out-of-order" {
@@ -652,4 +652,174 @@ func TestVoiceStartsWithNavigation(t *testing.T) {
 	active.Navigating = false
 	s.mu.Unlock()
 	s.finish(active, "test_finished")
+}
+
+const marriottTransferAnnouncement = "Honor Marriott wonderful. Hospitality always in order to best serve you we ask that you please select from the following options. To make a new reservation or modify an existing reservation, please press 1 for a copy of a guest room folio or accounting related. Questions, please press 2 to make a restaurant reservation at Finn and field. Please press 3 for all other requests and to speak with a member of our front office team. Please press zero, or remain on the line. Please stay on the line, while your call is transferred to the operator."
+const hiltonVoiceAnnouncement = "Thank you for calling Hilton, Santa Barbara for better service. You can ask me questions about our hotel or services."
+
+func TestNavigationActualHotelAnnouncements(t *testing.T) {
+	for _, tc := range []struct{ name, speech, kind string }{
+		{"marriott_transfer", marriottTransferAnnouncement, "wait"},
+		{"hilton_voice_menu", hiltonVoiceAnnouncement, "request"},
+		{"transfer_before_known_digit", "For the front desk press 2. Please stay on the line, while your call is transferred to the operator.", "wait"},
+		{"transfer_in_progress", "For reception dial 0. Please remain on the line. Your call is being transferred.", "wait"},
+		{"unresolved_front_office_menu", strings.Split(marriottTransferAnnouncement, " Please stay on the line,")[0], "unsupported"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			choice := navigationAction(tc.speech, false)
+			if choice.kind != tc.kind || choice.value != "" {
+				t.Fatalf("unexpected navigation: %+v", choice)
+			}
+		})
+	}
+}
+func TestNavigationTransferWaitDoesNotInterruptOrAskConsent(t *testing.T) {
+	s, c := fixture()
+	c.Navigating = true
+	c.NavDeadline = time.Now().Add(navigationLimit)
+	w := httptest.NewRecorder()
+	s.navigate(w, request(s, c, "/navigate?run=trial&target=hotel&step=0", marriottTransferAnnouncement))
+	body := w.Body.String()
+	if w.Code != 200 || !strings.Contains(body, "<Gather") || strings.Contains(body, "<Play") || strings.Contains(body, "/consent?") || strings.Contains(body, "Front desk or customer service") {
+		t.Fatalf("transfer was interrupted: %s", body)
+	}
+	if !c.Navigating || c.Ended || c.NavActions != 0 || c.NavStep != 1 {
+		t.Fatal("transfer did not remain in bounded navigation")
+	}
+}
+
+func TestMediaAcceptsConfiguredWSSSignatureGolden(t *testing.T) {
+	// Independent Node crypto HMAC-SHA1 vectors for test-secret and the exact
+	// configured TwiML wss://bridge.example/media/token URL (with/without slash).
+	// These intentionally do not call the server's signature() helper.
+	for _, sig := range []string{"e/UMP2ImipZHPP256fWE2dmkrkE=", "8TNCnR3B4B4ZpPV5hp0mIj5OfYw="} {
+		t.Run(sig, func(t *testing.T) {
+			s, c := fixture()
+			c.Consented = true
+			srv := httptest.NewServer(http.HandlerFunc(s.media))
+			defer srv.Close()
+			ws, resp, e := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http")+"/media/token", http.Header{"X-Twilio-Signature": []string{sig}})
+			if e != nil {
+				status := 0
+				if resp != nil {
+					status = resp.StatusCode
+					resp.Body.Close()
+				}
+				t.Fatalf("configured WSS signature rejected: HTTP %d", status)
+			}
+			ws.Close()
+		})
+	}
+}
+
+func TestMediaSignaturesIgnoreForwardedOriginAndRejectTampering(t *testing.T) {
+	s, _ := fixture()
+	for _, tc := range []struct {
+		path, sig string
+		want      bool
+	}{
+		{"/media/token", "e/UMP2ImipZHPP256fWE2dmkrkE=", true},
+		{"/media/token", "8TNCnR3B4B4ZpPV5hp0mIj5OfYw=", true},
+		{"/media/token", "vln6/tV4NZQbklh2EYA3+qZRdAo=", true},
+		{"/media/other", "e/UMP2ImipZHPP256fWE2dmkrkE=", false},
+		{"/media/token?extra=1", "e/UMP2ImipZHPP256fWE2dmkrkE=", false},
+		{"/media/token", "invalid", false},
+	} {
+		r := httptest.NewRequest("GET", tc.path, nil)
+		r.Host = "untrusted.example"
+		r.Header.Set("X-Forwarded-Host", "untrusted.example")
+		r.Header.Set("X-Forwarded-Proto", "http")
+		r.Header.Set("X-Twilio-Signature", tc.sig)
+		if got := s.signedMedia(r); got != tc.want {
+			t.Fatalf("%s valid=%v", tc.path, got)
+		}
+	}
+}
+func TestMediaEndedSettlesFailedHandshakeOnce(t *testing.T) {
+	s, c := fixture()
+	c.Consented = true
+	types := []string{}
+	reason := ""
+	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "recorder.example" {
+			var ev map[string]any
+			json.NewDecoder(r.Body).Decode(&ev)
+			types = append(types, stringAt(ev, "type"))
+			if ev["type"] == "call_ended" {
+				reason = stringAt(objectAt(ev, "data"), "reason")
+			}
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("{}"))}, nil
+	})
+	for i := 0; i < 2; i++ {
+		w := httptest.NewRecorder()
+		s.mediaEnded(w, request(s, c, "/media-ended?run=trial&target=hotel&stream=token", ""))
+		if w.Code != 200 {
+			t.Fatal(w.Code)
+		}
+	}
+	if !c.Ended || reason != "media_ended_before_model" || len(types) != 2 || types[0] != "error" || types[1] != "call_ended" {
+		t.Fatalf("ended=%v reason=%s events=%v", c.Ended, reason, types)
+	}
+}
+func TestMediaEndedRejectsUnboundCallbacks(t *testing.T) {
+	for _, kind := range []string{"unsigned", "wrong_stream", "wrong_call", "unconsented"} {
+		t.Run(kind, func(t *testing.T) {
+			s, c := fixture()
+			c.Consented = true
+			path := "/media-ended?run=trial&target=hotel&stream=token"
+			if kind == "wrong_stream" {
+				path = "/media-ended?run=trial&target=hotel&stream=other"
+			}
+			if kind == "unconsented" {
+				c.Consented = false
+			}
+			r := request(s, c, path, "")
+			if kind == "unsigned" {
+				r.Header.Set("X-Twilio-Signature", "invalid")
+			}
+			if kind == "wrong_call" {
+				other := *c
+				other.SID = "CA" + strings.Repeat("b", 32)
+				r = request(s, &other, path, "")
+			}
+			w := httptest.NewRecorder()
+			s.mediaEnded(w, r)
+			if w.Code != 403 || c.Ended {
+				t.Fatal("unbound callback changed call state")
+			}
+		})
+	}
+}
+func TestMediaInvalidStartEmitsFailureImmediately(t *testing.T) {
+	s, c := fixture()
+	c.Consented = true
+	done := make(chan string, 1)
+	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "recorder.example" {
+			var ev map[string]any
+			json.NewDecoder(r.Body).Decode(&ev)
+			if ev["type"] == "call_ended" {
+				done <- stringAt(objectAt(ev, "data"), "reason")
+			}
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("{}"))}, nil
+	})
+	srv := httptest.NewServer(http.HandlerFunc(s.media))
+	defer srv.Close()
+	ws, _, e := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http")+"/media/token", http.Header{"X-Twilio-Signature": []string{"e/UMP2ImipZHPP256fWE2dmkrkE="}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer ws.Close()
+	ws.WriteJSON(map[string]any{"event": "connected"})
+	ws.WriteJSON(map[string]any{"event": "start", "start": map[string]any{"accountSid": "wrong", "callSid": c.SID}})
+	select {
+	case reason := <-done:
+		if reason != "stream_rejected" {
+			t.Fatal(reason)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream failure remained pending")
+	}
 }

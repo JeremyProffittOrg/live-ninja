@@ -13,6 +13,7 @@ from unittest.mock import patch
 import recorder as r
 import send_report
 from email.message import EmailMessage
+from decimal import Decimal
 
 CALL = "CA" + "1" * 32
 REC = "RE" + "2" * 32
@@ -248,6 +249,8 @@ class RecorderTests(unittest.TestCase):
         body = send_report.build_report(report, "")[1]
         self.assertIn("requirements remain unknown", body)
         self.assertNotIn("AI summary of staff-reported information", body)
+        report["events"][0]["data"]["data"] = {"phase": "media", "action": "stream_authenticated"}
+        self.assertIn("requirements remain unknown", send_report.build_report(report, "")[1])
 
     def test_ready_audio_preserved_and_final_usage_stored(self):
         self.ready()
@@ -347,6 +350,13 @@ class RecorderTests(unittest.TestCase):
         control["attempted"] = 20
         self.assertEqual(send_report.send_once(table, ses, report, message), ("test-id", False))
         self.assertEqual(ses.send_raw_email.call_count, 1)
+        control["transcriptionStatus"] = "failed"
+        self.assertEqual(send_report.send_once(table, ses, report, message), ("test-id", True))
+        self.assertEqual(table.item["mailOutcome"], "completed:20:transcription:failed")
+        control["transcriptionStatus"] = "completed"
+        self.assertEqual(send_report.send_once(table, ses, report, message), ("test-id", True))
+        self.assertEqual(send_report.send_once(table, ses, report, message), ("test-id", False))
+        self.assertEqual(ses.send_raw_email.call_count, 3)
         table = MailTable()
         ses.send_raw_email.side_effect = TimeoutError()
         with self.assertRaisesRegex(RuntimeError, "outcome is unknown"):
@@ -354,7 +364,7 @@ class RecorderTests(unittest.TestCase):
         self.assertEqual(table.item["mailState"], "sending")
         with self.assertRaisesRegex(RuntimeError, "outcome is unknown"):
             send_report.send_once(table, ses, report, message)
-        self.assertEqual(ses.send_raw_email.call_count, 2)
+        self.assertEqual(ses.send_raw_email.call_count, 4)
 
     def test_email_count_boundary_rejects_invalid_counts(self):
         outcome, _ = send_report.build_report({"control": {"status": "blocked", "attempted": 0.0, "authorizedCalls": 20.0}}, "")
@@ -399,6 +409,100 @@ class RecorderTests(unittest.TestCase):
         with patch.object(r.urllib.request, "build_opener", return_value=opener), patch.object(r._s3, "head_object", return_value={"ContentLength": 3, "Metadata": {"sha256": "mismatch"}}):
             with self.assertRaisesRegex(ValueError, "S3 verification failed"):
                 r.copy_audio(CALL, REC)
+
+    def test_internal_report_filters_before_recording_link_issuance(self):
+        self.ready()
+        other_sid = "CA" + "9" * 32
+        r._table.put_item(Item={**r.call_key(other_sid), "runId": "trial", "callSid": other_sid,
+            "recordingStatus": "ready", "recordingSid": "RE" + "9" * 32, "s3Key": "unrelated"})
+        result = r.handler({"operation": "internal_report", "runId": "trial", "callSids": [CALL]}, None)
+        report = json.loads(result["body"])
+        self.assertEqual([call["callSid"] for call in report["calls"]], [CALL])
+        self.assertTrue(all(row["data"]["callSid"] == CALL for row in report["events"]))
+        self.assertEqual(len([key for key in r._table.items if key[0].startswith("LINK#")]), 1)
+        self.assertIsNone(r.get({"PK": "LINK#RE" + "9" * 32, "SK": "META"}))
+        empty = json.loads(r.handler({"operation": "internal_report", "runId": "trial", "callSids": []}, None)["body"])
+        self.assertEqual(empty["calls"], [])
+        self.assertEqual(empty["events"], [])
+        for invalid in ([CALL] * 21, [CALL, CALL], ["invalid"], "invalid", [123]):
+            self.assertEqual(r.handler({"operation": "internal_report", "runId": "trial", "callSids": invalid}, None)["statusCode"], 400)
+
+    def test_batch_context_uses_only_approved_targets_and_call_sids(self):
+        batch = "hotel-vpn-ten-2026-10-16"
+        control = {"PK": "TRIAL#" + batch, "SK": "CONTROL", "status": "completed", "eventRunId": "hotel-trial-2026-10-15",
+                   "attempted": Decimal("1"), "authorizedCalls": Decimal("10"), "spentUSD": Decimal("17.58806")}
+        r._table.put_item(Item=control)
+        targets = [{"id": "hotel-%02d" % number, "name": "Hotel " + str(number)} for number in range(1, 21)]
+        r._table.put_item(Item={"PK": control["PK"], "SK": "hotel-02", "target": targets[1], "callSid": CALL})
+        selected_control, sids, selected_targets = send_report.batch_context(r._table, batch, targets)
+        self.assertEqual(sids, [CALL])
+        self.assertEqual([target["id"] for target in selected_targets], ["hotel-%02d" % n for n in range(2, 12)])
+        self.assertEqual(send_report.integer_count(selected_control["attempted"]), 1)
+        self.assertEqual(selected_control["eventRunId"], "hotel-trial-2026-10-15")
+        with self.assertRaisesRegex(ValueError, "Unknown approved"):
+            send_report.batch_context(r._table, "other-batch", targets)
+        r._table.put_item(Item={"PK": control["PK"], "SK": "hotel-01", "target": targets[0], "callSid": "CA" + "9" * 32})
+        with self.assertRaisesRegex(ValueError, "Unexpected batch target"):
+            send_report.batch_context(r._table, batch, targets)
+
+    def test_transcript_attachment_contains_only_consented_turns_in_order(self):
+        def event(second, kind, data):
+            return {"createdAt": second, "data": {"callSid": CALL, "type": kind, "data": data}}
+        report = {"runId": "batch", "calls": [{"callSid": CALL, "targetId": "hotel"}], "events": [
+            event(4, "transcript", {"speaker": "assistant", "text": "Thank you"}),
+            event(1, "transcript", {"speaker": "hotel", "text": "UNCONSENTED MENU"}),
+            event(2, "consent", {"result": "granted"}),
+            event(3, "transcript", {"speaker": "hotel", "text": "Password then accept"}),
+            event(5, "transcript", {"speaker": "hotel", "text": "NAVIGATION", "phase": "navigation"}),
+            event(6, "consent", {"result": "declined"}),
+            event(7, "transcript", {"speaker": "hotel", "text": "AFTER WITHDRAWAL"})]}
+        text = send_report.transcript_attachment(report, [{"id": "hotel", "name": "Real Hotel", "city": "California"}])
+        self.assertIn("not guaranteed exact", text)
+        self.assertIn("Real Hotel — California", text)
+        self.assertNotIn("UNCONSENTED MENU", text)
+        self.assertNotIn("NAVIGATION", text)
+        self.assertNotIn("AFTER WITHDRAWAL", text)
+        self.assertLess(text.index("Password then accept"), text.index("Thank you"))
+
+    def test_offline_asr_attachment_is_bound_and_channels_stay_unverified(self):
+        key = f"phone-trial/trial/{CALL}/{REC}.mp3"
+        call = {"callSid": CALL, "recordingSid": REC, "runId": "trial", "s3Key": key,
+                "recordingStatus": "ready", "consentStatus": "granted"}
+        report = {"runId": "batch", "calls": [call], "events": []}
+        artifact = {"callSid": CALL, "recordingSid": REC, "source": "offline_asr", "status": "completed", "channelAssignment": "unverified",
+                    "channels": [{"channel": 1, "speaker": "unverified", "text": "Please hold", "status": "completed"},
+                                 {"channel": 2, "speaker": "unverified", "text": "", "status": "no_speech"}]}
+        s3 = unittest.mock.Mock()
+        s3.get_object.return_value = {"Body": io.BytesIO(json.dumps(artifact).encode())}
+        report["offlineTranscripts"] = send_report.offline_transcripts(s3, "private", report)
+        s3.get_object.assert_called_once_with(Bucket="private", Key=key[:-4] + ".transcript.json")
+        text = send_report.transcript_attachment(report)
+        self.assertIn("Please hold", text)
+        self.assertIn("Channel 1 (speaker unverified", text)
+        self.assertIn("not a merged chronological", text)
+        self.assertIn("No words recognized on this channel.", text)
+        self.assertNotIn("hotel: Please hold", text)
+        artifact["callSid"] = "CA" + "9" * 32
+        s3.get_object.return_value = {"Body": io.BytesIO(json.dumps(artifact).encode())}
+        result = send_report.offline_transcripts(s3, "private", report)
+        self.assertEqual(result[CALL]["status"], "unavailable")
+        self.assertEqual(result[CALL]["channels"], [])
+        call["consentStatus"] = "declined"
+        s3.get_object.reset_mock()
+        self.assertEqual(send_report.offline_transcripts(s3, "private", report), {})
+        s3.get_object.assert_not_called()
+
+    def test_missing_offline_transcript_and_no_live_findings_are_honest(self):
+        call = {"callSid": CALL, "recordingSid": REC, "runId": "trial", "s3Key": f"phone-trial/trial/{CALL}/{REC}.mp3",
+                "recordingStatus": "ready", "consentStatus": "granted"}
+        report = {"runId": "batch", "calls": [call], "events": []}
+        s3 = unittest.mock.Mock()
+        s3.get_object.side_effect = OSError("unavailable")
+        report["offlineTranscripts"] = send_report.offline_transcripts(s3, "private", report)
+        attachment = send_report.transcript_attachment(report)
+        self.assertIn("Offline transcription is missing or could not be verified", attachment)
+        _, body = send_report.build_report(report, "{{OUTCOME_ONE_LINE}}")
+        self.assertIn("No completed interview or VPN findings are verified", body)
 
 
 if __name__ == "__main__":

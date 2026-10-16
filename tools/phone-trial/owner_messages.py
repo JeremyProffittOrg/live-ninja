@@ -1,0 +1,338 @@
+"""IAM-only, owner-bound messages to privately configured phone aliases."""
+import base64
+from datetime import datetime, timezone
+from decimal import Decimal
+import hashlib
+import hmac
+import html
+import json
+import os
+import re
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+
+import recorder as r
+
+CONFIG_KEY = {"PK": "CONFIG", "SK": "OWNER_MESSAGES"}
+VOICE_KEY = {"PK": "PHONE#CONTROL", "SK": "VOICE"}
+RESERVE = Decimal("0.30")
+LIMIT = Decimal("20")
+TERMINAL = {"completed", "busy", "failed", "no-answer", "canceled"}
+STATUSES = TERMINAL | {"queued", "initiated", "ringing", "in-progress"}
+INTRO = "This is Live Ninja, Jeremy's AI assistant. This owner message is being recorded. "
+PHONE = re.compile(r"^\+[1-9][0-9]{7,14}$")
+REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
+
+
+class ProviderError(Exception):
+    def __init__(self, code=None, rejected=False):
+        self.code, self.rejected = code, rejected
+
+
+def provider(path, form=None):
+    """One attempt only, including POST. Never expose provider response text."""
+    account = os.environ["TWILIO_ACCOUNT_SID"]
+    auth = base64.b64encode((os.environ.get("TWILIO_API_KEY_SID") or account).encode() + b":" +
+                           (os.environ.get("TWILIO_API_KEY_SECRET") or os.environ["TWILIO_AUTH_TOKEN"]).encode()).decode()
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{account}{path}"
+    data = urllib.parse.urlencode(form, doseq=True).encode() if form is not None else None
+    req = urllib.request.Request(url, data=data, headers={"Authorization": "Basic " + auth, "Content-Type": "application/x-www-form-urlencoded"})
+    try:
+        with urllib.request.build_opener(r.NoRedirect).open(req, timeout=10) as source:
+            raw = source.read(256 * 1024 + 1)
+            if len(raw) > 256 * 1024:
+                raise ValueError("Response too large")
+            return json.loads(raw, parse_float=Decimal)
+    except urllib.error.HTTPError as exc:
+        code = None
+        try:
+            code = json.loads(exc.read(4096)).get("code")
+        except Exception:
+            pass
+        code = code if type(code) is int else None
+        raise ProviderError(code, exc.code in {400, 401, 403, 404, 422} and code is not None) from None
+    except Exception:
+        raise ProviderError() from None
+
+
+def config(owner, sending=False):
+    try:
+        if str(uuid.UUID(owner)) != owner:
+            return None
+    except (ValueError, TypeError, AttributeError):
+        return None
+    value = r.get(CONFIG_KEY)
+    if not value or value.get("ownerUserId") != owner or (sending and value.get("enabled") is not True):
+        return None
+    return value
+
+
+def request_key(owner, request_id):
+    return {"PK": "OWNER#" + owner, "SK": "MESSAGE#" + request_id}
+
+
+def namespace(owner):
+    return "owner-messages#" + owner
+
+
+def transact(operations):
+    r.clients()[0].meta.client.transact_write_items(TransactItems=operations)
+
+
+def put(item, old=None):
+    value = {"TableName": os.environ["TABLE"], "Item": item,
+             "ConditionExpression": "#v=:v" if old else "attribute_not_exists(PK)"}
+    if old:
+        value.update(ExpressionAttributeNames={"#v": "version"}, ExpressionAttributeValues={":v": old["version"]})
+    return {"Put": value}
+
+
+def change(key, fields, event_type, event_data, sid=None, release=False):
+    """Append callback evidence and update state/binding atomically."""
+    event_hash = hashlib.sha256(json.dumps([event_type, event_data], sort_keys=True).encode()).hexdigest()
+    event_key = {"PK": key["PK"], "SK": "EVENT#" + key["SK"][8:] + "#" + event_hash}
+    for _ in range(4):
+        old = r.get(key)
+        if not old:
+            raise ValueError("Unknown message")
+        if sid and old.get("callSid", sid) != sid:
+            raise ValueError("Call binding mismatch")
+        if r.get(event_key):
+            return old
+        new = {**old, **fields, "version": int(old["version"]) + 1, "updatedAt": int(time.time())}
+        # Delayed create responses/status callbacks must not move a call backwards.
+        rank = {"creating": 0, "unknown": 0, "queued": 1, "initiated": 2, "ringing": 3, "in-progress": 4}
+        old_status, new_status = old.get("providerStatus"), fields.get("providerStatus")
+        if old_status in TERMINAL or rank.get(old_status, 0) > rank.get(new_status, 5 if new_status in TERMINAL else 0):
+            new["providerStatus"] = old_status
+        if sid:
+            new["callSid"] = sid
+        operations = [put(new, old), put({**event_key, "type": event_type, "data": event_data, "createdAt": int(time.time())})]
+        if sid:
+            call_key = r.call_key(sid, namespace(old["ownerUserId"]))
+            call = r.get(call_key)
+            if call and call.get("requestId") != old["requestId"]:
+                raise ValueError("Call already bound")
+            if not call:
+                operations.append(put({**call_key, "version": 1, "runId": namespace(old["ownerUserId"]), "callSid": sid,
+                    "ownerUserId": old["ownerUserId"], "requestId": old["requestId"], "targetId": old["destination"], "recordingStatus": "pending"}))
+        lock = r.get(VOICE_KEY) if release else None
+        if lock and lock.get("activeRequest") == old["lockId"]:
+            operations.append({"Update": {"TableName": os.environ["TABLE"], "Key": VOICE_KEY,
+                "UpdateExpression": "REMOVE activeRequest", "ConditionExpression": "activeRequest=:request",
+                "ExpressionAttributeValues": {":request": old["lockId"]}}})
+        try:
+            transact(operations)
+            return new
+        except Exception as exc:
+            if not r.conditional(exc):
+                raise
+    raise RuntimeError("Concurrent message update; retry status lookup")
+
+
+def view(item, links=False):
+    payload = {"requestId": item["requestId"], "destination": item["destination"], "accepted": bool(item.get("callSid")),
+               "providerStatus": item["providerStatus"], "playbackCompleted": item.get("playbackCompleted", False),
+               "humanHeard": "not_verified", "scriptTranscript": item["scriptTranscript"], "transcriptType": "spoken_script_not_speech_recognition",
+               "recordingStatus": "pending" if item.get("callSid") else "absent", "reservedUSD": str(RESERVE)}
+    if item.get("providerCode"):
+        payload["providerCode"] = item["providerCode"]
+    if item.get("callSid"):
+        payload["callSid"] = item["callSid"]
+        call = r.get(r.call_key(item["callSid"], namespace(item["ownerUserId"])))
+        if call:
+            payload["recordingStatus"] = call["recordingStatus"]
+            if links and call["recordingStatus"] == "ready":
+                payload["recordingLink"] = r.issue_link(call)
+    return payload
+
+
+def reserve(owner, request_id, alias, message, cfg):
+    usage = provider("/Usage/Records/ThisMonth.json?Category=totalprice")
+    records = usage.get("usage_records", [])
+    if len(records) != 1 or records[0].get("price_unit", "").lower() != "usd" or usage.get("next_page_uri"):
+        raise ValueError("Monthly provider cost unavailable")
+    observed = Decimal(str(records[0].get("price")))
+    floor = Decimal(str(cfg.get("budgetFloorUSD", "8")))
+    if not observed.is_finite() or observed < 0 or not floor.is_finite() or floor < 8:
+        raise ValueError("Invalid monthly budget")
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+    floor_month = cfg.get("budgetFloorMonth")
+    if floor_month is not None and (not isinstance(floor_month, str) or not re.fullmatch(r"[0-9]{4}-(0[1-9]|1[0-2])", floor_month)):
+        raise ValueError("Invalid budget floor month")
+    if floor > 8 and floor_month is None:
+        raise ValueError("A budget floor above $8 requires budgetFloorMonth")
+    if floor_month != month:
+        floor = Decimal("8")
+    budget_key = {"PK": "PHONE#BUDGET#" + month, "SK": "MONTH"}
+    key = request_key(owner, request_id)
+    callback_id = r.digest(("owner-message\n" + owner + "\n" + request_id).encode())
+    lock_id = "owner:" + owner + ":" + request_id
+    item = {**key, "ownerUserId": owner, "requestId": request_id, "destination": alias, "message": message,
+            "scriptTranscript": INTRO + message, "providerStatus": "creating", "version": 1, "createdAt": int(time.time()),
+            "lockId": lock_id, "callbackId": callback_id, "fromNumber": cfg["fromNumber"], "toNumber": cfg["destinations"][alias]}
+    for _ in range(4):
+        prior = r.get(key)
+        if prior:
+            return prior, False
+        old = r.get(budget_key)
+        base = max(floor, Decimal("8") + observed, Decimal(str((old or {}).get("allocatedUSD", "0"))))
+        if base + RESERVE > LIMIT:
+            raise ValueError("Monthly $20 allowance reached; explicit owner permission required")
+        budget = {**budget_key, "allocatedUSD": base + RESERVE, "version": int((old or {}).get("version", 0)) + 1}
+        config_check = {"TableName": os.environ["TABLE"], "Key": CONFIG_KEY,
+            "ConditionExpression": "#enabled=:enabled AND #owner=:owner AND #from=:from AND #destinations=:destinations",
+            "ExpressionAttributeNames": {"#enabled": "enabled", "#owner": "ownerUserId", "#from": "fromNumber", "#destinations": "destinations"},
+            "ExpressionAttributeValues": {":enabled": True, ":owner": owner, ":from": cfg["fromNumber"], ":destinations": cfg["destinations"]}}
+        # A concurrent floor/month change must invalidate this budget reservation.
+        for name in ("budgetFloorUSD", "budgetFloorMonth"):
+            config_check["ExpressionAttributeNames"]["#" + name] = name
+            if name in cfg:
+                config_check["ConditionExpression"] += " AND #" + name + "=:" + name
+                config_check["ExpressionAttributeValues"][":" + name] = cfg[name]
+            else:
+                config_check["ConditionExpression"] += " AND attribute_not_exists(#" + name + ")"
+        operations = [put(item), put(budget, old),
+            {"Put": {"TableName": os.environ["TABLE"], "Item": {**VOICE_KEY, "activeRequest": lock_id}, "ConditionExpression": "attribute_not_exists(activeRequest)"}},
+            put({"PK": "OWNER_CALLBACK#" + callback_id, "SK": "META", "ownerUserId": owner, "requestId": request_id}),
+            {"ConditionCheck": config_check}]
+        try:
+            transact(operations)
+            return item, True
+        except Exception as exc:
+            if not r.conditional(exc):
+                raise
+            lock = r.get(VOICE_KEY)
+            if lock and lock.get("activeRequest"):
+                existing = r.get(key)
+                if existing:
+                    return existing, False
+                raise ValueError("Another voice call or unresolved call holds the shared lock")
+    raise ValueError("Budget or configuration changed; no call created")
+
+
+def operation(event):
+    owner, request_id = event.get("ownerUserId"), event.get("requestId", "")
+    sending = event["operation"] == "owner_message_send"
+    cfg = config(owner, sending)
+    if not cfg:
+        return r.response(403, {"error": "Owner phone messages are not configured for this identity"})
+    if not isinstance(request_id, str) or not REQUEST_ID.fullmatch(request_id):
+        return r.response(400, {"error": "Invalid requestId"})
+    key = request_key(owner, request_id)
+    prior = r.get(key)
+    if not sending:
+        return r.response(200, view(prior, links=True)) if prior else r.response(404, {"error": "Unknown message request"})
+    alias, message = event.get("destination"), event.get("message")
+    if alias not in {"primary", "secondary"} or not isinstance(message, str) or not 1 <= len(message.strip()) <= 1000 or len(message) > 1000 or any(ord(c) < 32 and c not in "\n\t" for c in message):
+        return r.response(400, {"error": "Use a configured alias and 1–1000 characters of plain text"})
+    if prior:
+        if prior["destination"] != alias or prior["message"] != message:
+            return r.response(409, {"error": "requestId already identifies a different message"})
+        return r.response(200, view(prior))
+    number = cfg.get("destinations", {}).get(alias, "")
+    if not PHONE.fullmatch(number) or not PHONE.fullmatch(cfg.get("fromNumber", "")):
+        return r.response(403, {"error": "Destination is not configured"})
+    try:
+        item, fresh = reserve(owner, request_id, alias, message, cfg)
+    except ValueError as exc:
+        return r.response(409, {"error": str(exc)})
+    except ProviderError:
+        return r.response(409, {"error": "Provider usage cannot be verified; no call created"})
+    if not fresh:
+        if item["destination"] != alias or item["message"] != message:
+            return r.response(409, {"error": "requestId already identifies a different message"})
+        return r.response(200, view(item))
+    base = os.environ["PUBLIC_BASE_URL"].rstrip("/") + "/owner-message/"
+    token = item["callbackId"]
+    twiml = '<Response><Say>' + html.escape(item["scriptTranscript"]) + '</Say><Redirect method="POST">' + html.escape(base + "played/" + token) + '</Redirect></Response>'
+    try:
+        result = provider("/Calls.json", {"To": item["toNumber"], "From": item["fromNumber"], "Twiml": twiml,
+            "Timeout": 20, "TimeLimit": 90, "Record": "true", "RecordingChannels": "dual",
+            "StatusCallback": base + "status/" + token, "StatusCallbackMethod": "POST",
+            "StatusCallbackEvent": ["initiated", "ringing", "answered", "completed"],
+            "RecordingStatusCallback": base + "recording/" + token, "RecordingStatusCallbackMethod": "POST",
+            "RecordingStatusCallbackEvent": ["completed", "absent"]})
+        sid = result.get("sid", "")
+        if not r.SID.fullmatch(sid) or result.get("account_sid") != os.environ["TWILIO_ACCOUNT_SID"]:
+            raise ProviderError()
+        item = change(key, {"providerStatus": result.get("status") if result.get("status") in STATUSES else "queued"}, "provider_accepted", {"callSid": sid}, sid=sid)
+    except ProviderError as exc:
+        fields = {"providerStatus": "rejected" if exc.rejected else "unknown"}
+        if exc.code:
+            fields["providerCode"] = exc.code
+        item = change(key, fields, "provider_create_outcome", fields, release=exc.rejected)
+    return r.response(200, view(item))
+
+
+def callback(path, raw, headers):
+    match = re.fullmatch(r"/owner-message/(status|played|recording)/([0-9a-f]{64})", path)
+    if not match:
+        return r.response(404)
+    kind, token = match.groups()
+    pairs = urllib.parse.parse_qs(raw.decode(), keep_blank_values=True, max_num_fields=60)
+    signed = os.environ["PUBLIC_BASE_URL"].rstrip("/") + path
+    for key in sorted(pairs):
+        for value in sorted(set(pairs[key])):
+            signed += key + value
+    expected = base64.b64encode(hmac.new(os.environ["TWILIO_AUTH_TOKEN"].encode(), signed.encode(), hashlib.sha1).digest()).decode()
+    if not hmac.compare_digest(expected, headers.get("x-twilio-signature", "")):
+        return r.response(403)
+    if any(len(v) != 1 for v in pairs.values()):
+        return r.response(400)
+    data = {k: v[0] for k, v in pairs.items()}
+    sid = data.get("CallSid", "")
+    if data.get("AccountSid") != os.environ["TWILIO_ACCOUNT_SID"] or not r.SID.fullmatch(sid):
+        return r.response(400)
+    binding = r.get({"PK": "OWNER_CALLBACK#" + token, "SK": "META"})
+    if not binding:
+        return r.response(404)
+    key = request_key(binding["ownerUserId"], binding["requestId"])
+    item = r.get(key)
+    if not item or item.get("callSid", sid) != sid or item["callbackId"] != token:
+        return r.response(409)
+    if any(data.get(field) is not None and data[field] != item[stored] for field, stored in (("To", "toNumber"), ("From", "fromNumber"))):
+        return r.response(409)
+    if kind == "status":
+        status = data.get("CallStatus")
+        if status not in STATUSES:
+            return r.response(400)
+        item = change(key, {"providerStatus": status}, "status", {"callSid": sid, "status": status, "duration": data.get("CallDuration")}, sid=sid, release=status in TERMINAL)
+        if status in {"busy", "failed", "no-answer", "canceled"}:
+            call = r.get(r.call_key(sid, namespace(item["ownerUserId"])))
+            if call and call["recordingStatus"] == "pending" and not call.get("recordingSid"):
+                new = {**call, "recordingStatus": "absent", "recordingReason": "call_" + status, "version": int(call["version"]) + 1}
+                try:
+                    r.commit(call, new)
+                except Exception as exc:
+                    if not r.conditional(exc):
+                        raise
+                    return r.response(503, {"error": "Recording state changed; retry callback"})
+        return r.response(200)
+    if kind == "played":
+        change(key, {"playbackCompleted": True}, "playback_completed", {"callSid": sid}, sid=sid)
+        return {"statusCode": 200, "headers": {"content-type": "text/xml", "cache-control": "no-store"}, "body": "<Response><Hangup/></Response>"}
+    recording = data.get("RecordingSid", "")
+    if not r.REC.fullmatch(recording) or data.get("RecordingStatus") not in {"completed", "absent"}:
+        return r.response(400)
+    item = change(key, {}, "recording_callback", {"callSid": sid, "recordingSid": recording, "status": data["RecordingStatus"]}, sid=sid)
+    run_id = namespace(item["ownerUserId"])
+    call = r.get(r.call_key(sid, run_id))
+    if call.get("recordingSid", recording) != recording:
+        return r.response(409)
+    if call["recordingStatus"] == "ready":
+        return r.response(200)
+    if data["RecordingStatus"] == "absent":
+        r.set_recording(sid, recording, "absent", run_id=run_id)
+        return r.response(200)
+    try:
+        r.set_recording(sid, recording, "pending", run_id=run_id)
+        audio_key, size = r.copy_audio(sid, recording, run_id=run_id)
+        r.set_recording(sid, recording, "ready", run_id=run_id, s3Key=audio_key, audioBytes=size, sourceRetained=True)
+        return r.response(200)
+    except Exception:
+        r.set_recording(sid, recording, "failed", run_id=run_id, recordingError="Audio copy failed; retry callback")
+        return r.response(503, {"error": "Audio copy failed; retry"})
