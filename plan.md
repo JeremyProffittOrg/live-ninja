@@ -1,6 +1,6 @@
 # Plan
 
-Status: MCP SERVICE DEPLOYED; owner client sign-in pending. Ten-hotel report delivered. Updated 2026-10-16.
+Status: PAUSE-READY 2026-10-16. MCP service deployed (owner client sign-in pending); ten-hotel report delivered; owner rehearsal take 1 done and the repeat-question fix deployed. No call, workflow or deploy is in flight. Updated 2026-10-16.
 
 Single active source: C:\dev\live-ninja\plan.md. Completed history: C:\dev\live-ninja\completed\plan-2026-10-15-history.md and earlier completed/ archives. Deferred work: C:\dev\live-ninja\backlog.md. The current plan covers telephony, Jobs, S3 recordings, car Bluetooth, Android Auto, and their acceptance tests.
 
@@ -863,9 +863,16 @@ Retry policy: each hotel one call; job resumes only verified terminal prior call
 ## owner-rehearsal — owner plays the hotel front desk on the hotel-call path
 Owner request 2026-10-16, verbatim: `okay, call me acting like a hotel and let's try the ocnversations`.
 Owner answers 2026-10-16 (AskUserQuestion, verbatim): number = owner allowlisted number, stored as secret OWNER_REHEARSAL_NUMBER (not committed); mode = `Several takes` — "Up to 3 calls in a row, so you can play different front-desk behaviours (refuse recording, transfer, IVR menu). Same caps per call."
-- [~] owner-rehearsal-runner — batch owner-rehearsal-2026-10-16 in tools/phone-trial/run_trial.py reuses the hotel runner: own CONTROL ledger, existing event namespace, voice lock, intent ledger, consent before recording, 180 s provider+bridge caps, one attempt per take, no redial. Destination comes only from the OWNER_REHEARSAL_NUMBER secret; any other number is refused. Takes 1..3 run strictly in sequence with a 45 s pause after a terminal take; a declined recording or hangup still lets the next take run. Hotel 09:00–17:00 window skipped for this batch only (owner's own phone); 2026-10-16 date guard kept. Budget floor also counts the ten-batch ledger and the shared PHONE#BUDGET month allocation, and each take publishes its reservation there; $20 threshold unchanged, no self-granted allowance.
-- [~] owner-rehearsal-workflow — .github/workflows/phone-owner-rehearsal.yml (workflow_dispatch, takes 1..3, default 3) points the existing Azure bridge TARGETS_JSON at the owner target only, runs the Azure audio probe, calls, emails the report through send_report.py --batch-id owner-rehearsal-2026-10-16, then restores the 20 hotel targets and min-replicas 0.
+- [x] owner-rehearsal-runner — f147c23; 67 python tests pass. batch owner-rehearsal-2026-10-16 in tools/phone-trial/run_trial.py reuses the hotel runner: own CONTROL ledger, existing event namespace, voice lock, intent ledger, consent before recording, 180 s provider+bridge caps, one attempt per take, no redial. Destination comes only from the OWNER_REHEARSAL_NUMBER secret; any other number is refused. Takes 1..3 run strictly in sequence with a 45 s pause after a terminal take; a declined recording or hangup still lets the next take run. Hotel 09:00–17:00 window skipped for this batch only (owner's own phone); 2026-10-16 date guard kept. Budget floor also counts the ten-batch ledger and the shared PHONE#BUDGET month allocation, and each take publishes its reservation there; $20 threshold unchanged, no self-granted allowance.
+- [!] owner-rehearsal-workflow — run 38901224896 placed take 1 then stopped on the cost threshold (see results); takes 2 and 3 not placed. .github/workflows/phone-owner-rehearsal.yml (workflow_dispatch, takes 1..3, default 3) points the existing Azure bridge TARGETS_JSON at the owner target only, runs the Azure audio probe, calls, emails the report through send_report.py --batch-id owner-rehearsal-2026-10-16, then restores the 20 hotel targets and min-replicas 0.
 Definition of done: python -B -m unittest discover -s tools/phone-trial -p 'test_*.py' exits 0; rehearsal workflow reaches a terminal result with each take's CallSid, status, duration, recording state and SES MessageId recorded here, or the exact blocker.
+
+Results 2026-10-16 (run 38901224896, conclusion failure = expected exit for a blocked batch; Azure probe, report and restore steps succeeded):
+- take-1: CallSid CAdebbeeb654690d3519827db4b7babbad, completed, 113 s, consent granted by speech, ended remote_hangup; recording RE7cc29ad90682520fae2a7e2a3a1c8fd2 in S3, state ready.
+- takes 2 and 3: not placed. take-1 usage was incomplete (usageComplete=false), so it settled at the full $1.40 reserve; month spend 19.70 + 1.40 would pass the $20 threshold.
+- Report email SES MessageId 010001a144b73615-3c888f6c-5b3e-40e4-804a-ae4a401937ff-000000.
+- Bridge restored: 20 hotel targets, min-replicas 0, no active call.
+- Unblock (owner only): an explicit $5 daily cost grant, and release of the voice lock held as `owner-stop-2026-10-16` (not set by this run). A re-test after the repeat fix is the owner's decision.
 
 ### rehearsal-repeat-fix — ask each question once, then close
 Owner report 2026-10-16 after take 1, verbatim: "look at the call, it kept asking the same question, over and over again".
