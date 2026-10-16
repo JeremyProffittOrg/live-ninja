@@ -38,7 +38,7 @@ func RegisterPhoneRecordingRoutes(app *fiber.App, deps *Deps) {
 		if deps.Store == nil {
 			return errors.New("identity unavailable")
 		}
-		u, e := deps.Store.GetUser(ctx, owner)
+		u, e := deps.Store.GetUserConsistent(ctx, owner)
 		if e != nil {
 			return e
 		}

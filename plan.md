@@ -760,6 +760,11 @@ Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat r
 
 ### phone-web-foundation — budget controls, private recordings and prompt quality
 
+- Published c11da61ca730ac8c23f5e28daa5408cf100bc4c7 to main. Phone workflow 38926826412 and app workflow 38926826437 started.
+- Live IAM-only budget read: HTTP-style status 200, allocatedUSD=19.7, dailyGrantedUSD=0, pausedReason=disabled. No grant submitted.
+- Live owner-bound legacy recording list: status 200, 13 records, 4 ready. Private playback link expiresIn=300; S3 Range request returned 206, audio/mpeg, 64 bytes. No URL retained in evidence or logs; no audio played.
+- Follow-up uses existing GetUserConsistent for both new owner authorization boundaries. go test ./internal/webapp/ ./internal/store/ -count=1 passed; no new abstraction or store API.
+
 - Implemented fixed $5 daily grants for owner messages, local-day expiry, no pre-stacking, atomic cost reservation and owner-only web controls. Grants preserve disabled configuration and the durable owner-stop. Dated hotel trials retain their stricter $20 cap. Multi-leg accounting remains dependent on call-topology-proof.
 - Implemented owner History recording list/play/download through the existing Lambda/S3 path. Explicit legacy source binding compares canonical owner transactionally. Every new five-minute media link requires fresh owner access; existing issued links can survive revocation for at most five minutes. Native Android/Jobs integration and cross-tab microphone exclusion remain open.
 - Fixed trial prompts use Polly.Joanna-Neural en-US. Existing consent wording/state remain unchanged; speech overhead allowance is $0.25 inside the existing $1.40 reservation. No listener test or telephone call occurred.

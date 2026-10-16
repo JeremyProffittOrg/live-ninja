@@ -35,7 +35,7 @@ func RegisterPhoneBudgetRoutes(app *fiber.App, deps *Deps) {
 		if deps.Store == nil {
 			return errors.New("identity store unavailable")
 		}
-		user, err := deps.Store.GetUser(ctx, uid)
+		user, err := deps.Store.GetUserConsistent(ctx, uid)
 		if err != nil {
 			return err
 		}
