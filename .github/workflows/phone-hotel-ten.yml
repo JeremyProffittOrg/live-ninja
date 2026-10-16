@@ -1,0 +1,110 @@
+name: Ten California hotel calls 2026-10-16
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/phone-hotel-ten.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: phone-trial-2026-10-15
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+  PHONE_TRIAL_BATCH: hotel-vpn-ten-2026-10-16
+  EXECUTE_PHONE_TRIAL: hotel-vpn-ten-2026-10-16
+
+jobs:
+  trial:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      TWILIO_ACCOUNT_SID: ${{ vars.TWILIO_ACCOUNT_SID }}
+      TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+      TWILIO_API_KEY_SID: ${{ vars.TWILIO_API_KEY_SID }}
+      TWILIO_API_KEY_SECRET: ${{ secrets.TWILIO_API_KEY_SECRET }}
+      TWILIO_FROM_NUMBER: ${{ vars.TWILIO_FROM_NUMBER }}
+      AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check the explicitly authorized date and load public Azure identity
+        id: config
+        shell: python
+        run: |
+          import json, os
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          now = datetime.now(ZoneInfo('America/Los_Angeles'))
+          if now.date().isoformat() != '2026-10-16' or now.hour >= 17:
+              raise SystemExit('Authorized calling date/window ended; no calls made.')
+          c = json.load(open('infra/phone-trial-config.json'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              for k in ['azureClientId', 'azureTenantId', 'azureSubscriptionId']:
+                  out.write(k+'='+c[k]+'\n')
+      - run: python -B -m unittest discover -s tools/phone-trial -p 'test_trial_control.py' -v
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - run: python -m pip install 'boto3>=1.40,<2'
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-hotel-ten-${{ github.run_id }}
+          role-duration-seconds: 7200
+          aws-region: us-east-1
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ steps.config.outputs.azureClientId }}
+          tenant-id: ${{ steps.config.outputs.azureTenantId }}
+          subscription-id: ${{ steps.config.outputs.azureSubscriptionId }}
+      - name: Discover existing endpoints and warm the existing bridge
+        shell: python
+        run: |
+          import boto3, json, os, subprocess, time, urllib.request
+          c = json.load(open('infra/phone-trial-config.json'))
+          fqdn = subprocess.check_output(['az','containerapp','show','--resource-group',c['azureResourceGroup'],'--name',c['azureAppName'],'--query','properties.configuration.ingress.fqdn','--output','tsv'], text=True).strip()
+          if not fqdn.endswith('.azurecontainerapps.io'):
+              raise SystemExit('Unexpected bridge host; no calls made.')
+          bridge = 'https://' + fqdn
+          outputs = boto3.client('cloudformation').describe_stacks(StackName='live-ninja-phone-trial')['Stacks'][0]['Outputs']
+          recorder = next(o['OutputValue'] for o in outputs if o['OutputKey'] == 'ServiceUrl').rstrip('/')
+          if not recorder.startswith('https://') or not recorder.endswith('.execute-api.us-east-1.amazonaws.com'):
+              raise SystemExit('Unexpected recorder host; no calls made.')
+          ready = False
+          for attempt in range(3):
+              try:
+                  with urllib.request.urlopen(bridge+'/health', timeout=30) as response:
+                      ready = json.load(response).get('ready') is True
+                  if ready:
+                      break
+              except Exception:
+                  pass
+              if attempt < 2:
+                  time.sleep(10)
+          if not ready:
+              raise SystemExit('Existing bridge failed bounded health check; no calls made.')
+          with open(os.environ['GITHUB_ENV'], 'a') as out:
+              out.write('BRIDGE_URL='+bridge+'\nRECORDER_URL='+recorder+'\n')
+      - name: Verify Azure audio before dialing
+        shell: python
+        run: |
+          import json, os, subprocess
+          c = json.load(open('infra/phone-trial-config.json'))
+          targets = json.load(open('tools/phone-trial/targets.json'))['hotels']
+          env = dict(os.environ)
+          env.update(PUBLIC_BASE_URL=env['BRIDGE_URL'], AZURE_OPENAI_ENDPOINT=c['modelEndpoint'],
+                     AZURE_OPENAI_DEPLOYMENT=c['modelDeployment'], RUN_ID='hotel-trial-2026-10-15',
+                     MAX_CALL_SECONDS='180', RECORDING_CALLBACK_URL=env['RECORDER_URL']+'/recording',
+                     EVENT_CALLBACK_URL=env['RECORDER_URL']+'/events',
+                     TARGETS_JSON=json.dumps([{'id':t['id'],'name':t['name'],'phone':t['phone']} for t in targets]))
+          subprocess.run(['go','run','./cmd/phone-trial-bridge','-probe'], env=env, check=True, timeout=120)
+      - name: Call exactly the ten approved destinations subject to the budget
+        run: python -B tools/phone-trial/run_trial.py

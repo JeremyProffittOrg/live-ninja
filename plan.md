@@ -6,6 +6,10 @@ Single active source: C:\dev\live-ninja\plan.md. Completed history: C:\dev\live-
 
 ## Locked decisions (user-confirmed; do not revisit)
 
+- 2026-10-16 — user: "Then let's call 10 hotels in ca asking for the vpn configuration". Exactly ten distinct verified California hotels (hotel-02 through hotel-11), immediate single-call concurrency; guest Wi-Fi login requirements and reported VPN restrictions only, no private router settings or credentials. Existing monthly $20 and explicit $5 daily permission rules remain. No automatic redial.
+- 2026-10-16 — user selected "Claude/ChatGPT remote MCP with browser sign-in" and "Only my configured cell numbers". MCP exposes owner phone messages, existing Jobs and memory. General background AI workers were asked about, not authorized as an implementation expansion. Existing caller values remain private runtime configuration.
+
+
 - 2026-10-16 — user: "yes" to adding menu navigation before consent, announced keypad choices, front-desk/customer-service requests, and limits on transfers and waiting.
 - 2026-10-16 — inbound owner calling authorized for exactly two owner-supplied numbers. Exact user wording and E.164 allowlist are stored outside the public repository at C:\dev\live-ninja-test-evidence\inbound-owner-2026-10-16\locked-decisions.txt. Existing owner/PIN requirement remains. Clarification pending: fresh owner conversation vs exact active-session handoff. Login with Amazon refers to the existing internal owner account; no inbound routing change yet.
 
@@ -846,3 +850,23 @@ Restart policy: classify deterministic failures and fix before a new commit; at 
 - cmd/realtime-broker/main.go creates fresh session IDs; cmd/nova-bridge/main.go redeems per-session tokens once. An active web token cannot be reused for phone login.
 - Nova uses PCM16 16 kHz input and 24 kHz output; Twilio uses PCMU 8 kHz. Inbound Nova needs explicit audio conversion and an authenticated phone entry point.
 - Required decision remains new conversation under same owner vs exact active-session takeover. No account identity inferred from caller ID alone.
+
+## hotel-vpn-ten — execute the explicitly requested October 16 calls
+depends on: ivr-delivery
+### hotel-ten-execution — call exactly the approved destinations within limits
+- [x] hotel-ten-runner — shared runner profile hotel-vpn-ten-2026-10-16, own CONTROL ledger, existing recorder event namespace; 40 offline tests pass, workflow Python syntax checked.
+- [~] hotel-ten-calls — GitHub workflow phone-hotel-ten.yml; one 180-second call at a time, 00:00–17:00 California date guard reflects user's explicit immediate request. Hold PHONE#CONTROL/VOICE activeRequest=batch:hotel-vpn-ten-2026-10-16 for the batch; release only after terminal provider states. Unknown creation holds lock for reconciliation.
+- [ ] hotel-ten-results — reconcile all attempted CallSids, consent, transcript evidence and S3 recordings; report accurate results and unattempted count. A queued call never proves a conversation or VPN compatibility.
+Definition of done: GitHub trial job exits0 for ten terminal attempts, or explicit budget/provider blocker with counted attempts; read durable batch CONTROL and call/event records and verify existing recordings.
+Retry policy: each hotel one call; job resumes only verified terminal prior calls and no ambiguous creation, maximum three batch executions. Deployment retry ceiling three; model/audio preflight must pass. No local scheduled automation.
+
+## mcp-owner-tools — expose phone messages, existing Jobs and memory
+depends on: none; phone-send enablement depends on hotel-ten-results
+### mcp-oauth-login — browser sign-in through existing owner account
+- [~] mcp-oauth-implementation — agent /root/phone_trial_bridge owns internal/mcpauth and webapp mcp_auth handlers; owner browser consent, PKCE, exact redirects, hashed opaque tokens and refresh rotation.
+Definition of done: go test ./internal/mcpauth ./internal/webapp -run 'TestMCP|TestOAuth' exits0; deployed metadata and unauthorized challenge verified.
+### mcp-shared-tools — preserve existing authorization and side-effect controls
+- [~] mcp-transport — root owns narrow MCP tool adapter, registry phone definitions, route/IAM wiring, Help and docs. Existing job mutation proposals still require the Jobs review interface; no general background AI executor.
+- [~] mcp-phone-service — agent /root/phone_trial_recordings owns existing recorder Lambda IAM-only owner-message backend and tests; configured destination aliases only, durable idempotency, single-call lock, budget reservation, signed callbacks and private recordings. Runtime config remains absent/disabled until hotel batch is terminal; seed budgetFloorUSD from final batch allocation before enablement.
+Definition of done: focused Go/Python tests pass for scopes, owner boundaries, no duplicate calls, budget stop, recording and status; GitHub deployment passes; MCP initialize/tools/list/tools/call protocol verified. Actual Claude/ChatGPT connection requires owner browser sign-in and cannot be claimed from mocked tests.
+Scope: no inbound call session-handoff implementation, no arbitrary phone destinations, no general task worker, no local scheduling. Pending inbound session choice remains separate.

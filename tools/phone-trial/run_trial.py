@@ -25,7 +25,7 @@ MAX_SECONDS = 180
 TERMINAL = {"completed", "failed", "busy", "no-answer", "canceled"}
 NORMAL_END_REASONS = {"research_finished", "remote_hangup", "twilio_disconnected", "conversation_idle",
                       "duration_limit", "consent_withdrawn", "token_budget_limit",
-                      "navigation_limit", "unsupported_menu", "voicemail"}
+                      "navigation_limit", "unsupported_menu", "voicemail", "consent_declined"}
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -97,7 +97,7 @@ def select_caller():
     configured = os.environ.get("TWILIO_FROM_NUMBER", "")
     if configured in [n["phone_number"] for n in numbers]:
         return configured
-    if not named:
+    if not named and os.environ.get("PHONE_TRIAL_BATCH", RUN) == RUN:
         # The requested dedicated number is within the fixed infrastructure reserve.
         # Never alter routing on a number used by another application.
         available = twilio("/AvailablePhoneNumbers/US/Local.json?VoiceEnabled=true&PageSize=1").get("available_phone_numbers", [])
@@ -119,12 +119,12 @@ def existing_month_cost():
     return amount
 
 
-def ensure_window():
+def ensure_window(date=DATE, start_hour=9):
     while True:
         now = datetime.now(ZoneInfo("America/Los_Angeles"))
-        if now.date().isoformat() != DATE or now.hour >= 17:
+        if now.date().isoformat() != date or now.hour >= 17:
             raise RuntimeError("The authorized trial date/window has ended")
-        if now.hour >= 9:
+        if now.hour >= start_hour:
             return
         print("Waiting for the California 09:00-17:00 trial window.", flush=True)
         time.sleep(60)
@@ -148,23 +148,80 @@ def usage_charge(events, sid):
     return charge
 
 
+def batch_profile():
+    batch = os.environ.get("PHONE_TRIAL_BATCH", RUN)
+    if batch == RUN:
+        return batch, DATE, 9, None
+    if batch == "hotel-vpn-ten-2026-10-16":
+        return batch, "2026-10-16", 0, ["hotel-%02d" % n for n in range(2, 12)]
+    raise SystemExit("Unknown dated batch; no calls authorized.")
+
+
+def prior_budget_floor(table):
+    rows = table.query(KeyConditionExpression="PK=:pk", ExpressionAttributeValues={":pk": "TRIAL#" + RUN}, ConsistentRead=True)
+    if rows.get("LastEvaluatedKey"):
+        raise RuntimeError("Prior budget ledger pagination requires reconciliation")
+    control = next((r for r in rows["Items"] if r["SK"] == "CONTROL"), {})
+    floor = max(FIXED_RESERVE + existing_month_cost(), Decimal(str(control.get("spentUSD", FIXED_RESERVE))))
+    for row in rows["Items"]:
+        if row["SK"] != "CONTROL" and not row.get("settled"):
+            floor += max(CALL_RESERVE, Decimal(str(row.get("reserveUSD", CALL_RESERVE))))
+    return floor
+
+
 def main():
-    if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("EXECUTE_PHONE_TRIAL") != RUN:
+    batch, date, start_hour, target_ids = batch_profile()
+    if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("EXECUTE_PHONE_TRIAL") != batch:
+        raise SystemExit("Explicit dated GitHub trial execution flag required.")
+    table = boto3.resource("dynamodb").Table("live-ninja-phone-trial")
+    lock_key = {"PK": "PHONE#CONTROL", "SK": "VOICE"}
+    owner = "batch:" + batch
+    current = table.get_item(Key=lock_key, ConsistentRead=True).get("Item", {})
+    state = {"safe": False}
+    if current.get("activeRequest") != owner:
+        try:
+            table.update_item(Key=lock_key, UpdateExpression="SET activeRequest=:owner",
+                              ConditionExpression="attribute_not_exists(activeRequest)",
+                              ExpressionAttributeValues={":owner": owner})
+        except Exception:
+            raise SystemExit("Another call owner holds the voice lock or lock access failed; no calls made.") from None
+        state["safe"] = True
+    try:
+        execute_batch(table, batch, date, start_hour, target_ids, state)
+    finally:
+        if state["safe"]:
+            try:
+                table.update_item(Key=lock_key, UpdateExpression="REMOVE activeRequest",
+                                  ConditionExpression="activeRequest=:owner", ExpressionAttributeValues={":owner": owner})
+            except Exception:
+                raise SystemExit("Voice lock release could not be confirmed; reconcile before another call.") from None
+
+
+def execute_batch(table, batch, date, start_hour, target_ids, state):
+    if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("EXECUTE_PHONE_TRIAL") != batch:
         raise SystemExit("Explicit dated GitHub trial execution flag required.")
     targets = json.loads(Path("tools/phone-trial/targets.json").read_text())["hotels"]
     if len(targets) != 20 or len({t["phone"] for t in targets}) != 20:
         raise SystemExit("Exactly 20 unique destinations required.")
-    table = boto3.resource("dynamodb").Table("live-ninja-phone-trial")
-    ledger_key = {"PK": "TRIAL#" + RUN, "SK": "CONTROL"}
+    if target_ids is not None:
+        by_id = {t["id"]: t for t in targets}
+        if len(by_id) != len(targets) or any(t not in by_id for t in target_ids):
+            raise SystemExit("Approved destination list is incomplete or duplicated.")
+        targets = [by_id[t] for t in target_ids]
+    count = len(targets)
+    ledger_key = {"PK": "TRIAL#" + batch, "SK": "CONTROL"}
     prior = table.get_item(Key=ledger_key, ConsistentRead=True).get("Item")
-    ensure_window()
+    ensure_window(date, start_hour)
     attempted_ids = set()
     reconciled_intents = set()
     if prior:
+        state["safe"] = False
         if prior.get("status") == "completed":
+            state["safe"] = True
             print("Trial already completed. No redial.")
             return
         if prior.get("status") == "running" or int(prior.get("executionAttempts", 1)) >= 3:
+            state["safe"] = False
             raise SystemExit("Prior run is active/unknown or retry ceiling reached; no calls made.")
         rows = table.query(KeyConditionExpression="PK=:pk", ExpressionAttributeValues={":pk": ledger_key["PK"]}, ConsistentRead=True)
         if rows.get("LastEvaluatedKey"):
@@ -174,7 +231,7 @@ def main():
             if row["SK"] == "CONTROL":
                 continue
             if not row.get("callSid"):
-                query = urllib.parse.urlencode({"To": row["target"]["phone"], "From": prior["callerNumber"], "StartTime>=": DATE, "PageSize": 1000})
+                query = urllib.parse.urlencode({"To": row["target"]["phone"], "From": prior["callerNumber"], "StartTime>=": date, "PageSize": 1000})
                 history = twilio("/Calls.json?" + query)
                 if history.get("next_page_uri") or "calls" not in history or history["calls"]:
                     raise SystemExit("Ambiguous call creation has provider history; reconcile before resuming.")
@@ -189,10 +246,11 @@ def main():
                           ConditionExpression="#s=:old", ExpressionAttributeNames={"#s": "status"},
                           ExpressionAttributeValues={":r": "running", ":old": prior["status"], ":n": int(prior.get("executionAttempts", 1)) + 1, ":spent": spent})
     else:
-        spent = FIXED_RESERVE + existing_month_cost()
-        table.put_item(Item={**ledger_key, "status": "running", "authorizedCalls": 20, "startedAt": int(time.time()), "gitSha": os.environ.get("GITHUB_SHA", "unknown"),
+        spent = prior_budget_floor(table) if batch != RUN else FIXED_RESERVE + existing_month_cost()
+        table.put_item(Item={**ledger_key, "status": "running", "authorizedCalls": count, "eventRunId": RUN, "authorizedDate": date, "startedAt": int(time.time()), "gitSha": os.environ.get("GITHUB_SHA", "unknown"),
                             "executionAttempts": 1, "reservedInfrastructureUSD": FIXED_RESERVE, "spentUSD": spent},
                        ConditionExpression="attribute_not_exists(PK)")
+    state["safe"] = True
     attempts = len(attempted_ids)
     failure = None
     sid = None
@@ -205,7 +263,7 @@ def main():
         for target in targets:
             if target["id"] in attempted_ids:
                 continue
-            ensure_window()
+            ensure_window(date, start_hour)
             if spent + CALL_RESERVE > LIMIT:
                 failure = "Monthly $20 threshold reached; explicit $5 daily permission required."
                 break
@@ -222,6 +280,8 @@ def main():
                 table.put_item(Item={**attempt_key, "target": target, "createdAt": int(time.time()),
                                     "reserveUSD": CALL_RESERVE, "settled": False}, ConditionExpression="attribute_not_exists(PK)")
             # A failed/ambiguous create is never retried. No recording until voice consent.
+            state["safe"] = False
+            sid = None
             created = twilio("/Calls.json", "POST", {"To": target["phone"], "From": caller, "Url": url,
                              "Method": "POST", "Timeout": 20, "TimeLimit": MAX_SECONDS})
             sid = created["sid"]
@@ -229,7 +289,7 @@ def main():
             attempts += 1
             table.update_item(Key=attempt_key, UpdateExpression="SET callSid=:sid", ExpressionAttributeValues={":sid": sid})
             event(sid, target, "call_registered", hotel=target["name"], city=target["city"], source=target["source"])
-            print("Call attempt " + str(attempts) + "/20: " + target["id"], flush=True)
+            print("Call attempt " + str(attempts) + "/" + str(count) + ": " + target["id"], flush=True)
             deadline = time.monotonic() + MAX_SECONDS + 45
             while details.get("status") not in TERMINAL and time.monotonic() < deadline:
                 time.sleep(5)
@@ -242,6 +302,7 @@ def main():
                 details = twilio("/Calls/" + sid + ".json")
             if details.get("status") not in TERMINAL:
                 raise RuntimeError("Provider call end is not confirmed; remaining calls stopped")
+            state["safe"] = True
             event(sid, target, "call_ended", status=details.get("status"), duration=details.get("duration"),
                   providerPrice=details.get("price"), providerCurrency=details.get("price_unit"))
             if details.get("status") == "failed":
@@ -298,12 +359,13 @@ def main():
         if sid and details.get("status") not in TERMINAL:
             try:
                 twilio("/Calls/" + sid + ".json", "POST", {"Status": "completed"})
+                state["safe"] = twilio("/Calls/" + sid + ".json").get("status") in TERMINAL
             except Exception:
                 failure += " Provider stop unconfirmed; provider-side 180-second limit remains in force."
     table.update_item(Key=ledger_key, UpdateExpression="SET #s=:s, attempted=:a, detail=:d, endedAt=:e",
                       ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":s": "blocked" if failure else "completed", ":a": attempts,
-                      ":d": failure or "All 20 attempts reached a terminal call state.", ":e": int(time.time())})
-    print("Trial terminal: " + str(attempts) + "/20 attempted. " + (failure or "Completed."), flush=True)
+                      ":d": failure or "All " + str(count) + " attempts reached a terminal call state.", ":e": int(time.time())})
+    print("Trial terminal: " + str(attempts) + "/" + str(count) + " attempted. " + (failure or "Completed."), flush=True)
     if failure:
         raise SystemExit(1)
 
