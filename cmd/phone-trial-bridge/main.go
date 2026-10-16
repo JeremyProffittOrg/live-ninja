@@ -53,6 +53,8 @@ type server struct {
 	client *http.Client
 	mu     sync.Mutex
 	calls  map[string]*call
+	// Zero means the dialog.go defaults.
+	silenceWait, transcriptWait time.Duration
 }
 
 var sidPattern = regexp.MustCompile("^CA[0-9a-fA-F]{32}$")

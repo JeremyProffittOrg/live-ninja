@@ -369,7 +369,9 @@ func TestTokenBudgetStopsBeforeNextResponse(t *testing.T) {
 		}
 		events <- wireEvent{Source: "azure", Data: map[string]any{"type": "response.done", "response": map[string]any{"id": fmt.Sprintf("r%d", i), "status": "completed", "usage": map[string]any{"input_tokens": float64(10000), "output_tokens": float64(100)}}}}
 		if i < 3 {
-			events <- wireEvent{Source: "azure", Data: map[string]any{"type": "input_audio_buffer.committed"}}
+			item := fmt.Sprintf("in%d", i)
+			events <- wireEvent{Source: "azure", Data: map[string]any{"type": "input_audio_buffer.committed", "item_id": item}}
+			events <- wireEvent{Source: "azure", Data: map[string]any{"type": "conversation.item.input_audio_transcription.completed", "item_id": item, "transcript": "Just the password."}}
 		}
 	}
 	if reason := <-done; reason != "token_budget_limit" {
