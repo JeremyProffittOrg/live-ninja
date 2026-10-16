@@ -1,6 +1,6 @@
 # Plan
 
-Status: IMPLEMENTING 2026-10-16. The user authorized implementation with multiple agents. Calls remain stopped. Live-call, inbound-session, and car acceptance gates remain open.
+Status: PARTIAL DELIVERY 2026-10-16. Owner budget controls, web recording playback, neural trial prompts and evidence tools are implemented. Calls remain stopped. Inbound-session, live topology, native Android/Jobs and car/Auto acceptance remain open.
 
 Single active source: repository-root plan.md; current implementation checkout C:\dev\live-ninja-plan-run\plan.md. Completed history: C:\dev\live-ninja\completed\plan-2026-10-15-history.md and earlier completed/ archives. Deferred work: C:\dev\live-ninja\backlog.md. The current plan covers telephony, Jobs, S3 recordings, car Bluetooth, Android Auto, and their acceptance tests.
 
@@ -160,7 +160,7 @@ Execution sequence: resolve the front-loaded batch and verification tools first.
 - [ ] call-modes-acceptance — blocked by: phone-acceptance, call-client, assistant-call-task, recording-app-access; gate: scripts\verify-phone-evidence.bat call-modes-acceptance
 - [ ] hotel-task-provider — blocked by: assistant-call-task, phone-targets, call-budget-gate; gate: scripts\verify-phone-evidence.bat hotel-task-provider
 - [ ] hotel-results — blocked by: hotel-task-provider, call-modes-acceptance, recording-app-access; gate: scripts\verify-phone-evidence.bat hotel-results
-- [!] car-usb-access — Samsung S9 is offline in adb on 2026-10-16; owner must reconnect/unlock USB debugging; gate: scripts\verify-phone-evidence.bat car-usb-access
+- [!] car-usb-access — Samsung S9 requires USB debugging authorization after one bounded reconnect on 2026-10-16; owner must unlock the phone and approve its prompt; gate: scripts\verify-phone-evidence.bat car-usb-access
 - [ ] car-repro — blocked by: car-usb-access; gate: scripts\verify-phone-evidence.bat car-repro
 - [ ] car-route-fix — blocked by: car-repro; gate: scripts\verify-phone-evidence.bat car-route-fix
 - [ ] auto-platform-gate — blocked by: phone-targets; gate: scripts\verify-phone-evidence.bat auto-platform-gate
@@ -759,6 +759,14 @@ Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat r
 ## Execution log
 
 ### phone-web-foundation — budget controls, private recordings and prompt quality
+
+- Phone backend workflow 38926826412 (c11da61c) completed success; dated trial job skipped, no calls. Main workflow 38926826437 completed success, including browser quality checks.
+- Authorization follow-up commit 8af7457220643b17a2eb0c10e82a104f5b7fbfa1 uses existing strongly consistent owner reads. Main workflow 38927291929 completed success at 2026-10-16T16:07:34Z: tests/races, SAM deploy, Nova bootstrap and web-quality passed.
+- Production phonebudget.mjs and recording-history.mjs both returned 200 and exactly matched release contents. Unauthenticated budget/recording API reads returned 403; recorder HTTP grant injection returned 404; wrong-owner IAM recording list returned 403.
+- Post-deployment DDB read verified enabled=false, owner-stop-2026-10-16 still held, and only the explicit hotel-trial-2026-10-15 legacy recording source bound.
+- One bounded adb reconnect changed Samsung state from offline to unauthorized. Owner must unlock the phone and approve USB debugging. No pairing reset, install, or UI input occurred. Evidence: C:\dev\live-ninja-test-evidence\plan-run-2026-10-16\android-reconnect.json.
+- Operator blocker email confirmed SES MessageId 010001a14569affb-a924f787-7163-4d54-bcda-208c12aa9a9b-000000. The delegated prior attempt lost its response and may also have delivered; parent completed the required receipt verification with a direct send.
+
 
 - Published c11da61ca730ac8c23f5e28daa5408cf100bc4c7 to main. Phone workflow 38926826412 and app workflow 38926826437 started.
 - Live IAM-only budget read: HTTP-style status 200, allocatedUSD=19.7, dailyGrantedUSD=0, pausedReason=disabled. No grant submitted.
