@@ -82,7 +82,7 @@ func TestMCPAuthorizationRejectsUnsafeRequests(t *testing.T) {
 }
 func TestMCPRegistrationRedirectValidation(t *testing.T) {
 	s, _, _, _ := setup(t)
-	for _, u := range []string{"http://client.example/cb", "https://client.example/cb#fragment", "https://user@client.example/cb", "https://127.0.0.1/cb", "https://localhost/cb", "https://client.local/cb", "https://client.example/\r\nheader"} {
+	for _, u := range []string{"http://client.example/cb", "https://client.example/cb#fragment", "https://user@client.example/cb", "https://127.0.0.1/cb", "https://localhost/cb", "https://client.local/cb", "https://client.example/\r\nheader", "https://*.client.example/cb", "https://client.example;sandbox/cb"} {
 		if _, e := s.Register(context.Background(), "bad", []string{u}, "phone:read"); e == nil {
 			t.Fatalf("accepted %q", u)
 		}

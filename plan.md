@@ -901,3 +901,13 @@ Definition of done: deployment workflows terminal success; live metadata and una
 depends on: mcp-release-verification
 - [!] mcp-owner-sign-in — Jeremy must add https://live.jeremy.ninja/mcp as an OAuth remote MCP connection in Claude or ChatGPT, complete Login with Amazon and approve the displayed scopes. Then test a read such as job_list. Server/unit tests and unauthenticated live probes do not prove a real client connection. Async question remains pending; no credentials requested in chat.
 Definition of done: owner completes browser consent and an actual client initialize/tools/list/read-tool result is observed without exposing tokens. Existing direct inbound-call session choice remains unresolved and inbound routing is not enabled.
+
+## mcp-consent-redirect — fix invalid_grant during remote-client connection
+depends on: mcp-release-verification
+### mcp-return-policy — permit the registered client after browser consent
+- [x] mcp-redirect-reproduction — production route trace on 2026-10-16: authorize GET200 twice, Allow POST302 at12:05:08UTC, second POST400 at12:05:11UTC, no token exchange. TestMCPOAuthConsentPolicyAllowsClientRedirect failed with 'consent policy blocks registered client callback: https://client.example'. Consent CSP form-action self excludes the cross-origin OAuth return; Chromium can enforce CSP on this redirect chain.
+- [x] mcp-callback-policy-fix — consent CSP includes only self and the already-registered callback origin; URL validation excludes wildcard/policy-injection hosts. CSRF, active-owner, PKCE, audience and one-use code/consent checks remain. Help instructs fresh client connection after stale/used grant.
+- [~] mcp-redirect-delivery — go test ./internal/mcpauth ./internal/webapp -count=1 and go vet ./internal/mcpauth ./internal/webapp passed. Commit/push through main; CI/deploy must reach terminal success. Then Jeremy must start a fresh client connection, not reuse the consumed consent page.
+Definition of done: focused regression, OAuth negative tests and CI pass; deployed code contains the exact-origin policy; actual client returns after Allow and exchanges code successfully. Browser verification remains operator-dependent on OFFICEPC unless an approved browser driver is supplied.
+Non-goals: do not relax grant replay, accept arbitrary redirect origins, change memory/jobs/call permissions, or retry phone calls. Files: mcp_auth.go/test, mcpauth/service.go/test, Help, plan. Deployment repair ceiling three; no credential values or callback query strings in logs.
+Primary reference: https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy/form-action

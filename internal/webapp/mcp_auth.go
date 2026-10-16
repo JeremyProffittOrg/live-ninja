@@ -208,7 +208,14 @@ func (a *MCPAuth) authorize(c *fiber.Ctx) error {
 	if e != nil {
 		return oauthError(c, e)
 	}
-	c.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+	// Chromium applies form-action to the POST redirect chain as well.
+	// Permit only this already-bound client's callback origin, never a wildcard.
+	callbackURL, parseErr := url.Parse(pending.Request.RedirectURI)
+	if parseErr != nil || !mcpauth.ValidRedirect(pending.Request.RedirectURI) {
+		return oauthError(c, mcpauth.ErrInvalidRequest)
+	}
+	callbackOrigin := callbackURL.Scheme + "://" + callbackURL.Host
+	c.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' "+callbackOrigin+"; frame-ancestors 'none'; base-uri 'none'")
 	c.Set("X-Frame-Options", "DENY")
 	c.Type("html")
 	var out bytes.Buffer

@@ -217,3 +217,35 @@ func TestMCPOAuthRejectsPlainPKCEAndDuplicateParameters(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPOAuthConsentPolicyAllowsClientRedirect(t *testing.T) {
+	app, a, cookie := mcpOAuthTestApp(t)
+	req, _ := mcpAuthRequest(t, a)
+	resp, _ := mcpOAuthRequest(t, app, "GET", "/oauth/authorize?"+mcpQuery(req), "", cookie, "", "")
+	if resp.StatusCode != 200 {
+		t.Fatal("consent page unavailable")
+	}
+	callback, _ := url.Parse(req.RedirectURI)
+	want := callback.Scheme + "://" + callback.Host
+	sources := ""
+	for _, directive := range strings.Split(resp.Header.Get("Content-Security-Policy"), ";") {
+		if strings.HasPrefix(strings.TrimSpace(directive), "form-action ") {
+			sources = strings.TrimSpace(directive)
+		}
+	}
+	found := false
+	for _, source := range strings.Fields(sources)[1:] {
+		if source == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("consent policy blocks registered client callback:", want)
+	}
+	if strings.Contains(sources, "*") || !strings.Contains(sources, "'self'") {
+		t.Fatal("consent form policy is too broad")
+	}
+	if !strings.Contains(resp.Header.Get("Content-Security-Policy"), "frame-ancestors 'none'") {
+		t.Fatal("clickjacking defense removed")
+	}
+}

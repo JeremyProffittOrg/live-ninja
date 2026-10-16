@@ -119,7 +119,7 @@ func scopeSubset(scope, parent string) bool {
 }
 func ValidRedirect(raw string) bool {
 	u, e := url.Parse(raw)
-	return e == nil && len(raw) <= 2048 && u.Scheme == "https" && u.Hostname() != "" && strings.Contains(u.Hostname(), ".") && net.ParseIP(u.Hostname()) == nil && u.User == nil && u.Fragment == "" && u.Opaque == "" && !strings.ContainsAny(raw, "\r\n\\") && !strings.HasSuffix(strings.ToLower(u.Hostname()), ".local")
+	return e == nil && len(raw) <= 2048 && u.Scheme == "https" && regexp.MustCompile("^[A-Za-z0-9.-]+$").MatchString(u.Hostname()) && strings.Contains(u.Hostname(), ".") && net.ParseIP(u.Hostname()) == nil && u.User == nil && u.Fragment == "" && u.Opaque == "" && !strings.ContainsAny(raw, "\r\n\\") && !strings.HasSuffix(strings.ToLower(u.Hostname()), ".local")
 }
 func (s *Service) Register(ctx context.Context, name string, redirects []string, scope string) (*Client, error) {
 	if len(name) > 120 || len(redirects) == 0 || len(redirects) > 5 {
