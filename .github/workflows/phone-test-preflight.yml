@@ -5,6 +5,19 @@ on:
     branches: [main]
     paths: [.github/workflows/phone-test-preflight.yml]
   workflow_dispatch:
+    inputs:
+      activate_inbound:
+        description: 'Activate only the existing owner/PIN inbound route; never place a call'
+        type: boolean
+        default: false
+      authorization_date:
+        description: 'Activation requires the current locked date 2026-10-17'
+        type: string
+        default: ''
+
+concurrency:
+  group: phone-inbound-operation
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -99,3 +112,36 @@ jobs:
           print("Azure federation subject: " + claims["sub"])
           print("Azure federation issuer: " + claims["iss"])
           print("Azure federation audience: " + claims["aud"])
+
+  inbound:
+    needs: verify
+    if: github.repository == 'JeremyProffittOrg/live-ninja' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test inbound operational boundaries without provider calls
+        run: python -B -m unittest discover -s tools/phone-trial -p test_activate_inbound.py -v
+      - run: python -m pip install boto3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-phone-inbound-${{ github.run_id }}
+          aws-region: us-east-1
+      - name: Inspect or explicitly activate exact existing inbound route
+        env:
+          TWILIO_ACCOUNT_SID: ${{ vars.TWILIO_ACCOUNT_SID }}
+          TWILIO_API_KEY_SID: ${{ vars.TWILIO_API_KEY_SID }}
+          TWILIO_API_KEY_SECRET: ${{ secrets.TWILIO_API_KEY_SECRET }}
+          ACTIVATE_INBOUND: ${{ github.event_name == 'workflow_dispatch' && inputs.activate_inbound || false }}
+          ACTIVATION_DATE: ${{ inputs.authorization_date }}
+        shell: python
+        run: |
+          import os, subprocess, sys
+          command = [sys.executable, '-B', 'tools/phone-trial/activate_inbound.py']
+          if os.environ.get('ACTIVATE_INBOUND') == 'true':
+              command.append('--activate')
+          subprocess.run(command, check=True)

@@ -125,6 +125,17 @@ live call merely to set its callback. Twilio documents that callback-update
 restriction in https://www.twilio.com/docs/voice/api/call-resource . Number-level
 callbacks are documented in https://www.twilio.com/docs/phone-numbers/api/incomingphonenumber-resource .
 
+The existing `phone-test-preflight.yml` workflow now includes a read-only inbound
+routing check. Its helper, `tools/phone-trial/activate_inbound.py`, runs only in
+this repository's main-branch GitHub context. A route/configuration mismatch is
+a failing check, not permission to activate. The separately authorized manual
+operation uses `activate_inbound=true` and `authorization_date=2026-10-17`; it
+requires the recorded current-day10USD grant, an active canonical owner, enrolled
+PIN, the existing two caller aliases and no active owned call. It updates only
+the exact existing number's four voice/status callback fields, verifies preserved
+settings, then conditionally enables the existing owner/PIN rows. It never places
+a call, purchases a number, changes SMS, or grants budget.
+
 ## Repo bootstrap facts (filled in at creation)
 
 | | |
