@@ -165,8 +165,10 @@ def start(data):
         remaining = deadline - int(time.time())
         if remaining <= 0:
             raise ValueError('Admission expired')
-        result = m.provider('/Calls/' + sid + '.json', {'TimeLimit': remaining,
-                   'StatusCallback': base() + 'status/' + item['callbackId'], 'StatusCallbackMethod': 'POST'})
+        # Incoming-number configuration owns the signed status callback. Twilio
+        # requires a redirect URL when changing a call's StatusCallback, which
+        # would interrupt this pending PIN response.
+        result = m.provider('/Calls/' + sid + '.json', {'TimeLimit': remaining})
         if result.get('sid') != sid or result.get('account_sid') != os.environ['TWILIO_ACCOUNT_SID'] or result.get('status') not in m.STATUSES:
             raise ValueError('Provider cap binding unavailable')
     except Exception:
@@ -189,13 +191,44 @@ def mint(item):
     return value
 
 
+def number_status(data):
+    """Signed number-level terminal receipt; never admit or recreate a call."""
+    if data.get('Direction') != 'inbound' or data.get('CallStatus') not in m.STATUSES:
+        return r.response(403)
+    cfg = r.get(m.CONFIG_KEY) or {}
+    owner = cfg.get('ownerUserId')
+    if not owner:
+        return r.response(200)
+    import boto3
+    canonical = boto3.resource('dynamodb', region_name='us-east-1').Table('live-ninja').get_item(
+        Key={'pk': 'CONFIG', 'sk': 'OWNER'}, ProjectionExpression='userId', ConsistentRead=True).get('Item', {})
+    if canonical.get('userId') != owner:
+        return r.response(403)
+    sid = data['CallSid']
+    request_id = 'inbound-' + sid
+    item = r.get(m.request_key(owner, request_id))
+    if not item:
+        return r.response(200)
+    if (item.get('ownerUserId') != owner or item.get('requestId') != request_id or item.get('direction') != 'inbound'
+            or item.get('callSid') != sid or data.get('From') != item.get('toNumber') or data.get('To') != item.get('fromNumber')):
+        return r.response(403)
+    import account_lifecycle
+    if account_lifecycle.blocked({'ownerUserId': owner, 'runId': m.namespace(owner)}) or item.get('inboundState') == 'ended':
+        return r.response(200)
+    if data['CallStatus'] in m.TERMINAL:
+        end(item, 'provider_terminal', provider_status=data['CallStatus'])
+    return r.response(200)
+
+
 def callback(path, raw, headers):
     data = signed_form(path, raw, headers)
     if data is None:
         return r.response(403)
     if path == '/inbound-owner/voice':
         return start(data)
-    match = re.fullmatch(r'/inbound-owner/(pin/[123]|consent|status|recording|ended)/([0-9a-f]{64})', path)
+    if path == '/inbound-owner/status':
+        return number_status(data)
+    match = re.fullmatch(r'/inbound-owner/(pin/[123]|consent|recording|ended)/([0-9a-f]{64})', path)
     if not match:
         return r.response(404)
     kind, token = match.groups()
@@ -215,11 +248,10 @@ def callback(path, raw, headers):
             return account_lifecycle.resolve_deleted_recording(call, recording, data.get('RecordingStatus'))
         return r.ingest_recording(item['callSid'], recording, data.get('RecordingStatus'), run_id=m.namespace(item['ownerUserId']))
     if item.get('inboundState') == 'ended':
-        return r.response(200) if kind == 'status' else bye()
-    if kind in {'status', 'ended'}:
-        if kind == 'ended' or data.get('CallStatus') in m.TERMINAL:
-            end(item, 'provider_terminal', hangup=kind == 'ended', provider_status=data.get('CallStatus'))
-        return bye() if kind == 'ended' else r.response(200)
+        return bye()
+    if kind == 'ended':
+        end(item, 'provider_terminal', hangup=True, provider_status=data.get('CallStatus'))
+        return bye()
     cfg, inbound = r.get(m.CONFIG_KEY), r.get(CONFIG)
     lock = r.get(m.VOICE_KEY) or {}
     if not valid_config(cfg, inbound, since=item['createdAt']) or lock.get('activeRequest') != item['lockId'] or int(time.time()) >= item['deadline']:

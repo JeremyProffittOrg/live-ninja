@@ -41,6 +41,10 @@ class InboundTests(unittest.TestCase):
         self.broker = patch.object(i, 'mint', return_value={'mode': 'phone', 'bridgeToken': 'test-capability',
             'sessionId': 'fresh-session', 'sessionConfig': {'instructions': 'owner context', 'tools': []}}).start()
         self.final = patch.object(i, 'final_transcript').start()
+        self.canonical = Mock()
+        self.canonical.get_item.return_value = {'Item': {'userId': owners.OWNER}}
+        resource = Mock(); resource.Table.return_value = self.canonical
+        patch.dict(sys.modules, {'boto3': types.SimpleNamespace(resource=Mock(return_value=resource))}).start()
 
     def transact(self, operations):
         regular = []
@@ -68,9 +72,10 @@ class InboundTests(unittest.TestCase):
 
     def callback(self, kind='voice', **fields):
         path = '/inbound-owner/' + kind
-        if kind != 'voice':
+        if kind not in {'voice', 'status'}:
             path += '/' + self.item()['callbackId']
         data = {'AccountSid': f.ACCOUNT, 'CallSid': f.CALL, 'From': '+12025550101', 'To': '+12025550100', 'Direction': 'inbound', **fields}
+        data = {key: value for key, value in data.items() if value is not None}
         signed = 'https://api.example' + path + ''.join(k + data[k] for k in sorted(data))
         signature = base64.b64encode(hmac.new(b'test-secret', signed.encode(), hashlib.sha1).digest()).decode()
         return r.handler({'rawPath': path, 'body': urllib.parse.urlencode(data), 'headers': {'x-twilio-signature': signature},
@@ -100,7 +105,7 @@ class InboundTests(unittest.TestCase):
         self.configure()
         self.assertIn('six digit', self.callback()['body'])
         cap = self.provider.call_args.args[1]
-        self.assertEqual(cap['TimeLimit'], 180)
+        self.assertEqual(cap, {'TimeLimit': 180})
         self.assertIn('Press 1', self.callback('pin/1', Digits='123456')['body'])
         self.broker.assert_not_called()
         reply = self.callback('consent', Digits='1')
@@ -131,6 +136,72 @@ class InboundTests(unittest.TestCase):
         self.assertNotIn('activeRequest', r.get(m.VOICE_KEY))
         self.broker.assert_not_called()
         self.assertFalse(any('/Recordings' in call.args[0] for call in self.provider.call_args_list))
+
+    def test_number_status_early_hangup_before_pin_releases_only_own_lock(self):
+        self.configure(); self.callback()
+        self.provider.reset_mock()
+        self.assertEqual(self.callback('status', CallStatus='completed')['statusCode'], 200)
+        self.assertEqual(self.item()['inboundState'], 'ended')
+        self.assertEqual(self.item()['providerStatus'], 'completed')
+        self.assertEqual(self.item()['pinAttempts'], 0)
+        self.assertNotIn('activeRequest', r.get(m.VOICE_KEY))
+        self.assertEqual(r.get(r.call_key(f.CALL, m.namespace(owners.OWNER)))['recordingStatus'], 'absent')
+        self.canonical.get_item.assert_called_with(Key={'pk':'CONFIG','sk':'OWNER'}, ProjectionExpression='userId', ConsistentRead=True)
+        self.provider.assert_not_called(); self.broker.assert_not_called()
+        before = self.item()
+        self.assertEqual(self.callback('status', CallStatus='completed')['statusCode'], 200)
+        self.assertEqual(self.item(), before)
+        self.final.assert_called_once()
+
+    def test_number_status_hangup_before_consent_preserves_owner_stop(self):
+        self.configure(); self.callback(); self.callback('pin/1', Digits='123456')
+        r._table.put_item(Item={**m.VOICE_KEY, 'activeRequest':'owner-stop-2026-10-16'})
+        self.provider.reset_mock()
+        self.assertEqual(self.callback('status', CallStatus='completed')['statusCode'], 200)
+        self.assertEqual(self.item()['inboundState'], 'ended')
+        self.assertNotIn('consented', self.item())
+        self.assertEqual(r.get(m.VOICE_KEY)['activeRequest'], 'owner-stop-2026-10-16')
+        self.provider.assert_not_called(); self.broker.assert_not_called()
+
+    def test_number_status_preserves_unrelated_call_lock(self):
+        self.configure(); self.callback()
+        r._table.put_item(Item={**m.VOICE_KEY, 'activeRequest':'owner:another:request'})
+        self.assertEqual(self.callback('status', CallStatus='failed')['statusCode'], 200)
+        self.assertEqual(self.item()['providerStatus'], 'failed')
+        self.assertEqual(r.get(m.VOICE_KEY)['activeRequest'], 'owner:another:request')
+
+    def test_number_status_rejects_untrusted_provider_and_call_identity(self):
+        self.configure(); self.callback()
+        before = self.item()
+        self.assertEqual(i.callback('/inbound-owner/status', b'', {})['statusCode'], 403)
+        for fields in ({'AccountSid':'AC'+'9'*32}, {'From':'+12025550999'}, {'To':'+12025550999'},
+                       {'From':None}, {'To':None}, {'Direction':'outbound-api'}, {'Direction':None}, {'CallStatus':'unexpected'}):
+            with self.subTest(fields=fields):
+                self.assertEqual(self.callback('status', **{'CallStatus':'completed', **fields})['statusCode'], 403)
+        self.canonical.get_item.return_value = {'Item':{'userId':owners.OTHER}}
+        self.assertEqual(self.callback('status', CallStatus='completed')['statusCode'], 403)
+        self.assertEqual(self.item(), before)
+        self.final.assert_not_called()
+
+    def test_number_status_unknown_deleted_and_nonterminal_calls_make_no_records(self):
+        self.configure()
+        before = dict(r._table.items)
+        reply = self.callback('status', CallStatus='completed')
+        self.assertEqual(reply['statusCode'], 200); self.assertEqual(reply['body'], '{}')
+        self.assertEqual(r._table.items, before)
+        self.callback(); before = self.item()
+        self.assertEqual(self.callback('status', CallStatus='ringing')['statusCode'], 200)
+        self.assertEqual(self.item(), before)
+        r._table.put_item(Item={'PK':'OWNER#'+owners.OWNER, 'SK':'ACCOUNT_DELETION', 'ownerUserId':owners.OWNER})
+        before = dict(r._table.items)
+        self.assertEqual(self.callback('status', CallStatus='completed')['statusCode'], 200)
+        self.assertEqual(r._table.items, before)
+        before_item = self.item()
+        r._table.items.pop((before_item['PK'], before_item['SK']))
+        remaining = dict(r._table.items)
+        self.assertEqual(self.callback('status', CallStatus='completed')['statusCode'], 200)
+        self.assertEqual(r._table.items, remaining)
+        self.final.assert_not_called()
 
     def test_ambiguous_mint_never_retries(self):
         self.configure(); self.callback(); self.callback('pin/1', Digits='123456')

@@ -114,6 +114,17 @@ activation, verify the existing caller allowlist, private PIN enrollment, budget
 call stop, exact Twilio number callback, deployed SHA and bounded call acceptance.
 Never copy PINs or configured private numbers into deployment logs.
 
+Before activating inbound owner calling, configure the exact owned number's
+`VoiceUrl` to the recorder ServiceUrl plus `/inbound-owner/voice`, and its
+number-level `StatusCallback` to the same ServiceUrl plus `/inbound-owner/status`.
+Both methods must be POST. Verify those exact values before enabling the private
+owner/PIN rows or releasing the known owner-stop lock. Preserve SMS and unrelated
+number settings. Inbound call admission updates only the provider `TimeLimit`;
+do not add a call-level `StatusCallback` update without a `Url`, or redirect the
+live call merely to set its callback. Twilio documents that callback-update
+restriction in https://www.twilio.com/docs/voice/api/call-resource . Number-level
+callbacks are documented in https://www.twilio.com/docs/phone-numbers/api/incomingphonenumber-resource .
+
 ## Repo bootstrap facts (filled in at creation)
 
 | | |
