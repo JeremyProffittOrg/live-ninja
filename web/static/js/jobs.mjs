@@ -170,6 +170,16 @@ function initJobs() {
       state.phoneCatalog = Array.isArray(catalog?.targets) ? catalog : null;
     } catch { state.phoneCatalog = null; }
     if (state.capabilities) setCapabilities(state.capabilities);
+    if ($('jobEditor').open && !state.saving) {
+      const options = $('jobPhoneTargetOptions');
+      const selected = options.querySelectorAll('input').length
+        ? [...options.querySelectorAll('input:checked')].map(input => input.value)
+        : (state.editorJob?.phoneResearch?.targets || []).map(target => target.id);
+      renderPhoneTargets(selected);
+      if (state.editing && state.editorJob?.kind !== 'phone-research') {
+        [...$('jobKind').options].find(option => option.value === 'phone-research').disabled = true;
+      }
+    }
   }
 
   async function loadJobs(append = false, quiet = false) {

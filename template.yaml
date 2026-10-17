@@ -1036,7 +1036,7 @@ Resources:
           Type: Schedule
           Properties:
             Schedule: rate(1 minute)
-            Enabled: !If [JobsSchedulerEnabled, true, false]
+            State: !If [JobsSchedulerEnabled, ENABLED, DISABLED]
       Policies:
       - Statement:
         - Effect: Allow

@@ -161,7 +161,12 @@ test('phone research saves five catalog hotels without calling and requires exac
   const purpose = 'Ask each hotel about guest Wi-Fi login requirements and reported VPN restrictions. Do not request private router settings or credentials.';
   let saved = null; let runs = []; const calls = [];
   const capabilities = { reminder: true, review: true, scheduling: true, phoneResearch: true };
-  await page.route('**/api/v1/jobs/phone-research/catalog', route => route.fulfill({ json: { targets, enabled: false, blockedReason: 'Calls are stopped by the owner.' } }));
+  let releaseCatalog;
+  const catalogReady = new Promise(resolve => { releaseCatalog = resolve; });
+  await page.route('**/api/v1/jobs/phone-research/catalog', async route => {
+    await catalogReady;
+    await route.fulfill({ json: { targets, enabled: false, blockedReason: 'Calls are stopped by the owner.' } });
+  });
   await page.route('**/api/v1/jobs', async route => {
     if (route.request().method() === 'POST') {
       const body = route.request().postDataJSON();
@@ -187,7 +192,11 @@ test('phone research saves five catalog hotels without calling and requires exac
   });
   await open(page);
   await page.getByRole('button', { name: 'New job', exact: true }).click();
+  await expect(page.locator('#jobPhoneTargetOptions input')).toHaveCount(0);
+  await expect(page.locator('#jobKind option[value="phone-research"]')).toBeDisabled();
+  releaseCatalog();
   await expect(page.locator('#jobKind option[value="phone-research"]')).toBeEnabled();
+  await expect(page.locator('#jobPhoneTargetOptions input')).toHaveCount(6);
   await page.getByLabel('Job type', { exact: true }).selectOption('phone-research');
   await page.getByLabel('Job title', { exact: true }).fill('Research five hotel connections');
   await expect(page.getByLabel('Notes', { exact: true })).toHaveValue(purpose);
