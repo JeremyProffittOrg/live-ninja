@@ -778,6 +778,8 @@ Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evi
 
 ## Execution log
 
+- 2026-10-17 — corrected delivery verified: main39028551114 and Phone39028551161 succeeded atef808d78c002351bb6a4884fb93feccd6aeb0c37; final main39029116533 and Phone39029116502 succeeded at262586c75677ae901f9661c5c54fde4fa8512f17. Latest main completed all test/deploy/browser/accessibility gates; latest phone passed137 Python tests, Go race checks, recorder/Azure deployment and real audio probe, skipped trial calls and released idle capacity. All watchers closed. Read-only export again completed7 pages/118 rows with forbidden fields absent. Owner messages remain disabled, owner-stop retained and inbound PIN enrollment absent. No calls, purge, provider-data deletion or enrollment were executed.
+
 - 2026-10-17 — corrected provider lifecycle committed asef808d78c002351bb6a4884fb93feccd6aeb0c37. Phone39028551161 completed success including136 Python tests, bridge race checks, recorder/Azure deployment/audio probe; trial skipped and owner stop unchanged. Main39028551114 deployment passed and final browser checks are monitored by /root/phone_verification (session96504).
 - 2026-10-17 — named cleanup regression reproduced a lost known bootstrap when a post-mint persistence CAS loses to hangup/deletion. Local failure cleanup now retains the returned exact session capability without reminting. Regression proves exact session finalization and no recording POST; full Python suite137 tests passes. No other speculative scope added.
 
