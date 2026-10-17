@@ -1,5 +1,6 @@
 # Plan
-Status: IMPLEMENTING 2026-10-17. Multiple agents are building native Android recordings, bounded recording recovery, web audio exclusion and evidence checks. Calls remain stopped. Android Auto is deferred to backlog.md. Fresh inbound conversations are selected; private PIN setup, live topology, Jobs and Bluetooth acceptance remain open.
+
+Status: PARTIAL DELIVERY 2026-10-17. Android recordings0.3.17/code23 are installed on the S9; recording recovery and cross-tab audio protection are deployed. Fresh inbound owner sessions and recording account export/deletion are built and tested, and deployed with calling still disabled. Calls stay stopped; PIN enrollment, live topology, Jobs integration and physical Bluetooth acceptance remain open. Android Auto is in backlog.md.
 
 Single active source: repository-root plan.md; current implementation checkout C:\dev\live-ninja-plan-build\plan.md. Completed history: C:\dev\live-ninja\completed\plan-2026-10-15-history.md and earlier completed/ archives. Deferred work: C:\dev\live-ninja\backlog.md. The current plan covers telephony, Jobs, S3 recordings, car Bluetooth, and their acceptance tests. All Android Auto work is in backlog.md.
 
@@ -203,7 +204,7 @@ Definition of done: from C:\dev\live-ninja-plan-build, `powershell.exe -NoProfil
 ### recordings-integrated-delivery — review, verify and publish the combined change
 depends on: android-native-recordings, recording-retry-recovery, web-recording-audio-exclusion, verifier-proof-repair
 - [x] recordings-help-and-checks — root updates Help for shipped behavior, reviews the complete diff, and runs focused tests plus `go test ./internal/webapp/ -run TestHelpDrawer -count=1` and `git diff --check`; all must exit 0.
-- [ ] recordings-main-release — root commits only task files, pushes main and watches every triggered workflow to a terminal result. Verify the deployed SHA without creating a call or changing owner-stop/budget state.
+- [x] recordings-main-release — root commits only task files, pushes main and watches every triggered workflow to a terminal result. Verify the deployed SHA without creating a call or changing owner-stop/budget state.
 Definition of done: `git push origin main` exits 0 and `gh run watch <recorded-run-id> --repo JeremyProffittOrg/live-ninja --exit-status` exits 0 for each triggered delivery run; root appends exact SHA/run identifiers and evidence to Execution log. Android source verification alone is not an installed app release.
 
 Supervision: local tests have a 20-minute deadline; Android build/lint has 45 minutes; delivery runs have 60 minutes. Register session/run identifiers and monitor both success and failure. Classify failures before retrying the recorded command; one ceiling of three attempts per milestone applies across parent and agents. Existing Stop conditions govern this run. No local schedules or new call permissions are created.
@@ -220,7 +221,7 @@ Definition of done: `go test ./cmd/realtime-broker ./internal/realtime ./interna
 - [x] inbound-private-pin-helper — real .bat entrypoint with hidden local entry and salted verifier storage, no PIN in arguments/chat/temp files and no automatic activation.
 Definition of done: `python -B -m unittest discover -s tools/phone-trial -p 'test_*.py'` and `go test ./cmd/phone-trial-bridge -count=1` exit 0. Agent /root/phone_backend owns recorder, bridge and helper files.
 ### inbound-closed-delivery — publish implementation without enabling calls
-- [ ] inbound-contract-release — root verifies integration, Help/contract truth, IAM resource scope and absent/disabled inbound configuration; commit/push main; watch exact GitHub run IDs to terminal success. Real call proof remains open.
+- [x] inbound-contract-release — root verifies integration, Help/contract truth, IAM resource scope and absent/disabled inbound configuration; commit/push main; watch exact GitHub run IDs to terminal success. Real call proof remains open.
 Definition of done: focused tests and existing main/phone deployment workflows succeed, unauthenticated inbound requests are rejected, owner-stop remains set and no call was created.
 Supervision: local test20 minutes; delivery60 minutes; at most three classified attempts per milestone. Missing private PIN or call authority blocks runtime activation only. No local scheduled job, provider routing update, or secret read.
 
@@ -383,7 +384,7 @@ depends on: none
 - [x] phone-evidence-schema — define fixed required cases for every milestone from the acceptance criteria in this plan. Store immutable attempt artifacts outside the repo at the exact evidence root in Execution contract. Include command/exit/result source, commit, device/account identifiers, provider call/recording IDs, audio-route observations and human confirmation where needed. Do not accept missing/skipped required cases as success.
 - [ ] phone-run-manifest — save the locked nonsecret account/resource names, device serials, budgets, exact approved targets, deployment run IDs, and scenario-to-test mappings before executing dependent cases. Validate format, account scope, stale decisions, and recorded SHA; reject unresolved fields. Missing values fail closed. Keep secrets in the existing secure flows only.
 
-Definition of done: from C:\dev\live-ninja, "powershell.exe -NoProfile -NonInteractive -File scripts/verify-phone-evidence.tests.ps1" exits 0. Tests must prove the verifier fails on missing evidence, incorrect owner/commit, failed command, no human audio evidence, unknown case, and attempted call execution without a locked budget/target/start flag. Positive fixtures are synthetic and explicitly labeled; they cannot satisfy live gates. The verifier is planned test support and has not been created or run during planning.
+Definition of done: from C:\dev\live-ninja-plan-build, "powershell.exe -NoProfile -NonInteractive -File scripts/verify-phone-evidence.tests.ps1" exits 0. Tests must prove the verifier fails on missing evidence, incorrect owner/commit, failed command, no human audio evidence, unknown case, and attempted call execution without a locked budget/target/start flag. Positive fixtures are synthetic and explicitly labeled; they cannot satisfy live gates. The verifier is planned test support and has not been created or run during planning.
 
 ### phone-targets — verify account access and cost
 depends on: phone-verification-tools
@@ -394,7 +395,7 @@ depends on: phone-verification-tools
 
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat phone-targets" exits 0. Required checks: gh auth status; gh secret list --repo JeremyProffittOrg/live-ninja; account/resource identity and noninteractive access checks. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat phone-targets" exits 0. Required checks: gh auth status; gh secret list --repo JeremyProffittOrg/live-ninja; account/resource identity and noninteractive access checks. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 
 ## phone-foundation — Azure hosting and trusted Live Ninja access
@@ -413,7 +414,7 @@ depends on: phone-targets
 
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat phone-account-session" exits 0. Required checks: go test ./internal/realtime/ ./internal/tools/ ./internal/webapp/ ./cmd/realtime-broker/ -count=1. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat phone-account-session" exits 0. Required checks: go test ./internal/realtime/ ./internal/tools/ ./internal/webapp/ ./cmd/realtime-broker/ -count=1. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 ### phone-azure-service — host the persistent audio connection
 depends on: phone-account-session
@@ -424,7 +425,7 @@ depends on: phone-account-session
 
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat phone-azure-service" exits 0. Required checks: go test ./cmd/phone-trial-bridge/ -count=1; GitHub run and deployed health/commit checks from deployment.json. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat phone-azure-service" exits 0. Required checks: go test ./cmd/phone-trial-bridge/ -count=1; GitHub run and deployed health/commit checks from deployment.json. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 
 
@@ -446,7 +447,7 @@ depends on: phone-targets
 - [~] call-budget-observability — show month usage, current daily grant/remaining amount, pending reservation, and why dialing is paused. Keep stored recordings and completed job results accessible when new calls are paused. Do not delete recordings to meet a calling budget.
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat call-budget-gate" exits 0. Required checks: go test ./cmd/phone-trial-bridge/ ./internal/jobs/ ./internal/tools/ ./internal/webapp/ -count=1. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat call-budget-gate" exits 0. Required checks: go test ./cmd/phone-trial-bridge/ ./internal/jobs/ ./internal/tools/ ./internal/webapp/ -count=1. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 
 ## phone-media — connect telephone audio to the Azure model
@@ -467,7 +468,7 @@ depends on: phone-azure-service
 
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat phone-audio-loop" exits 0. Required checks: go test ./cmd/phone-trial-bridge/ -count=1; go test -race ./cmd/phone-trial-bridge/ -count=1. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat phone-audio-loop" exits 0. Required checks: go test ./cmd/phone-trial-bridge/ -count=1; go test -race ./cmd/phone-trial-bridge/ -count=1. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 ### phone-number-routing — attach the authorized number
 depends on: phone-audio-loop, call-budget-gate
@@ -478,7 +479,7 @@ depends on: phone-audio-loop, call-budget-gate
 
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat phone-number-routing" exits 0. Required checks: provider number ownership/capability/webhook checks against the locked account and deployed URLs. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat phone-number-routing" exits 0. Required checks: provider number ownership/capability/webhook checks against the locked account and deployed URLs. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 
 ## call-topology — prove the expanded media path before feature work
@@ -497,7 +498,7 @@ depends on: phone-targets, phone-azure-service
 
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat call-topology-proof" exits 0. Required checks: scripts\verify-phone-evidence.bat run-case call-transport-proof. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat call-topology-proof" exits 0. Required checks: scripts\verify-phone-evidence.bat run-case call-transport-proof. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 
 ## call-controls — in-app dialing and clear speaker ownership
@@ -519,7 +520,7 @@ Expected additional files: relevant web/static/js modules, conversation template
 
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat call-client" exits 0. Required checks: go test ./cmd/phone-trial-bridge/ ./internal/webapp/ -count=1; node --test tests/web/unit/*.test.mjs; Android gradlew.bat :app:testDebugUnitTest :app:lintDebug. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat call-client" exits 0. Required checks: go test ./cmd/phone-trial-bridge/ ./internal/webapp/ -count=1; node --test tests/web/unit/*.test.mjs; Android gradlew.bat :app:testDebugUnitTest :app:lintDebug. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 
 ## assistant-outbound — authorized calls without an active browser
@@ -539,7 +540,7 @@ depends on: call-topology-proof, phone-number-routing, call-budget-gate
 
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat assistant-call-task" exits 0. Required checks: go test ./internal/tools/ ./cmd/phone-trial-bridge/ -count=1; scripts\verify-phone-evidence.bat run-case call-task-lifecycle. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat assistant-call-task" exits 0. Required checks: go test ./internal/tools/ ./cmd/phone-trial-bridge/ -count=1; scripts\verify-phone-evidence.bat run-case call-task-lifecycle. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 
 ## call-recordings — log every phone interaction and retain playable audio in S3
@@ -567,7 +568,7 @@ depends on: phone-audio-loop, phone-account-session
 
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat recording-capture" exits 0. Required checks: go test ./cmd/phone-trial-bridge/ ./internal/store/ ./internal/webapp/ -count=1. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat recording-capture" exits 0. Required checks: go test ./cmd/phone-trial-bridge/ ./internal/store/ ./internal/webapp/ -count=1. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 ### recording-s3-ingest — verified private storage and bounded recovery
 depends on: recording-capture
@@ -579,7 +580,7 @@ depends on: recording-capture
 
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat recording-s3-ingest" exits 0. Required checks: go test ./internal/deliv/ ./internal/store/ ./internal/webapp/ ./cmd/account-purge/ -count=1; ingestion-worker integrity/retry tests. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat recording-s3-ingest" exits 0. Required checks: go test ./internal/deliv/ ./internal/store/ ./internal/webapp/ ./cmd/account-purge/ -count=1; ingestion-worker integrity/retry tests. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 ### recording-app-access — play and download from call history and Jobs
 depends on: recording-s3-ingest, call-client
@@ -591,7 +592,7 @@ depends on: recording-s3-ingest, call-client
 
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat recording-app-access" exits 0. Required checks: go test ./internal/webapp/ ./internal/deliv/ -count=1; node --test tests/web/unit/*.test.mjs; Android gradlew.bat :app:testDebugUnitTest :app:lintDebug. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat recording-app-access" exits 0. Required checks: go test ./internal/webapp/ ./internal/deliv/ -count=1; node --test tests/web/unit/*.test.mjs; Android gradlew.bat :app:testDebugUnitTest :app:lintDebug. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 
 ## phone-delivery — help, live proof, and terminal deployment checks
@@ -611,7 +612,7 @@ depends on: phone-number-routing, recording-app-access
 
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat phone-acceptance" exits 0. Required checks: go test ./internal/webapp/ -run TestHelpDrawer -count=1; go test ./... -count=1; scripts\verify-phone-evidence.bat run-case phone-live-call. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat phone-acceptance" exits 0. Required checks: go test ./internal/webapp/ -run TestHelpDrawer -count=1; go test ./... -count=1; scripts\verify-phone-evidence.bat run-case phone-live-call. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 
 ## call-expanded-delivery — verify every requested call mode
@@ -632,7 +633,7 @@ depends on: phone-acceptance, call-client, assistant-call-task, recording-app-ac
 
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat call-modes-acceptance" exits 0. Required checks: go test ./... -count=1; node --test tests/web/unit/*.test.mjs; scripts\verify-phone-evidence.bat run-case call-live-matrix. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat call-modes-acceptance" exits 0. Required checks: go test ./... -count=1; node --test tests/web/unit/*.test.mjs; scripts\verify-phone-evidence.bat run-case call-live-matrix. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 
 ## hotel-job-execution — durable phone tasks within Jobs
@@ -653,7 +654,7 @@ depends on: assistant-call-task, phone-targets, call-budget-gate
 
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat hotel-task-provider" exits 0. Required checks: go test ./internal/jobs/ ./cmd/phone-trial-bridge/ ./internal/tools/ ./internal/webapp/ ./cmd/jobs-worker/ -count=1. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat hotel-task-provider" exits 0. Required checks: go test ./internal/jobs/ ./cmd/phone-trial-bridge/ ./internal/tools/ ./internal/webapp/ ./cmd/jobs-worker/ -count=1. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 ### hotel-results — concise evidence-backed comparison
 depends on: hotel-task-provider, call-modes-acceptance, recording-app-access
@@ -666,7 +667,7 @@ depends on: hotel-task-provider, call-modes-acceptance, recording-app-access
 Restart policy: existing phone deployment ceilings apply. Hotel calls have one attempt per property by default, with no automatic redial until a different bounded policy is locked. Call timeout or budget exhaustion ends the active call, preserves results, and prevents further charges. One unavailable hotel does not block the remaining authorized hotels. No local scheduled automation and no actual hotel calls in this planning session.
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat hotel-results" exits 0. Required checks: go test ./internal/webapp/ -run TestHelpDrawer -count=1; node --test tests/web/unit/jobs.test.mjs; scripts\verify-phone-evidence.bat run-case hotel-acceptance-run. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat hotel-results" exits 0. Required checks: go test ./internal/webapp/ -run TestHelpDrawer -count=1; node --test tests/web/unit/jobs.test.mjs; scripts\verify-phone-evidence.bat run-case hotel-acceptance-run. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 
 ## car-audio — restore car Bluetooth hands-free audio
@@ -692,7 +693,7 @@ depends on: phone-verification-tools
 
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat car-usb-access" exits 0. Required checks: "C:\Users\Jeremy\AppData\Local\Android\Sdk\platform-tools\adb.exe" -s 4633424442303098 get-state; installed artifact/commit match. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat car-usb-access" exits 0. Required checks: "C:\Users\Jeremy\AppData\Local\Android\Sdk\platform-tools\adb.exe" -s 4633424442303098 get-state; installed artifact/commit match. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 ### car-repro — capture the exact failure before changing code
 depends on: car-usb-access
@@ -702,7 +703,7 @@ depends on: car-usb-access
 
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat car-repro" exits 0. Required checks: scripts\verify-phone-evidence.bat run-case car-baseline; the gate passes only when a valid red-capable baseline is recorded, not when missing hardware is mislabeled as a reproduced bug. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat car-repro" exits 0. Required checks: scripts\verify-phone-evidence.bat run-case car-baseline; the gate passes only when a valid red-capable baseline is recorded, not when missing hardware is mislabeled as a reproduced bug. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 ### car-route-fix — one route owner and verified cleanup
 depends on: car-repro
@@ -714,7 +715,7 @@ depends on: car-repro
 
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat car-route-fix" exits 0. Required checks: Android gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:connectedDebugAndroidTest with ANDROID_SERIAL=4633424442303098; scripts\verify-phone-evidence.bat run-case car-regression-proof. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat car-route-fix" exits 0. Required checks: Android gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:connectedDebugAndroidTest with ANDROID_SERIAL=4633424442303098; scripts\verify-phone-evidence.bat run-case car-regression-proof. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 
 ## car-call-testing — extensive device, head-unit, and real-call verification
@@ -738,7 +739,7 @@ Acceptance thresholds: 10/10 lifecycle cycles release their resources; every req
 
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat car-test-matrix" exits 0. Required checks: Android gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:connectedDebugAndroidTest; scripts\verify-phone-evidence.bat run-case car-real-call-matrix; scripts\verify-phone-evidence.bat run-case car-failure-matrix; scripts\verify-phone-evidence.bat run-case car-soak. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat car-test-matrix" exits 0. Required checks: Android gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:connectedDebugAndroidTest; scripts\verify-phone-evidence.bat run-case car-real-call-matrix; scripts\verify-phone-evidence.bat run-case car-failure-matrix; scripts\verify-phone-evidence.bat run-case car-soak. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 ### car-release-proof — publish only verified behavior
 depends on: car-test-matrix
@@ -751,7 +752,7 @@ depends on: car-test-matrix
 
 
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat car-release-proof" exits 0. Required checks: go test ./internal/webapp/ -run TestHelpDrawer -count=1; scripts\verify-phone-evidence.bat run-case car-installed-acceptance; GitHub/installed-version checks. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat car-release-proof" exits 0. Required checks: go test ./internal/webapp/ -run TestHelpDrawer -count=1; scripts\verify-phone-evidence.bat run-case car-installed-acceptance; GitHub/installed-version checks. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 ## recording-acceptance — verify final call audio and S3 playback
 depends on: recording-app-access, call-modes-acceptance, hotel-results, car-release-proof
@@ -770,10 +771,25 @@ depends on: recording-app-access, call-modes-acceptance, hotel-results, car-rele
 
 Expected files: existing telephony callbacks, one scoped ingestion worker only if existing workers do not fit, internal/deliv and store/webapp routes, history/Jobs web and Android views, template.yaml lifecycle/IAM, relevant existing tests, contracts/api.md, and Help copy. No infrastructure mutation occurs during planning. No new credentials are assumed; verify existing Twilio API-key media permissions by name/access status before requesting any additional secret.
 
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat recording-live-proof" exits 0. Required checks: scripts\verify-phone-evidence.bat run-case recording-live-matrix; go test ./internal/webapp/ -run TestHelpDrawer -count=1; final GitHub/installed-artifact/S3 checks. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat recording-live-proof" exits 0. Required checks: scripts\verify-phone-evidence.bat run-case recording-live-matrix; go test ./internal/webapp/ -run TestHelpDrawer -count=1; final GitHub/installed-artifact/S3 checks. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 
 ## Execution log
+
+- 2026-10-17 — all code deliveries terminal success: main39025863230/34eff07ce86b89c18996233f3af12daeb4ad4b6f and39026045269/83aa4149ab4fa21417078f63c9feb897c1f0ff26; phone39025863237/34eff07 and39026045322/83aa414. Latest main includes complete Go tests/vet/race, arm64 builds, SAM, browser/accessibility/Lighthouse success. Latest phone includes120 Python tests, Go race tests, recorder/Azure deployment, real model-audio probe, skipped telephone trial and idle scale-down. Android release/install proof is recorded above. All watcher sessions are closed.
+
+### remaining-execution-gates — only incomplete work stays open
+- [!] inbound-live-acceptance — Jeremy must privately enroll a PIN using `C:\dev\live-ninja-plan-build\scripts\enroll-phone-pin.bat` and explicitly authorize resumption of calls and any needed daily budget. Enrollment alone stays disabled. No number callback was changed and no new call was made in this run.
+- [!] expanded-call-topology — the existing stop-calls decision prevents the required live human/assistant conference experiment. App dialer/listen/takeover/take-back and phone-research Jobs remain downstream of that proof; no placeholder implementations were added.
+- [!] bluetooth-physical-proof — Jeremy must provide the parked Suburban test window and verify actual microphone/speaker audio. S9 USB access, signed installation and existing Bluetooth unit tests pass; vehicle acoustics and full recording playback have not been physically verified.
+- [!] android-existing-lint — unchanged AppUpdateInstaller.kt:123 NewApi error blocks local lintDebug; source fingerprint matches baseline. No updater code or lint check was altered. Focused JVM tests, debug assembly and both complete release CI runs pass.
+- [!] generated-cache-cleanup — automatic execution policy rejected deletion of `tools/phone-trial/__pycache__/account_lifecycle.cpython-314.pyc` with reason `blocked by policy`; the generated file is not committed. Local operator cleanup can remove it outside this blocked execution path.
+- Android Auto is deferred exclusively to backlog.md; no Auto implementation, Play publication or Auto hardware acceptance was performed.
+
+- 2026-10-17 — latest Phone39026045322 at83aa4149ab4fa21417078f63c9feb897c1f0ff26 completed success, real Azure audio probe passed, trial skipped, idle release passed. Unauthenticated inbound voice/redeem requests each returned403. Consistent projections confirm owner messages disabled, owner-stop-2026-10-16 retained, inbound configuration absent. Root IAM broker probe with a nonexistent owner returned403/owner_required and no session token; no quota session or call created.
+- 2026-10-17 — live read-only account export check:7 pages,118 projected rows, sources hotel-trial-2026-10-15=109 and messages=9. No forbidden credential/PIN/raw-number/bootstrap/link fields, no repeated cursor; source complete. No export artifact, signed media URL, purge or enrollment generated. Both web and account-purge runtime envs point to the exact us-east-1 recorder ARN.
+
+- 2026-10-17 — Decimal wire correction83aa4149ab4fa21417078f63c9feb897c1f0ff26 pushed; main Deploy39026045269 and Phone39026045322 registered (attempt1of3 for corrected release,60-minute deadline). Both are monitored after preceding deployments, with no cancellation or local deployment. Phone39025863237 completed success including model-audio probe; dated trial skipped.
 
 - 2026-10-17 — inbound/privacy commit34eff07ce86b89c18996233f3af12daeb4ad4b6f pushed main; Deploy39025863230 and Phone39025863237 tracked by /root/phone_verification and /root/phone_backend,60-minute deadlines, attempt1of3. Root found actual DynamoDB Decimal bootstrap deadlines would serialize as fractional JSON and fail Go int64 decoding; serializer now preserves integral values, with a real-Decimal regression. Full Python suite120 tests passes. Calls stay disabled throughout both deployments.
 
