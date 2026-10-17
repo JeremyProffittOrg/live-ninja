@@ -306,9 +306,23 @@ func (s *server) consent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := url.Values{"RecordingTrack": {"both"}, "RecordingChannels": {"dual"}, "RecordingStatusCallback": {s.cfg.Recording}, "RecordingStatusCallbackMethod": {"POST"}, "RecordingStatusCallbackEvent": {"completed", "absent"}}
-	if s.twilio(c, "/Recordings.json", data) != nil {
+	if !s.emit(c, "recording_requested", map[string]any{"outcome": "attempted"}) {
+		s.finish(c, "event_delivery_failed")
+		twiml(w, goodbye)
+		return
+	}
+	if err := s.twilio(c, "/Recordings.json", data); err != nil {
+		var status twilioStatusError
+		if errors.As(err, &status) && (status == 400 || status == 401 || status == 403 || status == 404 || status == 422) {
+			s.emit(c, "recording_requested", map[string]any{"outcome": "rejected"})
+		}
 		s.emit(c, "error", map[string]any{"code": "recording_start_failed"})
 		s.finish(c, "recording_start_failed")
+		twiml(w, goodbye)
+		return
+	}
+	if !s.emit(c, "recording_requested", map[string]any{"outcome": "confirmed"}) {
+		s.finish(c, "event_delivery_failed")
 		twiml(w, goodbye)
 		return
 	}
@@ -316,6 +330,11 @@ func (s *server) consent(w http.ResponseWriter, r *http.Request) {
 	action := s.cfg.Base + "/media-ended?" + url.Values{"run": {s.cfg.Run}, "target": {c.Target.ID}, "stream": {c.Token}}.Encode()
 	twiml(w, sayPrompt("Thank you. Recording starts now.")+"<Connect action=\""+escape(action)+"\" method=\"POST\"><Stream url=\""+escape(stream)+"\"/></Connect>"+goodbye)
 }
+
+type twilioStatusError int
+
+func (status twilioStatusError) Error() string { return fmt.Sprintf("twilio status %d", status) }
+
 func (s *server) twilio(c *call, suffix string, data url.Values) error {
 	uri := "https://api.twilio.com/2010-04-01/Accounts/" + url.PathEscape(s.cfg.Account) + "/Calls/" + c.SID + suffix
 	req, e := http.NewRequest("POST", uri, strings.NewReader(data.Encode()))
@@ -331,7 +350,7 @@ func (s *server) twilio(c *call, suffix string, data url.Values) error {
 	defer resp.Body.Close()
 	io.Copy(io.Discard, io.LimitReader(resp.Body, 65536))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("twilio status %d", resp.StatusCode)
+		return twilioStatusError(resp.StatusCode)
 	}
 	return nil
 }

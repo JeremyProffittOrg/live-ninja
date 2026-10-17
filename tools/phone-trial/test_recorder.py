@@ -139,10 +139,24 @@ class RecorderTests(unittest.TestCase):
     def test_late_trial_registration_cannot_recreate_deleted_run(self):
         r._table.put_item(Item={'PK': 'RUN#trial', 'SK': 'ACCOUNT_DELETION', 'complete': True})
         result = self.register()
-        self.assertEqual(result['statusCode'], 200)
+        self.assertEqual(result['statusCode'], 410)
         self.assertEqual(json.loads(result['body'])['recordingStatus'], 'deleted')
         self.assertIsNone(r.get(r.call_key(CALL)))
         self.assertEqual(len(r._table.items), 1)
+
+    def test_recording_intent_survives_failure_and_late_deleted_callback_uses_cleanup(self):
+        self.register()
+        self.state_event('recording_requested', outcome='attempted')
+        self.state_event('error', code='recording_start_failed')
+        self.assertEqual(r.get(r.call_key(CALL))['recordingCreateState'], 'attempted')
+        r._table.put_item(Item={'PK': 'RUN#trial', 'SK': 'ACCOUNT_DELETION', 'ownerUserId': 'owner'})
+        with patch('account_lifecycle.resolve_deleted_recording', return_value=r.response(200)) as resolve, patch.object(r, 'copy_audio') as copy_audio:
+            self.assertEqual(self.callback(AccountSid='AC'+'9'*32)['statusCode'], 400)
+            resolve.assert_not_called()
+            self.assertEqual(self.callback()['statusCode'], 200)
+            self.assertEqual(resolve.call_args.args[1:], (REC, 'completed'))
+            self.assertEqual(resolve.call_args.args[0]['callSid'], CALL)
+            copy_audio.assert_not_called()
 
     def test_wrong_account_or_unregistered_call_rejected(self):
         self.assertEqual(self.callback()["statusCode"], 409)

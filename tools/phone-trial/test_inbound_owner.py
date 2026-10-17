@@ -242,6 +242,39 @@ class InboundTests(unittest.TestCase):
         self.assertIs(type(numeric['integer']), int)
         self.assertEqual(numeric['fraction'], 1.4)
 
+    def test_recording_timeout_keeps_attempted_intent_for_late_cleanup(self):
+        self.configure(); self.callback(); self.callback('pin/1', Digits='123456')
+        def timeout(path, form=None):
+            if path.endswith('/Recordings.json'):
+                self.assertEqual(r.get(r.call_key(f.CALL, m.namespace(owners.OWNER)))['recordingCreateState'], 'attempted')
+                raise m.ProviderError()
+            return self.provider_result(path, form)
+        self.provider.side_effect = timeout
+        self.callback('consent', Digits='1')
+        call = r.get(r.call_key(f.CALL, m.namespace(owners.OWNER)))
+        self.assertEqual(call['recordingCreateState'], 'attempted')
+        self.assertEqual(call['recordingStatus'], 'failed')
+        self.assertEqual(call['recordingReason'], 'recording_create_unknown')
+        r._table.put_item(Item={'PK': 'OWNER#'+owners.OWNER, 'SK': 'ACCOUNT_DELETION', 'ownerUserId': owners.OWNER})
+        with patch('account_lifecycle.resolve_deleted_recording', return_value=r.response(200)) as resolve, patch.object(r, 'copy_audio') as copy_audio:
+            self.assertEqual(self.callback('recording', RecordingSid=f.REC, RecordingStatus='completed', From='+12025550999')['statusCode'], 403)
+            resolve.assert_not_called()
+            self.assertEqual(self.callback('recording', RecordingSid=f.REC, RecordingStatus='completed')['statusCode'], 200)
+            self.assertEqual(resolve.call_args.args, (call, f.REC, 'completed'))
+            copy_audio.assert_not_called()
+
+    def test_known_recording_rejection_is_not_an_ambiguous_creation(self):
+        self.configure(); self.callback(); self.callback('pin/1', Digits='123456')
+        def rejected(path, form=None):
+            if path.endswith('/Recordings.json'):
+                raise m.ProviderError(21220, rejected=True)
+            return self.provider_result(path, form)
+        self.provider.side_effect = rejected
+        self.callback('consent', Digits='1')
+        call = r.get(r.call_key(f.CALL, m.namespace(owners.OWNER)))
+        self.assertEqual(call['recordingCreateState'], 'rejected')
+        self.assertEqual(call['recordingStatus'], 'absent')
+
     def test_broker_invocation_uses_exact_trusted_identity_and_wire_contract(self):
         self.configure(); self.callback()
         provider = Mock()

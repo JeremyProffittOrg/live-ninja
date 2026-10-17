@@ -130,6 +130,42 @@ class OwnerMessageTests(unittest.TestCase):
         rows = [v for v in r._table.items.values() if v["PK"].startswith("PHONE#BUDGET#")]
         self.assertEqual(rows[0]["allocatedUSD"], Decimal("8.30"))
 
+    def test_recording_intent_precedes_provider_and_deleted_callback_cannot_copy(self):
+        self.setup_send()
+        def inspect(path, form=None):
+            if path == '/Calls.json':
+                self.assertEqual(r.get(m.request_key(OWNER, 'request-one'))['recordingCreateState'], 'attempted')
+            return self.provider(path, form)
+        with patch.object(m, 'provider', side_effect=inspect):
+            self.send()
+        call = r.get(r.call_key(CALL, m.namespace(OWNER)))
+        self.assertEqual(call['recordingCreateState'], 'attempted')
+        r._table.put_item(Item={'PK': 'OWNER#'+OWNER, 'SK': 'ACCOUNT_DELETION', 'ownerUserId': OWNER})
+        with patch('account_lifecycle.resolve_deleted_recording', return_value=r.response(200)) as resolve, patch.object(r, 'copy_audio') as copy_audio:
+            self.assertEqual(self.callback('recording', RecordingSid=REC, RecordingStatus='completed', To='+12025550999')['statusCode'], 409)
+            resolve.assert_not_called()
+            self.assertEqual(self.callback('recording', RecordingSid=REC, RecordingStatus='completed')['statusCode'], 200)
+            self.assertEqual(resolve.call_args.args, (call, REC, 'completed'))
+            copy_audio.assert_not_called()
+
+    def test_revoked_recording_intent_never_reaches_call_creation(self):
+        self.setup_send()
+        original_change = m.change
+        def revoke(key, fields, event_type, event_data, **kwargs):
+            if event_type == 'recording_create_attempted':
+                r._table.put_item(Item={'PK': 'OWNER#'+OWNER, 'SK': 'ACCOUNT_DELETION', 'ownerUserId': OWNER})
+            return original_change(key, fields, event_type, event_data, **kwargs)
+        with patch.object(m, 'change', side_effect=revoke):
+            self.assertEqual(self.send()['statusCode'], 409)
+        self.assertEqual(self.forms, [])
+        self.assertNotIn('callSid', r.get(m.request_key(OWNER, 'request-one')))
+
+    def test_unpersisted_intent_return_is_not_call_admission(self):
+        self.setup_send()
+        with patch.object(m, 'change', side_effect=lambda key, *args, **kwargs: r.get(key)):
+            self.assertEqual(self.send()['statusCode'], 409)
+        self.assertEqual(self.forms, [])
+
     def test_shared_batch_lock_and_budget_cap(self):
         self.setup_send()
         r._table.put_item(Item={**m.VOICE_KEY, "activeRequest": "batch:hotel"})

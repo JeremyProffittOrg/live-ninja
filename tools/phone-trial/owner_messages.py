@@ -128,7 +128,8 @@ def change(key, fields, event_type, event_data, sid=None, release=False):
             if not call:
                 operations.append(put({**call_key, "version": 1, "runId": namespace(old["ownerUserId"]), "callSid": sid,
                     "ownerUserId": old["ownerUserId"], "requestId": old["requestId"], "targetId": old["destination"],
-                    "direction": old.get("direction", "outbound"), "recordingStatus": "pending"}))
+                    "direction": old.get("direction", "outbound"), "recordingStatus": "pending",
+                    "recordingCreateState": new.get("recordingCreateState", "not_requested")}))
         lock = r.get(VOICE_KEY) if release else None
         if lock and lock.get("activeRequest") == old["lockId"]:
             operations.append({"Update": {"TableName": os.environ["TABLE"], "Key": VOICE_KEY,
@@ -263,7 +264,7 @@ def reserve(owner, request_id, alias, message, cfg, *, reserve_amount=RESERVE, i
     callback_id = r.digest(("owner-message\n" + owner + "\n" + request_id).encode())
     lock_id = "owner:" + owner + ":" + request_id
     item = {**key, "ownerUserId": owner, "requestId": request_id, "destination": alias, "message": message,
-            "scriptTranscript": INTRO + message, "providerStatus": "creating", "version": 1, "createdAt": int(time.time()),
+            "scriptTranscript": INTRO + message, "providerStatus": "creating", "recordingCreateState": "not_requested", "version": 1, "createdAt": int(time.time()),
             "lockId": lock_id, "callbackId": callback_id, "fromNumber": cfg["fromNumber"], "toNumber": cfg["destinations"][alias]}
     item.update(initial_fields or {})
     for _ in range(4):
@@ -364,6 +365,28 @@ def operation(event):
         item = change(key, {"providerStatus": "rejected"}, "budget_expired", {}, release=True)
         return r.response(409, {"error": "Daily authority expires before a call can connect"})
     try:
+        item = change(key, {"recordingCreateState": "attempted"}, "recording_create_attempted", {})
+        import account_lifecycle
+        if item.get("recordingCreateState") != "attempted" or account_lifecycle.blocked({"ownerUserId": owner, "runId": namespace(owner)}):
+            if item.get("recordingCreateState") == "attempted" and not item.get("callSid"):
+                # The fresh deletion check ran before POST, so this attempt is
+                # definitively aborted. Preserve that fact even though normal
+                # message writes are fenced; never recreate a removed request.
+                abort = {"Update": {"TableName": os.environ["TABLE"], "Key": key,
+                    "UpdateExpression": "SET providerStatus=:rejected, recordingCreateState=:rejected, #v=:next",
+                    "ConditionExpression": "#v=:v AND ownerUserId=:owner AND recordingCreateState=:attempted AND attribute_not_exists(callSid)",
+                    "ExpressionAttributeNames": {"#v": "version"},
+                    "ExpressionAttributeValues": {":v": item["version"], ":next": int(item["version"])+1,
+                        ":owner": owner, ":attempted": "attempted", ":rejected": "rejected"}}}
+                checks = [{"ConditionCheck": {"TableName": os.environ["TABLE"], "Key": marker,
+                    "ConditionExpression": "ownerUserId=:owner", "ExpressionAttributeValues": {":owner": owner}}}
+                    for marker in (account_lifecycle.owner_key(owner), account_lifecycle.run_key(namespace(owner)))]
+                try:
+                    transact([abort, *checks])
+                except Exception as exc:
+                    if not r.conditional(exc):
+                        raise
+            return r.response(409, {"error": "Call admission was revoked; no call created"})
         result = provider("/Calls.json", {"To": item["toNumber"], "From": item["fromNumber"], "Twiml": twiml,
             "Timeout": 20, "TimeLimit": call_seconds, "Record": "true", "RecordingChannels": "dual",
             "StatusCallback": base + "status/" + token, "StatusCallbackMethod": "POST",
@@ -376,6 +399,8 @@ def operation(event):
         item = change(key, {"providerStatus": result.get("status") if result.get("status") in STATUSES else "queued"}, "provider_accepted", {"callSid": sid}, sid=sid)
     except ProviderError as exc:
         fields = {"providerStatus": "rejected" if exc.rejected else "unknown"}
+        if exc.rejected:
+            fields["recordingCreateState"] = "rejected"
         if exc.code:
             fields["providerCode"] = exc.code
         item = change(key, fields, "provider_create_outcome", fields, release=exc.rejected)
@@ -432,6 +457,10 @@ def callback(path, raw, headers):
     recording = data.get("RecordingSid", "")
     if not r.REC.fullmatch(recording) or data.get("RecordingStatus") not in {"completed", "absent"}:
         return r.response(400)
+    import account_lifecycle
+    call = r.get(r.call_key(sid, namespace(item["ownerUserId"])))
+    if call and account_lifecycle.blocked(call):
+        return account_lifecycle.resolve_deleted_recording(call, recording, data["RecordingStatus"])
     item = change(key, {}, "recording_callback", {"callSid": sid, "recordingSid": recording, "status": data["RecordingStatus"]}, sid=sid)
     run_id = namespace(item["ownerUserId"])
     return r.ingest_recording(sid, recording, data["RecordingStatus"], run_id=run_id)

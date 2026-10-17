@@ -327,6 +327,12 @@ the main account partition and completion email wait for phone cleanup to finish
 Minimal deletion markers remain to reject late callback replay. This path runs only
 for an already requested account deletion; deployments never invoke it.
 
+Provider cleanup waits while audio is being processed. A recording marked absent
+or already deleted has no media to remove. An uncertain recording-create result
+keeps deletion pending until verified recording metadata or its authenticated
+callback resolves it; an empty list alone is not proof. Twilio retains metadata
+for 40 days after deleting media. See the [provider deletion contract](https://www.twilio.com/docs/voice/api/recording#delete-a-recording).
+
 ## Change log
 
 | Date | Change | Motivated by |

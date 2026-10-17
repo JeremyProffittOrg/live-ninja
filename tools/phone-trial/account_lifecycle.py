@@ -24,6 +24,10 @@ class CopyInFlight(Exception):
         self.seconds = min(120, max(1, seconds))
 
 
+class RecordingPending(Exception):
+    pass
+
+
 def owner_key(owner):
     return {'PK': 'OWNER#' + owner, 'SK': MARKER}
 
@@ -177,11 +181,18 @@ def provider_delete(sid, recording):
         info = m.provider('/Recordings/' + recording + '.json')
     except m.ProviderError as exc:
         if exc.code == 20404:
-            return
+            return 'deleted'
         raise
     account = os.environ['TWILIO_ACCOUNT_SID']
     if info.get('sid') != recording or info.get('call_sid') != sid or info.get('account_sid') != account:
         raise ValueError('Provider recording binding mismatch')
+    status = info.get('status')
+    if status in {'absent', 'deleted'}:
+        return status
+    if status in {'processing', 'in-progress', 'paused', 'stopped'}:
+        raise RecordingPending()
+    if status != 'completed':
+        raise ValueError('Unknown provider recording state')
     key = os.environ.get('TWILIO_API_KEY_SID') or account
     secret = os.environ.get('TWILIO_API_KEY_SECRET') or os.environ['TWILIO_AUTH_TOKEN']
     authorization = base64.b64encode((key + ':' + secret).encode()).decode()
@@ -193,6 +204,44 @@ def provider_delete(sid, recording):
     except urllib.error.HTTPError as exc:
         if exc.code != 404:
             raise RuntimeError('Provider recording deletion failed') from None
+    return 'deleted'
+
+
+def resolve_deleted_recording(call, recording, status):
+    """Finish a signed late callback without restoring private account data."""
+    sid, run = call.get('callSid', ''), call.get('runId', '')
+    if (status not in {'completed', 'absent'} or not r.SID.fullmatch(sid) or not r.REC.fullmatch(recording)
+            or call.get('PK') != 'RUN#' + run or call.get('SK') != 'CALL#' + sid
+            or call.get('recordingSid', recording) != recording):
+        return r.response(409, {'error': 'Deleted recording binding mismatch'})
+    tombstone = r.get(run_key(run)) or {}
+    owner = tombstone.get('ownerUserId', '')
+    deletion = r.get(owner_key(owner)) if owner else None
+    if (not deletion or deletion.get('ownerUserId') != owner or run not in deletion.get('runs', [])
+            or call.get('ownerUserId', owner) != owner):
+        return r.response(409, {'error': 'Recording deletion was not authorized'})
+    try:
+        provider_delete(sid, recording)
+        updated = {**call, 'recordingSid': recording, 'recordingStatus': 'deleted',
+                   'recordingCreationResolved': True, 'recordingCreateState': 'resolved', 'version': int(call['version']) + 1}
+        write = m.put(updated, call)
+        write['Put']['ConditionExpression'] += ' AND runId=:run AND callSid=:sid'
+        write['Put']['ExpressionAttributeValues'].update({':run': run, ':sid': sid})
+        checks = [{'ConditionCheck': {'TableName': os.environ['TABLE'], 'Key': key,
+                   'ConditionExpression': 'ownerUserId=:owner', 'ExpressionAttributeValues': {':owner': owner}}}
+                  for key in (owner_key(owner), run_key(run))]
+        m.transact([write, *checks])
+        return r.response(200, {'recordingStatus': 'deleted'})
+    except RecordingPending:
+        return r.response(503, {'error': 'Provider recording is still processing', 'retryAfterSeconds': 30})
+    except ValueError:
+        return r.response(409, {'error': 'Deleted recording binding mismatch'})
+    except Exception as exc:
+        if r.conditional(exc):
+            current = r.get(r.call_key(sid, run))
+            if current is None or (current.get('recordingCreationResolved') is True and current.get('recordingSid') == recording):
+                return r.response(200, {'recordingStatus': 'deleted'})
+        return r.response(503, {'error': 'Deleted recording cleanup incomplete; retry required'})
 
 
 def purge_call(row):
@@ -240,6 +289,14 @@ def purge_call(row):
         if not r.REC.fullmatch(known):
             raise ValueError('Invalid recording identifier')
         recordings_found.add(known)
+    create_state = row.get('recordingCreateState')
+    never_answered = provider_call is not None and provider_call.get('status') in {'no-answer', 'busy', 'canceled'}
+    uncertain = (create_state not in {'not_requested', 'rejected'} and not never_answered
+                 and (create_state == 'attempted' or row.get('consentStatus') == 'granted'
+                      or run.startswith('owner-messages#')))
+    if (not recordings_found and uncertain and row.get('recordingCreationResolved') is not True
+            and row.get('recordingStatus') not in {'absent', 'deleted', 'expired'}):
+        raise RecordingPending()
     for recording in recordings_found:
         provider_delete(sid, recording)
         link = r.get({'PK': 'LINK#' + recording, 'SK': 'META'})
@@ -296,21 +353,23 @@ def purge(owner, cfg):
         if row.get('SK', '').startswith('CALL#'):
             purge_call(row)
         if row.get('SK', '').startswith('MESSAGE#'):
-            if not row.get('callSid') and row.get('providerStatus') in {'creating', 'unknown'}:
+            no_provider_call = not row.get('callSid') and row.get('recordingCreateState') in {'not_requested', 'rejected'}
+            if not row.get('callSid') and row.get('providerStatus') in {'creating', 'unknown'} and not no_provider_call:
                 raise RuntimeError('Unresolved provider creation must be reconciled before deletion')
             lock = r.get(m.VOICE_KEY) or {}
             expected_lock = 'owner:' + owner + ':' + str(row.get('requestId', ''))
             if row.get('lockId') == expected_lock and lock.get('activeRequest') == expected_lock:
                 sid = row.get('callSid', '')
-                if not r.SID.fullmatch(sid):
+                if not no_provider_call and not r.SID.fullmatch(sid):
                     raise RuntimeError('Unresolved call lock cannot be released')
-                try:
-                    provider_call = m.provider('/Calls/' + sid + '.json')
-                    if provider_call.get('sid') != sid or provider_call.get('account_sid') != os.environ['TWILIO_ACCOUNT_SID'] or provider_call.get('status') not in m.TERMINAL:
-                        raise RuntimeError('Call lock terminal state is unconfirmed')
-                except m.ProviderError as exc:
-                    if exc.code != 20404:
-                        raise
+                if not no_provider_call:
+                    try:
+                        provider_call = m.provider('/Calls/' + sid + '.json')
+                        if provider_call.get('sid') != sid or provider_call.get('account_sid') != os.environ['TWILIO_ACCOUNT_SID'] or provider_call.get('status') not in m.TERMINAL:
+                            raise RuntimeError('Call lock terminal state is unconfirmed')
+                    except m.ProviderError as exc:
+                        if exc.code != 20404:
+                            raise
                 r.clients()[0].update_item(Key=m.VOICE_KEY, UpdateExpression='REMOVE activeRequest',
                     ConditionExpression='activeRequest=:request', ExpressionAttributeValues={':request': expected_lock})
             callback = row.get('callbackId', '')
@@ -356,6 +415,8 @@ def operation(event):
         return r.response(400)
     except CopyInFlight as exc:
         return r.response(503, {'error': 'Recording copy is still in flight', 'retryAfterSeconds': exc.seconds})
+    except RecordingPending:
+        return r.response(503, {'error': 'Provider recording creation or processing is unresolved', 'retryAfterSeconds': 30})
     except (ValueError, TypeError, KeyError):
         return r.response(409, {'error': 'Phone account data binding could not be verified'})
     except Exception:

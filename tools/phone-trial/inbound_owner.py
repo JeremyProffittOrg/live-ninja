@@ -110,8 +110,9 @@ def end(item, reason, hangup=False, finalized=False, provider_status=None):
     call = r.get(r.call_key(item['callSid'], m.namespace(item['ownerUserId'])))
     if call and call.get('recordingStatus') == 'pending' and not call.get('recordingSid'):
         try:
-            r.commit(call, {**call, 'version': int(call['version']) + 1, 'recordingStatus': 'absent',
-                            'recordingReason': reason})
+            unresolved = call.get('recordingCreateState') == 'attempted'
+            r.commit(call, {**call, 'version': int(call['version']) + 1, 'recordingStatus': 'failed' if unresolved else 'absent',
+                            'recordingReason': 'recording_create_unknown' if unresolved else reason})
         except Exception as exc:
             if not r.conditional(exc):
                 raise
@@ -199,6 +200,10 @@ def callback(path, raw, headers):
         recording = data.get('RecordingSid', '')
         if not r.REC.fullmatch(recording) or not item.get('consented'):
             return r.response(403)
+        import account_lifecycle
+        call = r.get(r.call_key(item['callSid'], m.namespace(item['ownerUserId'])))
+        if call and account_lifecycle.blocked(call):
+            return account_lifecycle.resolve_deleted_recording(call, recording, data.get('RecordingStatus'))
         return r.ingest_recording(item['callSid'], recording, data.get('RecordingStatus'), run_id=m.namespace(item['ownerUserId']))
     if item.get('inboundState') == 'ended':
         return r.response(200) if kind == 'status' else bye()
@@ -241,12 +246,19 @@ def callback(path, raw, headers):
         r.commit(call, {**call, 'version': int(call['version']) + 1, 'consentStatus': 'granted'})
         bootstrap = mint(item)
         item = transition(item, bootstrap=bootstrap, inboundState='starting')
-        rec = m.provider('/Calls/' + item['callSid'] + '/Recordings.json', {'RecordingTrack': 'both', 'RecordingChannels': 'dual',
-            'RecordingStatusCallback': base() + 'recording/' + token, 'RecordingStatusCallbackMethod': 'POST',
-            'RecordingStatusCallbackEvent': ['completed', 'absent']})
+        run_id = m.namespace(item['ownerUserId'])
+        r.recording_creation(item['callSid'], 'attempted', run_id)
+        try:
+            rec = m.provider('/Calls/' + item['callSid'] + '/Recordings.json', {'RecordingTrack': 'both', 'RecordingChannels': 'dual',
+                'RecordingStatusCallback': base() + 'recording/' + token, 'RecordingStatusCallbackMethod': 'POST',
+                'RecordingStatusCallbackEvent': ['completed', 'absent']})
+        except m.ProviderError as exc:
+            if exc.rejected:
+                r.recording_creation(item['callSid'], 'rejected', run_id)
+            raise
         if not r.REC.fullmatch(rec.get('sid', '')) or rec.get('call_sid') != item['callSid'] or rec.get('account_sid') != os.environ['TWILIO_ACCOUNT_SID']:
             raise ValueError('Invalid recording binding')
-        r.set_recording(item['callSid'], rec['sid'], 'recording', run_id=m.namespace(item['ownerUserId']))
+        r.set_recording(item['callSid'], rec['sid'], 'recording', run_id=run_id, recordingCreateState='confirmed')
         item = transition(item, inboundState='ready')
     except Exception:
         end(item, 'bootstrap_failed', hangup=True)

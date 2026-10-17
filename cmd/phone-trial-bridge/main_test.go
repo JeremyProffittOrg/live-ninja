@@ -91,9 +91,13 @@ func TestConsentRecordingOnlyAfterYesAndOnce(t *testing.T) {
 	s, c := fixture()
 	recordings := 0
 	events := []string{}
+	outcomes := []string{}
 	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		b, _ := io.ReadAll(r.Body)
 		if strings.HasSuffix(r.URL.Path, "Recordings.json") {
+			if len(outcomes) != 1 || outcomes[0] != "attempted" {
+				t.Fatal("recording request preceded durable intent")
+			}
 			recordings++
 			v, _ := url.ParseQuery(string(b))
 			if v.Get("RecordingTrack") != "both" || v.Get("RecordingStatusCallback") != s.cfg.Recording {
@@ -103,6 +107,9 @@ func TestConsentRecordingOnlyAfterYesAndOnce(t *testing.T) {
 			var ev map[string]any
 			json.Unmarshal(b, &ev)
 			events = append(events, ev["type"].(string))
+			if ev["type"] == "recording_requested" {
+				outcomes = append(outcomes, stringAt(objectAt(ev, "data"), "outcome"))
+			}
 			mac := hmac.New(sha256.New, []byte(s.cfg.Auth))
 			mac.Write(b)
 			if r.Header.Get("X-LN-Signature") != hex.EncodeToString(mac.Sum(nil)) {
@@ -118,7 +125,7 @@ func TestConsentRecordingOnlyAfterYesAndOnce(t *testing.T) {
 			t.Fatal(w.Body.String())
 		}
 	}
-	if recordings != 1 || len(events) != 1 || events[0] != "consent" {
+	if recordings != 1 || len(events) != 3 || events[0] != "consent" || len(outcomes) != 2 || outcomes[1] != "confirmed" {
 		t.Fatalf("recordings=%d events=%v", recordings, events)
 	}
 }
@@ -165,6 +172,64 @@ func TestRecordingFailureEndsCall(t *testing.T) {
 	s.consent(w, request(s, c, "/consent?run=trial&target=hotel", "yes"))
 	if strings.Contains(w.Body.String(), "<Connect") {
 		t.Fatal("continued without recording")
+	}
+}
+
+func TestRecordingRejectedOutcomeFollowsAttemptedIntent(t *testing.T) {
+	s, c := fixture()
+	outcomes := []string{}
+	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		status := 200
+		if strings.HasSuffix(r.URL.Path, "/Recordings.json") {
+			if len(outcomes) != 1 || outcomes[0] != "attempted" {
+				t.Fatal("provider request before intent")
+			}
+			status = 400
+		} else if r.URL.Host != "api.twilio.com" {
+			var event map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+				t.Fatal(err)
+			}
+			if event["type"] == "recording_requested" {
+				outcomes = append(outcomes, stringAt(objectAt(event, "data"), "outcome"))
+			}
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader("{}"))}, nil
+	})
+	w := httptest.NewRecorder()
+	s.consent(w, request(s, c, "/consent?run=trial&target=hotel", "yes"))
+	if !c.Ended || len(outcomes) != 2 || outcomes[1] != "rejected" || strings.Contains(w.Body.String(), "<Connect") {
+		t.Fatalf("rejected recording not terminated: outcomes=%v", outcomes)
+	}
+}
+
+func TestDeletedJournalNeverAcknowledgesRecordingAdmission(t *testing.T) {
+	for _, deletedEvent := range []string{"consent", "recording_requested"} {
+		t.Run(deletedEvent, func(t *testing.T) {
+			s, c := fixture()
+			recordings := 0
+			s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				status := 200
+				if strings.HasSuffix(r.URL.Path, "/Recordings.json") {
+					recordings++
+				}
+				if r.URL.Host != "api.twilio.com" {
+					var event map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+						t.Fatal(err)
+					}
+					if event["type"] == deletedEvent {
+						status = 410
+					}
+				}
+				return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(`{"recordingStatus":"deleted"}`))}, nil
+			})
+			w := httptest.NewRecorder()
+			s.consent(w, request(s, c, "/consent?run=trial&target=hotel", "yes"))
+			if recordings != 0 || !c.Ended || strings.Contains(w.Body.String(), "<Connect") {
+				t.Fatalf("deleted journal admitted recording: requests=%d ended=%v", recordings, c.Ended)
+			}
+		})
 	}
 }
 func TestTwiMLEscaping(t *testing.T) {

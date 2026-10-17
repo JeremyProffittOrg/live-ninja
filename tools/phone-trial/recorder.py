@@ -18,7 +18,7 @@ COPY_LEASE_SECONDS = 120
 LINK_SECONDS = 7 * 86400
 SID = re.compile(r"^CA[0-9a-fA-F]{32}$")
 REC = re.compile(r"^RE[0-9a-fA-F]{32}$")
-TYPES = {"call_registered", "consent", "transcript", "summary", "usage", "error", "call_ended"}
+TYPES = {"call_registered", "consent", "recording_requested", "transcript", "summary", "usage", "error", "call_ended"}
 _table = _s3 = None
 
 
@@ -75,7 +75,7 @@ def event_post(raw):
         return response(400, {"error": "Invalid event identity"})
     import account_lifecycle
     if account_lifecycle.blocked({"runId": data["runId"]}):
-        return response(200, {"recordingStatus": "deleted"})
+        return response(410, {"recordingStatus": "deleted"})
     event_id = hashlib.sha256(raw).hexdigest()
     key = call_key(sid)
     journal_key = {"PK": key["PK"], "SK": "EVENT#" + sid + "#" + event_id}
@@ -95,6 +95,12 @@ def event_post(raw):
         details = data.get("data", {})
         if not isinstance(details, dict):
             return response(400, {"error": "Event data must be an object"})
+        if data["type"] == "recording_requested":
+            outcome = details.get("outcome")
+            if outcome not in {"attempted", "confirmed", "rejected"}:
+                return response(400, {"error": "Invalid recording creation outcome"})
+            if new.get("recordingCreateState") not in {"confirmed", "resolved"}:
+                new["recordingCreateState"] = outcome
         if data["type"] == "consent":
             result = details.get("result")
             if result not in {"granted", "declined"}:
@@ -149,6 +155,27 @@ def set_recording(sid, recording, status, run_id=None, expected_attempt=None, **
             if not conditional(exc):
                 raise
     raise RuntimeError("Concurrent recording update")
+
+
+def recording_creation(sid, state, run_id=None):
+    """Persist intent before a provider request; a timeout is not a rejection."""
+    if state not in {"attempted", "confirmed", "rejected"}:
+        raise ValueError("Invalid recording creation state")
+    import account_lifecycle
+    for _ in range(3):
+        old = get(call_key(sid, run_id))
+        if not old or account_lifecycle.blocked(old):
+            raise ValueError("Recording call unavailable")
+        if old.get("recordingCreateState") in {"confirmed", "resolved"}:
+            return
+        new = {**old, "version": int(old["version"]) + 1, "recordingCreateState": state}
+        try:
+            commit(old, new)
+            return
+        except Exception as exc:
+            if not conditional(exc):
+                raise
+    raise RuntimeError("Concurrent recording intent update")
 
 
 def ingest_recording(sid, recording, status, run_id=None):
@@ -285,6 +312,10 @@ def recording_post(raw, headers):
     sid, recording = data.get("CallSid", ""), data.get("RecordingSid", "")
     if data.get("AccountSid") != os.environ["TWILIO_ACCOUNT_SID"] or not SID.fullmatch(sid) or not REC.fullmatch(recording):
         return response(400)
+    import account_lifecycle
+    call = get(call_key(sid))
+    if call and account_lifecycle.blocked(call):
+        return account_lifecycle.resolve_deleted_recording(call, recording, data.get("RecordingStatus"))
     return ingest_recording(sid, recording, data.get("RecordingStatus"))
 
 
