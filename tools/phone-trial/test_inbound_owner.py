@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import sys
 import types
+from decimal import Decimal
 import unittest
 import urllib.parse
 from unittest.mock import patch, Mock
@@ -226,6 +227,20 @@ class InboundTests(unittest.TestCase):
                     self.assertEqual(i.redeem(raw, {'x-ln-signature': signature}, replay_action)['statusCode'], 403)
         self.assertEqual(self.item(), before)
         self.assertEqual(i.redeem(raw, {'x-ln-signature': r.digest(raw)}, 'redeem')['statusCode'], 403)
+
+    def test_dynamodb_decimal_deadline_keeps_integer_bootstrap_wire_type(self):
+        self.configure(); self.callback(); self.callback('pin/1', Digits='123456'); self.callback('consent', Digits='1')
+        stored = self.item()
+        stored['deadline'] = Decimal('1180')
+        r._table.put_item(Item=stored)
+        reply = self.control()
+        self.assertEqual(reply['statusCode'], 200)
+        deadline = json.loads(reply['body'])['deadline']
+        self.assertIs(type(deadline), int)
+        self.assertEqual(deadline, 1180)
+        numeric = json.loads(r.response(200, {'integer': Decimal('42.000'), 'fraction': Decimal('1.40')})['body'])
+        self.assertIs(type(numeric['integer']), int)
+        self.assertEqual(numeric['fraction'], 1.4)
 
     def test_broker_invocation_uses_exact_trusted_identity_and_wire_contract(self):
         self.configure(); self.callback()

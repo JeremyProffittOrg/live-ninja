@@ -33,7 +33,7 @@ def clients():
 
 def response(code, payload=None, headers=None):
     return {"statusCode": code, "headers": {"content-type": "application/json", "cache-control": "no-store", **(headers or {})},
-            "body": json.dumps(payload or {}, default=lambda n: float(n) if isinstance(n, Decimal) else str(n))}
+            "body": json.dumps(payload or {}, default=lambda n: (int(n) if n == n.to_integral_value() else float(n)) if isinstance(n, Decimal) else str(n))}
 
 
 def digest(raw):
