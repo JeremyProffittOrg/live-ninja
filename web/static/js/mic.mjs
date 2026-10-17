@@ -785,6 +785,10 @@ export class MicController extends EventTarget {
   }
 
   #handleConnectError(err) {
+    if (err?.code === 'recording_audio_busy') {
+      this.#fail({ code: err.code, message: 'Close Phone recordings in your other Live Ninja tabs, then try the microphone again.', retryable: true });
+      return;
+    }
     if (err instanceof RealtimeError) {
       // Backend-originated failures carry a txId + the raw backend message;
       // the friendly line goes to `message`, the detail/ref to the banner.

@@ -79,7 +79,7 @@ import ninja.jeremy.liveninja.ui.files.FilesViewModel
  * empty / error states per the rich-UI data-presentation rules.
  */
 @Composable
-fun FilesScreen(modifier: Modifier = Modifier) {
+fun FilesScreen(modifier: Modifier = Modifier, onPhoneRecordings: () -> Unit = {}) {
     val viewModel: FilesViewModel = hiltViewModel()
     val state by viewModel.state.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -143,6 +143,7 @@ fun FilesScreen(modifier: Modifier = Modifier) {
                 )
             }
             HorizontalDivider()
+            TextButton(onClick = onPhoneRecordings) { Text("Phone recordings") }
 
             when {
                 state.loading && !state.loaded -> LoadingState()

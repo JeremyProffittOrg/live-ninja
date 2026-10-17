@@ -31,6 +31,12 @@ import kotlinx.serialization.json.JsonObject
  * resource routes under `/api/v1/` per contracts/api.md.
  */
 interface LiveNinjaApi {
+    @GET("api/v1/phone/recordings/")
+    suspend fun phoneRecordings(@Query("source") source: String, @Query("cursor") cursor: String? = null): PhoneRecordingsResponse
+
+    @GET("api/v1/phone/recordings/{sid}/media")
+    suspend fun phoneRecordingMedia(@Path("sid") sid: String, @Query("source") source: String, @Query("disposition") disposition: String): PhoneRecordingMedia
+
     @GET("api/v1/ghost-work/nodes")
     suspend fun ghostNodes(@Header("Authorization") authorization: String, @Tag bound: AuthBoundRequest): GhostNodesResponse
 

@@ -1,6 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { recordingLabel, recordingPath, validRecordingURL, mountRecordingHistory } from '../../../web/static/js/recording-history.mjs';
+import { acquireAudioAccess, acquireGuardedMicrophone } from '../../../web/static/js/audio-access.mjs';
+
+// Two pages use the same origin-scoped lock manager.
+function audioLocks() {
+ const held = new Set();
+ return { async request(name, options, callback) {
+  if ([...held].some(lock => lock.mode === 'exclusive' || options.mode === 'exclusive')) return callback(null);
+  const lock={mode:options.mode};held.add(lock);
+  try{return await callback({name});}finally{held.delete(lock);}
+ }};
+}
+const unlockedPlayback=async()=>()=>{};
 
 const sid='CA'+'1'.repeat(32);
 test('recording states and paths never imply absent audio is ready',()=>{
@@ -21,7 +33,7 @@ function documentFixture(){const ids=Object.fromEntries(['phoneRecordingHistory'
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 test('history fetches no audio until explicit request and never autoplays',async()=>{
  const doc=documentFixture(),requests=[];const request=async path=>{requests.push(path);return path.includes('/media?')?{url:'https://live-ninja-deliverables-759775734231.s3.amazonaws.com/audio?signature=test'}:{items:[{callSid:sid,target:'primary',recordingStatus:'ready'},{target:'failed call',recordingStatus:'failed'}],sources:['messages']};};
- mountRecordingHistory(doc,request,()=>()=>{});await settle();assert.equal(requests.length,1);
+ mountRecordingHistory(doc,request,()=>()=>{},unlockedPlayback);await settle();assert.equal(requests.length,1);
  const rows=doc.ids.phoneRecordingList.children;assert.equal(rows.length,2);assert.equal(rows[1].querySelectorAll('button').length,0);
  const audio=rows[0].querySelectorAll('audio')[0];assert.equal(audio.src,undefined);assert.equal(audio.hidden,true);assert.notEqual(audio.autoplay,true);
  await rows[0].querySelectorAll('button')[0].events.click();assert.equal(requests.length,2);assert.equal(audio.hidden,false);assert.match(audio.src,/signature=test/);assert.notEqual(audio.autoplay,true);
@@ -34,9 +46,81 @@ test('access failure remains visible and never fabricates an empty success',asyn
 test('auth loss clears media and suppresses a late private media response',async()=>{
  const doc=documentFixture();let loseAuth,resolveMedia;
  const request=async path=>path.includes('/media?')?await new Promise(resolve=>{resolveMedia=resolve;}):{items:[{callSid:sid,target:'primary',recordingStatus:'ready'}],sources:['messages']};
- mountRecordingHistory(doc,request,fn=>{loseAuth=fn;return ()=>{};});await settle();
+ mountRecordingHistory(doc,request,fn=>{loseAuth=fn;return ()=>{};},unlockedPlayback);await settle();
  const row=doc.ids.phoneRecordingList.children[0],audio=row.querySelectorAll('audio')[0];
- const pending=row.querySelectorAll('button')[0].events.click();loseAuth();
+ const pending=row.querySelectorAll('button')[0].events.click();await settle();loseAuth();
  resolveMedia({url:'https://live-ninja-deliverables-759775734231.s3.amazonaws.com/audio?signature=test'});await pending;
  assert.equal(audio.src,undefined);assert.equal(doc.ids.phoneRecordingList.children.length,0);assert.match(doc.ids.phoneRecordingStatus.textContent,/session changed/);
+});
+
+test('capture blocks recording fetch across tabs until every capture stream ends',async()=>{
+ const locks=audioLocks(),tracks=[];
+ const nav={locks,mediaDevices:{async getUserMedia(){const track={stop(){},addEventListener(type,fn){this.end=fn;}};tracks.push(track);return {getTracks:()=>[track]};}}};
+ await acquireGuardedMicrophone({audio:true},nav);await acquireGuardedMicrophone({audio:true},nav);
+ await assert.rejects(acquireAudioAccess('exclusive',locks),/Close loaded recordings/);
+ tracks[0].stop();await settle();
+ await assert.rejects(acquireAudioAccess('exclusive',locks));
+ tracks[1].end();await settle();
+ const release=await acquireAudioAccess('exclusive',locks);
+ await assert.rejects(acquireGuardedMicrophone({audio:true},nav));assert.equal(tracks.length,2);
+ release();await settle();const stream=await acquireGuardedMicrophone({audio:true},nav);stream.getTracks()[0].stop();
+});
+
+test('failed microphone acquisition releases access and unsupported playback fails closed',async()=>{
+ const locks=audioLocks();
+ await assert.rejects(acquireGuardedMicrophone({audio:true},{locks,mediaDevices:{getUserMedia:async()=>{throw Error('denied');}}}),/denied/);
+ const release=await acquireAudioAccess('exclusive',locks);release();
+ await assert.rejects(acquireAudioAccess('exclusive',null),/Download/);
+});
+
+test('history cannot fetch media while microphone is held and close releases playback',async()=>{
+ const locks=audioLocks(),doc=documentFixture(),requests=[];
+ const request=async path=>{requests.push(path);return path.includes('/media?')?{url:'https://live-ninja-deliverables-759775734231.s3.amazonaws.com/audio?signature=test'}:{items:[{callSid:sid,recordingStatus:'ready'}],sources:['messages']};};
+ const releaseMic=await acquireAudioAccess('shared',locks);
+ mountRecordingHistory(doc,request,()=>()=>{},()=>acquireAudioAccess('exclusive',locks));await settle();
+ const row=doc.ids.phoneRecordingList.children[0],buttons=row.querySelectorAll('button');
+ await buttons[0].events.click();assert.equal(requests.length,1);
+ releaseMic();await settle();await buttons[0].events.click();assert.equal(requests.length,2);
+ await assert.rejects(acquireAudioAccess('shared',locks));
+ buttons[2].events.click();await settle();const release=await acquireAudioAccess('shared',locks);release();
+ assert.equal(row.querySelectorAll('audio')[0].src,undefined);
+});
+
+test('closing recordings invalidates a pending URL before releasing audio access',async()=>{
+ const locks=audioLocks(),doc=documentFixture();let finish;
+ const request=async path=>path.includes('/media?')?new Promise(resolve=>{finish=resolve;}):{items:[{callSid:sid,recordingStatus:'ready'}],sources:['messages']};
+ mountRecordingHistory(doc,request,()=>()=>{},()=>acquireAudioAccess('exclusive',locks));await settle();
+ const row=doc.ids.phoneRecordingList.children[0],buttons=row.querySelectorAll('button');
+ const pending=buttons[0].events.click();await settle();buttons[2].events.click();await settle();
+ const release=await acquireAudioAccess('shared',locks);
+ finish({url:'https://live-ninja-deliverables-759775734231.s3.amazonaws.com/audio?signature=test'});await pending;
+ assert.equal(row.querySelectorAll('audio')[0].src,undefined);release();
+});
+
+test('failed parallel load invalidates another pending recording before capture resumes',async()=>{
+ const locks=audioLocks(),doc=documentFixture(),pendingMedia=[];
+ const request=async path=>path.includes('/media?')?new Promise((resolve,reject)=>pendingMedia.push({resolve,reject})):{items:[sid,'CA'+'2'.repeat(32)].map(callSid=>({callSid,recordingStatus:'ready'})),sources:['messages']};
+ mountRecordingHistory(doc,request,()=>()=>{},()=>acquireAudioAccess('exclusive',locks));await settle();
+ const rows=doc.ids.phoneRecordingList.children;
+ const first=rows[0].querySelectorAll('button')[0].events.click();await settle();
+ const second=rows[1].querySelectorAll('button')[0].events.click();await settle();
+ assert.equal(pendingMedia.length,2);
+ await assert.rejects(acquireAudioAccess('shared',locks));
+ pendingMedia[0].reject(new Error('media unavailable'));await first;await settle();
+ const release=await acquireAudioAccess('shared',locks);
+ pendingMedia[1].resolve({url:'https://live-ninja-deliverables-759775734231.s3.amazonaws.com/audio?signature=test'});await second;
+ for(const row of rows){const audio=row.querySelectorAll('audio')[0];assert.equal(audio.src,undefined);assert.equal(audio.hidden,true);}
+ release();
+});
+
+test('closing while playback access is pending releases its late lease without fetching media',async()=>{
+ const doc=documentFixture();let finishLock,releases=0,requests=0;
+ const request=async()=>{requests++;return {items:[{callSid:sid,recordingStatus:'ready'}],sources:['messages']};};
+ mountRecordingHistory(doc,request,()=>()=>{},()=>new Promise(resolve=>{finishLock=resolve;}));await settle();
+ const row=doc.ids.phoneRecordingList.children[0],buttons=row.querySelectorAll('button');
+ const pending=buttons[0].events.click();buttons[2].events.click();
+ finishLock(()=>{releases++;});await pending;
+ assert.equal(releases,1);assert.equal(requests,1);
+ assert.equal(row.querySelectorAll('audio')[0].src,undefined);
+ buttons[2].events.click();assert.equal(releases,1);
 });

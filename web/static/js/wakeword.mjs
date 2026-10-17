@@ -52,6 +52,7 @@
 'use strict';
 
 import { authFetch } from './toolclient.mjs';
+import { acquireGuardedMicrophone } from './audio-access.mjs';
 
 // ---------------------------------------------------------------------------
 // Pinned artifacts (verify-before-use).
@@ -372,7 +373,7 @@ export class WakeWordEngine {
         this._stream = opts.stream;
         this._ownStream = false;
       } else {
-        this._stream = await navigator.mediaDevices.getUserMedia({
+        this._stream = await acquireGuardedMicrophone({
           audio: {
             echoCancellation: true,
             noiseSuppression: true,

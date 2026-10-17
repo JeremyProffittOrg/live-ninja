@@ -12,6 +12,9 @@ import urllib.request
 from decimal import Decimal
 
 MAX_AUDIO = 200 * 1024 * 1024
+COPY_ATTEMPTS = 3
+# Longer than the deployed recorder Lambda's 60-second execution limit.
+COPY_LEASE_SECONDS = 120
 LINK_SECONDS = 7 * 86400
 SID = re.compile(r"^CA[0-9a-fA-F]{32}$")
 REC = re.compile(r"^RE[0-9a-fA-F]{32}$")
@@ -91,7 +94,7 @@ def event_post(raw):
             if result not in {"granted", "declined"}:
                 return response(400, {"error": "Invalid consent result"})
             new["consentStatus"] = result
-            if result == "declined" and new["recordingStatus"] != "ready":
+            if result == "declined" and new["recordingStatus"] not in {"ready", "deleted", "expired"}:
                 new.update(recordingStatus="absent", recordingReason="consent_declined")
         if data["type"] == "error" and details.get("code") == "recording_start_failed" and new["recordingStatus"] == "pending":
             new.update(recordingStatus="failed", recordingReason="recording_start_failed")
@@ -114,12 +117,16 @@ def event_post(raw):
     return response(409, {"error": "Concurrent update; retry"})
 
 
-def set_recording(sid, recording, status, run_id=None, **fields):
+def set_recording(sid, recording, status, run_id=None, expected_attempt=None, **fields):
     for _ in range(3):
         old = get(call_key(sid, run_id))
         if not old or old.get("recordingSid", recording) != recording:
             raise ValueError("Recording binding mismatch")
-        if old.get("recordingStatus") == "ready":
+        if old.get("recordingStatus") in {"ready", "deleted", "expired"}:
+            return old
+        if expected_attempt is not None and old.get("copyAttempts") != expected_attempt:
+            return old
+        if expected_attempt is None and old.get("recordingStatus") == "copying":
             return old
         new = {**old, "recordingSid": recording, "recordingStatus": status,
                "version": int(old["version"]) + 1, **fields}
@@ -133,6 +140,60 @@ def set_recording(sid, recording, status, run_id=None, **fields):
             if not conditional(exc):
                 raise
     raise RuntimeError("Concurrent recording update")
+
+
+def ingest_recording(sid, recording, status, run_id=None):
+    """One durable retry budget across callbacks and explicit reconciliation."""
+    for _ in range(3):
+        old = get(call_key(sid, run_id))
+        if not old or old.get("recordingSid", recording) != recording:
+            return response(409, {"error": "Recording binding mismatch"})
+        state = old.get("recordingStatus")
+        if state in {"ready", "deleted", "expired"}:
+            return response(200, {"recordingStatus": state})
+        if status not in {"completed", "absent"}:
+            return response(400)
+        now = int(time.time())
+        if state == "copying" and int(old.get("copyLeaseUntil", 0)) > now:
+            return response(503, {"error": "Recording copy in progress; retry"})
+        if status == "absent":
+            # A delayed absence event cannot undo a completed-media transfer
+            # attempt or erase its visible failure and retry budget.
+            if old.get("copyAttempts", 0):
+                return response(200, {"recordingStatus": state})
+            set_recording(sid, recording, "absent", run_id=run_id)
+            return response(200)
+        attempts = int(old.get("copyAttempts", 0))
+        if attempts >= COPY_ATTEMPTS:
+            set_recording(sid, recording, "failed", run_id=run_id, expected_attempt=attempts,
+                          recordingError="Recording copy attempt limit reached", recordingReason="copy_attempt_limit")
+            return response(200, {"recordingStatus": "failed", "error": "Recording copy attempt limit reached"})
+        if int(old.get("copyRetryAt", 0)) > now:
+            return response(503, {"error": "Recording copy retry delay", "retryAt": int(old["copyRetryAt"])})
+        claimed = {**old, "recordingSid": recording, "recordingStatus": "copying",
+                   "version": int(old["version"]) + 1, "copyAttempts": attempts + 1,
+                   "copyLeaseUntil": now + COPY_LEASE_SECONDS, "updatedAt": now}
+        try:
+            commit(old, claimed)
+            break
+        except Exception as exc:
+            if not conditional(exc):
+                raise
+    else:
+        return response(503, {"error": "Concurrent recording update; retry"})
+    attempt = attempts + 1
+    try:
+        key, size = copy_audio(sid, recording, run_id=run_id)
+        result = set_recording(sid, recording, "ready", run_id=run_id, expected_attempt=attempt,
+                               s3Key=key, audioBytes=size, sourceRetained=True, copyLeaseUntil=0)
+        return response(200, {"recordingStatus": result["recordingStatus"]})
+    except Exception:
+        exhausted = attempt >= COPY_ATTEMPTS
+        set_recording(sid, recording, "failed", run_id=run_id, expected_attempt=attempt,
+                      copyLeaseUntil=0, copyRetryAt=int(time.time()) + (30 if attempt == 1 else 60),
+                      recordingReason="copy_attempt_limit" if exhausted else "copy_failed",
+                      recordingError="Recording copy attempt limit reached" if exhausted else "Audio copy failed; retry callback")
+        return response(200 if exhausted else 503, {"recordingStatus": "failed", "error": "Audio copy failed"})
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -203,25 +264,7 @@ def recording_post(raw, headers):
     sid, recording = data.get("CallSid", ""), data.get("RecordingSid", "")
     if data.get("AccountSid") != os.environ["TWILIO_ACCOUNT_SID"] or not SID.fullmatch(sid) or not REC.fullmatch(recording):
         return response(400)
-    old = get(call_key(sid))
-    if not old or old.get("recordingSid", recording) != recording:
-        return response(409)
-    if old.get("recordingStatus") == "ready":
-        return response(200, {"duplicate": True})
-    status = data.get("RecordingStatus")
-    if status == "absent":
-        set_recording(sid, recording, "absent")
-        return response(200)
-    if status != "completed":
-        return response(400)
-    set_recording(sid, recording, "pending")
-    try:
-        key, size = copy_audio(sid, recording)
-        set_recording(sid, recording, "ready", s3Key=key, audioBytes=size, sourceRetained=True)
-        return response(200)
-    except Exception:
-        set_recording(sid, recording, "failed", recordingError="Audio copy failed; retry callback")
-        return response(503, {"error": "Audio copy failed; retry"})
+    return ingest_recording(sid, recording, data.get("RecordingStatus"))
 
 
 def issue_link(call):

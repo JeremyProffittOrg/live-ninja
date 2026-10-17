@@ -241,7 +241,10 @@ class OwnerMessageTests(unittest.TestCase):
         with patch.object(r, "copy_audio", side_effect=OSError("provider unavailable")):
             self.assertEqual(self.callback("recording", RecordingSid=REC, RecordingStatus="completed")["statusCode"], 503)
         self.assertEqual(r.get(r.call_key(CALL, m.namespace(OWNER)))["recordingStatus"], "failed")
-        with patch.object(r, "copy_audio", return_value=("phone-trial/owner-audio.mp3", 100)):
+        with patch.object(r, "copy_audio", return_value=("phone-trial/owner-audio.mp3", 100)) as fetch:
+            self.assertEqual(self.callback("recording", RecordingSid=REC, RecordingStatus="completed")["statusCode"], 503)
+            fetch.assert_not_called()
+            self.now.return_value = 1030
             self.assertEqual(self.callback("recording", RecordingSid=REC, RecordingStatus="completed")["statusCode"], 200)
         self.assertEqual(r.get(r.call_key(CALL, m.namespace(OWNER)))["recordingStatus"], "ready")
         self.assertEqual(len(self.forms), 1)

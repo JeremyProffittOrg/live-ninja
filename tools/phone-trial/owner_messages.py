@@ -421,19 +421,4 @@ def callback(path, raw, headers):
         return r.response(400)
     item = change(key, {}, "recording_callback", {"callSid": sid, "recordingSid": recording, "status": data["RecordingStatus"]}, sid=sid)
     run_id = namespace(item["ownerUserId"])
-    call = r.get(r.call_key(sid, run_id))
-    if call.get("recordingSid", recording) != recording:
-        return r.response(409)
-    if call["recordingStatus"] == "ready":
-        return r.response(200)
-    if data["RecordingStatus"] == "absent":
-        r.set_recording(sid, recording, "absent", run_id=run_id)
-        return r.response(200)
-    try:
-        r.set_recording(sid, recording, "pending", run_id=run_id)
-        audio_key, size = r.copy_audio(sid, recording, run_id=run_id)
-        r.set_recording(sid, recording, "ready", run_id=run_id, s3Key=audio_key, audioBytes=size, sourceRetained=True)
-        return r.response(200)
-    except Exception:
-        r.set_recording(sid, recording, "failed", run_id=run_id, recordingError="Audio copy failed; retry callback")
-        return r.response(503, {"error": "Audio copy failed; retry"})
+    return r.ingest_recording(sid, recording, data["RecordingStatus"], run_id=run_id)

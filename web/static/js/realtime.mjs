@@ -93,6 +93,7 @@
 // `connect-src` (internal/webapp/pages_routes.go).
 
 import { authFetch, createToolDispatcher, ApiError, voiceBindingForResponse } from './toolclient.mjs';
+import { acquireGuardedMicrophone } from './audio-access.mjs';
 
 const SESSION_PATH = '/api/v1/realtime/session';
 const OPENAI_CALLS_URL = 'https://api.openai.com/v1/realtime/calls';
@@ -232,18 +233,18 @@ export async function acquireMicStream({ deviceId = null } = {}) {
   const base = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
   if (deviceId) {
     try {
-      return await navigator.mediaDevices.getUserMedia({
+      return await acquireGuardedMicrophone({
         audio: { ...base, deviceId: { exact: deviceId } },
       });
     } catch (err) {
       if (err && err.name === 'OverconstrainedError') {
         // Saved mic unplugged — retry on the system default.
-        return navigator.mediaDevices.getUserMedia({ audio: base });
+        return acquireGuardedMicrophone({ audio: base });
       }
       throw err;
     }
   }
-  return navigator.mediaDevices.getUserMedia({ audio: base });
+  return acquireGuardedMicrophone({ audio: base });
 }
 
 // ---- session mint (single attempt) + intent prefetch ---------------------

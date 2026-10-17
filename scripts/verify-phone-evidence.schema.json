@@ -318,78 +318,26 @@
       ],
       "requiresLive": true
     },
-    "auto-platform-gate": {
-      "depends": [
-        "phone-targets"
-      ],
-      "items": [
-        "auto-eligibility",
-        "auto-release-access",
-        "auto-phone-support"
-      ],
-      "cases": [],
-      "checks": [
-        "read-only Play/device/category eligibility checks using the locked package, account and recorded newer-phone serial"
-      ],
-      "requiresLive": true
-    },
-    "auto-call-integration": {
-      "depends": [
-        "auto-platform-gate",
-        "car-route-fix",
-        "call-client",
-        "assistant-call-task"
-      ],
-      "items": [
-        "auto-telecom",
-        "auto-car-ui",
-        "auto-session-continuity"
-      ],
-      "cases": [],
-      "checks": [
-        "Android gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleDebug",
-        "scoped connected tests for Telecom lifecycle"
-      ],
-      "requiresLive": true
-    },
-    "auto-test-distribution": {
-      "depends": [
-        "auto-call-integration"
-      ],
-      "items": [
-        "auto-test-artifact",
-        "auto-test-install"
-      ],
-      "cases": [],
-      "checks": [
-        "GitHub/Play artifact receipts and installed-device version/commit checks"
-      ],
-      "requiresLive": true
-    },
     "car-test-matrix": {
       "depends": [
         "car-route-fix",
-        "auto-test-distribution",
         "call-modes-acceptance",
         "recording-app-access"
       ],
       "items": [
         "car-unit-matrix",
         "car-device-matrix",
-        "auto-dhu-matrix",
         "car-real-call-matrix",
         "car-failure-matrix",
         "car-soak"
       ],
       "cases": [
-        "auto-dhu-matrix",
         "car-real-call-matrix",
         "car-failure-matrix",
         "car-soak"
       ],
       "checks": [
         "Android gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:connectedDebugAndroidTest",
-        "scripts\\verify-phone-evidence.bat run-case auto-dhu-matrix",
         "scripts\\verify-phone-evidence.bat run-case car-real-call-matrix",
         "scripts\\verify-phone-evidence.bat run-case car-failure-matrix",
         "scripts\\verify-phone-evidence.bat run-case car-soak"
@@ -411,7 +359,7 @@
       "checks": [
         "go test ./internal/webapp/ -run TestHelpDrawer -count=1",
         "scripts\\verify-phone-evidence.bat run-case car-installed-acceptance",
-        "GitHub/Play/installed-version checks"
+        "GitHub/installed-version checks"
       ],
       "requiresLive": true
     },

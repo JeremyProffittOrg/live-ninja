@@ -18,6 +18,15 @@ $manifest=[ordered]@{schemaVersion=1;repository='JeremyProffittOrg/live-ninja';a
 $manifest.implementationFiles=@('verify-phone-evidence.bat','verify-phone-evidence.ps1','verify-phone-evidence.tests.ps1','verify-phone-evidence.schema.json') | ForEach-Object { @{path=('scripts/'+$_);sha256=(Get-FileHash -LiteralPath (Join-Path $PSScriptRoot $_)).Hash.ToLowerInvariant()} }
 $receipts=@{}
 try {
+ $milestoneNames=@($script:PhoneEvidenceSchema.milestones.PSObject.Properties.Name)
+ foreach ($entry in $script:PhoneEvidenceSchema.milestones.PSObject.Properties) {
+  foreach ($dependency in $entry.Value.depends) {
+   Assert-PhoneEvidence ($milestoneNames -ccontains $dependency) ('Unknown schema dependency: '+$dependency)
+  }
+  $activeNames=@($entry.Name)+@($entry.Value.items)+@($entry.Value.cases)+@($entry.Value.depends)
+  Assert-PhoneEvidence (@($activeNames | Where-Object { $_ -cmatch '^auto-' }).Count -eq 0) 'Android Auto belongs in the backlog, not active evidence gates.'
+ }
+ $script:checks++
  foreach ($entry in $script:PhoneEvidenceSchema.milestones.PSObject.Properties) {
   $name=$entry.Name; $spec=$entry.Value
   $relative='attempts/'+$now.ToString('yyyyMMddTHHmmssZ')+'-'+[Guid]::NewGuid().ToString('N')
@@ -98,7 +107,10 @@ try {
  function Invoke-PhoneEvidenceRead { param([string]$Tool,[string[]]$Arguments)
   $script:readCalls++
   if ($Tool -eq 'gh') {
-   if ($Arguments[0] -eq 'run') { return 'verify-source-command' }
+   if ($Arguments[0] -eq 'run') {
+    $loggedStep=if ($script:readMode -eq 'wrong-log-step') {'unrelated-step'} else {'verify'}
+    return "build`t$loggedStep`t2026-10-17T12:00:00Z verify-source-command"
+   }
    if ($Arguments[1].Contains('/jobs?')) {
     return '{"total_count":1,"jobs":[{"id":7,"conclusion":"success","steps":[{"name":"verify","status":"completed","conclusion":"success"}]}]}'
    }
@@ -124,6 +136,9 @@ try {
  Assert-Fails { Test-PhoneEvidenceLive $manifest $liveReceipt $requirements $testRoot 'phone-azure-service' } 'another account'
  $script:readMode='ok'
  Assert-Fails { Test-PhoneEvidenceLive $manifest $liveReceipt @{checks=@('other-command')} $testRoot 'phone-azure-service' } 'Missing independent command binding'
+ $script:readMode='wrong-log-step'
+ Assert-Fails { Test-PhoneEvidenceLive $manifest $liveReceipt $requirements $testRoot 'phone-azure-service' } 'Provider step log lacks required command'
+ $script:readMode='ok'
  $liveSource.checks[0].stepName='unrelated-step'; Save-TestJson $sourcePath $liveSource
  $liveReceipt.live.source.sha256=(Get-FileHash -LiteralPath $sourcePath).Hash.ToLowerInvariant()
  Assert-Fails { Test-PhoneEvidenceLive $manifest $liveReceipt $requirements $testRoot 'phone-azure-service' } 'step did not succeed'

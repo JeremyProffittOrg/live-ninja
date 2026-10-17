@@ -78,7 +78,7 @@ class RecorderTests(unittest.TestCase):
         self.commit_patch = patch.object(r, "commit", self.commit)
         self.commit_patch.start()
         self.clock = patch.object(r.time, "time", return_value=1000)
-        self.clock.start()
+        self.now = self.clock.start()
 
     def tearDown(self):
         self.env.stop()
@@ -146,7 +146,7 @@ class RecorderTests(unittest.TestCase):
         class Opener:
             def open(inner, request, timeout):
                 self.assertEqual(request.full_url, f"https://api.twilio.com/2010-04-01/Accounts/{ACCOUNT}/Recordings/{REC}.mp3")
-                self.assertEqual(r.get(r.call_key(CALL))["recordingStatus"], "pending")
+                self.assertEqual(r.get(r.call_key(CALL))["recordingStatus"], "copying")
                 return Audio()
         with patch.object(r.urllib.request, "build_opener", return_value=Opener()):
             self.assertEqual(self.callback(RecordingUrl="http://169.254.169.254/")["statusCode"], 200)
@@ -163,6 +163,99 @@ class RecorderTests(unittest.TestCase):
         with patch.object(r, "copy_audio", side_effect=OSError("provider unavailable")):
             self.assertEqual(self.callback()["statusCode"], 503)
         self.assertEqual(r.get(r.call_key(CALL))["recordingStatus"], "failed")
+
+    def test_copy_retry_budget_and_backoff_survive_callbacks(self):
+        self.register()
+        with patch.object(r, "copy_audio", side_effect=OSError("unavailable")) as fetch:
+            self.assertEqual(self.callback()["statusCode"], 503)
+            self.assertEqual(self.callback()["statusCode"], 503)
+            self.assertEqual(fetch.call_count, 1)
+            self.now.return_value = 1030
+            self.assertEqual(self.callback()["statusCode"], 503)
+            self.now.return_value = 1089
+            self.assertEqual(self.callback()["statusCode"], 503)
+            self.assertEqual(fetch.call_count, 2)
+            self.now.return_value = 1090
+            self.assertEqual(self.callback()["statusCode"], 200)
+            self.now.return_value = 2000
+            self.assertEqual(self.callback()["statusCode"], 200)
+            self.assertEqual(fetch.call_count, 3)
+        call = r.get(r.call_key(CALL))
+        self.assertEqual(call["copyAttempts"], 3)
+        self.assertEqual(call["recordingStatus"], "failed")
+        self.assertEqual(call["recordingReason"], "copy_attempt_limit")
+        self.assertEqual(self.callback(RecordingStatus="absent")["statusCode"], 200)
+        self.assertEqual(r.get(r.call_key(CALL)), call)
+
+    def test_overlapping_callbacks_cannot_copy_or_downgrade_ready(self):
+        self.register()
+        def copying(*args, **kwargs):
+            self.assertEqual(self.callback()["statusCode"], 503)
+            self.assertEqual(self.callback(RecordingStatus="absent")["statusCode"], 503)
+            return "key", 3
+        with patch.object(r, "copy_audio", side_effect=copying) as fetch:
+            self.assertEqual(self.callback()["statusCode"], 200)
+            fetch.assert_called_once()
+        self.assertEqual(self.callback(RecordingStatus="absent")["statusCode"], 200)
+        self.assertEqual(r.get(r.call_key(CALL))["recordingStatus"], "ready")
+
+    def test_abandoned_copy_lease_counts_attempt_and_rejects_stale_completion(self):
+        self.register()
+        call = r.get(r.call_key(CALL))
+        call.update(recordingSid=REC, recordingStatus="copying", copyAttempts=1, copyLeaseUntil=1120)
+        r._table.put_item(Item=call)
+        with patch.object(r, "copy_audio", return_value=("key", 3)) as fetch:
+            self.now.return_value = 1119
+            self.assertEqual(self.callback()["statusCode"], 503)
+            fetch.assert_not_called()
+            self.now.return_value = 1120
+            self.assertEqual(self.callback()["statusCode"], 200)
+        self.assertEqual(r.get(r.call_key(CALL))["copyAttempts"], 2)
+        r.set_recording(CALL, REC, "failed", expected_attempt=1)
+        self.assertEqual(r.get(r.call_key(CALL))["recordingStatus"], "ready")
+
+    def test_deleted_and_expired_recordings_stay_unavailable(self):
+        self.register()
+        for state in ("deleted", "expired"):
+            call = r.get(r.call_key(CALL))
+            call.update(recordingStatus=state, recordingSid=REC)
+            r._table.put_item(Item=call)
+            with patch.object(r, "copy_audio") as fetch:
+                self.assertEqual(self.callback()["statusCode"], 200)
+                self.assertEqual(self.callback(RecordingStatus="absent")["statusCode"], 200)
+                fetch.assert_not_called()
+            r.set_recording(CALL, REC, "ready", expected_attempt=1)
+            self.state_event("consent", result="declined")
+            self.assertEqual(r.get(r.call_key(CALL))["recordingStatus"], state)
+
+    def test_expired_final_lease_fails_without_fourth_transfer(self):
+        self.register()
+        call = r.get(r.call_key(CALL))
+        call.update(recordingSid=REC, recordingStatus="copying", copyAttempts=3, copyLeaseUntil=999)
+        r._table.put_item(Item=call)
+        with patch.object(r, "copy_audio") as fetch:
+            self.assertEqual(self.callback()["statusCode"], 200)
+            fetch.assert_not_called()
+        self.assertEqual(r.get(r.call_key(CALL))["recordingReason"], "copy_attempt_limit")
+
+    def test_stale_worker_cannot_complete_new_attempt(self):
+        self.register()
+        call = r.get(r.call_key(CALL))
+        call.update(recordingSid=REC, recordingStatus="copying", copyAttempts=2, copyLeaseUntil=1120)
+        r._table.put_item(Item=call)
+        for status in ("ready", "failed"):
+            r.set_recording(CALL, REC, status, expected_attempt=1)
+            self.assertEqual(r.get(r.call_key(CALL)), call)
+
+    def test_claim_conflict_reloads_active_worker_without_copying(self):
+        self.register()
+        def competing_claim(old, new, event=None):
+            self.commit(old, new, event)
+            raise Conflict()
+        with patch.object(r, "commit", side_effect=competing_claim), patch.object(r, "copy_audio") as fetch:
+            self.assertEqual(self.callback()["statusCode"], 503)
+            fetch.assert_not_called()
+        self.assertEqual(r.get(r.call_key(CALL))["copyAttempts"], 1)
 
     def test_audio_empty_wrong_type_and_size_are_rejected(self):
         for content, kind, maximum in [(b"", "audio/mpeg", 10), (b"html", "text/html", 10), (b"abc", "audio/mpeg", 2)]:

@@ -110,7 +110,13 @@ function Test-PhoneEvidenceLive {
         $step=@($job[0].steps | Where-Object { $_.name -ceq $binding.stepName -and $_.status -ceq 'completed' -and $_.conclusion -ceq 'success' })
         Assert-PhoneEvidence ($step.Count -eq 1) 'Bound GitHub verification step did not succeed.'
         $log=Invoke-PhoneEvidenceRead gh @('run','view','--repo',$repo,'--job',[string]$binding.jobId,'--log')
-        Assert-PhoneEvidence ($log.Contains($command)) ('Provider job log lacks required command: '+$command)
+        # gh prefixes each log line with job and step names separated by tabs.
+        # A command in another successful step does not prove this binding.
+        $stepCommands=@($log -split "`n" | Where-Object {
+            $fields=$_ -split "`t",3
+            $fields.Count -eq 3 -and $fields[1] -ceq $binding.stepName -and $fields[2].Contains($command)
+        })
+        Assert-PhoneEvidence ($stepCommands.Count -gt 0) ('Provider step log lacks required command: '+$command)
     }
     $identity=Invoke-PhoneEvidenceRead aws @('sts','get-caller-identity','--output','json') | ConvertFrom-Json
     Assert-PhoneEvidence ($identity.Account -ceq $Manifest.awsAccount) 'Configured AWS identity belongs to another account.'

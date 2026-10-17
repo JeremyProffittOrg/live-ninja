@@ -65,6 +65,7 @@ import ninja.jeremy.liveninja.update.AppUpdateState
 import ninja.jeremy.liveninja.update.AppUpdateViewModel
 import ninja.jeremy.liveninja.ui.screens.ConversationScreen
 import ninja.jeremy.liveninja.ui.screens.FilesScreen
+import ninja.jeremy.liveninja.ui.screens.PhoneRecordingsScreen
 import ninja.jeremy.liveninja.ui.screens.HistoryScreen
 import ninja.jeremy.liveninja.ui.screens.LogViewerScreen
 import ninja.jeremy.liveninja.ui.screens.JobsScreen
@@ -250,7 +251,8 @@ fun LiveNinjaRoot(assistTriggers: SharedFlow<AssistTrigger> = MutableSharedFlow(
                 composable(TopLevelDestination.HISTORY.route) { HistoryScreen() }
                 composable(TopLevelDestination.JOBS.route) { JobsScreen() }
                 composable(TopLevelDestination.MEMORY.route) { MemoryScreen() }
-                composable(TopLevelDestination.FILES.route) { FilesScreen() }
+                composable(TopLevelDestination.FILES.route) { FilesScreen(onPhoneRecordings = { navController.navigate("phone-recordings") }) }
+                composable("phone-recordings") { PhoneRecordingsScreen(onBack = { navController.popBackStack() }) }
                 // Internal route reached from Settings › Privacy › Diagnostics.
                 composable(ROUTE_LOG_VIEWER) {
                     LogViewerScreen(onBack = { navController.popBackStack() })

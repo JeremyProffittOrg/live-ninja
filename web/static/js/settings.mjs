@@ -19,6 +19,7 @@
 // catalog (/static/wakewords/catalog.json).
 
 import { apiJSON, ApiError } from './toolclient.mjs';
+import { acquireGuardedMicrophone } from './audio-access.mjs';
 import {
   SETTINGS_SECTIONS,
   ensureCurrentDeviceRegistered,
@@ -1490,7 +1491,7 @@ micGrantBtn.addEventListener('click', async () => {
   micGrantBtn.disabled = true;
   try {
     // One-shot grant purely to unlock device labels; released immediately.
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await acquireGuardedMicrophone({ audio: true });
     for (const t of stream.getTracks()) t.stop();
     await refreshMicDevices();
   } catch {

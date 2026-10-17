@@ -12,6 +12,11 @@ name: Android Release
 # release.
 on:
   workflow_dispatch:
+    inputs:
+      notify_email:
+        description: Send the release download link by email
+        type: boolean
+        default: true
   push:
     branches: [main]
     paths:
@@ -489,6 +494,7 @@ jobs:
       # confirmation is the orchestrator's local SES send after M7.2 verifies
       # the link is live — this step must never fail the run.
       - name: Email download link
+        if: inputs.notify_email
         continue-on-error: true
         run: |
           set -eu

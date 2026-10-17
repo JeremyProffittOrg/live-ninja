@@ -153,3 +153,117 @@ reference; nothing in them is committed work until an item is promoted into `pla
 - **Porcupine wake engine.** Catalog-flagged unavailable (needs Picovoice seats); openWakeWord is the free default and the reason training is never blocked. ⟵ archive/plan.md §8 M6
 - **SNS ops-topic email subscription confirmation.** Optional by design: the owner wants **no CloudWatch alerts**, budgets email directly, and the topic's only producer is SES bounce/complaint. Confirm the subscription only if bounce/complaint notices are wanted. ⟵ SETUP.md · archive/plan.md §8 M14 item 12
 - **Bedrock Nova Sonic model access in `us-east-1`.** Was only ever needed for M12, which is disabled. ⟵ SETUP.md
+
+
+## android-auto-deferred — owner deferred all Android Auto work on 2026-10-17
+
+Owner instruction, verbatim: "put anything for android auto in the backlog". Not scheduled. Do not implement, test, distribute, or provision Android Auto until the owner explicitly restores it to plan.md. Bluetooth and ordinary native-phone calling remain in the active plan.
+
+The original workstream and mixed car test/release requirements follow verbatim so projection, DHU, Play distribution, supported-phone and acceptance details are retained. The duplicated Bluetooth/native portions below are historical context only; their active requirements remain in plan.md. Original dependency names and commands are retained for a future promotion and are not active gates.
+
+## android-auto — integrate real calling with the car display
+depends on: phone-targets, car-route-fix, call-client, assistant-call-task
+
+Jobs: local-test-job, delivery-job, human-hardware-job. Watchers, exact restart commands, and shared ceilings are defined in Job supervision and restart policy; register concrete IDs before launch.
+Authorization: explicit start plus locked account, spending, contact, retention and distribution scope as applicable; standing deployment authorization already applies.
+Workstream done: every contained milestone gate exits 0; run "scripts\verify-phone-evidence.bat auto-test-distribution" to check the terminal gate and its dependency evidence.
+
+
+### auto-platform-gate — use supported calling APIs and distribution
+depends on: phone-targets
+
+- [ ] auto-eligibility — recheck Google's calling guide and supported categories immediately before implementation. Current documented route is Android Auto calling via Core-Telecom, with optional Car App Library calling templates. There is no documented general-purpose AI-assistant category. Keep direct assistant chat on the phone/Bluetooth unless Google explicitly supports the proposed car surface.
+- [ ] auto-release-access — confirm Play account/application identity and Internal/Closed Testing access. Calling is currently a labs feature restricted to those tracks; do not promise Open Testing or Production. Trusted-source installation is required for real-car Car App Library tests; the current sideload APK flow alone is insufficient.
+- [ ] auto-phone-support — reserve an eligible newer phone and compatible car. Google's current requirements state Android 11+; S9 Android 10 remains a Bluetooth regression device despite an installed Android Auto package. No OS flashing or phone purchase is implied.
+
+
+
+Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat auto-platform-gate" exits 0. Required checks: read-only Play/device/category eligibility checks using the locked package, account and recorded newer-phone serial. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+
+### auto-call-integration — native call lifecycle and supported car controls
+depends on: auto-platform-gate, car-route-fix, call-client, assistant-call-task
+
+- [ ] auto-telecom — integrate Android Twilio calls with Core-Telecom in ordinary phone use as well as projection. Map answer/active/inactive/disconnect/mute and remote actions; observe endpoint changes and request routes through Telecom. Handle each remote action within Google's five-second requirement. Use correct call notification/foreground lifecycle and do not make two audio controllers compete.
+- [ ] auto-car-ui — add the permitted calling service/templates and manifest metadata needed for call launch/contact/history navigation. Android Auto owns its in-call UI. Do not assume custom Listen/Take over buttons are available in that UI; prove the supported control path and keep phone controls honest where the host limits them.
+- [ ] auto-session-continuity — preserve the correct call, permissions, participant roles, and audio route when projection connects/disconnects, phone locks, the app backgrounds, and a cellular call interrupts. Handle assistant takeover/take-back through the previously approved call state machine.
+
+Expected additional files: Android manifest and car XML resources, existing Android session/call integration, a scoped CarAppService if required, version catalog/Gradle entries for selected Core-Telecom/Car App Library/Twilio SDKs, related tests, Help and delivery docs. Dependency additions belong to this requested feature only; verify exact compatible versions before implementation.
+
+
+
+
+
+Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat auto-call-integration" exits 0. Required checks: Android gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleDebug; scoped connected tests for Telecom lifecycle. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+
+### auto-test-distribution — publish the test artifact before vehicle acceptance
+depends on: auto-call-integration
+
+- [ ] auto-test-artifact — create a versioned signed test artifact through GitHub Android Release, with a version code above the actually installed code. Publish to the approved Play Internal/Closed test route. Record package, signing verification result, version, commit, track and artifact receipt without key material.
+- [ ] auto-test-install — install the trusted-source test build on the selected supported phone and verify the installed package/version and Android Auto discovery. Do not require final car acceptance before making this test artifact available. This milestone does not claim public production release.
+
+
+Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat auto-test-distribution" exits 0. Required checks: GitHub/Play artifact receipts and installed-device version/commit checks. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+
+
+## car-call-testing — extensive device, head-unit, and real-call verification
+depends on: car-route-fix, auto-test-distribution, call-modes-acceptance, recording-app-access
+
+Jobs: local-test-job, delivery-job, controlled-call-job, human-hardware-job. Watchers, exact restart commands, and shared ceilings are defined in Job supervision and restart policy; register concrete IDs before launch.
+Authorization: explicit start plus locked account, spending, contact, retention and distribution scope as applicable; standing deployment authorization already applies.
+Workstream done: every contained milestone gate exits 0; run "scripts\verify-phone-evidence.bat car-release-proof" to check the terminal gate and its dependency evidence.
+
+
+### car-test-matrix — automated and physical coverage
+depends on: car-route-fix, auto-test-distribution, call-modes-acceptance, recording-app-access
+
+- [ ] car-unit-matrix — test API 29/30 legacy routing and API 31+ routing; connection arriving late; refused route; missing permissions; route removal during capture; focus denied/lost/regained; wake mic contention; duplicate end; process/session cancellation; Telecom endpoint ownership; stale AI output after Take back. Existing tests first, new test classes only for new observable behavior.
+- [ ] car-device-matrix — on the S9, run Bluetooth HFP and handset/wired checks. On a supported newer phone, run modern HFP and BLE if hardware supports it, plus wired/wireless Android Auto where the actual car supports them. Unsupported hardware modes are explicitly not covered, never silently passed.
+- [ ] auto-dhu-matrix — run Google's Desktop Head Unit with the eligible phone; test supported call UI, microphone granted/denied, answer/reject/end/mute, reconnect, screen configurations, and simulated driving restrictions. Record host version and commands. DHU does not prove car acoustics or Bluetooth microphone routing.
+- [ ] car-real-call-matrix — place controlled inbound and outbound Twilio calls through the parked car, covering human speaking, assistant Listen, Take over, Take back, and assistant-only continuation. Verify separate microphone uplink and speaker downlink with a test phrase at each end. Check remote party cannot hear muted user audio and hears no AI audio in Listen mode.
+- [ ] car-failure-matrix — during controlled calls, test car/Bluetooth disconnect, headset/handset route change, USB projection unplug, phone lock/background, cellular interruption, network loss, remote hangup, and owner stop. Verify no duplicate dial, no dropped remote leg during an intended handoff, no persistent capture, and no orphaned paid call legs.
+- [ ] car-soak — after basic success, run 10 connect/start/end cycles on the S9 and on the supported modern phone, plus one 20-minute controlled call with interruptions and projection reconnects. Use the locked budget; lack of budget is not permission to run unbounded calls.
+
+Acceptance thresholds: 10/10 lifecycle cycles release their resources; every required mode has audible two-way evidence; zero duplicate calls, unintended microphone disclosure, AI speech in Listen mode, or orphaned call legs; every supported car remote action is acknowledged within five seconds. Capture route-acquisition and handoff timing rather than invent a universal Bluetooth latency limit. Any failed criterion fails its scenario; preserve partial results and fix before repeating. Allow at most three attempts per failing scenario, with a classified change between attempts.
+
+
+
+Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat car-test-matrix" exits 0. Required checks: Android gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:connectedDebugAndroidTest; scripts\verify-phone-evidence.bat run-case auto-dhu-matrix; scripts\verify-phone-evidence.bat run-case car-real-call-matrix; scripts\verify-phone-evidence.bat run-case car-failure-matrix; scripts\verify-phone-evidence.bat run-case car-soak. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+
+### car-release-proof — publish only verified behavior
+depends on: car-test-matrix
+
+- [ ] car-help-release — update Help in the same feature commits, including Bluetooth setup, route choice, microphone state, call controls, supported Android Auto test distribution, and recovery instructions.
+- [ ] car-ci-release — use existing GitHub Android Release workflow, select a valid version above the installed code 21, verify signature/hash and installed version without reading keys. Add the approved Play testing delivery step through GitHub if needed; preserve existing AWS delivery and APK updates.
+- [ ] car-installed-acceptance — repeat the key parked-car audio and controlled-call checks on the exact released artifact installed through the appropriate channel. Passing a debug build alone does not prove the release.
+
+
+
+
+
+Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat car-release-proof" exits 0. Required checks: go test ./internal/webapp/ -run TestHelpDrawer -count=1; scripts\verify-phone-evidence.bat run-case car-installed-acceptance; GitHub/Play/installed-version checks. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+
+
+### android-auto-source-context — original related requirements and decisions
+
+Single active source: repository-root plan.md; current implementation checkout C:\dev\live-ninja-plan-run\plan.md. Completed history: C:\dev\live-ninja\completed\plan-2026-10-15-history.md and earlier completed/ archives. Deferred work: C:\dev\live-ninja\backlog.md. The current plan covers telephony, Jobs, S3 recordings, car Bluetooth, Android Auto, and their acceptance tests.
+13. **2026-10-15 — Bluetooth repair, Android Auto, and extensive call tests.** Verbatim: "Also, when I use live=ninja in my car, it does now alloe me to use my car's hands free over bluetooth, research and add that fix, and add update the live-ninja app to also be an android auto application.  Add extensive testing include test calls." This adds research and planned implementation/testing; the start hold remains.
+19. **2026-10-15 — target vehicle.** Verbatim: "chevy suburban 2027 stock head unit". Target the 2027 Chevrolet Suburban stock head unit; test window, symptom surface, newer-phone access and Play access remain unconfirmed.
+23. **2026-10-15 — execute today's trial and email results.** Verbatim: "make 20 test calls today using that, and email me the results, along with temporary s3 links to the recordings (7 day ttl)" This authorizes only the bounded 20-call trial and its required backend/recording/email deployment now. Broader app/Android Auto implementation remains on hold.
+- Current USB evidence (2026-10-15): serial 4633424442303098, SM-G965U, Android 10/API 29, app 0.3.15/code 21. Windows USB status OK; wake and MainActivity control passed. Full evidence and current Android Auto requirements: C:\dev\live-ninja\docs\android-auto-research.md. Physical car audio not tested.
+Authority: deployments, deployment retries, normal deployment cost, and required restarts have standing authorization dated 2026-08-16; do not ask for deployment approval again. The 2026-10-16 implementation instruction lifts the historical no-start hold; the separate call stop remains effective. Number acquisition and test calls must fit the locked spending rule; recording retention is 180 days. Play test audience/access and any expanded autonomy must be resolved before affected execution. No unrelated deletion, OS flashing, new hardware purchase, new local schedule, or third-party contact outside the approved list is authorized.
+Definition-of-done rule: all commands named by a milestone must exit 0 and all required evidence must exist. Missing hardware, failed provider calls, partial hotel answers, and unsupported Android Auto modes remain explicit statuses; they cannot be converted to green by omitting cases. A partial hotel report can be delivered while the unmet five-interview target remains open.
+- vehicle-test-input — resolved model: 2027 Chevrolet Suburban, stock head unit. Remaining: native app/browser and affected directions, parked test window, Android 11+ test phone and Play testing access. Discover available resources before asking for anything missing.
+Discover exact account/resource identities, existing credentials by names only, model quota, eligible credit offer, official hotel numbers, installed artifact SHA, existing Play access, and driver/tool availability from the environment before asking the operator to resolve ambiguity. A missing SDK tool is an implementation/preflight dependency, not an operator question by default.
+- Android Auto eligibility, supported newer phone availability, Play testing access, and seamless bot-to-conference transport are unverified. They are explicit gates, not promised facts.
+- human-hardware-job — parked-car/DHU test with a named available operator and device. Exact case, duration, observed evidence, and timeout are registered before launch. No response means unverified, not passed. Do independent work while waiting.
+- unresolved-run-input — an essential owner-only decision, required credential/resource, parked-car/newer-phone access, or Play test access is absent. Mark the dependent work [!] and continue unrelated authorized work.
+- platform-boundary — Android Auto policy or provider capabilities prohibit the planned feature; do not bypass the category/distribution rule.
+Execution sequence: resolve the front-loaded batch and verification tools first. Start provider/Play eligibility checks and car reproduction access early. Then run independent Bluetooth repair, Azure/call foundation, and media topology work where their actual dependencies permit. Recording ingestion is required before final calling acceptance. Deliver a Play testing artifact before real-car Android Auto acceptance; final release verification follows those tests.
+- [ ] auto-platform-gate — blocked by: phone-targets; gate: scripts\verify-phone-evidence.bat auto-platform-gate
+- [ ] auto-call-integration — blocked by: auto-platform-gate, car-route-fix, call-client, assistant-call-task; gate: scripts\verify-phone-evidence.bat auto-call-integration
+- [ ] auto-test-distribution — blocked by: auto-call-integration; gate: scripts\verify-phone-evidence.bat auto-test-distribution
+- [ ] car-test-matrix — blocked by: car-route-fix, auto-test-distribution, call-modes-acceptance, recording-app-access; gate: scripts\verify-phone-evidence.bat car-test-matrix
+- Surfaces: Android is now explicitly requested by the car/Android Auto addition. Native SDK, audio-focus and Telecom integration are in planned scope. Preserve the proposed web dialer; lock whether web and Android ship together before execution.
+- [ ] phone-run-lock — replace tentative paths and verification commands with exact account-specific values. No unresolved decision required by a runnable workstream may be deferred to that workstream. Missing Play/car access blocks only its dependents.
+- [ ] recording-storage-index — use private encrypted S3 plus existing owner-scoped index patterns. Reuse the deliverables bucket only if the locked retention fits its 180-day lifecycle; otherwise define a recording-specific bucket/lifecycle without changing unrelated deliverables. Playback-ready requires a verified S3 object and metadata commit. Never overwrite a different recording on a repeated event.
+Non-goals: replacing the phone OS, resetting Bluetooth pairings, moving app data, enabling disabled voice engines, building Android Automotive OS, disguising assistant audio as a music app, or modifying unrelated Jobs work.
