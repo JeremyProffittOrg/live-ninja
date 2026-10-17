@@ -155,6 +155,25 @@ class InboundTests(unittest.TestCase):
         self.assertEqual(self.final.call_args.args[0]['bootstrap']['bridgeToken'], 'test-capability')
         self.assertFalse(any('/Recordings' in call.args[0] for call in self.provider.call_args_list))
 
+    def test_failed_provider_hangup_still_finalizes_session_without_releasing_lock(self):
+        self.configure(); self.callback(); self.callback('pin/1', Digits='123456'); self.callback('consent', Digits='1')
+        item = self.item()
+        self.provider.side_effect = m.ProviderError()
+        self.assertFalse(i.end(item, 'bridge_failed', hangup=True))
+        self.final.assert_called_once()
+        self.assertEqual(self.final.call_args.args[0]['bootstrap']['sessionId'], 'fresh-session')
+        self.assertEqual(r.get(m.VOICE_KEY)['activeRequest'], item['lockId'])
+        self.assertNotEqual(self.item()['providerStatus'], 'completed')
+        self.assertTrue(self.item()['transcriptFinalized'])
+        self.assertIn('provider_cleanup_unconfirmed', self.item()['endReason'])
+        # A later cleanup attempt must not finalize the already-ended broker
+        # session again, and a mismatched provider reply cannot release the lock.
+        self.provider.side_effect = None
+        self.provider.return_value = {'sid': 'CA'+'9'*32, 'account_sid': f.ACCOUNT, 'status': 'completed'}
+        self.assertFalse(i.end(self.item(), 'bridge_failed', hangup=True))
+        self.final.assert_called_once()
+        self.assertEqual(r.get(m.VOICE_KEY)['activeRequest'], item['lockId'])
+
     def test_untrusted_forms_and_iam_enrollment_do_not_enable_calls(self):
         self.configure()
         self.assertEqual(i.callback('/inbound-owner/voice', b'Digits=123456', {})['statusCode'], 403)

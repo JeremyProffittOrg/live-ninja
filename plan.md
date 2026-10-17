@@ -1,10 +1,13 @@
 # Plan
 
-Status: PARTIAL DELIVERY 2026-10-17. Android recordings0.3.17/code23 are installed on the S9; recording recovery and cross-tab audio protection are deployed. Fresh inbound owner sessions and recording account export/deletion are built and tested, and deployed with calling still disabled. Calls stay stopped; PIN enrollment, live topology, Jobs integration and physical Bluetooth acceptance remain open. Android Auto is in backlog.md.
+Status: PARTIAL DELIVERY 2026-10-17. Android recordings0.3.17/code23 are installed on the S9; recording recovery and cross-tab audio protection are deployed. Fresh inbound owner sessions and recording account export/deletion are built, tested and deployed. PIN enrollment is verified. Calls stay stopped; activation, live topology, Jobs integration and physical Bluetooth acceptance remain open. Android Auto is in backlog.md.
 
 Single active source: repository-root plan.md; current implementation checkout C:\dev\live-ninja-plan-build\plan.md. Completed history: C:\dev\live-ninja\completed\plan-2026-10-15-history.md and earlier completed/ archives. Deferred work: C:\dev\live-ninja\backlog.md. The current plan covers telephony, Jobs, S3 recordings, car Bluetooth, and their acceptance tests. All Android Auto work is in backlog.md.
 
 ## Locked decisions (user-confirmed; do not revisit)
+
+- 2026-10-17 — user: "pin set". Owner reports private PIN enrollment complete; verify only enrollment status, never the PIN or verifier contents.
+- 2026-10-17 — user: "agressively go after this". Resume blocker removal with multiple agents. Fix the Android lint blocker and verify dependency-ready phone work. The existing explicit stop-calls and retention decisions still require separate answers.
 
 Historical quotes below remain unchanged. Later dated decisions supersede earlier planning holds and Android Auto scope; only the latest applicable decision governs execution.
 
@@ -154,9 +157,9 @@ Execution sequence: resolve the front-loaded batch and verification tools first.
 
 - [~] phone-verification-tools — offline checks and read-only provider/device reconciliation implemented; full run manifest remains pending; gate: powershell.exe -NoProfile -NonInteractive -File scripts/verify-phone-evidence.tests.ps1
 - [ ] phone-targets — blocked by: phone-verification-tools; gate: scripts\verify-phone-evidence.bat phone-targets
-- [!] phone-account-session — fresh owner conversation selected; owner must complete private PIN setup; gate: scripts\verify-phone-evidence.bat phone-account-session
-- [ ] phone-azure-service — blocked by: phone-account-session; gate: scripts\verify-phone-evidence.bat phone-azure-service
-- [ ] phone-audio-loop — blocked by: phone-azure-service; gate: scripts\verify-phone-evidence.bat phone-audio-loop
+- [~] phone-account-session — fresh owner conversation implemented and PIN enrollment verified; call activation and actual telephone acceptance remain pending; gate: scripts\verify-phone-evidence.bat phone-account-session
+- [~] phone-azure-service — bridge/workflow deployed and audio probe passed; actual telephone cold-start acceptance remains; gate: scripts\verify-phone-evidence.bat phone-azure-service
+- [~] phone-audio-loop — authenticated inbound media and cleanup implemented and tested; actual telephone acceptance remains; gate: scripts\verify-phone-evidence.bat phone-audio-loop
 - [ ] phone-number-routing — blocked by: phone-audio-loop, call-budget-gate; gate: scripts\verify-phone-evidence.bat phone-number-routing
 - [!] call-topology-proof — live experiment blocked by stop-calls; owner must explicitly resume calls within budget; gate: scripts\verify-phone-evidence.bat call-topology-proof
 - [ ] call-client — blocked by: call-topology-proof, phone-account-session; gate: scripts\verify-phone-evidence.bat call-client
@@ -422,8 +425,8 @@ Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evi
 depends on: phone-account-session
 
 
-- [ ] phone-host — add the Go bridge and Azure Container Apps configuration with HTTPS/WSS, health checks, bounded queues, explicit timeouts, graceful cleanup, and no raw audio/PIN/token logs. Verify cold-start and connection behavior. Use scale-to-zero only if answer deadlines pass; otherwise record and price the smallest warm instance within budget.
-- [ ] phone-azure-workflow — add a separate GitHub Actions workflow on main using azure/login@v2, id-token: write, and contents: read. Preserve the AWS workflow. Verify the exact JeremyProffittOrg/live-ninja federated subject before adding credentials; never reuse the event repository's identity. Prefer managed identity for Azure model access. Use existing hidden credential entry for Twilio secrets and supported app-secret injection; no paid secrets service.
+- [~] phone-host — Implementation deployed and tested; complete live acceptance remains. Original acceptance requirement: add the Go bridge and Azure Container Apps configuration with HTTPS/WSS, health checks, bounded queues, explicit timeouts, graceful cleanup, and no raw audio/PIN/token logs. Verify cold-start and connection behavior. Use scale-to-zero only if answer deadlines pass; otherwise record and price the smallest warm instance within budget.
+- [~] phone-azure-workflow — Implementation deployed and tested; complete live acceptance remains. Original acceptance requirement: add a separate GitHub Actions workflow on main using azure/login@v2, id-token: write, and contents: read. Preserve the AWS workflow. Verify the exact JeremyProffittOrg/live-ninja federated subject before adding credentials; never reuse the event repository's identity. Prefer managed identity for Azure model access. Use existing hidden credential entry for Twilio secrets and supported app-secret injection; no paid secrets service.
 
 
 
@@ -463,10 +466,10 @@ Workstream done: every contained milestone gate exits 0; run "scripts\verify-pho
 ### phone-audio-loop — authenticate and run one conversation
 depends on: phone-azure-service
 
-- [ ] phone-ingress-validation — verify Twilio signatures on webhooks and WebSocket upgrades against the actual public URL, including proxy handling. Check expected account, destination, CallSid, StreamSid, and short-lived stream binding. A Twilio signature verifies the provider, not the caller's personal identity.
-- [ ] phone-caller-auth — implement enrolled-number/PIN validation before private data or privileged tools. Bound retries and reject unknown callers. Keep PIN digits out of model input and logs. Return valid TwiML on acceptance and rejection.
-- [ ] phone-stream-adapter — use bidirectional Connect/Stream. Handle start/media/mark/clear/stop and Azure session events. Twilio uses base64 8 kHz mono mu-law audio; negotiate the selected model's actual formats and convert only when needed. On interruption, cancel generation, clear queued playback, and reconcile heard audio with model state.
-- [ ] phone-call-cleanup — enforce concurrency and duration limits. Deduplicate callbacks and tool events. Close model connections and settle transcript/usage once on hangup or error. Give a short audible failure response where possible; never leave a paid silent call open.
+- [~] phone-ingress-validation — Implementation deployed and tested; complete live acceptance remains. Original acceptance requirement: verify Twilio signatures on webhooks and WebSocket upgrades against the actual public URL, including proxy handling. Check expected account, destination, CallSid, StreamSid, and short-lived stream binding. A Twilio signature verifies the provider, not the caller's personal identity.
+- [~] phone-caller-auth — Implementation deployed and tested; complete live acceptance remains. Original acceptance requirement: implement enrolled-number/PIN validation before private data or privileged tools. Bound retries and reject unknown callers. Keep PIN digits out of model input and logs. Return valid TwiML on acceptance and rejection.
+- [~] phone-stream-adapter — Implementation deployed and tested; complete live acceptance remains. Original acceptance requirement: use bidirectional Connect/Stream. Handle start/media/mark/clear/stop and Azure session events. Twilio uses base64 8 kHz mono mu-law audio; negotiate the selected model's actual formats and convert only when needed. On interruption, cancel generation, clear queued playback, and reconcile heard audio with model state.
+- [~] phone-call-cleanup — Implementation deployed and tested; complete live acceptance remains. Original acceptance requirement: enforce concurrency and duration limits. Deduplicate callbacks and tool events. Close model connections and settle transcript/usage once on hangup or error. Give a short audible failure response where possible; never leave a paid silent call open.
 
 
 
@@ -778,6 +781,13 @@ Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evi
 
 ## Execution log
 
+### blocker-clearance — remove executable blockers after PIN enrollment
+- [x] blocker-pin-check — /root/phone_backend verified projected enrollment version1 and server-side verifier-shape COUNT without retrieving secret values. PIN is enrolled; inbound and owner messages remain disabled; owner-stop-2026-10-16 is intact. October allocation19.70USD, October17 grant/spend0.00USD; the1.40USD reserve requires new daily authority.
+- [x] blocker-session-cleanup — inbound_owner.end now finalizes the known AI session even if provider hangup fails, records unconfirmed cleanup and retains the paid-call lock. Regression failed before the fix (final_transcript call count0). `python -B -m unittest discover -s tools/phone-trial -p 'test_*.py'` passed138 tests in11.163s. Root reviewed the diff; no runtime controls changed.
+- [x] blocker-android-lint — existing SDK guard now exposes its API31 boundary to lint, preserving Android confirmation behavior. `gradlew.bat :app:testDebugUnitTest --tests '*UpdateTrustTest' :app:lintDebug --console=plain` exited0 in2m47s from C:\dev\live-ninja-plan-build\android:4 tests,0 failures/errors; lint0 errors,147 warnings. Job56840 terminal. No suppressions, dependency changes or APK version change.
+- [~] blocker-dependency-review — /root/phone_verification checks code and existing tests to identify real offline prerequisites for dialer/takeover and Jobs; live acceptance cannot be replaced by synthetic evidence.
+Outcome: verified PIN status and a passing Android lint gate, plus dependency-ready implementation supported by code evidence. Non-goals: no call activation, budget grant, provider-copy deletion, or Android Auto work without the applicable owner decision. Initial files: AppUpdateInstaller.kt, UpdateTrustTest.kt and plan.md. Root owns integration and existing GitHub delivery. Agents report terminal pass/fail; deterministic failures require a fix before retry, maximum three attempts per test/deployment job. Call and retention questions were asked together before dependent work.
+
 - 2026-10-17 — corrected delivery verified: main39028551114 and Phone39028551161 succeeded atef808d78c002351bb6a4884fb93feccd6aeb0c37; final main39029116533 and Phone39029116502 succeeded at262586c75677ae901f9661c5c54fde4fa8512f17. Latest main completed all test/deploy/browser/accessibility gates; latest phone passed137 Python tests, Go race checks, recorder/Azure deployment and real audio probe, skipped trial calls and released idle capacity. All watchers closed. Read-only export again completed7 pages/118 rows with forbidden fields absent. Owner messages remain disabled, owner-stop retained and inbound PIN enrollment absent. No calls, purge, provider-data deletion or enrollment were executed.
 
 - 2026-10-17 — corrected provider lifecycle committed asef808d78c002351bb6a4884fb93feccd6aeb0c37. Phone39028551161 completed success including136 Python tests, bridge race checks, recorder/Azure deployment/audio probe; trial skipped and owner stop unchanged. Main39028551114 deployment passed and final browser checks are monitored by /root/phone_verification (session96504).
@@ -792,10 +802,10 @@ Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evi
 
 ### remaining-execution-gates — only incomplete work stays open
 - [!] provider-copy-retention — Jeremy must choose whether the extra Twilio audio copy is deleted after verified S3 persistence or kept180 days. This blocks only normal provider-copy cleanup, not the implemented account-delete cleanup. Current in-app S3 expiry remains180 days.
-- [!] inbound-live-acceptance — Jeremy must privately enroll a PIN using `C:\dev\live-ninja-plan-build\scripts\enroll-phone-pin.bat` and explicitly authorize resumption of calls and any needed daily budget. Enrollment alone stays disabled. No number callback was changed and no new call was made in this run.
+- [!] inbound-live-acceptance — PIN enrollment verified2026-10-17. Jeremy must explicitly authorize resumption of calls and the needed daily budget. Enrollment alone stays disabled. No number callback was changed and no new call was made in this run.
 - [!] expanded-call-topology — the existing stop-calls decision prevents the required live human/assistant conference experiment. App dialer/listen/takeover/take-back and phone-research Jobs remain downstream of that proof; no placeholder implementations were added.
 - [!] bluetooth-physical-proof — Jeremy must provide the parked Suburban test window and verify actual microphone/speaker audio. S9 USB access, signed installation and existing Bluetooth unit tests pass; vehicle acoustics and full recording playback have not been physically verified.
-- [!] android-existing-lint — unchanged AppUpdateInstaller.kt:123 NewApi error blocks local lintDebug; source fingerprint matches baseline. No updater code or lint check was altered. Focused JVM tests, debug assembly and both complete release CI runs pass.
+- [x] android-existing-lint — resolved by blocker-android-lint on2026-10-17; focused update tests and lintDebug pass with0 errors. Installation behavior is unchanged.
 - [!] generated-cache-cleanup — automatic execution policy rejected deletion of `tools/phone-trial/__pycache__/account_lifecycle.cpython-314.pyc` with reason `blocked by policy`; the generated file is not committed. Local operator cleanup can remove it outside this blocked execution path.
 - Android Auto is deferred exclusively to backlog.md; no Auto implementation, Play publication or Auto hardware acceptance was performed.
 

@@ -7,6 +7,7 @@ import android.content.pm.PackageInstaller
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.os.Build
+import androidx.annotation.ChecksSdkIntAtLeast
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.security.MessageDigest
@@ -120,5 +121,11 @@ internal fun installSessionParams(size: Long, sdk: Int = Build.VERSION.SDK_INT):
     PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
         setAppPackageName(AndroidReleasePolicy.PACKAGE_NAME)
         setSize(size)
-        if (sdk >= 31) setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_REQUIRED)
+        if (supportsExplicitInstallConfirmation(sdk)) {
+            setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_REQUIRED)
+        }
     }
+
+// Keep the injected SDK test seam while making its API guard visible to lint.
+@ChecksSdkIntAtLeast(api = 31)
+private fun supportsExplicitInstallConfirmation(sdk: Int): Boolean = sdk >= 31

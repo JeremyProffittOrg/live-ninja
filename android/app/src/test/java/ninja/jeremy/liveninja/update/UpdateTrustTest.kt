@@ -43,12 +43,16 @@ class UpdateTrustTest {
             every { anyConstructed<PackageInstaller.SessionParams>().setAppPackageName(any()) } just Runs
             every { anyConstructed<PackageInstaller.SessionParams>().setSize(any()) } just Runs
             every { anyConstructed<PackageInstaller.SessionParams>().setRequireUserAction(any()) } just Runs
-            installSessionParams(1234, 35)
-            verify(exactly = 1) { anyConstructed<PackageInstaller.SessionParams>().setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_REQUIRED) }
-            verify(exactly = 0) { anyConstructed<PackageInstaller.SessionParams>().setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED) }
-            clearConstructorMockk(PackageInstaller.SessionParams::class)
-            installSessionParams(1234, 29)
-            verify(exactly = 0) { anyConstructed<PackageInstaller.SessionParams>().setRequireUserAction(any()) }
+            for (sdk in listOf(29, 30, 31, 35)) {
+                clearConstructorMockk(PackageInstaller.SessionParams::class)
+                installSessionParams(1234, sdk)
+                verify(exactly = if (sdk >= 31) 1 else 0) {
+                    anyConstructed<PackageInstaller.SessionParams>().setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_REQUIRED)
+                }
+                verify(exactly = 0) {
+                    anyConstructed<PackageInstaller.SessionParams>().setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+                }
+            }
         } finally { unmockkConstructor(PackageInstaller.SessionParams::class) }
     }
 

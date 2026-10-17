@@ -87,14 +87,17 @@ def final_transcript(item):
 
 def end(item, reason, hangup=False, finalized=False, provider_status=None):
     # Do not release a paid-call lock until the provider has confirmed termination.
+    provider_confirmed = not hangup
     if hangup:
         try:
             result = m.provider('/Calls/' + item['callSid'] + '.json', {'Status': 'completed'})
-            if result.get('sid') != item['callSid'] or result.get('account_sid') != os.environ['TWILIO_ACCOUNT_SID'] or result.get('status') not in m.TERMINAL:
-                return False
-            provider_status = result['status']
+            provider_confirmed = (result.get('sid') == item['callSid']
+                                  and result.get('account_sid') == os.environ['TWILIO_ACCOUNT_SID']
+                                  and result.get('status') in m.TERMINAL)
+            if provider_confirmed:
+                provider_status = result['status']
         except Exception:
-            return False
+            provider_confirmed = False
     finalized = finalized or item.get('transcriptFinalized') is True
     if not finalized:
         try:
@@ -104,6 +107,12 @@ def end(item, reason, hangup=False, finalized=False, provider_status=None):
             # Keep the failure visible; the scoped session also expires server-side.
             reason += '_transcript_cleanup_failed'
     key = {k: item[k] for k in ('PK', 'SK')}
+    if not provider_confirmed:
+        # Broker cleanup is independent of telephone termination. Preserve the
+        # unresolved provider state and lock, but do not leak the owner session.
+        m.change(key, {'transcriptFinalized': finalized, 'endReason': reason + '_provider_cleanup_unconfirmed'},
+                 'inbound_cleanup_pending', {'reason': reason, 'transcriptFinalized': finalized}, sid=item['callSid'])
+        return False
     m.change(key, {'inboundState': 'ended', 'providerStatus': provider_status or item.get('providerStatus', 'unknown'),
                   'endReason': reason, 'transcriptFinalized': finalized},
              'inbound_ended', {'reason': reason, 'callSid': item['callSid']}, sid=item['callSid'], release=True)
