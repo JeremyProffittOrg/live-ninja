@@ -140,6 +140,21 @@ class InboundTests(unittest.TestCase):
         self.broker.assert_called_once()
         self.assertEqual(self.item()['inboundState'], 'ended')
 
+    def test_minted_session_finalized_when_bootstrap_persistence_loses_race(self):
+        self.configure(); self.callback(); self.callback('pin/1', Digits='123456')
+        transition = i.transition
+        def lose_after_mint(item, **fields):
+            if 'bootstrap' in fields:
+                raise f.Conflict()
+            return transition(item, **fields)
+        with patch.object(i, 'transition', side_effect=lose_after_mint):
+            self.assertIn('<Hangup', self.callback('consent', Digits='1')['body'])
+        self.broker.assert_called_once()
+        self.final.assert_called_once()
+        self.assertEqual(self.final.call_args.args[0]['bootstrap']['sessionId'], 'fresh-session')
+        self.assertEqual(self.final.call_args.args[0]['bootstrap']['bridgeToken'], 'test-capability')
+        self.assertFalse(any('/Recordings' in call.args[0] for call in self.provider.call_args_list))
+
     def test_untrusted_forms_and_iam_enrollment_do_not_enable_calls(self):
         self.configure()
         self.assertEqual(i.callback('/inbound-owner/voice', b'Digits=123456', {})['statusCode'], 403)

@@ -241,6 +241,7 @@ def callback(path, raw, headers):
         return bye()
     # Persist before invoking: an ambiguous mint/recording creation is never retried.
     item = transition(item, inboundState='minting', consented=True)
+    bootstrap = None
     try:
         call = r.get(r.call_key(item['callSid'], m.namespace(item['ownerUserId'])))
         r.commit(call, {**call, 'version': int(call['version']) + 1, 'consentStatus': 'granted'})
@@ -261,6 +262,10 @@ def callback(path, raw, headers):
         r.set_recording(item['callSid'], rec['sid'], 'recording', run_id=run_id, recordingCreateState='confirmed')
         item = transition(item, inboundState='ready')
     except Exception:
+        # A concurrent hangup/deletion can reject persistence after mint returns.
+        # Retain that known capability only for finalizing its exact session.
+        if bootstrap is not None:
+            item = {**item, 'bootstrap': bootstrap}
         end(item, 'bootstrap_failed', hangup=True)
         return bye()
     stream = item['bridge'].replace('https://', 'wss://', 1) + '/owner-media'

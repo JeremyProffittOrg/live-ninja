@@ -98,6 +98,8 @@ Definition-of-done rule: all commands named by a milestone must exit 0 and all r
 
 ## Open decisions (asked together on 2026-10-15)
 
+- 2026-10-17 — provider-copy-retention: S3 retention is locked at180 days; the separate Twilio audio-copy policy is not locked. Asked owner whether to delete Twilio audio after verified S3 persistence or retain it180 days too. No answer is authorization; no normal provider-copy deletion or schedule is enabled while this is pending. Account deletion remains a separate explicitly requested privacy action.
+
 One asynchronous question batch was answered on 2026-10-15. The verbatim answers are in Locked decisions. The recording follow-up was also answered: use a friendly AI introduction and ask to record. Remaining resource/access inputs are listed below; they do not block completing the draft. Do not ask another permission question for deployment.
 
 - hotel-target-input — resolved: select five random California hotels. Verify official property numbers and freeze the selected list before dialing. No additional VPN constraints supplied; do not claim verified compatibility.
@@ -576,7 +578,7 @@ depends on: recording-capture
 - [ ] recording-object-copy — use an AWS-owned worker with the existing workload role to fetch authenticated Twilio media and write the owner-scoped S3 object. Azure handles voice/orchestration; no static AWS keys in Azure or Twilio. Accept only known provider recording endpoints and validated IDs; restrict redirects and size/type. Stream bytes with bounded memory and record integrity checksum, byte count, duration, content type, and source RecordingSid.
 - [ ] recording-storage-index — use private encrypted S3 plus existing owner-scoped index patterns. Reuse the deliverables bucket only if the locked retention fits its 180-day lifecycle; otherwise define a recording-specific bucket/lifecycle without changing unrelated deliverables. Playback-ready requires a verified S3 object and metadata commit. Never overwrite a different recording on a repeated event.
 - [ ] recording-recovery — retain pending work durably and reconcile missed callbacks without redialing. Limit transfer attempts to three total across queue/worker retries with 30-second then 60-second delay. Keep failed records visible for explicit retry. Never delete a provider source before verified S3 persistence; provider-copy cleanup and S3 expiration require the locked retention policy.
-- [x] recording-data-lifecycle — cover user deletion/account purge/export, object versions if enabled, metadata, provider copies, and in-flight callbacks. Deleted calls must not be recreated by late ingestion. Separate recording retention from mandatory 7-day CloudWatch log retention.
+- [~] recording-data-lifecycle — account deletion/export is implemented; automatic cleanup of the extra Twilio copy awaits the owner retention choice. Cover user deletion/account purge/export, object versions if enabled, metadata, provider copies, and in-flight callbacks. Deleted calls must not be recreated by late ingestion. Separate recording retention from mandatory 7-day CloudWatch log retention.
 
 
 
@@ -776,6 +778,9 @@ Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evi
 
 ## Execution log
 
+- 2026-10-17 — corrected provider lifecycle committed asef808d78c002351bb6a4884fb93feccd6aeb0c37. Phone39028551161 completed success including136 Python tests, bridge race checks, recorder/Azure deployment/audio probe; trial skipped and owner stop unchanged. Main39028551114 deployment passed and final browser checks are monitored by /root/phone_verification (session96504).
+- 2026-10-17 — named cleanup regression reproduced a lost known bootstrap when a post-mint persistence CAS loses to hangup/deletion. Local failure cleanup now retains the returned exact session capability without reminting. Regression proves exact session finalization and no recording POST; full Python suite137 tests passes. No other speculative scope added.
+
 - 2026-10-17 — recording provider-state correction complete locally: completed media uses verified DELETE; absent/deleted means no media; processing stays pending. Uncertain recording creation retains call/callback state until a signed late callback resolves it under deletion markers. Explicit not-requested/rejected states and confirmed no-answer/busy/canceled calls do not wait for nonexistent audio. Tombstoned journal writes return410 so bridges cannot treat discarded intent as approval. Both deletion-before-intent and deletion-after-intent/pre-POST paths persist safe no-call outcomes; uncertain submitted calls remain blocked. No live provider action was run.
 - 2026-10-17 — final correction checks: `python -B -m unittest discover -s tools/phone-trial -p 'test_*.py'` exit0,136 tests; `go test ./cmd/phone-trial-bridge ./cmd/account-purge ./internal/webapp -count=1` exit0; `go vet ./cmd/phone-trial-bridge` exit0; `git diff --check` exit0. These fixes replace the earlier incomplete provider-state assumptions; current deletion behavior remains tested with isolated fakes, not real data deletion.
 
@@ -784,6 +789,7 @@ Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evi
 - 2026-10-17 — all code deliveries terminal success: main39025863230/34eff07ce86b89c18996233f3af12daeb4ad4b6f and39026045269/83aa4149ab4fa21417078f63c9feb897c1f0ff26; phone39025863237/34eff07 and39026045322/83aa414. Latest main includes complete Go tests/vet/race, arm64 builds, SAM, browser/accessibility/Lighthouse success. Latest phone includes120 Python tests, Go race tests, recorder/Azure deployment, real model-audio probe, skipped telephone trial and idle scale-down. Android release/install proof is recorded above. All watcher sessions are closed.
 
 ### remaining-execution-gates — only incomplete work stays open
+- [!] provider-copy-retention — Jeremy must choose whether the extra Twilio audio copy is deleted after verified S3 persistence or kept180 days. This blocks only normal provider-copy cleanup, not the implemented account-delete cleanup. Current in-app S3 expiry remains180 days.
 - [!] inbound-live-acceptance — Jeremy must privately enroll a PIN using `C:\dev\live-ninja-plan-build\scripts\enroll-phone-pin.bat` and explicitly authorize resumption of calls and any needed daily budget. Enrollment alone stays disabled. No number callback was changed and no new call was made in this run.
 - [!] expanded-call-topology — the existing stop-calls decision prevents the required live human/assistant conference experiment. App dialer/listen/takeover/take-back and phone-research Jobs remain downstream of that proof; no placeholder implementations were added.
 - [!] bluetooth-physical-proof — Jeremy must provide the parked Suburban test window and verify actual microphone/speaker audio. S9 USB access, signed installation and existing Bluetooth unit tests pass; vehicle acoustics and full recording playback have not been physically verified.
