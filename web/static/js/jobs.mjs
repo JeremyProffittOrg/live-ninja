@@ -4,7 +4,41 @@ import { apiJSON, pageSessionJSON } from './toolclient.mjs';
 import { mountJobHistory } from './job-timeline.mjs';
 import { mountGhostWork } from './ghost-work.mjs';
 
-const LABELS = { active: 'Active', paused: 'Paused', cancelled: 'Cancelled', queued: 'Queued', running: 'Running', waiting_approval: 'Needs review', succeeded: 'Completed', failed: 'Failed' };
+const LABELS = { active: 'Active', paused: 'Paused', cancelled: 'Cancelled', queued: 'Queued', running: 'Running', waiting_approval: 'Needs review', succeeded: 'Completed', failed: 'Failed', blocked: 'Blocked', partial: 'Partial', unknown: 'Unknown', pending: 'Pending', not_started: 'Not started', creating: 'Starting call', initiated: 'Started', ringing: 'Ringing', 'in-progress': 'In progress', completed: 'Call ended', busy: 'Busy', 'no-answer': 'No answer', canceled: 'Cancelled', skipped: 'Skipped', stopping: 'Stopping' };
+export const PHONE_RESEARCH_PURPOSE = 'Ask each hotel about guest Wi-Fi login requirements and reported VPN restrictions. Do not request private router settings or credentials.';
+
+export function phoneTargetSelection(ids, catalog) {
+  if (!Array.isArray(ids) || ids.length !== 5 || new Set(ids).size !== 5) throw new Error('Choose exactly five different hotels.');
+  const allowed = new Set((catalog?.targets || []).map(target => target.id));
+  if (ids.some(id => !allowed.has(id))) throw new Error('The hotel catalog changed. Refresh and choose five listed hotels.');
+  return [...ids];
+}
+
+export function phoneApprovalDetails(job, run = null) {
+  const research = run?.phoneResearch || job?.phoneResearch;
+  if (!Array.isArray(research?.targets) || research.targets.length !== 5 || new Set(research.targets.map(t => t.id)).size !== 5 || research.targets.some(t => !t.name || !t.phone)) throw new Error('The exact five hotel details are unavailable. Refresh before approving calls.');
+  const caps = research;
+  if (caps?.purpose !== PHONE_RESEARCH_PURPOSE || caps?.maxCallSeconds !== 180 || caps?.maxAttempts !== 1 || caps?.maxCostUSD !== '7.00') throw new Error('Call limits could not be verified. Refresh before approving calls.');
+  return [PHONE_RESEARCH_PURPOSE, ...research.targets.map(t => `${t.name} · ${t.city || ''} · ${t.phone}\nSource: ${t.sourceUrl || 'Unavailable'}${run ? `\nCurrent outcome: ${research.properties?.find(p => p.targetId === t.id)?.status || 'not_started'}` : ''}`),
+    'Recording starts only after permission. At most 180 seconds per hotel. One attempt per hotel; no redial.',
+    'Conservative total limit: $7.00. The $20 monthly limit and any explicit $5 daily grant still apply.',
+    'Approval does not grant a budget or lift a call stop. Unknown call outcomes are reconciled before any further call.',
+    ...(run?.approvalExpiresAt ? [`Approval expires: ${dateLabel(run.approvalExpiresAt)}`] : []),
+    ...(run ? ['Resume continues only the remaining approved hotels. Completed or attempted hotels are not redialed.'] : []),
+  ].join('\n\n');
+}
+
+export function phoneResearchResults(run) {
+  const research = run?.phoneResearch;
+  if (!Array.isArray(research?.targets) || research.targets.length !== 5) return [];
+  const properties = Array.isArray(research.properties) ? research.properties : [];
+  return research.targets.map(target => ({ target, outcome: properties.find(p => p.targetId === target.id) || { status: 'not_started' } }));
+}
+
+export function phoneRecordingHref(outcome) {
+  if (outcome?.recordingStatus !== 'ready' || !/^[a-z0-9][a-z0-9-]{0,99}$/.test(outcome.recordingSource || '') || !/^CA[0-9a-fA-F]{32}$/.test(outcome.callSid || '')) return '';
+  return `/history?phoneSource=${encodeURIComponent(outcome.recordingSource)}&phoneCall=${encodeURIComponent(outcome.callSid)}#phoneRecordingHeading`;
+}
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 export const statusLabel = (status) => LABELS[status] || String(status || 'Unknown');
 
@@ -99,6 +133,7 @@ function initJobs() {
   $('localJobsMode').onclick=()=>sourceMode(false);$('ghostWorkMode').onclick=()=>sourceMode(true);
   const state = { jobs: [], selected: '', runs: [], runsLoaded: false, runPagesExpanded: false, jobPagesExpanded: false, runError: '', capabilities: null, cursor: '', runCursor: '', listSeq: 0, runSeq: 0, busy: false, loading: false, reloadNeeded: false, lastRefresh: 0, editorJob: null, editorVersion: 0, editing: false, saving: false, confirm: null };
   const keys = createRequestKeys();
+  state.phoneCatalog = null;
   let detailSignature = ''; let runsSignature = '';
   const expandedRuns = new Set();
   const el = (tag, cls, content) => { const node = document.createElement(tag); if (cls) node.className = cls; if (content !== undefined) node.textContent = String(content); return node; };
@@ -115,13 +150,26 @@ function initJobs() {
 
   function setCapabilities(caps) {
     state.capabilities = caps;
-    const available = Boolean(caps?.reminder || caps?.review);
+    const phoneAvailable = (state.phoneCatalog?.targets?.length || 0) >= 5;
+    const available = Boolean(caps?.reminder || caps?.review || phoneAvailable);
     $('jobNew').disabled = !available; $('jobsEmptyNew').disabled = !available;
     $('jobsCapability').textContent = !available ? 'Jobs unavailable' : caps.scheduling ? 'Reminders & human review · Scheduling available' : 'Manual jobs available · Automatic scheduling unavailable';
     const providers = Array.isArray(caps?.providers) ? caps.providers : [];
     $('jobsCapabilityDetails').textContent = [caps?.scheduling ? 'Scheduled runs are enabled. Times follow the timezone you choose.' : 'Automatic scheduling is not enabled on this server. Use Run now for a manual job.', ...providers.map((p) => `${p.label || p.id}: ${p.available ? 'available' : 'unavailable'}${p.reason ? ` — ${p.reason}` : ''}.`)].join(' ');
-    for (const option of $('jobKind').options) option.disabled = !caps?.[option.value];
-    for (const option of $('jobSchedule').options) option.disabled = option.value !== 'manual' && !caps?.scheduling;
+    for (const option of $('jobKind').options) {
+      option.disabled = option.value === 'phone-research' ? !phoneAvailable : !caps?.[option.value];
+      if (option.value === 'phone-research') option.hidden = !phoneAvailable;
+    }
+    for (const option of $('jobSchedule').options) option.disabled = option.value !== 'manual' && (!caps?.scheduling || $('jobKind').value === 'phone-research');
+    if (phoneAvailable) $('jobsCapabilityDetails').textContent += ` Hotel Wi-Fi research uses five listed hotels and a separate approval before calls. ${state.phoneCatalog.blockedReason || ''}`;
+  }
+
+  async function loadPhoneCatalog() {
+    try {
+      const catalog = await apiJSON(`${root}/phone-research/catalog`);
+      state.phoneCatalog = Array.isArray(catalog?.targets) ? catalog : null;
+    } catch { state.phoneCatalog = null; }
+    if (state.capabilities) setCapabilities(state.capabilities);
   }
 
   async function loadJobs(append = false, quiet = false) {
@@ -203,7 +251,7 @@ function initJobs() {
   function renderDetail() {
     const job = current(); const content = $('jobContent');
     $('jobConversation').hidden = !job; $('jobReceipts').hidden = !job; timeline.select(job?.id || '');
-    const signature = JSON.stringify([job, state.busy, state.capabilities?.historyLimit]);
+    const signature = JSON.stringify([job, state.busy, state.capabilities?.historyLimit, state.runsLoaded, job?.kind === 'phone-research' ? state.runs.map(run => [run.id, run.status]) : null]);
     if (signature === detailSignature) return;
     detailSignature = signature;
     const focusedAction = $('jobDetail').contains(document.activeElement) ? document.activeElement?.textContent : null;
@@ -218,17 +266,25 @@ function initJobs() {
     content.append(head, el('p', 'jobs-detail-notes', job.instructions));
     if (job.error) content.append(el('p', 'jobs-form-error', job.error));
     const facts = el('dl', 'jobs-facts');
-    fact(facts, 'Type', job.kind === 'review' ? 'Human review checkpoint' : 'In-app reminder');
+    fact(facts, 'Type', job.kind === 'phone-research' ? 'Hotel Wi-Fi research' : job.kind === 'review' ? 'Human review checkpoint' : 'In-app reminder');
     fact(facts, 'Schedule', scheduleLabel(job.schedule));
     fact(facts, 'Next run', job.status === 'active' ? (job.nextRunAt ? `${dateLabel(job.nextRunAt, job.schedule?.timezone)} · ${job.schedule?.timezone || 'UTC'}` : 'Manual only / no future occurrence') : 'None while inactive');
     fact(facts, 'Last updated', dateLabel(job.updatedAt)); content.append(facts);
     const actions = el('div', 'jobs-actions');
     if (job.status === 'active') {
-      actions.append(actionButton('Run now', () => mutate(job, 'run'), 'ln-btn--primary'));
+      const phonePending = job.kind === 'phone-research' && (!state.runsLoaded || state.runs.some(run => ['queued', 'running', 'waiting_approval', 'blocked', 'paused', 'stopping'].includes(run.status)));
+      if (!phonePending) actions.append(actionButton(job.kind === 'phone-research' ? 'Review & start calls' : 'Run now', () => job.kind === 'phone-research' ? confirmPhone(job, 'run') : mutate(job, 'run'), 'ln-btn--primary'));
       actions.append(actionButton('Pause', () => mutate(job, 'pause')));
-    } else if (job.status === 'paused') actions.append(actionButton('Resume', () => mutate(job, 'resume'), 'ln-btn--primary'));
-    if (job.status !== 'cancelled') actions.append(actionButton('Cancel job', () => confirmAction('Cancel this job?', 'Stop future runs and cancel pending checkpoints for this job. Its run history remains available.', () => mutate(job, 'cancel', null, true)), 'ln-btn--danger'));
+    } else if (job.status === 'paused') actions.append(actionButton('Resume', () => job.kind === 'phone-research' ? confirmPhone(job, 'resume') : mutate(job, 'resume'), 'ln-btn--primary'));
+    if (job.status !== 'cancelled') actions.append(actionButton('Cancel job', () => confirmAction('Cancel this job?', job.kind === 'phone-research' ? 'End any active hotel call and stop all remaining calls in this job. Its run history remains available. A pending provider stop must finish before another call starts.' : 'Stop future runs and cancel pending checkpoints for this job. Its run history remains available.', () => mutate(job, 'cancel', null, true)), 'ln-btn--danger'));
     content.append(actions);
+    if (job.kind === 'phone-research') {
+      const targets = el('ul');
+      for (const target of job.phoneResearch?.targets || []) targets.append(el('li', '', `${target.name} · ${target.city || ''} · ${target.phone}`));
+      content.append(el('h3', '', 'Approved scope'), targets, el('p', '', PHONE_RESEARCH_PURPOSE));
+      content.append(el('p', 'ln-hint', 'Manual approval only. Saving never calls. Results describe reported answers, not verified VPN compatibility.'));
+      if (state.phoneCatalog?.blockedReason) content.append(el('p', 'jobs-form-error', state.phoneCatalog.blockedReason));
+    }
     $('jobReceipts').append(el('h3', 'jobs-runs-heading', 'Run history'));
     $('jobReceipts').append(el('p', 'jobs-runs-intro', `Each run records the job as it was at that time. Up to ${state.capabilities?.historyLimit || 50} recent runs are retained; long receipts can reduce that number. Review approval only completes a human checkpoint.`));
     const runState = el('p', 'ln-muted', 'Loading run history…'); runState.id = 'jobsRunState'; $('jobReceipts').append(runState);
@@ -251,6 +307,7 @@ function initJobs() {
       state.runs = append ? [...new Map([...state.runs, ...runs].map((run) => [run.id, run])).values()] : runs;
       state.runCursor = data?.nextCursor || '';
       state.runsLoaded = true; state.runPagesExpanded = append; state.runError = '';
+      renderDetail();
       renderRuns(true);
     } catch (error) {
       if (seq !== state.runSeq || state.selected !== job.id) return;
@@ -279,17 +336,36 @@ function initJobs() {
         if (typeof run.progress === 'number') { const progress = el('progress'); progress.max = 100; progress.value = Math.min(100, Math.max(0, run.progress)); progress.setAttribute('aria-label', `Run progress: ${progress.value}%`); row.append(progress); }
         else row.append(el('p', '', typeof run.progress === 'string' ? run.progress : JSON.stringify(run.progress)));
       }
-      if (run.status === 'waiting_approval' && !run.progress) row.append(el('p', '', 'Waiting for your review. No external action will be taken.'));
+      if (run.status === 'waiting_approval' && !run.progress) row.append(el('p', '', job.kind === 'phone-research' ? 'Waiting for explicit call approval.' : 'Waiting for your review. No external action will be taken.'));
       if (run.result) row.append(el('pre', 'jobs-receipt', typeof run.result === 'string' ? run.result : JSON.stringify(run.result, null, 2)));
       if (run.error) row.append(el('p', 'jobs-form-error', typeof run.error === 'string' ? run.error : JSON.stringify(run.error)));
+      if (job.kind === 'phone-research') {
+        row.append(el('p', 'ln-hint', 'Completed means the attempts ended. It does not mean five interviews or confirmed VPN compatibility.'));
+        if (run.phoneResearch?.reason) row.append(el('p', 'jobs-form-error', run.phoneResearch.reason));
+        const outcomes = phoneResearchResults(run);
+        if (!outcomes.length) row.append(el('p', '', 'The hotel result snapshot is unavailable. Refresh to check this run.'));
+        for (const { target, outcome } of outcomes) {
+          const hotel = el('section', 'jobs-receipt');
+          hotel.append(el('h4', '', `${target.name} · ${target.phone}`), el('p', '', `Call: ${statusLabel(outcome.status || 'unknown')}`));
+          hotel.append(el('p', '', outcome.result ? (typeof outcome.result === 'string' ? outcome.result : JSON.stringify(outcome.result)) : 'No confirmed Wi-Fi or VPN findings recorded.'));
+          if (outcome.error) hotel.append(el('p', 'jobs-form-error', outcome.error));
+          hotel.append(el('p', '', `Recording: ${outcome.recordingStatus || 'unavailable'}`));
+          const recordingHref = phoneRecordingHref(outcome);
+          if (recordingHref) {
+            const link = el('a', 'ln-btn ln-btn--ghost', 'Open this recording'); link.href = recordingHref; hotel.append(link);
+            hotel.append(el('p', 'ln-hint', `Source: ${outcome.recordingSource || 'Check the call source in History'}. Call: ${outcome.callSid || 'Not returned'}`));
+          }
+          row.append(hotel);
+        }
+      }
       const details = el('details'); details.append(el('summary', '', `Run details · attempt ${run.attempt || 1}`));
       details.open = expandedRuns.has(run.id);
       details.addEventListener('toggle', () => { if (details.isConnected) { if (details.open) expandedRuns.add(run.id); else expandedRuns.delete(run.id); } });
       details.append(el('pre', 'jobs-receipt', [`Job: ${run.title || job.title}`, run.instructions || '', `Run ID: ${run.id}`, `Created: ${dateLabel(run.createdAt)}`, ...(run.finishedAt ? [`Finished: ${dateLabel(run.finishedAt)}`] : []), ...(run.approvalExpiresAt ? [`Review expires: ${dateLabel(run.approvalExpiresAt)}`] : []), ...(run.retryOf ? [`Retry of: ${run.retryOf}`] : [])].join('\n'))); row.append(details);
       const actions = el('div', 'jobs-actions');
-      if (run.status === 'waiting_approval' && job.status !== 'cancelled') actions.append(actionButton('Review & approve', () => confirmAction('Complete this review?', 'Approve the exact checkpoint below. This records your review; it does not send messages or execute an external task.', () => mutate(job, 'approve', run, true), `${run.title || job.title}\n\n${run.instructions || ''}\n\nRun: ${run.id}`), 'ln-btn--primary'));
-      if (['failed', 'cancelled'].includes(run.status) && job.status === 'active' && (run.attempt || 1) < 3) actions.append(actionButton('Retry run', () => mutate(job, 'retry', run)));
-      if (['queued', 'waiting_approval'].includes(run.status)) actions.append(actionButton('Cancel run', () => confirmAction('Cancel this run?', 'Cancel this occurrence. The job’s future schedule stays as it is.', () => mutate(job, 'cancel', run, true)), 'ln-btn--danger'));
+      if (job.kind !== 'phone-research' && run.status === 'waiting_approval' && job.status !== 'cancelled') actions.append(actionButton('Review & approve', () => confirmAction('Complete this review?', 'Approve the exact checkpoint below. This records your review; it does not send messages or execute an external task.', () => mutate(job, 'approve', run, true), `${run.title || job.title}\n\n${run.instructions || ''}\n\nRun: ${run.id}`), 'ln-btn--primary'));
+      if (job.kind !== 'phone-research' && ['failed', 'cancelled'].includes(run.status) && job.status === 'active' && (run.attempt || 1) < 3) actions.append(actionButton('Retry run', () => mutate(job, 'retry', run)));
+      if (job.kind !== 'phone-research' && ['queued', 'waiting_approval'].includes(run.status)) actions.append(actionButton('Cancel run', () => confirmAction('Cancel this run?', 'Cancel this occurrence. The job’s future schedule stays as it is.', () => mutate(job, 'cancel', run, true)), 'ln-btn--danger'));
       if (actions.childNodes.length) row.append(actions);
       list.append(row);
     }
@@ -305,6 +381,24 @@ function initJobs() {
     $('jobConfirmDetails').hidden = !details; $('jobConfirmDetails').textContent = details;
     $('jobConfirmError').hidden = true; $('jobConfirmYes').textContent = title.startsWith('Complete') ? 'Approve this review' : 'Confirm cancellation';
     $('jobConfirm').showModal(); $('jobConfirmBack').focus();
+  }
+
+  function confirmPhone(job, action) {
+    try {
+      const run = action === 'resume' ? state.runs.find(r => ['blocked', 'paused', 'queued', 'running'].includes(r.status)) : null;
+      if (action === 'resume' && !state.runsLoaded) throw new Error('Wait for run history to load before reviewing the remaining hotels.');
+      if (action === 'resume' && state.runs.length && !run) throw new Error('There is no remaining approved run to resume. Refresh to check its outcome.');
+      const details = phoneApprovalDetails(job, run);
+      if (action === 'resume' && !run) {
+        confirmAction('Resume this saved hotel job?', 'This only reactivates the saved job. It does not approve or place calls. Use Review & start calls afterward for a separate call approval.', () => mutate(job, action, null, true), details);
+        $('jobConfirmYes').textContent = 'Resume saved job';
+        return;
+      }
+      confirmAction(action === 'resume' ? 'Resume approved hotel calls?' : 'Approve five hotel calls?',
+        `${action === 'resume' ? 'Continue only the remaining approved hotels.' : 'This approval can place real telephone calls to these exact five hotels.'} ${state.phoneCatalog?.blockedReason || ''}`,
+        () => mutate(job, action, null, true), details);
+      $('jobConfirmYes').textContent = action === 'resume' ? 'Resume remaining calls' : 'Approve these five calls';
+    } catch (error) { notice(errorMessage(error), true); }
   }
 
   async function mutate(job, action, run = null, inDialog = false) {
@@ -346,14 +440,50 @@ function initJobs() {
     $('jobTimeField').hidden = !recurring; $('jobTime').disabled = !recurring; $('jobTime').required = recurring;
     $('jobWeekdayField').hidden = kind !== 'weekly'; $('jobWeekday').disabled = kind !== 'weekly';
   }
-  function updateKindHint() { $('jobKindHint').textContent = $('jobKind').value === 'review' ? 'Waits for your explicit approval of a human checkpoint. Approval does not execute external work.' : 'Creates an in-app reminder receipt when it runs.'; }
+  function updateKindHint() {
+    const phone = $('jobKind').value === 'phone-research';
+    $('jobKindHint').textContent = phone ? 'Five listed hotels, fixed Wi-Fi questions, manual approval before any call.' : $('jobKind').value === 'review' ? 'Waits for your explicit approval of a human checkpoint. Approval does not execute external work.' : 'Creates an in-app reminder receipt when it runs.';
+    $('jobPhoneTargets').hidden = !phone;
+    if (phone && !$('jobInstructions').readOnly) { state.nonPhoneInstructions = $('jobInstructions').value; $('jobInstructions').value = PHONE_RESEARCH_PURPOSE; }
+    else if (!phone && $('jobInstructions').readOnly) $('jobInstructions').value = state.nonPhoneInstructions || '';
+    $('jobInstructions').readOnly = phone;
+    if (phone) $('jobSchedule').value = 'manual';
+    for (const option of $('jobSchedule').options) option.disabled = option.value !== 'manual' && (phone || !state.capabilities?.scheduling);
+    updateScheduleFields();
+  }
+
+  function renderPhoneTargets(selected = []) {
+    const options = $('jobPhoneTargetOptions'); options.replaceChildren();
+    $('jobPhoneAvailability').textContent = state.phoneCatalog?.blockedReason || (state.phoneCatalog?.enabled ? 'Call approval remains subject to your budget and call controls.' : 'Calls are currently unavailable. You can save a job for later.');
+    const count = () => { $('jobPhoneTargetCount').textContent = `${options.querySelectorAll('input:checked').length} of 5 selected`; };
+    for (const target of state.phoneCatalog?.targets || []) {
+      const row = el('div', 'ln-field'); const label = el('label'); const checkbox = el('input');
+      checkbox.type = 'checkbox'; checkbox.name = 'phoneTargetIds'; checkbox.value = target.id; checkbox.checked = selected.includes(target.id);
+      checkbox.addEventListener('change', count);
+      label.append(checkbox, document.createTextNode(` ${target.name} · ${target.city || ''} · ${target.phone}`)); row.append(label);
+      try {
+        const source = new URL(target.sourceUrl);
+        if (['https:', 'http:'].includes(source.protocol) && !source.username && !source.password) {
+          const link = el('a', '', 'Official telephone source'); link.href = source.href; link.target = '_blank'; link.rel = 'noopener noreferrer'; row.append(link);
+        }
+      } catch { /* A missing source never becomes an executable link. */ }
+      options.append(row);
+    }
+    count();
+  }
 
   function openEditor(job = null) {
     if (state.busy || state.saving) return;
     state.editorJob = job ? { ...job } : null; state.editorVersion = job?.version || 0; state.editing = Boolean(job);
     $('jobEditorTitle').textContent = job ? 'Edit job' : 'New job'; $('jobSave').textContent = job ? 'Save changes' : 'Create job';
     $('jobTitle').value = job?.title || ''; $('jobInstructions').value = job?.instructions || '';
-    $('jobKind').value = job?.kind || (state.capabilities?.reminder ? 'reminder' : 'review');
+    $('jobKind').value = job?.kind || (state.capabilities?.reminder ? 'reminder' : state.capabilities?.review ? 'review' : 'phone-research');
+    $('jobKind').disabled = job?.kind === 'phone-research';
+    const phoneOption = [...$('jobKind').options].find(option => option.value === 'phone-research');
+    phoneOption.disabled = Boolean(job && job.kind !== 'phone-research') || (state.phoneCatalog?.targets?.length || 0) < 5;
+    if (job?.kind === 'phone-research') phoneOption.hidden = false;
+    $('jobInstructions').readOnly = false;
+    renderPhoneTargets((job?.phoneResearch?.targets || []).map(target => target.id));
     const schedule = job?.schedule || {};
     $('jobTimezone').value = schedule.timezone || detectedZone;
     $('jobSchedule').value = schedule.kind ? (schedule.kind === 'once' && !schedule.at ? 'manual' : schedule.kind) : 'manual';
@@ -367,7 +497,7 @@ function initJobs() {
     event.preventDefault(); if (state.saving) return;
     const title = $('jobTitle').value.trim(); const instructions = $('jobInstructions').value.trim();
     $('jobFormError').hidden = true;
-    let schedule;
+    let schedule, phoneTargetIds;
     try {
       if (!title || !instructions) throw new Error('Enter a title and notes for this job.');
       if (new TextEncoder().encode(title).length > 160) throw new Error('Shorten the job title to 160 bytes or fewer. Some characters use more than one byte.');
@@ -377,8 +507,12 @@ function initJobs() {
       // its exact schedule when unchanged instead of recreating an occurrence.
       const sameOnce = state.editing && original?.kind === 'once' && original.at && $('jobSchedule').value === 'once' && $('jobTimezone').value.trim() === original.timezone && $('jobAt').value === inTimezone(original.at, original.timezone);
       schedule = sameOnce ? { ...original } : buildSchedule({ kind: $('jobSchedule').value, timezone: $('jobTimezone').value, at: $('jobAt').value, time: $('jobTime').value, weekday: $('jobWeekday').value });
+      if ($('jobKind').value === 'phone-research') {
+        if ($('jobSchedule').value !== 'manual' || instructions !== PHONE_RESEARCH_PURPOSE) throw new Error('Hotel research uses the fixed questions and manual approval only.');
+        phoneTargetIds = phoneTargetSelection([...$('jobPhoneTargetOptions').querySelectorAll('input:checked')].map(input => input.value), state.phoneCatalog);
+      }
     } catch (error) { $('jobFormError').textContent = errorMessage(error); $('jobFormError').hidden = false; return; }
-    const payload = { title, instructions, kind: $('jobKind').value, schedule, ...(state.editing ? { expectedVersion: state.editorVersion } : {}) };
+    const payload = { title, instructions, kind: $('jobKind').value, schedule, ...(phoneTargetIds ? { phoneTargetIds } : {}), ...(state.editing ? { expectedVersion: state.editorVersion } : {}) };
     const path = state.editing ? jobPath(state.editorJob.id) : root;
     const method = state.editing ? 'PATCH' : 'POST'; const key = `${method}:${path}`;
     const requestId = keys.get(key, payload);
@@ -399,7 +533,7 @@ function initJobs() {
   }
 
   $('jobNew').addEventListener('click', () => openEditor()); $('jobsEmptyNew').addEventListener('click', () => openEditor());
-  $('jobsRefresh').addEventListener('click', () => loadJobs()); $('jobsTryAgain').addEventListener('click', () => loadJobs());
+  $('jobsRefresh').addEventListener('click', () => { loadPhoneCatalog(); loadJobs(); }); $('jobsTryAgain').addEventListener('click', () => loadJobs());
   $('jobsFilter').addEventListener('change', renderList); $('jobSchedule').addEventListener('change', updateScheduleFields); $('jobKind').addEventListener('change', updateKindHint);
   $('jobForm').addEventListener('submit', saveJob);
   for (const id of ['jobEditorClose', 'jobEditorCancel']) $(id).addEventListener('click', () => { if (!state.saving) $('jobEditor').close(); });
@@ -419,5 +553,5 @@ function initJobs() {
     const pending = state.runs.some((run) => ['queued', 'running'].includes(run.status)) || state.jobs.some((job) => ['queued', 'running'].includes(job.lastRun?.status));
     if (!document.hidden && !state.busy && !state.saving && !$('jobEditor').open && !$('jobConfirm').open && (pending || Date.now() - state.lastRefresh >= 15000)) loadJobs(false, true);
   }, 3000);
-  loadJobs();
+  loadPhoneCatalog(); loadJobs();
 }

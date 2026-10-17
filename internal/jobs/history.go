@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -160,7 +161,7 @@ func buildHistory(before *Record, after *Record) ([]HistoryEntry, error) {
 		case "cancelled":
 			kind = "job_cancelled"
 		}
-	} else if before.Job.Title != after.Job.Title || before.Job.Instructions != after.Job.Instructions || before.Job.Kind != after.Job.Kind || before.Job.Schedule != after.Job.Schedule {
+	} else if before.Job.Title != after.Job.Title || before.Job.Instructions != after.Job.Instructions || before.Job.Kind != after.Job.Kind || before.Job.Schedule != after.Job.Schedule || !reflect.DeepEqual(before.Job.PhoneResearch, after.Job.PhoneResearch) {
 		kind = "job_updated"
 	}
 	if kind != "" {
@@ -175,8 +176,14 @@ func buildHistory(before *Record, after *Record) ([]HistoryEntry, error) {
 	observedRuns := append(append([]Run(nil), after.Runs...), after.evictedRuns...)
 	for _, run := range observedRuns {
 		old, exists := oldRuns[run.ID]
-		if !exists || old != run {
+		if !exists || !reflect.DeepEqual(old, run) {
 			snapshot := run
+			if run.PhoneResearch != nil {
+				phone := *run.PhoneResearch
+				phone.Targets = append([]PhoneTarget(nil), phone.Targets...)
+				phone.Properties = append([]PhoneProperty(nil), phone.Properties...)
+				snapshot.PhoneResearch = &phone
+			}
 			appendEntry(HistoryEntry{Kind: "run_" + run.Status, Status: run.Status, RunID: run.ID, Run: &snapshot, Text: run.Progress})
 		}
 	}

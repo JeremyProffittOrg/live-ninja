@@ -2,14 +2,220 @@ package jobs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	"github.com/stretchr/testify/require"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type fakePhoneResearch struct {
+	targets    []PhoneTarget
+	commands   []PhoneCommand
+	next       PhoneResult
+	statusErr  error
+	advanceErr error
+}
+
+func (f *fakePhoneResearch) Catalog(_ context.Context, uid string) (PhoneCatalog, error) {
+	if uid != "alice" {
+		return PhoneCatalog{}, ErrForbidden
+	}
+	return PhoneCatalog{Targets: f.targets, BlockedReason: "Calls are stopped."}, nil
+}
+func (f *fakePhoneResearch) Advance(_ context.Context, c PhoneCommand) (PhoneResult, error) {
+	f.commands = append(f.commands, c)
+	return f.next, f.advanceErr
+}
+func (f *fakePhoneResearch) Status(_ context.Context, _, _, _ string) (PhoneResult, error) {
+	return f.next, f.statusErr
+}
+func phoneFixture(t *testing.T) (*Service, *FileStore, *time.Time, *fakePhoneResearch, Input) {
+	s, store, now := fixture(t)
+	p := &fakePhoneResearch{}
+	in := Input{Title: "Five California hotels", Kind: PhoneResearchKind, Instructions: PhoneResearchPurpose, Schedule: Schedule{Kind: "once"}}
+	for i := 1; i <= 6; i++ {
+		id := fmt.Sprintf("hotel-%02d", i)
+		p.targets = append(p.targets, PhoneTarget{ID: id, Name: "Hotel " + id, City: "California", Phone: fmt.Sprintf("+12025550%03d", i), SourceURL: "https://hotel.example/" + id})
+		if i <= 5 {
+			in.PhoneTargetIDs = append(in.PhoneTargetIDs, id)
+		}
+	}
+	return s.WithPhoneResearch(p), store, now, p, in
+}
+func phoneResult(status string, version, command int64, ids []string) PhoneResult {
+	r := PhoneResult{Status: status, Version: version, CommandVersion: command, Reason: status}
+	for _, id := range ids {
+		r.Properties = append(r.Properties, PhoneProperty{TargetID: id, Status: "not_started"})
+	}
+	return r
+}
+
+func TestPhoneResearchApprovalStopRequiresExplicitResume(t *testing.T) {
+	s, _, now, p, in := phoneFixture(t)
+	ctx := context.Background()
+	j := create(t, s, in)
+	require.Empty(t, p.commands)
+	p.next = phoneResult("blocked", 1, 1, in.PhoneTargetIDs)
+	run, e := s.RunNow(ctx, "alice", j.ID, j.Version, "approve-phone-1")
+	require.NoError(t, e)
+	require.Equal(t, "blocked", run.Status)
+	require.Equal(t, "alice", run.ApprovedBy)
+	require.Equal(t, stamp(now.Add(24*time.Hour)), run.ApprovalExpiresAt)
+	require.Len(t, p.commands, 1)
+	require.Equal(t, in.PhoneTargetIDs, p.commands[0].TargetIDs)
+	_, e = s.RunNow(ctx, "alice", j.ID, j.Version, "approve-phone-1")
+	require.NoError(t, e)
+	require.Len(t, p.commands, 1, "duplicate approval cannot resume a blocked call")
+	tick, e := s.Tick(ctx, now.Add(48*time.Hour), 100)
+	require.NoError(t, e)
+	require.Zero(t, tick.Processed)
+	require.Len(t, p.commands, 1)
+	j = current(t, s, j.ID)
+	require.Equal(t, "paused", j.Status)
+	p.next = phoneResult("running", 2, 2, in.PhoneTargetIDs)
+	j, e = s.Action(ctx, "alice", j.ID, "resume", j.Version, "resume-phone-1")
+	require.NoError(t, e)
+	require.Equal(t, "running", j.LastRun.Status)
+	require.Len(t, p.commands, 2)
+	require.Equal(t, run.ApprovalExpiresAt, j.LastRun.ApprovalExpiresAt)
+	_, e = s.ApproveRun(ctx, "alice", j.ID, run.ID, j.Version, "wrong-approval")
+	require.ErrorIs(t, e, ErrInvalidState)
+	_, e = s.CancelRun(ctx, "alice", j.ID, run.ID, j.Version, "wrong-cancel-1")
+	require.ErrorIs(t, e, ErrInvalidState)
+	_, e = s.Update(ctx, "alice", j.ID, in, j.Version, "active-edit-1")
+	require.ErrorIs(t, e, ErrInvalidState)
+}
+
+func TestPhoneResearchControlsFenceStaleProviderEvents(t *testing.T) {
+	s, _, _, p, in := phoneFixture(t)
+	ctx := context.Background()
+	j := create(t, s, in)
+	p.next = phoneResult("running", 1, 1, in.PhoneTargetIDs)
+	run, e := s.RunNow(ctx, "alice", j.ID, j.Version, "approve-phone-1")
+	require.NoError(t, e)
+	j = current(t, s, j.ID)
+	p.next = phoneResult("paused", 2, 2, in.PhoneTargetIDs)
+	j, e = s.Action(ctx, "alice", j.ID, "pause", j.Version, "pause-phone-1")
+	require.NoError(t, e)
+	require.Equal(t, "paused", j.LastRun.Status)
+	p.next = phoneResult("running", 99, 1, in.PhoneTargetIDs)
+	stale, e := s.SyncPhoneRun(ctx, "alice", j.ID, run.ID)
+	require.NoError(t, e)
+	require.Equal(t, "paused", stale.Status)
+	p.next = phoneResult("cancelled", 3, 3, in.PhoneTargetIDs)
+	j, e = s.Action(ctx, "alice", j.ID, "cancel", j.Version, "cancel-phone-1")
+	require.NoError(t, e)
+	require.Equal(t, "cancelled", j.LastRun.Status)
+	p.next = phoneResult("running", 100, 3, in.PhoneTargetIDs)
+	stale, e = s.SyncPhoneRun(ctx, "alice", j.ID, run.ID)
+	require.NoError(t, e)
+	require.Equal(t, "cancelled", stale.Status)
+	_, e = s.SyncPhoneRun(ctx, "bob", j.ID, run.ID)
+	require.ErrorIs(t, e, ErrNotFound)
+}
+
+func TestPhoneResearchTerminalEnrichmentHistoricalEditsAndCopies(t *testing.T) {
+	s, store, _, p, in := phoneFixture(t)
+	ctx := context.Background()
+	j := create(t, s, in)
+	p.next = phoneResult("succeeded", 1, 1, in.PhoneTargetIDs)
+	for i := range p.next.Properties {
+		p.next.Properties[i].Status = "completed"
+		p.next.Properties[i].CallSID = fmt.Sprintf("CA%032x", i+1)
+	}
+	p.next.Properties[4].Status = "rejected"
+	p.next.Properties[4].CallSID = ""
+	run, e := s.RunNow(ctx, "alice", j.ID, j.Version, "approve-phone-1")
+	require.NoError(t, e)
+	require.Equal(t, "succeeded", run.Status)
+	finished := run.FinishedAt
+	p.next.Version = 2
+	p.next.Properties[0].RecordingStatus = "ready"
+	p.next.Properties[0].RecordingSource = "hotel-trial-2026-10-15"
+	run, e = s.SyncPhoneRun(ctx, "alice", j.ID, run.ID)
+	require.NoError(t, e)
+	require.Equal(t, "ready", run.PhoneResearch.Properties[0].RecordingStatus)
+	require.Equal(t, finished, run.FinishedAt)
+	j = current(t, s, j.ID)
+	in.Title = "Edited completed task"
+	in.PhoneTargetIDs[4] = "hotel-06"
+	j, e = s.Update(ctx, "alice", j.ID, in, j.Version, "edit-completed-1")
+	require.NoError(t, e)
+	p.next.Version = 3
+	run, e = s.SyncPhoneRun(ctx, "alice", j.ID, run.ID)
+	require.NoError(t, e)
+	require.Equal(t, "hotel-05", run.PhoneResearch.Targets[4].ID)
+	j, e = s.Get(ctx, "alice", j.ID)
+	require.NoError(t, e)
+	require.Equal(t, "hotel-06", j.PhoneResearch.Targets[4].ID)
+	run.PhoneResearch.Targets[0].Name = "tampered return value"
+	stored, e := store.Get(ctx, "alice", j.ID)
+	require.NoError(t, e)
+	require.NotEqual(t, "tampered return value", stored.Runs[0].PhoneResearch.Targets[0].Name)
+	history, e := s.ListHistory(ctx, "alice", j.ID, HistoryQuery{Limit: 50})
+	require.NoError(t, e)
+	for _, entry := range history.Entries {
+		if entry.Run != nil && entry.Run.PhoneResearch != nil {
+			require.NotEqual(t, "tampered return value", entry.Run.PhoneResearch.Targets[0].Name)
+		}
+	}
+}
+
+func TestPhoneResearchRejectsChangedPurposeTargetsAndExpiredResume(t *testing.T) {
+	s, _, now, p, in := phoneFixture(t)
+	ctx := context.Background()
+	bad := in
+	bad.Instructions = "Call someone else"
+	_, e := s.Create(ctx, "alice", bad, "bad-purpose-1")
+	require.ErrorIs(t, e, ErrValidation)
+	bad = in
+	bad.PhoneTargetIDs = []string{"hotel-01", "hotel-01", "hotel-02", "hotel-03", "hotel-04"}
+	_, e = s.Create(ctx, "alice", bad, "bad-targets-1")
+	require.ErrorIs(t, e, ErrValidation)
+	_, e = s.Create(ctx, "bob", in, "other-owner-1")
+	require.ErrorIs(t, e, ErrForbidden)
+	j := create(t, s, in)
+	p.next = phoneResult("blocked", 1, 1, in.PhoneTargetIDs)
+	_, e = s.RunNow(ctx, "alice", j.ID, j.Version, "approve-phone-1")
+	require.NoError(t, e)
+	*now = now.Add(25 * time.Hour)
+	j = current(t, s, j.ID)
+	_, e = s.Action(ctx, "alice", j.ID, "resume", j.Version, "expired-resume")
+	require.ErrorIs(t, e, ErrInvalidState)
+	require.Len(t, p.commands, 1)
+}
+
+type phoneWireLambda struct{ request map[string]any }
+
+func (f *phoneWireLambda) Invoke(_ context.Context, in *lambda.InvokeInput, _ ...func(*lambda.Options)) (*lambda.InvokeOutput, error) {
+	if e := json.Unmarshal(in.Payload, &f.request); e != nil {
+		return nil, e
+	}
+	body, _ := json.Marshal(phoneResult("blocked", 1, 1, []string{"hotel-01", "hotel-02", "hotel-03", "hotel-04", "hotel-05"}))
+	outer, _ := json.Marshal(map[string]any{"statusCode": 200, "body": string(body)})
+	return &lambda.InvokeOutput{Payload: outer}, nil
+}
+func TestPhoneResearchRealLambdaWireContract(t *testing.T) {
+	client := &phoneWireLambda{}
+	p, e := NewPhoneResearchProvider(client, "arn:aws:lambda:us-east-1:759775734231:function:live-ninja-phone-trial-recorder")
+	require.NoError(t, e)
+	command := PhoneCommand{OwnerUserID: "alice", JobID: "job", RunID: "run", Generation: 2, Command: "run", CommandVersion: 3, ApprovalExpiresAt: 12345, TargetIDs: []string{"hotel-01", "hotel-02", "hotel-03", "hotel-04", "hotel-05"}}
+	r, e := p.Advance(context.Background(), command)
+	require.NoError(t, e)
+	require.Equal(t, "blocked", r.Status)
+	require.Equal(t, "phone_research_advance", client.request["operation"])
+	require.Equal(t, "alice", client.request["ownerUserId"])
+	require.Equal(t, float64(3), client.request["commandVersion"])
+	require.Len(t, client.request["targetIds"], 5)
+	_, e = NewPhoneResearchProvider(client, "arn:aws:lambda:us-east-2:759775734231:function:other")
+	require.Error(t, e)
+}
 
 func fixture(t *testing.T) (*Service, *FileStore, *time.Time) {
 	t.Helper()

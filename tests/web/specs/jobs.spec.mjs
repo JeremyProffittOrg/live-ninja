@@ -141,6 +141,7 @@ test('user content is inert, keyboard editor works and Jobs navigation is discov
 });
 
 test('unavailable scheduling is explicit and unsupported providers cannot be selected', async ({ page }) => {
+  await page.route('**/api/v1/jobs/phone-research/catalog', route => route.fulfill({ status: 404, json: { error: { code: 'not_configured' } } }));
   await page.route('**/api/v1/jobs', async (route) => {
     if (route.request().method() !== 'GET') return route.continue();
     const response = await route.fetch(); const body = await response.json();
@@ -150,7 +151,69 @@ test('unavailable scheduling is explicit and unsupported providers cannot be sel
   await page.getByRole('button', { name: 'New job', exact: true }).click();
   await expect(page.locator('#jobSchedule option[value="daily"]')).toBeDisabled();
   await expect(page.getByLabel('Repeat', { exact: true })).toHaveValue('manual');
-  expect(await page.locator('#jobKind option').allTextContents()).toEqual(['Reminder', 'Human review']);
+  expect(await page.locator('#jobKind option:not([hidden])').allTextContents()).toEqual(['Reminder', 'Human review']);
+  await expect(page.locator('#jobKind option[value="phone-research"]')).toHaveAttribute('hidden', '');
+  await expect(page.locator('#jobKind option[value="phone-research"]')).toBeDisabled();
+});
+
+test('phone research saves five catalog hotels without calling and requires exact explicit approval', async ({ page }) => {
+  const targets = Array.from({ length: 6 }, (_, i) => ({ id: `hotel-${String(i+1).padStart(2,'0')}`, name: `Catalog hotel ${i}`, city: 'California', phone: `+1555555000${i}`, sourceUrl: `https://hotel${i}.example/contact` }));
+  const purpose = 'Ask each hotel about guest Wi-Fi login requirements and reported VPN restrictions. Do not request private router settings or credentials.';
+  let saved = null; let runs = []; const calls = [];
+  const capabilities = { reminder: true, review: true, scheduling: true, phoneResearch: true };
+  await page.route('**/api/v1/jobs/phone-research/catalog', route => route.fulfill({ json: { targets, enabled: false, blockedReason: 'Calls are stopped by the owner.' } }));
+  await page.route('**/api/v1/jobs', async route => {
+    if (route.request().method() === 'POST') {
+      const body = route.request().postDataJSON();
+      expect(body.phoneTargetIds).toEqual(targets.slice(0, 5).map(t => t.id));
+      expect(body.instructions).toBe(purpose);
+      expect(body.schedule.kind).toBe('once'); expect(body.schedule.at).toBeUndefined();
+      saved = { ...body, id: 'phone-ui', status: 'active', version: 1, phoneResearch: { targets: targets.slice(0, 5), purpose, maxCallSeconds: 180, maxAttempts: 1, maxCostUSD: '7.00' } };
+      return route.fulfill({ json: { job: saved } });
+    }
+    return route.fulfill({ json: { jobs: saved ? [saved] : [], capabilities } });
+  });
+  await page.route('**/api/v1/jobs/phone-ui/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith('/run')) {
+      calls.push(route.request().postDataJSON());
+      saved = { ...saved, version: 2, status: 'paused' };
+      runs = [{ id: 'phone-run', status: 'blocked', phoneResearch: { ...saved.phoneResearch, reason: 'Calls are stopped by the owner.', properties: [{ targetId: targets[0].id, status: 'unknown', recordingStatus: 'absent' }] } }];
+      return route.fulfill({ json: { job: saved, run: runs[0] } });
+    }
+    if (path.endsWith('/runs')) return route.fulfill({ json: { runs } });
+    if (path.endsWith('/history')) return route.fulfill({ json: { entries: [] } });
+    throw new Error(`Unexpected phone mutation or endpoint: ${path}`);
+  });
+  await open(page);
+  await page.getByRole('button', { name: 'New job', exact: true }).click();
+  await expect(page.locator('#jobKind option[value="phone-research"]')).toBeEnabled();
+  await page.getByLabel('Job type', { exact: true }).selectOption('phone-research');
+  await page.getByLabel('Job title', { exact: true }).fill('Research five hotel connections');
+  await expect(page.getByLabel('Notes', { exact: true })).toHaveValue(purpose);
+  await expect(page.getByLabel('Notes', { exact: true })).toHaveAttribute('readonly', '');
+  await expect(page.locator('#jobSchedule option[value="once"]')).toBeDisabled();
+  await expect(page.locator('#jobPhoneAvailability')).toContainText('stopped');
+  await page.locator('#jobPhoneTargetOptions input').first().check();
+  await page.getByRole('button', { name: 'Create job', exact: true }).click();
+  await expect(page.locator('#jobFormError')).toContainText('exactly five');
+  for (let i = 1; i < 5; i++) await page.locator('#jobPhoneTargetOptions input').nth(i).check();
+  await page.getByRole('button', { name: 'Create job', exact: true }).click();
+  await expect(page.locator('#jobEditor')).not.toBeVisible();
+  expect(calls).toHaveLength(0);
+  await page.getByRole('button', { name: 'Review & start calls', exact: true }).click();
+  await expect(page.locator('#jobConfirmDetails')).toContainText('$7.00');
+  await expect(page.locator('#jobConfirmDetails')).toContainText('no redial');
+  for (const target of targets.slice(0, 5)) await expect(page.locator('#jobConfirmDetails')).toContainText(target.phone);
+  expect(calls).toHaveLength(0);
+  await page.getByRole('button', { name: 'Approve these five calls', exact: true }).click();
+  await expect(page.locator('#jobConfirm')).not.toBeVisible();
+  expect(calls).toHaveLength(1); expect(calls[0].expectedVersion).toBe(1);
+  await expect(page.locator('#jobsRuns .jobs-badge').first()).toHaveText('Blocked');
+  await expect(page.locator('#jobsRuns h4')).toHaveCount(5);
+  await expect(page.locator('#jobsRuns')).toContainText('Unknown');
+  await expect(page.getByRole('button', { name: 'Retry run', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Cancel run', exact: true })).toHaveCount(0);
 });
 
 test('real one-time schedule produces exactly one receipt through the background worker', async ({ page }) => {

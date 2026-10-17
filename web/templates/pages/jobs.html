@@ -14,7 +14,7 @@
   <div class="jobs-notice" id="jobsNotice" role="status" aria-live="polite" hidden></div>
   <section class="jobs-capabilities" aria-label="Available job capabilities">
     <span class="jobs-capability" id="jobsCapability">Checking availability…</span>
-    <details><summary>What can a job do?</summary><p id="jobsCapabilityDetails">Availability is checked when your jobs load.</p><p>Reminders create an in-app receipt. Review jobs hold a human checkpoint. Jobs do not yet send email, run AI tasks, write code, or control a browser or desktop.</p></details>
+    <details><summary>What can a job do?</summary><p id="jobsCapabilityDetails">Availability is checked when your jobs load.</p><p>Reminders create an in-app receipt. Review jobs hold a human checkpoint. Hotel Wi-Fi research asks five selected hotels the fixed questions after your approval, when calling is enabled. Jobs do not send email, write code, or control a browser or desktop.</p></details>
   </section>
   <section class="jobs-summary" aria-label="Job counts">
     <div><strong id="jobsActive">—</strong><span id="jobsActiveLabel">Active</span></div>
@@ -47,7 +47,8 @@
     <p class="ln-muted">Give a commitment a time and a place to follow up.</p>
     <div class="ln-field"><label for="jobTitle">Job title</label><input class="ln-input" id="jobTitle" name="title" maxlength="160" required autocomplete="off" placeholder="Review the weekly priorities"></div>
     <div class="ln-field"><label for="jobInstructions">Notes</label><textarea class="ln-textarea" id="jobInstructions" name="instructions" maxlength="2000" required rows="4" placeholder="What would you like to remember or review?"></textarea></div>
-    <div class="ln-field"><label for="jobKind">Job type</label><select class="ln-select" id="jobKind" name="kind"><option value="reminder">Reminder</option><option value="review">Human review</option></select><p class="ln-hint" id="jobKindHint">Creates an in-app reminder receipt when it runs.</p></div>
+    <div class="ln-field"><label for="jobKind">Job type</label><select class="ln-select" id="jobKind" name="kind"><option value="reminder">Reminder</option><option value="review">Human review</option><option value="phone-research" hidden disabled>Hotel Wi-Fi research</option></select><p class="ln-hint" id="jobKindHint">Creates an in-app reminder receipt when it runs.</p></div>
+    <fieldset id="jobPhoneTargets" hidden><legend>Choose exactly five hotels</legend><p>Ask about guest Wi-Fi login requirements and reported VPN restrictions. Answers do not prove VPN compatibility. Saving does not place calls.</p><p id="jobPhoneAvailability" role="status"></p><div id="jobPhoneTargetOptions"></div><p id="jobPhoneTargetCount" aria-live="polite">0 of 5 selected</p></fieldset>
     <fieldset class="jobs-schedule"><legend>Schedule</legend>
       <div class="jobs-form-grid">
         <div class="ln-field"><label for="jobSchedule">Repeat</label><select class="ln-select" id="jobSchedule" name="schedule"><option value="manual">Manual only</option><option value="once">Once</option><option value="daily">Every day</option><option value="weekdays">Weekdays</option><option value="weekly">Every week</option></select></div>

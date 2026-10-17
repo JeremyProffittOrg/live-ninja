@@ -55,6 +55,9 @@ func decode(item map[string]types.AttributeValue) (*Record, error) {
 	if r.Job.Version < 1 || !validID(r.Job.ID) || r.UserID == "" {
 		return nil, ErrCorrupt
 	}
+	if !validPhoneRecord(&r) {
+		return nil, ErrCorrupt
+	}
 	return &r, nil
 }
 func (s *DynamoStore) Get(ctx context.Context, uid, id string) (*Record, error) {

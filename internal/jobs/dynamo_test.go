@@ -300,3 +300,32 @@ func TestDynamoQuarantinePreservesBytesAndFencesRepairPurge(t *testing.T) {
 		t.Fatal("repaired record quarantined", e)
 	}
 }
+
+func TestPhoneResearchDecodeRejectsCorruptedApprovalSnapshot(t *testing.T) {
+	s, st, _, p, in := phoneFixture(t)
+	j := create(t, s, in)
+	p.next = phoneResult("blocked", 1, 1, in.PhoneTargetIDs)
+	if _, e := s.RunNow(context.Background(), "alice", j.ID, j.Version, "phone-approve-decode"); e != nil {
+		t.Fatal(e)
+	}
+	r, e := st.Get(context.Background(), "alice", j.ID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	encode := func(r *Record) map[string]types.AttributeValue {
+		raw, _ := json.Marshal(r)
+		return map[string]types.AttributeValue{"payload": avs(string(raw))}
+	}
+	if _, e = decode(encode(r)); e != nil {
+		t.Fatal("valid phone record rejected", e)
+	}
+	r.Runs[0].PhoneResearch.MaxAttempts = 2
+	if _, e = decode(encode(r)); !errors.Is(e, ErrCorrupt) {
+		t.Fatal("changed phone approval cap accepted", e)
+	}
+	r.Runs[0].PhoneResearch.MaxAttempts = 1
+	r.Runs[0].ApprovedBy = "other"
+	if _, e = decode(encode(r)); !errors.Is(e, ErrCorrupt) {
+		t.Fatal("foreign approval accepted", e)
+	}
+}

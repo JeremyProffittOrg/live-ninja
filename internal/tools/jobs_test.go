@@ -23,6 +23,52 @@ func jobsToolFixture(t *testing.T) (*Registry, *Deps, *jobs.Job) {
 	return newTestRegistry(t, d), d, j
 }
 
+type phoneProposalProvider struct{ calls int }
+
+func (p *phoneProposalProvider) Catalog(context.Context, string) (jobs.PhoneCatalog, error) {
+	c := jobs.PhoneCatalog{}
+	for n := 1; n <= 5; n++ {
+		id := fmt.Sprintf("hotel-%02d", n)
+		c.Targets = append(c.Targets, jobs.PhoneTarget{ID: id, Name: id, City: "California", Phone: fmt.Sprintf("+12025550%03d", n), SourceURL: "https://hotel.example/" + id})
+	}
+	return c, nil
+}
+func (p *phoneProposalProvider) Advance(context.Context, jobs.PhoneCommand) (jobs.PhoneResult, error) {
+	p.calls++
+	return jobs.PhoneResult{}, errors.New("unexpected provider action")
+}
+func (p *phoneProposalProvider) Status(context.Context, string, string, string) (jobs.PhoneResult, error) {
+	return jobs.PhoneResult{}, nil
+}
+func TestPhoneJobToolsCannotProposeCallApprovalOnUnreviewedSurfaces(t *testing.T) {
+	st, e := jobs.NewFileStore(filepath.Join(t.TempDir(), "phone-jobs.json"))
+	require.NoError(t, e)
+	t.Cleanup(func() { st.Close() })
+	p := &phoneProposalProvider{}
+	d := newTestDeps()
+	d.Jobs = jobs.NewService(st).WithPhoneResearch(p)
+	j, e := d.Jobs.Create(context.Background(), "user-1", jobs.Input{Title: "Hotel research", Kind: jobs.PhoneResearchKind, PhoneTargetIDs: []string{"hotel-01", "hotel-02", "hotel-03", "hotel-04", "hotel-05"}}, "create-phone-job")
+	require.NoError(t, e)
+	r := newTestRegistry(t, d)
+	for _, name := range []string{"job_start", "job_resume", "job_retry"} {
+		args := map[string]any{"jobId": j.ID}
+		if name == "job_retry" {
+			args["runId"] = "untrusted-run"
+		}
+		result := r.Invoke(context.Background(), invocation(name, args))
+		require.False(t, result.OK)
+		require.Equal(t, CodeForbidden, result.Error.Code)
+		require.Contains(t, result.Error.Message, "Use web Jobs")
+		require.Nil(t, result.Error.Details)
+	}
+	for _, name := range []string{"job_pause", "job_cancel"} {
+		result := r.Invoke(context.Background(), invocation(name, map[string]any{"jobId": j.ID}))
+		require.Equal(t, CodeConfirmationRequired, result.Error.Code)
+		require.Equal(t, true, result.Error.Details["externalExecutionConnected"])
+	}
+	require.Zero(t, p.calls)
+}
+
 func TestJobToolsProposeExactActionsWithoutWriting(t *testing.T) {
 	r, d, j := jobsToolFixture(t)
 	ctx := context.Background()

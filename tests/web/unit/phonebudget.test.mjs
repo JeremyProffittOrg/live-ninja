@@ -14,7 +14,7 @@ function fixture(apiJSON, storage = new Map()) {
   } });
   return { root, nodes, storage, loseAuth: () => loseAuth() };
 }
-const budget = { month: '2026-10', day: '2026-10-16', timezone: 'America/New_York', allocatedUSD: '20', monthlyLimitUSD: '20', dailyGrantedUSD: '5', dailySpentUSD: '0', dailyRemainingUSD: '5', expiresAt: 1792209600, pausedReason: 'voice_stop_or_active_call' };
+const budget = { month: '2026-10', day: '2026-10-16', timezone: 'America/New_York', allocatedUSD: '20', monthlyLimitUSD: '20', dailyGrantedUSD: '5', dailySpentUSD: '0', dailyRemainingUSD: '5', requiredReservationUSD: '1.40', expiresAt: 1792209600, pausedReason: 'voice_stop_or_active_call' };
 
 test('unknown grant retries same persisted ID across reload and never resumes calls', async () => {
   const requests = [];
@@ -43,6 +43,8 @@ test('unknown grant retries same persisted ID across reload and never resumes ca
     timeZone: budget.timezone, dateStyle: 'medium', timeStyle: 'short',
   })));
   assert.match(second.nodes.status.textContent, /does not resume calls/);
+  assert.match(second.nodes.status.textContent, /reserves \$1\.40/);
+  assert.match(second.nodes.status.textContent, /approve another \$5 when the remaining allowance cannot cover it/);
 });
 
 test('nonowner cannot load or grant phone budget', async () => {

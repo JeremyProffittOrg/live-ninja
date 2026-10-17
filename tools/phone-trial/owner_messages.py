@@ -20,6 +20,7 @@ import recorder as r
 CONFIG_KEY = {"PK": "CONFIG", "SK": "OWNER_MESSAGES"}
 VOICE_KEY = {"PK": "PHONE#CONTROL", "SK": "VOICE"}
 RESERVE = Decimal("0.30")
+MAX_RESERVE = Decimal("1.40")
 LIMIT = Decimal("20")
 TERMINAL = {"completed", "busy", "failed", "no-answer", "canceled"}
 STATUSES = TERMINAL | {"queued", "initiated", "ringing", "in-progress"}
@@ -82,6 +83,13 @@ def namespace(owner):
     return "owner-messages#" + owner
 
 
+def recording_run(item):
+    source = item.get('recordingRunId') or namespace(item['ownerUserId'])
+    if source != namespace(item['ownerUserId']) and (source != os.environ['RUN_ID'] or not item.get('phoneResearchJobId') or not item.get('phoneResearchRunId')):
+        raise ValueError('Invalid recording namespace')
+    return source
+
+
 def transact(operations):
     r.clients()[0].meta.client.transact_write_items(TransactItems=operations)
 
@@ -103,7 +111,8 @@ def change(key, fields, event_type, event_data, sid=None, release=False):
         if not old:
             raise ValueError("Unknown message")
         import account_lifecycle
-        bound = {"ownerUserId": old["ownerUserId"], "runId": namespace(old["ownerUserId"])}
+        run = recording_run(old)
+        bound = {"ownerUserId": old["ownerUserId"], "runId": run}
         if account_lifecycle.blocked(bound):
             return old
         if sid and old.get("callSid", sid) != sid:
@@ -121,12 +130,17 @@ def change(key, fields, event_type, event_data, sid=None, release=False):
         operations = [put(new, old), put({**event_key, "type": event_type, "data": event_data, "createdAt": int(time.time())})]
         operations.extend(account_lifecycle.ready_conditions(bound))
         if sid:
-            call_key = r.call_key(sid, namespace(old["ownerUserId"]))
+            call_key = r.call_key(sid, run)
             call = r.get(call_key)
-            if call and call.get("requestId") != old["requestId"]:
+            if call and call.get("requestId") not in {None, old["requestId"]}:
                 raise ValueError("Call already bound")
+            research = {name: old[name] for name in ('phoneResearchJobId', 'phoneResearchRunId', 'phoneResearchGeneration') if name in old}
+            if call and not call.get('requestId'):
+                if not research or call.get('targetId') != old['destination'] or call.get('runId') != run or call.get('ownerUserId', old['ownerUserId']) != old['ownerUserId']:
+                    raise ValueError('Call owner binding mismatch')
+                operations.append(put({**call, **research, 'ownerUserId': old['ownerUserId'], 'requestId': old['requestId'], 'version': int(call['version']) + 1}, call))
             if not call:
-                operations.append(put({**call_key, "version": 1, "runId": namespace(old["ownerUserId"]), "callSid": sid,
+                operations.append(put({**call_key, **research, "version": 1, "runId": run, "callSid": sid,
                     "ownerUserId": old["ownerUserId"], "requestId": old["requestId"], "targetId": old["destination"],
                     "direction": old.get("direction", "outbound"), "recordingStatus": "pending",
                     "recordingCreateState": new.get("recordingCreateState", "not_requested")}))
@@ -187,7 +201,7 @@ def budget_status(cfg):
     reason = "disabled" if cfg.get("enabled") is not True else "voice_stop_or_active_call" if stopped else "waiting_approval" if granted - spent < extra else ""
     return {"month": month, "day": day, "timezone": zone, "allocatedUSD": str(allocated),
             "monthlyLimitUSD": str(LIMIT), "dailyGrantedUSD": str(granted), "dailySpentUSD": str(spent),
-            "dailyRemainingUSD": str(max(Decimal(0), granted-spent)), "expiresAt": expires,
+            "dailyRemainingUSD": str(max(Decimal(0), granted-spent)), "requiredReservationUSD": str(MAX_RESERVE), "expiresAt": expires,
             "pausedReason": reason, "pendingReservation": stopped}
 
 
@@ -217,8 +231,8 @@ def budget_operation(event):
             return r.response(409, {"error": "Day changed; refresh the budget before approval"})
         old = r.get(day_key)
         remaining = Decimal(str((old or {}).get("grantedUSD", "0"))) - Decimal(str((old or {}).get("spentUSD", "0")))
-        if remaining >= RESERVE:
-            return r.response(409, {"error": "Today's allowance can still admit a call; another approval is not needed"})
+        if remaining >= MAX_RESERVE:
+            return r.response(409, {"error": "Today's allowance covers the next supported call reservation; another approval is not needed"})
         daily = {**(old or {}), **day_key, "version": int((old or {}).get("version", 0))+1,
                  "grantedUSD": Decimal(str((old or {}).get("grantedUSD", "0")))+Decimal("5"),
                  "spentUSD": Decimal(str((old or {}).get("spentUSD", "0"))), "expiresAt": expires, "timezone": zone}
@@ -242,7 +256,7 @@ def budget_operation(event):
     return r.response(409, {"error": "Budget changed; retry the same approval request"})
 
 
-def reserve(owner, request_id, alias, message, cfg, *, reserve_amount=RESERVE, initial_fields=None, extra_checks=()):
+def reserve(owner, request_id, alias, message, cfg, *, reserve_amount=RESERVE, initial_fields=None, extra_checks=(), target_number=None):
     usage = provider("/Usage/Records/ThisMonth.json?Category=totalprice")
     records = usage.get("usage_records", [])
     if len(records) != 1 or records[0].get("price_unit", "").lower() != "usd" or usage.get("next_page_uri"):
@@ -265,7 +279,9 @@ def reserve(owner, request_id, alias, message, cfg, *, reserve_amount=RESERVE, i
     lock_id = "owner:" + owner + ":" + request_id
     item = {**key, "ownerUserId": owner, "requestId": request_id, "destination": alias, "message": message,
             "scriptTranscript": INTRO + message, "providerStatus": "creating", "recordingCreateState": "not_requested", "version": 1, "createdAt": int(time.time()),
-            "lockId": lock_id, "callbackId": callback_id, "fromNumber": cfg["fromNumber"], "toNumber": cfg["destinations"][alias]}
+            "lockId": lock_id, "callbackId": callback_id, "fromNumber": cfg["fromNumber"], "toNumber": target_number if target_number is not None else cfg["destinations"][alias]}
+    if not PHONE.fullmatch(item['toNumber']):
+        raise ValueError('Invalid approved destination')
     item.update(initial_fields or {})
     for _ in range(4):
         prior = r.get(key)

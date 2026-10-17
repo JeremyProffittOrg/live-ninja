@@ -20,6 +20,13 @@ def sources(cfg):
 def call_for(owner, source, sid):
     run = m.namespace(owner) if source == "messages" else source
     call = r.get(r.call_key(sid, run))
+    if not call and source == 'messages':
+        cfg = m.config(owner) or {}
+        for candidate in sources(cfg)[1:]:
+            bound = r.get(r.call_key(sid, candidate))
+            if (bound and bound.get('ownerUserId') == owner and bound.get('phoneResearchJobId')
+                    and bound.get('phoneResearchRunId') and bound.get('runId') == candidate and bound.get('callSid') == sid):
+                return bound
     if not call or (source == "messages" and call.get("ownerUserId") != owner):
         return None
     if call.get("runId") != run or call.get("callSid") != sid:

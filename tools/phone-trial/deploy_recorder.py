@@ -38,11 +38,12 @@ def template():
                 "Policies": [{"PolicyName": "phone-trial", "PolicyDocument": {"Version": "2012-10-17", "Statement": [
                     {"Effect": "Allow", "Action": ["logs:CreateLogStream", "logs:PutLogEvents"], "Resource": sub("arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/live-ninja-phone-trial-recorder:*")},
                     {"Effect": "Allow", "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:TransactWriteItems", "dynamodb:ConditionCheckItem", "dynamodb:UpdateItem"], "Resource": {"Fn::GetAtt": ["Table", "Arn"]}},
-                    {"Effect": "Allow", "Action": ["dynamodb:GetItem"], "Resource": "arn:aws:dynamodb:us-east-1:759775734231:table/live-ninja"},
+                    {"Effect": "Allow", "Action": ["dynamodb:GetItem", "dynamodb:ConditionCheckItem"], "Resource": "arn:aws:dynamodb:us-east-1:759775734231:table/live-ninja"},
                     {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion"], "Resource": "arn:aws:s3:::live-ninja-deliverables-759775734231/phone-trial/*"},
                     {"Effect": "Allow", "Action": ["s3:ListBucket", "s3:ListBucketVersions"], "Resource": "arn:aws:s3:::live-ninja-deliverables-759775734231", "Condition": {"StringLike": {"s3:prefix": "phone-trial/*"}}},
                     {"Effect": "Allow", "Action": ["s3:GetBucketVersioning"], "Resource": "arn:aws:s3:::live-ninja-deliverables-759775734231"},
                     {"Effect": "Allow", "Action": ["lambda:InvokeFunction"], "Resource": "arn:aws:lambda:us-east-1:759775734231:function:live-ninja-realtime-broker"},
+                    {"Effect": "Allow", "Action": ["lambda:InvokeFunction"], "Resource": "arn:aws:lambda:us-east-1:759775734231:function:live-ninja-jobs-worker"},
                 ]}}],
             }},
             "Function": {"Type": "AWS::Lambda::Function", "DependsOn": ["LogGroup"], "Properties": {
@@ -90,6 +91,8 @@ def main():
         z.write(Path(__file__).with_name("owner_recordings.py"), "owner_recordings.py")
         z.write(Path(__file__).with_name("inbound_owner.py"), "inbound_owner.py")
         z.write(Path(__file__).with_name("account_lifecycle.py"), "account_lifecycle.py")
+        z.write(Path(__file__).with_name("phone_research.py"), "phone_research.py")
+        z.write(Path(__file__).with_name("targets.json"), "targets.json")
     boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=archive.getvalue(), ServerSideEncryption="AES256")
     config_file = Path(__file__).resolve().parents[2] / "infra" / "phone-trial-config.json"
     inbound_bridge = os.environ.get("INBOUND_BRIDGE_URL")

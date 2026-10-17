@@ -12,7 +12,7 @@ func jobIDParam() ParamSpec {
 	return ParamSpec{Name: "jobId", Type: "string", Required: true, MaxLen: 128, Description: "Exact saved job ID returned by job_list."}
 }
 func jobListDefinition() *Definition {
-	return &Definition{Name: "job_list", Description: "List this user's saved Jobs and their current status, including active, paused and cancelled jobs. Follow nextCursor to read further pages. These are in-app reminder/review jobs, not connected coding workers.", Params: []ParamSpec{{Name: "cursor", Type: "string", MaxLen: 2048, Description: "The nextCursor from an earlier job_list result."}, {Name: "limit", Type: "integer", Min: floatPtr(1), Max: floatPtr(50), Description: "Jobs per page, default 20."}}, Handler: handleJobList}
+	return &Definition{Name: "job_list", Description: "List this user's saved reminders, human reviews and approved five-hotel phone research, including active, paused and cancelled jobs. Follow nextCursor to read further pages. Phone approval and controls require the signed-in Jobs interface; no general coding worker is connected.", Params: []ParamSpec{{Name: "cursor", Type: "string", MaxLen: 2048, Description: "The nextCursor from an earlier job_list result."}, {Name: "limit", Type: "integer", Min: floatPtr(1), Max: floatPtr(50), Description: "Jobs per page, default 20."}}, Handler: handleJobList}
 }
 func jobStatusDefinition() *Definition {
 	return &Definition{Name: "job_status", Description: "Read one saved job, retained run receipts and a page of its durable conversation/history. Follow history olderCursor with cursor, or runsNextCursor with runCursor. Report actual receipt states and do not describe a saved note as execution.", Params: []ParamSpec{jobIDParam(), {Name: "cursor", Type: "string", MaxLen: 2048, Description: "The history olderCursor from an earlier job_status result."}, {Name: "runCursor", Type: "string", MaxLen: 2048, Description: "The runsNextCursor from an earlier job_status result; separate from history cursor."}, {Name: "limit", Type: "integer", Min: floatPtr(1), Max: floatPtr(50), Description: "History entries per page, default 20."}}, Handler: handleJobStatus}
@@ -80,7 +80,7 @@ func handleJobList(ctx context.Context, d *Deps, inv Invocation, args map[string
 	if e != nil {
 		return nil, jobsToolError(e)
 	}
-	return map[string]any{"jobs": p.Jobs, "nextCursor": p.NextCursor, "scope": "saved_jobs", "externalExecutionConnected": false, "jobsUrl": "/jobs"}, nil
+	return map[string]any{"jobs": p.Jobs, "nextCursor": p.NextCursor, "scope": "saved_jobs", "externalExecutionConnected": d.Jobs.PhoneResearchAvailable(), "phoneResearchConnected": d.Jobs.PhoneResearchAvailable(), "jobsUrl": "/jobs"}, nil
 }
 func handleJobStatus(ctx context.Context, d *Deps, inv Invocation, args map[string]any) (map[string]any, *ToolError) {
 	if e := requireJobs(d); e != nil {
@@ -99,12 +99,15 @@ func handleJobStatus(ctx context.Context, d *Deps, inv Invocation, args map[stri
 	if e != nil {
 		return nil, jobsToolError(e)
 	}
-	return map[string]any{"job": j, "runs": runs.Runs, "runsNextCursor": runs.NextCursor, "history": history, "jobsUrl": "/jobs", "externalExecutionConnected": false}, nil
+	return map[string]any{"job": j, "runs": runs.Runs, "runsNextCursor": runs.NextCursor, "history": history, "jobsUrl": "/jobs", "externalExecutionConnected": j.Kind == jobs.PhoneResearchKind && d.Jobs.PhoneResearchAvailable()}, nil
 }
 func jobConfirmation(action string, proposed map[string]any, j *jobs.Job, run *jobs.Run) *ToolError {
 	details := map[string]any{"operation": "job_" + action, "jobsUrl": "/jobs", "proposed": proposed, "executionAvailable": true, "externalExecutionConnected": false}
 	if j != nil {
 		details["job"] = j
+		if j.Kind == jobs.PhoneResearchKind {
+			details["externalExecutionConnected"] = true
+		}
 	}
 	if run != nil {
 		details["run"] = run
@@ -135,6 +138,9 @@ func jobActionProposal(ctx context.Context, d *Deps, inv Invocation, args map[st
 	j, e := d.Jobs.Get(ctx, inv.UserID, jobString(args, "jobId"))
 	if e != nil {
 		return nil, jobsToolError(e)
+	}
+	if j.Kind == jobs.PhoneResearchKind && (action == "start" || action == "resume" || action == "retry") {
+		return nil, toolErrf(CodeForbidden, "Use web Jobs to review the exact five hotels and limits before approving phone calls. No phone call was approved.")
 	}
 	p := map[string]any{"jobId": j.ID, "expectedVersion": j.Version}
 	var run *jobs.Run

@@ -31,6 +31,32 @@ class Element {
 }
 function documentFixture(){const ids=Object.fromEntries(['phoneRecordingHistory','phoneRecordingList','phoneRecordingStatus','phoneRecordingSource','phoneRecordingMore','phoneRecordingRefresh'].map(id=>[id,new Element()]));return {ids,body:new Element(),getElementById:id=>ids[id],createElement:tag=>new Element(tag),defaultView:new Element()};}
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
+test('hotel recording link finds the exact call across pages without fetching audio',async()=>{
+ const doc=documentFixture(),requests=[];const source='hotel-trial-2026-10-15';
+ doc.defaultView.location={search:'?'+new URLSearchParams({phoneSource:source,phoneCall:sid})};
+ mountRecordingHistory(doc,async path=>{requests.push(path);const query=new URL(path,'https://live.jeremy.ninja').searchParams;
+  assert.equal(query.get('source'),source);assert.ok(!path.includes('/media?'));
+  return query.get('cursor')?{items:[{callSid:sid,target:'Selected hotel',recordingStatus:'ready'}],sources:['messages',source]}:{items:[{callSid:'CA'+'2'.repeat(32),target:'Another hotel',recordingStatus:'ready'}],sources:['messages',source],nextCursor:'next-page'};
+ },()=>()=>{},unlockedPlayback);await settle();
+ assert.equal(requests.length,2);assert.equal(doc.ids.phoneRecordingList.children.length,1);
+ const row=doc.ids.phoneRecordingList.children[0];assert.match(row.querySelectorAll('h3')[0].textContent,/Selected recording.*Selected hotel/);
+ assert.equal(row.querySelectorAll('audio')[0].src,undefined);assert.equal(doc.ids.phoneRecordingSource.value,source);
+});
+
+test('recording lookup bounds automatic pages and keeps missing audio unverified',async()=>{
+ const doc=documentFixture();doc.defaultView.location={search:'?'+new URLSearchParams({phoneSource:'messages',phoneCall:sid})};let pages=0;
+ mountRecordingHistory(doc,async()=>({items:[],sources:['messages'],nextCursor:'page-'+(++pages)}),()=>()=>{},unlockedPlayback);await settle();
+ assert.equal(pages,10);assert.equal(doc.ids.phoneRecordingList.children.length,0);assert.equal(doc.ids.phoneRecordingMore.hidden,false);
+ assert.match(doc.ids.phoneRecordingStatus.textContent,/Load more/);
+});
+
+test('invalid recording deep link cannot select an arbitrary source or fetch media',async()=>{
+ const doc=documentFixture();doc.defaultView.location={search:'?'+new URLSearchParams({phoneSource:'../foreign',phoneCall:sid})};const requests=[];
+ mountRecordingHistory(doc,async path=>{requests.push(path);return {items:[],sources:['messages']};},()=>()=>{},unlockedPlayback);await settle();
+ assert.equal(requests.length,1);assert.equal(new URL(requests[0],'https://live.jeremy.ninja').searchParams.get('source'),'messages');
+ assert.equal(doc.ids.phoneRecordingList.children.length,0);
+});
+
 test('history fetches no audio until explicit request and never autoplays',async()=>{
  const doc=documentFixture(),requests=[];const request=async path=>{requests.push(path);return path.includes('/media?')?{url:'https://live-ninja-deliverables-759775734231.s3.amazonaws.com/audio?signature=test'}:{items:[{callSid:sid,target:'primary',recordingStatus:'ready'},{target:'failed call',recordingStatus:'failed'}],sources:['messages']};};
  mountRecordingHistory(doc,request,()=>()=>{},unlockedPlayback);await settle();assert.equal(requests.length,1);

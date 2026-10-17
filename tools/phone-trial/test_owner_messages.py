@@ -303,6 +303,23 @@ class OwnerMessageTests(unittest.TestCase):
         budget = r.get({"PK": "PHONE#BUDGET#2026-11", "SK": "MONTH"})
         self.assertEqual(budget["allocatedUSD"], Decimal("8.30"))
 
+    def test_explicit_daily_grant_can_cover_larger_call_reservation(self):
+        self.setup_send()
+        cfg = r.get(m.CONFIG_KEY)
+        month, day, zone, expiry = m.budget_clock(cfg)
+        day_key = m.budget_keys(month, day)[1]
+        for index, remaining in enumerate(('0.30', '1.39', '1.40')):
+            r._table.put_item(Item={**day_key, 'version': 1, 'grantedUSD': Decimal('5'),
+                'spentUSD': Decimal('5')-Decimal(remaining), 'expiresAt': expiry, 'timezone': zone})
+            event = {'operation': 'owner_budget_grant', 'ownerUserId': OWNER, 'requestId': 'bound-'+str(index), 'expectedDay': day}
+            reply = r.handler(event, None)
+            self.assertEqual(reply['statusCode'], 200 if Decimal(remaining)<Decimal('1.40') else 409)
+            if reply['statusCode'] == 200:
+                self.assertEqual(json.loads(reply['body'])['requiredReservationUSD'], '1.40')
+                self.assertEqual(r._table.get_item(Key=day_key)['Item']['grantedUSD'], Decimal('10'))
+                r.handler(event, None)
+                self.assertEqual(r._table.get_item(Key=day_key)['Item']['grantedUSD'], Decimal('10'))
+
     def test_provider_completed_is_not_playback_completed(self):
         self.setup_send()
         self.send()

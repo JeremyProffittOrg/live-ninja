@@ -1,7 +1,8 @@
 # Jobs core
 
-This module provides user-owned in-app reminders and human review checkpoints.
-It does not call an AI model, email provider, Ghost, browser, desktop, or device.
+This module provides user-owned in-app reminders, human review checkpoints,
+and explicitly approved five-hotel phone research through the existing recorder.
+It has no general AI worker, email provider, Ghost, browser, desktop, or device executor.
 A reminder succeeds when its durable inbox receipt is committed. Review approval
 only acknowledges the exact displayed checkpoint; it grants no external action.
 
@@ -24,9 +25,31 @@ retry remains usable when the scheduled worker is disabled. Retry supports only
 failed/cancelled local runs, at most three attempts, one successor per retained
 predecessor, and cannot resurrect old content after an edit or job cancellation.
 
+## Manual phone research
+
+Web Jobs selects exactly five deployed California catalog entries. The server
+resolves public numbers/source URLs and saves the fixed Wi-Fi/VPN purpose,
+180 seconds per property, one attempt each and a conservative $7 total cap.
+Web-only Run approves that exact saved version for 24 hours. Save, model
+proposals and native Android generic buttons cannot approve calls. Daily budget
+grants remain separate. The run and command version commit before recorder
+invocation; that service rechecks the owner and immutable job/run approval before
+every admission. Unknown creation never redials. A blocked start pauses the job
+and needs explicit Resume; lifting the global stop alone cannot resume it.
+
+Pause/cancel request actual provider termination and retain partial results.
+Resume retains the original snapshot/expiry and never recalls a completed hotel.
+Recorder callbacks advance the bounded batch and notify the existing Jobs worker
+through exact Lambda IAM. The worker rereads the job and fetches provider status;
+event-supplied identity is not authority. Phone notifications do not enable the
+separately gated reminder/review schedule, and phone jobs have no due-index entry.
+New evidence may enrich a terminal run without reopening it. Historical run
+snapshots remain readable after job edits. A successful batch means five terminal
+attempts, not five interviews or verified VPN compatibility.
+
 ## Scheduling and local execution
 
-Manual `RunNow` and `RetryRun` atomically commit the actual local outcome. Cloud
+For reminders/reviews, `RunNow` and `RetryRun` atomically commit the local outcome. Cloud
 scheduling is separately gated by `JOBS_WORKER_ENABLED`; the worker must be
 explicitly enabled and deployed before scheduled behavior can be claimed.
 The worker queries GSI2 partition `JOBS_DUE`, with fixed-width UTC timestamps.

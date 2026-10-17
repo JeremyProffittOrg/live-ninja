@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSchedule, localTimeToISO, inTimezone, scheduleLabel, statusLabel, createRequestKeys, errorMessage } from '../../../web/static/js/jobs.mjs';
+import { buildSchedule, localTimeToISO, inTimezone, scheduleLabel, statusLabel, createRequestKeys, errorMessage, phoneTargetSelection, phoneApprovalDetails, phoneResearchResults, phoneRecordingHref, PHONE_RESEARCH_PURPOSE } from '../../../web/static/js/jobs.mjs';
 
 test('once schedule resolves the chosen zone rather than the computer zone', () => {
   const schedule = buildSchedule({ kind: 'once', timezone: 'America/New_York', at: '2030-07-04T09:15' }, 0);
@@ -54,4 +54,51 @@ test('queued and review states never imply success; stale errors give a recovery
   assert.equal(statusLabel('waiting_approval'), 'Needs review');
   assert.match(errorMessage({ status: 409 }), /latest version/);
   assert.match(errorMessage({ status: 503 }), /input is kept/);
+});
+
+const hotels = Array.from({ length: 5 }, (_, i) => ({ id: `hotel-${i}`, name: `Hotel ${i}`, city: 'California', phone: `+1555555000${i}`, sourceUrl: `https://hotel${i}.example/contact` }));
+const phoneSnapshot = { targets: hotels, purpose: PHONE_RESEARCH_PURPOSE, maxCallSeconds: 180, maxAttempts: 1, maxCostUSD: '7.00' };
+
+test('phone research accepts exactly five distinct catalog IDs even when calls are stopped', () => {
+  const catalog = { targets: hotels, enabled: false, blockedReason: 'Calls stopped' };
+  const ids = hotels.map(hotel => hotel.id);
+  assert.deepEqual(phoneTargetSelection(ids, catalog), ids);
+  assert.throws(() => phoneTargetSelection(ids.slice(1), catalog), /exactly five/);
+  assert.throws(() => phoneTargetSelection([...ids.slice(1), ids[1]], catalog), /different/);
+  assert.throws(() => phoneTargetSelection([...ids.slice(1), 'unlisted'], catalog), /catalog changed/);
+  assert.throws(() => phoneTargetSelection(ids, null), /catalog changed/);
+});
+
+test('phone approval shows exact scope provenance budget and recording limits', () => {
+  const text = phoneApprovalDetails({ phoneResearch: phoneSnapshot });
+  for (const hotel of hotels) { assert.ok(text.includes(hotel.name)); assert.ok(text.includes(hotel.phone)); assert.ok(text.includes(hotel.sourceUrl)); }
+  for (const phrase of ['180 seconds', 'no redial', '$7.00', '$20 monthly', '$5 daily', 'only after permission', 'does not grant a budget or lift a call stop']) assert.ok(text.includes(phrase));
+  assert.throws(() => phoneApprovalDetails({ phoneResearch: { ...phoneSnapshot, maxAttempts: 2 } }), /limits/);
+  assert.throws(() => phoneApprovalDetails({ phoneResearch: { ...phoneSnapshot, targets: hotels.slice(1) } }), /exact five/);
+});
+
+test('resume approval uses frozen run caps and targets rather than an edited job', () => {
+  const run = { phoneResearch: { ...phoneSnapshot, properties: [{ targetId: hotels[0].id, status: 'completed' }] }, approvalExpiresAt: '2030-01-01T00:00:00Z' };
+  const text = phoneApprovalDetails({ phoneResearch: { ...phoneSnapshot, maxAttempts: 99, targets: [] } }, run);
+  assert.match(text, /Current outcome: completed/);
+  assert.match(text, /Current outcome: not_started/);
+  assert.match(text, /only the remaining approved hotels/);
+  assert.throws(() => phoneApprovalDetails({ phoneResearch: phoneSnapshot }, { phoneResearch: { ...phoneSnapshot, maxCostUSD: '70.00' } }), /limits/);
+});
+
+test('phone results preserve five target rows without inventing missing interview findings', () => {
+  const rows = phoneResearchResults({ phoneResearch: { ...phoneSnapshot, properties: [{ targetId: hotels[2].id, status: 'unknown', recordingStatus: 'absent' }] } });
+  assert.equal(rows.length, 5);
+  assert.equal(rows[2].outcome.status, 'unknown');
+  assert.equal(rows[0].outcome.status, 'not_started');
+  assert.equal(rows[0].outcome.result, undefined);
+  assert.deepEqual(phoneResearchResults({}), []);
+  assert.equal(statusLabel('blocked'), 'Blocked');
+  assert.equal(statusLabel('partial'), 'Partial');
+});
+
+test('only a ready recording with its exact valid source and call has a history link', () => {
+  const outcome = { recordingStatus: 'ready', recordingSource: 'research-job', callSid: 'CA' + 'a'.repeat(32) };
+  assert.equal(phoneRecordingHref(outcome), `/history?phoneSource=research-job&phoneCall=${outcome.callSid}#phoneRecordingHeading`);
+  for (const invalid of [{ ...outcome, recordingStatus: 'pending' }, { ...outcome, recordingSource: '../other' }, { ...outcome, callSid: 'wrong' }, { recordingStatus: 'ready' }]) assert.equal(phoneRecordingHref(invalid), '');
 });

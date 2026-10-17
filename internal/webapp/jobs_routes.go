@@ -51,17 +51,29 @@ func RegisterJobsAPI(app *fiber.App, svc *jobs.Service, scheduling bool, authori
 		return c.Next()
 	})
 	registerJobsHistoryRoutes(api, svc)
+	api.Get("/phone-research/catalog", func(c *fiber.Ctx) error {
+		catalog, e := svc.PhoneCatalog(c.UserContext(), UserID(c))
+		if e != nil {
+			return jobsError(c, e)
+		}
+		return c.JSON(catalog)
+	})
 	api.Get("/", func(c *fiber.Ctx) error {
 		page, err := svc.List(c.UserContext(), UserID(c), queryLimit(c, 30, 50), c.Query("cursor"))
 		if err != nil {
 			return jobsError(c, err)
 		}
-		return c.JSON(fiber.Map{"jobs": page.Jobs, "nextCursor": page.NextCursor, "capabilities": jobsCapabilities(scheduling)})
+		caps := jobsCapabilities(scheduling)
+		caps["phoneResearch"] = svc.PhoneResearchAvailable()
+		return c.JSON(fiber.Map{"jobs": page.Jobs, "nextCursor": page.NextCursor, "capabilities": caps})
 	})
 	api.Post("/", func(c *fiber.Ctx) error {
 		var b jobRequest
 		if ok, err := decodeJobRequest(c, &b); !ok {
 			return err
+		}
+		if ok, e := phoneReviewAllowed(c, svc, b.Kind); !ok {
+			return e
 		}
 		if !scheduling && scheduledJob(b.Input) {
 			return errorJSON(c, 409, "scheduler_disabled", "Background scheduling is not enabled. Save a manual job instead.")
@@ -77,12 +89,24 @@ func RegisterJobsAPI(app *fiber.App, svc *jobs.Service, scheduling bool, authori
 		if err != nil {
 			return jobsError(c, err)
 		}
+		if j.Kind == jobs.PhoneResearchKind && j.LastRun != nil {
+			if _, e := svc.SyncPhoneRun(c.UserContext(), UserID(c), j.ID, j.LastRun.ID); e != nil && !errors.Is(e, jobs.ErrNotFound) {
+				return jobsError(c, e)
+			}
+			j, err = svc.Get(c.UserContext(), UserID(c), c.Params("id"))
+			if err != nil {
+				return jobsError(c, err)
+			}
+		}
 		return c.JSON(fiber.Map{"job": j})
 	})
 	api.Patch("/:id", func(c *fiber.Ctx) error {
 		var b jobRequest
 		if ok, err := decodeJobRequest(c, &b); !ok {
 			return err
+		}
+		if ok, e := phoneReviewAllowed(c, svc, b.Kind); !ok {
+			return e
 		}
 		if !scheduling && scheduledJob(b.Input) {
 			return errorJSON(c, 409, "scheduler_disabled", "Background scheduling is not enabled.")
@@ -99,6 +123,11 @@ func RegisterJobsAPI(app *fiber.App, svc *jobs.Service, scheduling bool, authori
 			var b jobRequest
 			if ok, err := decodeJobRequest(c, &b); !ok {
 				return err
+			}
+			if action == "resume" {
+				if ok, e := phoneReviewAllowed(c, svc, ""); !ok {
+					return e
+				}
 			}
 			if action == "resume" && !scheduling {
 				j, e := svc.Get(c.UserContext(), UserID(c), c.Params("id"))
@@ -127,6 +156,9 @@ func RegisterJobsAPI(app *fiber.App, svc *jobs.Service, scheduling bool, authori
 		var b jobRequest
 		if ok, err := decodeJobRequest(c, &b); !ok {
 			return err
+		}
+		if ok, e := phoneReviewAllowed(c, svc, ""); !ok {
+			return e
 		}
 		r, e := svc.RunNow(c.UserContext(), UserID(c), c.Params("id"), b.ExpectedVersion, b.RequestID)
 		if e != nil {
@@ -157,6 +189,25 @@ func RegisterJobsAPI(app *fiber.App, svc *jobs.Service, scheduling bool, authori
 			return jobRunResponse(c, svc, r)
 		})
 	}
+}
+
+// Native Jobs currently has no five-target/cost review surface. It may stop an
+// existing phone run, but cannot create or approve one through generic buttons.
+func phoneReviewAllowed(c *fiber.Ctx, svc *jobs.Service, kind string) (bool, error) {
+	if Surface(c) == "web" {
+		return true, nil
+	}
+	if kind == "" {
+		j, e := svc.Get(c.UserContext(), UserID(c), c.Params("id"))
+		if e != nil {
+			return false, jobsError(c, e)
+		}
+		kind = j.Kind
+	}
+	if kind == jobs.PhoneResearchKind {
+		return false, errorJSON(c, 403, "phone_web_review_required", "Use web Jobs to review the exact five hotels and limits before approving phone calls.")
+	}
+	return true, nil
 }
 
 type jobRequest struct {

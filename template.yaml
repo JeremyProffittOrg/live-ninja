@@ -1013,17 +1013,15 @@ Resources:
 
   JobsWorkerLogGroup:
     Type: AWS::Logs::LogGroup
-    Condition: JobsSchedulerEnabled
     Properties:
       LogGroupName: /live-ninja/lambda/jobs-worker
-      RetentionInDays: 5
+      RetentionInDays: 7
 
   JobsWorkerFunction:
     Type: AWS::Serverless::Function
-    Condition: JobsSchedulerEnabled
     Properties:
       FunctionName: live-ninja-jobs-worker
-      Description: Produces durable in-app reminder receipts and human review checkpoints.
+      Description: Synchronizes approved phone research receipts; scheduled reminders remain separately gated.
       CodeUri: .build/jobs-worker/
       Timeout: 30
       ReservedConcurrentExecutions: 1
@@ -1032,12 +1030,13 @@ Resources:
       Environment:
         Variables:
           JOBS_WORKER_ENABLED: !Ref JobsSchedulingEnabled
+          PHONE_MESSAGES_FUNCTION_ARN: !Sub 'arn:${AWS::Partition}:lambda:us-east-1:${AWS::AccountId}:function:live-ninja-phone-trial-recorder'
       Events:
         DueJobs:
           Type: Schedule
           Properties:
             Schedule: rate(1 minute)
-            Enabled: true
+            Enabled: !If [JobsSchedulerEnabled, true, false]
       Policies:
       - Statement:
         - Effect: Allow
@@ -1046,6 +1045,9 @@ Resources:
         - Effect: Allow
           Action: dynamodb:Query
           Resource: !Sub '${Table.Arn}/index/GSI2'
+        - Effect: Allow
+          Action: lambda:InvokeFunction
+          Resource: !Sub 'arn:${AWS::Partition}:lambda:us-east-1:${AWS::AccountId}:function:live-ninja-phone-trial-recorder'
 
   EmailDispatchFunction:
     Type: AWS::Serverless::Function
@@ -1605,13 +1607,13 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /live-ninja/lambda/web
-      RetentionInDays: 5
+      RetentionInDays: 7
 
   AuthorizerLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /live-ninja/lambda/authorizer
-      RetentionInDays: 5
+      RetentionInDays: 7
 
   IotAuthorizerLogGroup:
     Type: AWS::Logs::LogGroup
@@ -1623,43 +1625,43 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /live-ninja/lambda/realtime-broker
-      RetentionInDays: 5
+      RetentionInDays: 7
 
   IotIngestLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /live-ninja/lambda/iot-ingest
-      RetentionInDays: 5
+      RetentionInDays: 7
 
   ShadowIngestLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /live-ninja/lambda/shadow-ingest
-      RetentionInDays: 5
+      RetentionInDays: 7
 
   UsageRollupLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /live-ninja/lambda/usage-rollup
-      RetentionInDays: 5
+      RetentionInDays: 7
 
   EmailDispatchLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /live-ninja/lambda/email-dispatch
-      RetentionInDays: 5
+      RetentionInDays: 7
 
   DeliverablesZipperLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /live-ninja/lambda/deliverables-zipper
-      RetentionInDays: 5
+      RetentionInDays: 7
 
   TopicsExtractLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /live-ninja/lambda/topics-extract
-      RetentionInDays: 5
+      RetentionInDays: 7
 
   # M17 rca-analyzer Lambda (cmd/rca-analyzer). Custom-named like the rest,
   # and stack-managed from day one: the function has never existed in AWS, so
@@ -1672,7 +1674,7 @@ Resources:
     Condition: RcaEnabled
     Properties:
       LogGroupName: /live-ninja/lambda/rca-analyzer
-      RetentionInDays: 5
+      RetentionInDays: 7
 
   CodeUpdateDispatchLogGroup:
     Type: AWS::Logs::LogGroup
@@ -1692,7 +1694,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /aws/lambda/live-ninja-account-purge
-      RetentionInDays: 5
+      RetentionInDays: 7
 
   # ------------------------------------------------------------------
   # DynamoDB single table
@@ -1936,7 +1938,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /aws/kinesisfirehose/live-ninja-telemetry
-      RetentionInDays: 5
+      RetentionInDays: 7
 
   TelemetryFirehoseLogStream:
     Type: AWS::Logs::LogStream
@@ -2466,7 +2468,7 @@ Resources:
     Condition: NovaBridgeReady
     Properties:
       LogGroupName: /live-ninja/ecs/nova-bridge
-      RetentionInDays: 5
+      RetentionInDays: 7
 
   NovaBridgeExecutionRole:
     Type: AWS::IAM::Role

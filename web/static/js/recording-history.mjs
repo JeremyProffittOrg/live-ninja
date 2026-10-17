@@ -15,6 +15,9 @@ export function mountRecordingHistory(doc = document, request = pageSessionJSON,
  const panel=doc.getElementById('phoneRecordingHistory');if(!panel)return;
  const list=doc.getElementById('phoneRecordingList'), status=doc.getElementById('phoneRecordingStatus'), source=doc.getElementById('phoneRecordingSource'), more=doc.getElementById('phoneRecordingMore');
  let cursor='', generation=0, mediaGeneration=0, invalidated=false, releasePlayback=null;
+ let linkedSource='', linkedCall='';
+ const query=new URLSearchParams(doc.defaultView?.location?.search||'');
+ try{const selected=query.get('phoneSource'),sid=query.get('phoneCall');if(selected&&sid){recordingPath(selected,sid);linkedSource=selected;linkedCall=sid;}}catch{/* Invalid links do not change the normal private list. */}
  function stopAudio(){for(const audio of list.querySelectorAll('audio'))audio.pause();}
  function closeAudio(){mediaGeneration++;stopAudio();for(const audio of list.querySelectorAll('audio')){audio.removeAttribute('src');audio.load();audio.hidden=true;}releasePlayback?.();releasePlayback=null;}
  function clear(){closeAudio();list.replaceChildren();}
@@ -22,7 +25,7 @@ export function mountRecordingHistory(doc = document, request = pageSessionJSON,
  function button(text, action){const b=doc.createElement('button');b.type='button';b.className='ln-btn ln-btn--ghost';b.textContent=text;b.addEventListener('click',action);return b;}
  function render(item, selectedSource){
   const row=doc.createElement('article');row.className='ln-card';
-  const title=doc.createElement('h3');title.textContent=item.target || 'Phone call';row.append(title);
+  const title=doc.createElement('h3');title.textContent=(linkedCall===item.callSid?'Selected recording · ':'')+(item.target || 'Phone call');row.append(title);
   const detail=doc.createElement('p');detail.textContent=[recordingLabel(item.recordingStatus),item.providerStatus,item.reason].filter(Boolean).join(' · ');row.append(detail);
   if(item.updatedAt){const when=doc.createElement('p');when.textContent=new Date(Number(item.updatedAt)*1000).toLocaleString();row.append(when);}
   if(item.recordingStatus==='ready' && /^CA[0-9a-fA-F]{32}$/.test(item.callSid||'')){
@@ -49,17 +52,21 @@ export function mountRecordingHistory(doc = document, request = pageSessionJSON,
  }
  async function load(append=false){
   if(invalidated)return;
-  const seq=++generation,selected=source.value||'messages';if(!append){cursor='';clear();}more.disabled=true;status.textContent='Loading phone recordings…';
-  try{const data=await request('/api/v1/phone/recordings?'+new URLSearchParams({source:selected,cursor,limit:'25'}));if(seq!==generation)return;
+  const seq=++generation,selected=source.value||linkedSource||'messages';if(!append){cursor='';clear();}more.disabled=true;status.textContent='Loading phone recordings…';
+  try{let pages=0;const visited=new Set();do{
+   if(visited.has(cursor))throw new Error('Repeated recording cursor');visited.add(cursor);
+   const data=await request('/api/v1/phone/recordings?'+new URLSearchParams({source:selected,cursor,limit:'25'}));if(seq!==generation)return;
    if(!Array.isArray(data.items)||!Array.isArray(data.sources))throw new Error('Invalid response');
    panel.hidden=false;
    source.replaceChildren(...data.sources.map(value=>{const option=doc.createElement('option');option.value=value;option.textContent=value==='messages'?'Owner phone messages':value;return option;}));source.value=selected;
-   for(const item of data.items)render(item,selected);cursor=data.nextCursor||'';more.hidden=!cursor;
-   status.textContent=list.children.length?'Recordings stay private. Each playback or download link lasts five minutes.':'No phone recordings in this source.';
+   for(const item of data.items)if(!linkedCall||item.callSid===linkedCall)render(item,selected);cursor=data.nextCursor||'';pages++;
+  }while(linkedCall&&!list.children.length&&cursor&&pages<10);
+   more.hidden=!cursor||Boolean(linkedCall&&list.children.length);
+   status.textContent=list.children.length?'Recordings stay private. Each playback or download link lasts five minutes.':linkedCall?(cursor?'The selected call is not on these pages. Load more to continue looking.':'The selected call is not available in this source. Check its current result in Jobs.'):'No phone recordings in this source.';
   }catch{if(seq===generation){panel.hidden=false;status.textContent='Phone recordings are unavailable. Owner sign-in is required.';more.hidden=true;}}
   finally{if(seq===generation)more.disabled=false;}
  }
- source.addEventListener('change',()=>load());doc.getElementById('phoneRecordingRefresh').addEventListener('click',()=>load());more.addEventListener('click',()=>load(true));
+ source.addEventListener('change',()=>{linkedCall='';linkedSource='';load();});doc.getElementById('phoneRecordingRefresh').addEventListener('click',()=>load());more.addEventListener('click',()=>load(true));
  doc.defaultView?.addEventListener('pagehide',()=>{invalidated=true;generation++;clear();unsubscribe();});
  doc.defaultView?.addEventListener('focus',()=>load());load();
 }

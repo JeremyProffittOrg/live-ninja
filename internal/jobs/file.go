@@ -96,6 +96,9 @@ func (s *FileStore) Get(ctx context.Context, uid, id string) (*Record, error) {
 		return nil, ErrNotFound
 	}
 	v := cloneRecord(r)
+	if !validPhoneRecord(&v) {
+		return nil, ErrCorrupt
+	}
 	return &v, nil
 }
 func (s *FileStore) check(ctx context.Context) error {

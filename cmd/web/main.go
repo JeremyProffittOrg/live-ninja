@@ -261,6 +261,13 @@ func buildDeps(ctx context.Context, cfg config.App, logger *slog.Logger) (*webap
 		return nil, err
 	}
 	deps.Jobs = jobs.NewService(jobStore)
+	if phoneFunction := os.Getenv("PHONE_MESSAGES_FUNCTION_ARN"); phoneFunction != "" {
+		provider, e := jobs.NewPhoneResearchProvider(deps.PhoneAccount, phoneFunction)
+		if e != nil {
+			return nil, e
+		}
+		deps.Jobs = deps.Jobs.WithPhoneResearch(provider)
+	}
 	deps.JobsSchedulingEnabled = os.Getenv("JOBS_SCHEDULING_ENABLED") == "true"
 	// agentcore-memory: nil when AGENTCORE_MEMORY_ID is unset or the mode is
 	// off; every caller treats nil as "not configured". The counter feeds the

@@ -16,6 +16,7 @@ type Service struct {
 	store         Store
 	now           func() time.Time
 	conversations ConversationReader
+	phone         PhoneResearchProvider
 }
 
 func NewService(store Store) *Service { return &Service{store: store, now: time.Now} }
@@ -26,11 +27,19 @@ func validateInput(in *Input, now time.Time, creating bool) error {
 	if len(in.Title) < 1 || len(in.Title) > 160 || len(in.Instructions) > 2000 {
 		return fmt.Errorf("%w: title is required (160 bytes maximum), instructions maximum 2000 bytes", ErrValidation)
 	}
-	if in.Kind != "reminder" && in.Kind != "review" {
+	if in.Kind != "reminder" && in.Kind != "review" && in.Kind != PhoneResearchKind {
 		return fmt.Errorf("%w: only in-app reminder and human review are available", ErrValidation)
 	}
 	if in.Schedule.Kind == "" {
 		in.Schedule.Kind = "once"
+	}
+	if in.Kind == PhoneResearchKind {
+		if in.Schedule.Kind != "once" || in.Schedule.At != "" || (in.Instructions != "" && in.Instructions != PhoneResearchPurpose) || !validPhoneIDs(in.PhoneTargetIDs) {
+			return fmt.Errorf("%w: phone research requires five distinct catalog hotels, the fixed Wi-Fi purpose, and a manual schedule", ErrValidation)
+		}
+		in.Instructions = PhoneResearchPurpose
+	} else if len(in.PhoneTargetIDs) > 0 {
+		return ErrValidation
 	}
 	if err := validateSchedule(in.Schedule); err != nil {
 		return err
@@ -132,7 +141,16 @@ func (s *Service) Create(ctx context.Context, uid string, in Input, requestID st
 	if err := validateInput(&in, now, true); err != nil {
 		return nil, err
 	}
+	var phone *PhoneResearchSnapshot
+	if in.Kind == PhoneResearchKind {
+		var e error
+		phone, e = s.phoneSnapshot(ctx, uid, in.PhoneTargetIDs)
+		if e != nil {
+			return nil, e
+		}
+	}
 	r := &Record{UserID: uid, Generation: 1, CreateFingerprint: fp, Runs: []Run{}, Receipts: []Receipt{}, Job: Job{ID: id, Title: in.Title, Instructions: in.Instructions, Kind: in.Kind, Schedule: in.Schedule, Status: "active", Version: 1, NextRunAt: next(in.Schedule, now), CreatedAt: stamp(now), UpdatedAt: stamp(now)}}
+	r.Job.PhoneResearch = phone
 	if err := s.store.CompareAndSwap(ctx, r, 0); err != nil {
 		if errors.Is(err, ErrConflict) {
 			return s.Create(ctx, uid, in, requestID)
@@ -198,8 +216,19 @@ func (s *Service) Update(ctx context.Context, uid, id string, in Input, version 
 	if e := validateInput(&in, s.now(), false); e != nil {
 		return nil, e
 	}
+	var phone *PhoneResearchSnapshot
+	if in.Kind == PhoneResearchKind {
+		var e error
+		phone, e = s.phoneSnapshot(ctx, uid, in.PhoneTargetIDs)
+		if e != nil {
+			return nil, e
+		}
+	}
 	fp := digest([]any{"update", in, version})
 	r, _, e := s.mutate(ctx, uid, id, requestID, fp, version, func(r *Record, now time.Time) (string, error) {
+		if (r.Job.Kind == PhoneResearchKind) != (in.Kind == PhoneResearchKind) || (r.Job.Kind == PhoneResearchKind && activePhoneRun(r) != nil) {
+			return "", ErrInvalidState
+		}
 		if r.Job.Status == "cancelled" {
 			return "", ErrInvalidState
 		}
@@ -215,6 +244,7 @@ func (s *Service) Update(ctx context.Context, uid, id string, in Input, version 
 		r.Job.Instructions = in.Instructions
 		r.Job.Kind = in.Kind
 		r.Job.Schedule = in.Schedule
+		r.Job.PhoneResearch = phone
 		if scheduleChanged {
 			r.Job.NextRunAt = next(in.Schedule, now)
 		}
@@ -227,6 +257,13 @@ func (s *Service) Update(ctx context.Context, uid, id string, in Input, version 
 	return &j, nil
 }
 func (s *Service) Action(ctx context.Context, uid, id, action string, version int64, requestID string) (*Job, error) {
+	current, readErr := s.store.Get(ctx, uid, id)
+	if readErr != nil {
+		return nil, readErr
+	}
+	if current.Job.Kind == PhoneResearchKind {
+		return s.phoneAction(ctx, uid, id, action, version, requestID)
+	}
 	fp := digest([]any{action, version})
 	r, _, e := s.mutate(ctx, uid, id, requestID, fp, version, func(r *Record, now time.Time) (string, error) {
 		switch action {
@@ -284,7 +321,7 @@ func reserveRun(r *Record) error {
 	for len(r.Runs) >= MaxRuns {
 		found := -1
 		for i, v := range r.Runs {
-			if v.Status != "queued" && v.Status != "waiting_approval" {
+			if !pendingRun(v) {
 				found = i
 				break
 			}
@@ -311,7 +348,7 @@ func compact(r *Record, keepID string) error {
 		}
 		found := -1
 		for i, v := range r.Runs {
-			if v.ID != keepID && v.Status != "queued" && v.Status != "waiting_approval" {
+			if v.ID != keepID && !pendingRun(v) {
 				found = i
 				break
 			}
@@ -346,6 +383,13 @@ func resultRun(r *Record, id string, e error) (*Run, error) {
 	return &out, nil
 }
 func (s *Service) RunNow(ctx context.Context, uid, id string, version int64, requestID string) (*Run, error) {
+	current, readErr := s.store.Get(ctx, uid, id)
+	if readErr != nil {
+		return nil, readErr
+	}
+	if current.Job.Kind == PhoneResearchKind {
+		return s.runPhoneResearch(ctx, uid, id, version, requestID)
+	}
 	r, rid, e := s.mutate(ctx, uid, id, requestID, digest([]any{"run", version}), version, func(r *Record, now time.Time) (string, error) {
 		if r.Job.Status != "active" {
 			return "", ErrInvalidState
@@ -399,7 +443,7 @@ func (s *Service) ApproveRun(ctx context.Context, uid, id, runID string, version
 		if e != nil {
 			return "", e
 		}
-		if r.Job.Status != "active" || v.Status != "waiting_approval" || v.Generation != r.Generation || !parse(v.ApprovalExpiresAt).After(now) {
+		if v.Kind == PhoneResearchKind || r.Job.Status != "active" || v.Status != "waiting_approval" || v.Generation != r.Generation || !parse(v.ApprovalExpiresAt).After(now) {
 			return "", ErrInvalidState
 		}
 		v.ApprovedBy = uid
@@ -414,7 +458,7 @@ func (s *Service) CancelRun(ctx context.Context, uid, id, runID string, version 
 		if e != nil {
 			return "", e
 		}
-		if v.Status != "queued" && v.Status != "waiting_approval" {
+		if v.Kind == PhoneResearchKind || (v.Status != "queued" && v.Status != "waiting_approval") {
 			return "", ErrInvalidState
 		}
 		finish(v, "cancelled", "Run cancelled before any external action.", now)
@@ -502,7 +546,7 @@ func (s *Service) read(ctx context.Context, uid, id string) (*Record, error) {
 }
 
 func dueAt(r *Record) time.Time {
-	if r.Job.Status != "active" {
+	if r.Job.Kind == PhoneResearchKind || r.Job.Status != "active" {
 		return time.Time{}
 	}
 	at := parse(r.Job.NextRunAt)

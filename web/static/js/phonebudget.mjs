@@ -24,7 +24,8 @@ export function initPhoneBudget(root, { apiJSON, onAuthLost = () => {}, storage 
     }[data.pausedReason || ''] || 'Calling is on hold. Check the call status before another attempt.';
     status.textContent = `Month ${data.month}: $${data.allocatedUSD} allocated; monthly limit $${data.monthlyLimitUSD}. ` +
       `Today ${data.day} (${data.timezone}): $${data.dailyGrantedUSD} authorized, $${data.dailySpentUSD} used, $${data.dailyRemainingUSD} remaining. ` +
-      `Expires ${expiry} (${data.timezone}). ${hold} A grant does not resume calls.`;
+      `Expires ${expiry} (${data.timezone}). ${hold} A grant does not resume calls.` +
+      (data.requiredReservationUSD ? ` A full phone conversation reserves $${data.requiredReservationUSD}; you can approve another $5 when the remaining allowance cannot cover it.` : '');
     grant.textContent = pending ? 'Retry the same $5 authorization' : 'Authorize $5 for this day';
   }
   async function load() {

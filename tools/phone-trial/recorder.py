@@ -80,7 +80,7 @@ def event_post(raw):
     key = call_key(sid)
     journal_key = {"PK": key["PK"], "SK": "EVENT#" + sid + "#" + event_id}
     if get(journal_key):
-        return response(200, {"duplicate": True})
+        return response(200 if research_notify(get(key)) else 503, {"duplicate": True})
     for _ in range(3):
         old = get(key)
         if not old and data["type"] != "call_registered":
@@ -120,13 +120,20 @@ def event_post(raw):
         journal = {**journal_key, "createdAt": int(time.time()), "data": data}
         try:
             commit(old, new, journal)
-            return response(200, {"accepted": True})
+            return response(200 if research_notify(new) else 503, {"accepted": True})
         except Exception as exc:
             if not conditional(exc):
                 raise
             if get(journal_key):
                 return response(200, {"duplicate": True})
     return response(409, {"error": "Concurrent update; retry"})
+
+
+def research_notify(call):
+    if not call or not call.get('phoneResearchJobId'):
+        return True
+    import phone_research
+    return phone_research.event_updated(call)
 
 
 def set_recording(sid, recording, status, run_id=None, expected_attempt=None, **fields):
@@ -189,7 +196,7 @@ def ingest_recording(sid, recording, status, run_id=None):
             return response(200, {"recordingStatus": "deleted"})
         state = old.get("recordingStatus")
         if state in {"ready", "deleted", "expired"}:
-            return response(200, {"recordingStatus": state})
+            return response(200 if research_notify(old) else 503, {"recordingStatus": state})
         if status not in {"completed", "absent"}:
             return response(400)
         now = int(time.time())
@@ -225,7 +232,7 @@ def ingest_recording(sid, recording, status, run_id=None):
         key, size = copy_audio(sid, recording, run_id=run_id)
         result = set_recording(sid, recording, "ready", run_id=run_id, expected_attempt=attempt,
                                s3Key=key, audioBytes=size, sourceRetained=True, copyLeaseUntil=0)
-        return response(200, {"recordingStatus": result["recordingStatus"]})
+        return response(200 if research_notify(result) else 503, {"recordingStatus": result["recordingStatus"]})
     except Exception:
         exhausted = attempt >= COPY_ATTEMPTS
         set_recording(sid, recording, "failed", run_id=run_id, expected_attempt=attempt,
@@ -421,6 +428,9 @@ def handler(event, context):
     # Only a principal with lambda:InvokeFunction can supply a direct outer event.
     # API Gateway always supplies requestContext/version, regardless of HTTP body.
     if "requestContext" not in event and "version" not in event:
+        if event.get('operation') in {'phone_research_catalog', 'phone_research_advance', 'phone_research_status'}:
+            import phone_research
+            return phone_research.operation(event)
         if event.get("operation") in {"owner_account_export", "owner_account_purge"}:
             import account_lifecycle
             return account_lifecycle.operation(event)
@@ -448,6 +458,9 @@ def handler(event, context):
     path = event.get("rawPath", "")
     method = event.get("requestContext", {}).get("http", {}).get("method", "")
     try:
+        if path.startswith('/phone-research/') and method == 'POST':
+            import phone_research
+            return phone_research.callback(path, raw, headers)
         if path.startswith("/inbound-owner/") and method == "POST":
             import inbound_owner
             if path in {"/inbound-owner/redeem", "/inbound-owner/check", "/inbound-owner/finish"}:
