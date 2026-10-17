@@ -1497,6 +1497,7 @@ Resources:
           USER_BUCKET: !Ref UserBucket
           WAKEWORDS_BUCKET: !Ref WakewordsBucket
           EMAIL_QUEUE_URL: !Ref EmailQueue
+          PHONE_MESSAGES_FUNCTION_ARN: !Sub "arn:${AWS::Partition}:lambda:us-east-1:${AWS::AccountId}:function:live-ninja-phone-trial-recorder"
           # agentcore-memory: the actor's events and long-term records are
           # deleted with the DynamoDB partition (fails the run on error so the
           # async retry re-runs, same posture as the table purge).
@@ -1516,6 +1517,12 @@ Resources:
           Resource:
           - !GetAtt Table.Arn
           - !Sub "${Table.Arn}/index/*"
+        - Sid: InvokePhoneRecordingPurge
+          Effect: Allow
+          Action:
+          - lambda:InvokeFunction
+          Resource:
+          - !Sub "arn:${AWS::Partition}:lambda:us-east-1:${AWS::AccountId}:function:live-ninja-phone-trial-recorder"
         - Sid: AgentCoreMemoryPurge
           Effect: Allow
           Action:

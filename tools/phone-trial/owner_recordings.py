@@ -123,6 +123,11 @@ def bind_legacy_recordings(main_table, phone_table, client):
     """CI deployment-only account binding; no caller or model supplies this run."""
     canonical = main_table.get_item(Key={"pk": "CONFIG", "sk": "OWNER"}, ConsistentRead=True).get("Item", {})
     cfg = phone_table.get_item(Key=m.CONFIG_KEY, ConsistentRead=True).get("Item", {})
+    if not cfg and canonical.get("userId"):
+        import account_lifecycle
+        marker = phone_table.get_item(Key=account_lifecycle.owner_key(canonical["userId"]), ConsistentRead=True).get("Item", {})
+        if marker.get("ownerUserId") == canonical["userId"] and marker.get("complete") is True:
+            return
     owner = cfg.get("ownerUserId")
     if not owner or canonical.get("userId") != owner:
         raise ValueError("Historical recording owner binding could not be verified")

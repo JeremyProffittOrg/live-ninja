@@ -95,6 +95,25 @@ don't build per-repo rotation machinery.
   `Query`, or a cached/S3-snapshot representation only.
 - Production-only: assume no staging environment. Verify before you deploy.
 
+## Owner phone service
+
+The existing `phone-trial.yml` workflow deploys the recorder and Azure bridge.
+Its dated hotel-call job cannot dial after its authorized date. Main deploys the
+broker and web authorization boundary. Inbound code can deploy while calling
+stays disabled: deployment must not create or enable `CONFIG/INBOUND_OWNER`,
+change number callbacks, grant a budget, or clear `PHONE#CONTROL/VOICE`.
+
+`infra/phone-trial-config.json` contains the verified nonsecret Azure bridge URL.
+The recorder role can invoke only the existing `live-ninja-realtime-broker` for
+fresh phone sessions. The Azure bridge receives no AWS credentials.
+
+The owner can enroll a PIN locally with `scripts\enroll-phone-pin.bat` after
+deployment. This stores a salted verifier and keeps inbound calling disabled.
+Enrollment alone does not authorize activation. Before any separately authorized
+activation, verify the existing caller allowlist, private PIN enrollment, budget,
+call stop, exact Twilio number callback, deployed SHA and bounded call acceptance.
+Never copy PINs or configured private numbers into deployment logs.
+
 ## Repo bootstrap facts (filled in at creation)
 
 | | |

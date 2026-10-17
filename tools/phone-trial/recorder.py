@@ -60,6 +60,9 @@ def commit(old, new, event=None):
     if old:
         put.update(ExpressionAttributeNames={"#v": "version"}, ExpressionAttributeValues={":v": old["version"]})
     operations = [{"Put": put}]
+    if new.get("runId"):
+        import account_lifecycle
+        operations.extend(account_lifecycle.ready_conditions(new))
     if event:
         operations.append({"Put": {"TableName": os.environ["TABLE"], "Item": event, "ConditionExpression": "attribute_not_exists(PK)"}})
     clients()[0].meta.client.transact_write_items(TransactItems=operations)
@@ -70,6 +73,9 @@ def event_post(raw):
     sid = data.get("callSid", "")
     if data.get("runId") != os.environ["RUN_ID"] or not SID.fullmatch(sid) or data.get("type") not in TYPES:
         return response(400, {"error": "Invalid event identity"})
+    import account_lifecycle
+    if account_lifecycle.blocked({"runId": data["runId"]}):
+        return response(200, {"recordingStatus": "deleted"})
     event_id = hashlib.sha256(raw).hexdigest()
     key = call_key(sid)
     journal_key = {"PK": key["PK"], "SK": "EVENT#" + sid + "#" + event_id}
@@ -122,6 +128,9 @@ def set_recording(sid, recording, status, run_id=None, expected_attempt=None, **
         old = get(call_key(sid, run_id))
         if not old or old.get("recordingSid", recording) != recording:
             raise ValueError("Recording binding mismatch")
+        import account_lifecycle
+        if account_lifecycle.blocked(old):
+            return {**old, "recordingStatus": "deleted"}
         if old.get("recordingStatus") in {"ready", "deleted", "expired"}:
             return old
         if expected_attempt is not None and old.get("copyAttempts") != expected_attempt:
@@ -148,6 +157,9 @@ def ingest_recording(sid, recording, status, run_id=None):
         old = get(call_key(sid, run_id))
         if not old or old.get("recordingSid", recording) != recording:
             return response(409, {"error": "Recording binding mismatch"})
+        import account_lifecycle
+        if account_lifecycle.blocked(old):
+            return response(200, {"recordingStatus": "deleted"})
         state = old.get("recordingStatus")
         if state in {"ready", "deleted", "expired"}:
             return response(200, {"recordingStatus": state})
@@ -202,6 +214,11 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def copy_audio(sid, recording, run_id=None):
+    import account_lifecycle
+    call = get(call_key(sid, run_id)) or {"runId": run_id or os.environ["RUN_ID"], "callSid": sid}
+    call = {**call, "recordingSid": recording}
+    if account_lifecycle.blocked(call):
+        raise ValueError("Recording owner deleted")
     account = os.environ["TWILIO_ACCOUNT_SID"]
     url = f"https://api.twilio.com/2010-04-01/Accounts/{account}/Recordings/{recording}.mp3"
     auth = base64.b64encode((os.environ.get("TWILIO_API_KEY_SID", account) + ":" + os.environ.get("TWILIO_API_KEY_SECRET", os.environ["TWILIO_AUTH_TOKEN"])).encode()).decode()
@@ -238,10 +255,14 @@ def copy_audio(sid, recording, run_id=None):
             raise ValueError("Truncated audio content")
         audio_hash = checksum.hexdigest()
         audio.seek(0)
+        if account_lifecycle.blocked(call):
+            raise ValueError("Recording owner deleted")
         clients()[1].put_object(Bucket=os.environ["BUCKET"], Key=key, Body=audio,
                                ContentLength=size, ContentType="audio/mpeg", ServerSideEncryption="AES256",
                                ChecksumSHA256=base64.b64encode(checksum.digest()).decode(),
                                Metadata={"sha256": audio_hash})
+    if account_lifecycle.cleanup_if_deleted(call, key):
+        raise ValueError("Recording owner deleted during transfer")
     head = clients()[1].head_object(Bucket=os.environ["BUCKET"], Key=key)
     if head["ContentLength"] != size or head.get("Metadata", {}).get("sha256") != audio_hash:
         raise ValueError("S3 verification failed")
@@ -369,6 +390,12 @@ def handler(event, context):
     # Only a principal with lambda:InvokeFunction can supply a direct outer event.
     # API Gateway always supplies requestContext/version, regardless of HTTP body.
     if "requestContext" not in event and "version" not in event:
+        if event.get("operation") in {"owner_account_export", "owner_account_purge"}:
+            import account_lifecycle
+            return account_lifecycle.operation(event)
+        if event.get("operation") == "owner_inbound_enroll":
+            import inbound_owner
+            return inbound_owner.enroll(event)
         if event.get("operation") in {"owner_recordings_list", "owner_recording_media"}:
             import owner_recordings
             return owner_recordings.operation(event)
@@ -390,6 +417,11 @@ def handler(event, context):
     path = event.get("rawPath", "")
     method = event.get("requestContext", {}).get("http", {}).get("method", "")
     try:
+        if path.startswith("/inbound-owner/") and method == "POST":
+            import inbound_owner
+            if path in {"/inbound-owner/redeem", "/inbound-owner/check", "/inbound-owner/finish"}:
+                return inbound_owner.redeem(raw, headers, path.rsplit("/", 1)[1])
+            return inbound_owner.callback(path, raw, headers)
         if path.startswith("/owner-message/") and method == "POST":
             import owner_messages
             return owner_messages.callback(path, raw, headers)

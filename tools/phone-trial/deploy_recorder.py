@@ -17,6 +17,7 @@ def template():
         "Description": "Live Ninja bounded phone trial recordings and download links",
         "Parameters": {
             "CodeBucket": {"Type": "String"}, "CodeKey": {"Type": "String"},
+            "InboundBridgeUrl": {"Type": "String", "Default": ""},
             "TwilioAccount": {"Type": "String"}, "TwilioKeySid": {"Type": "String"},
             "TwilioAuth": {"Type": "String", "NoEcho": True},
             "TwilioKeySecret": {"Type": "String", "NoEcho": True},
@@ -36,8 +37,12 @@ def template():
                 "AssumeRolePolicyDocument": {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"}, "Action": "sts:AssumeRole"}]},
                 "Policies": [{"PolicyName": "phone-trial", "PolicyDocument": {"Version": "2012-10-17", "Statement": [
                     {"Effect": "Allow", "Action": ["logs:CreateLogStream", "logs:PutLogEvents"], "Resource": sub("arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/live-ninja-phone-trial-recorder:*")},
-                    {"Effect": "Allow", "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:TransactWriteItems", "dynamodb:ConditionCheckItem", "dynamodb:UpdateItem"], "Resource": {"Fn::GetAtt": ["Table", "Arn"]}},
-                    {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject"], "Resource": "arn:aws:s3:::live-ninja-deliverables-759775734231/phone-trial/*"},
+                    {"Effect": "Allow", "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:TransactWriteItems", "dynamodb:ConditionCheckItem", "dynamodb:UpdateItem"], "Resource": {"Fn::GetAtt": ["Table", "Arn"]}},
+                    {"Effect": "Allow", "Action": ["dynamodb:GetItem"], "Resource": "arn:aws:dynamodb:us-east-1:759775734231:table/live-ninja"},
+                    {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion"], "Resource": "arn:aws:s3:::live-ninja-deliverables-759775734231/phone-trial/*"},
+                    {"Effect": "Allow", "Action": ["s3:ListBucket", "s3:ListBucketVersions"], "Resource": "arn:aws:s3:::live-ninja-deliverables-759775734231", "Condition": {"StringLike": {"s3:prefix": "phone-trial/*"}}},
+                    {"Effect": "Allow", "Action": ["s3:GetBucketVersioning"], "Resource": "arn:aws:s3:::live-ninja-deliverables-759775734231"},
+                    {"Effect": "Allow", "Action": ["lambda:InvokeFunction"], "Resource": "arn:aws:lambda:us-east-1:759775734231:function:live-ninja-realtime-broker"},
                 ]}}],
             }},
             "Function": {"Type": "AWS::Lambda::Function", "DependsOn": ["LogGroup"], "Properties": {
@@ -51,6 +56,7 @@ def template():
                     "BUCKET": "live-ninja-deliverables-759775734231", "TABLE": ref("Table"),
                     "PUBLIC_BASE_URL": sub("https://${Api}.execute-api.${AWS::Region}.amazonaws.com"),
                     "RUN_ID": "hotel-trial-2026-10-15",
+                    "INBOUND_BRIDGE_URL": ref("InboundBridgeUrl"),
                 }},
             }},
             "Integration": {"Type": "AWS::ApiGatewayV2::Integration", "Properties": {"ApiId": ref("Api"), "IntegrationType": "AWS_PROXY", "IntegrationUri": {"Fn::GetAtt": ["Function", "Arn"]}, "PayloadFormatVersion": "2.0"}},
@@ -82,8 +88,19 @@ def main():
         z.write(Path(__file__).with_name("recorder.py"), "recorder.py")
         z.write(Path(__file__).with_name("owner_messages.py"), "owner_messages.py")
         z.write(Path(__file__).with_name("owner_recordings.py"), "owner_recordings.py")
+        z.write(Path(__file__).with_name("inbound_owner.py"), "inbound_owner.py")
+        z.write(Path(__file__).with_name("account_lifecycle.py"), "account_lifecycle.py")
     boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=archive.getvalue(), ServerSideEncryption="AES256")
-    params = {"CodeBucket": bucket, "CodeKey": key,
+    config_file = Path(__file__).resolve().parents[2] / "infra" / "phone-trial-config.json"
+    inbound_bridge = os.environ.get("INBOUND_BRIDGE_URL")
+    if inbound_bridge is None:
+        inbound_bridge = json.loads(config_file.read_text(encoding="utf-8")).get("inboundBridgeUrl", "")
+    if inbound_bridge:
+        from urllib.parse import urlsplit
+        parsed = urlsplit(inbound_bridge)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.path or parsed.query or parsed.fragment or parsed.username:
+            raise SystemExit("Invalid inbound bridge URL")
+    params = {"CodeBucket": bucket, "CodeKey": key, "InboundBridgeUrl": inbound_bridge,
               "TwilioAccount": os.environ["TWILIO_ACCOUNT_SID"], "TwilioKeySid": os.environ["TWILIO_API_KEY_SID"],
               "TwilioAuth": os.environ["TWILIO_AUTH_TOKEN"], "TwilioKeySecret": os.environ["TWILIO_API_KEY_SECRET"]}
     name = "live-ninja-phone-trial"

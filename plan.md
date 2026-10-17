@@ -160,12 +160,12 @@ Execution sequence: resolve the front-loaded batch and verification tools first.
 - [ ] assistant-call-task — blocked by: call-topology-proof, phone-number-routing, call-budget-gate; gate: scripts\verify-phone-evidence.bat assistant-call-task
 - [ ] recording-capture — blocked by: phone-audio-loop, phone-account-session; gate: scripts\verify-phone-evidence.bat recording-capture
 - [ ] recording-s3-ingest — blocked by: recording-capture; gate: scripts\verify-phone-evidence.bat recording-s3-ingest
-- [~] recording-app-access — existing owner and historical trial web playback implemented; Android, Jobs links and cross-tab audio exclusion depend on call-client; gate: scripts\verify-phone-evidence.bat recording-app-access
+- [~] recording-app-access — web and native Android playback/download plus cross-tab capture exclusion are deployed. Jobs links and complete call-mode acceptance remain dependent on call-client; gate: scripts\verify-phone-evidence.bat recording-app-access
 - [ ] phone-acceptance — blocked by: phone-number-routing, recording-app-access; gate: scripts\verify-phone-evidence.bat phone-acceptance
 - [ ] call-modes-acceptance — blocked by: phone-acceptance, call-client, assistant-call-task, recording-app-access; gate: scripts\verify-phone-evidence.bat call-modes-acceptance
 - [ ] hotel-task-provider — blocked by: assistant-call-task, phone-targets, call-budget-gate; gate: scripts\verify-phone-evidence.bat hotel-task-provider
 - [ ] hotel-results — blocked by: hotel-task-provider, call-modes-acceptance, recording-app-access; gate: scripts\verify-phone-evidence.bat hotel-results
-- [!] car-usb-access — Samsung S9 requires USB debugging authorization after one bounded reconnect on 2026-10-16; owner must unlock the phone and approve its prompt; gate: scripts\verify-phone-evidence.bat car-usb-access
+- [~] car-usb-access — S9 access restored and signed0.3.17/code23 installed/verified2026-10-17. Formal evidence gate and physical car test remain open; gate: scripts\verify-phone-evidence.bat car-usb-access
 - [ ] car-repro — blocked by: car-usb-access; gate: scripts\verify-phone-evidence.bat car-repro
 - [ ] car-route-fix — blocked by: car-repro; gate: scripts\verify-phone-evidence.bat car-route-fix
 - [ ] car-test-matrix — blocked by: car-route-fix, call-modes-acceptance, recording-app-access; gate: scripts\verify-phone-evidence.bat car-test-matrix
@@ -208,13 +208,38 @@ Definition of done: `git push origin main` exits 0 and `gh run watch <recorded-r
 
 Supervision: local tests have a 20-minute deadline; Android build/lint has 45 minutes; delivery runs have 60 minutes. Register session/run identifiers and monitor both success and failure. Classify failures before retrying the recorded command; one ceiling of three attempts per milestone applies across parent and agents. Existing Stop conditions govern this run. No local schedules or new call permissions are created.
 
+## inbound-fresh-owner-build — build authenticated fresh phone sessions while calls stay stopped
+Depends on: existing recorder, broker, Azure bridge and owner APIs; live activation depends on private PIN enrollment and explicit resumption of calls.
+Outcome: allowlisted owner calls authenticate with PIN, consent to recording, and enter a fresh owner conversation using existing persona, rules, memory, transcript and quota services. Initial phone tool set is read-only: memory_search, entity_get, knowledge_search, knowledge_recent, job_list, job_status. No phone token can mutate account data, start another call, control devices or bypass review. Non-goals: active-session handoff, routing activation, new providers/dependencies, call-stop release, new spending grants, Android Auto.
+Files: recorder/inbound helper and existing tests, bridge owner media path/tests, existing broker/realtime/webapp auth and tests, deployment wiring, contracts, Help and this plan. Preserve outbound hotel behavior.
+### inbound-broker-boundary — bind owner privileges to one live call session
+- [x] inbound-phone-capability — IAM-only mint after recorder authorization; fresh active-owner lookup, quota session and phone token expiring at the call deadline plus 60 seconds; exact tool/transcript sinks and session binding; shared six-tool policy enforced in prompt, manifest and execution.
+Definition of done: `go test ./cmd/realtime-broker ./internal/realtime ./internal/webapp ./internal/tools -count=1` exits 0, including negative authorization/session tests. Agent /root/phone_verification owns these files.
+### inbound-recorder-bridge — authenticate caller before owner data or recorded conversation
+- [x] inbound-pin-media — signed callbacks, exact From/To allowlist, persisted PIN attempt limit, no raw PIN logging, consent before recording, bounded one-mint bootstrap, one-use bridge redemption, owner model/tool/transcript transport, 180-second cap and matching session/voice-lock cleanup. Reuse existing ledger reservations; never release owner-stop.
+- [x] inbound-private-pin-helper — real .bat entrypoint with hidden local entry and salted verifier storage, no PIN in arguments/chat/temp files and no automatic activation.
+Definition of done: `python -B -m unittest discover -s tools/phone-trial -p 'test_*.py'` and `go test ./cmd/phone-trial-bridge -count=1` exit 0. Agent /root/phone_backend owns recorder, bridge and helper files.
+### inbound-closed-delivery — publish implementation without enabling calls
+- [ ] inbound-contract-release — root verifies integration, Help/contract truth, IAM resource scope and absent/disabled inbound configuration; commit/push main; watch exact GitHub run IDs to terminal success. Real call proof remains open.
+Definition of done: focused tests and existing main/phone deployment workflows succeed, unauthenticated inbound requests are rejected, owner-stop remains set and no call was created.
+Supervision: local test20 minutes; delivery60 minutes; at most three classified attempts per milestone. Missing private PIN or call authority blocks runtime activation only. No local scheduled job, provider routing update, or secret read.
+
+## recording-account-lifecycle — include recordings in existing account privacy actions
+Depends on: recording-s3-ingest and existing authenticated account export/delete.
+Outcome: account export includes bounded recording metadata and authenticated download references; account deletion removes owned provider media, S3 versions and private metadata. A durable tombstone prevents late ingestion recreating audio. Non-goals: no live deletion, provider mutation, retention change, new service or framework during this run.
+Files: new recorder account_lifecycle.py and tests; existing webapp account export and account-purge worker/tests; exact Lambda adapter, template IAM and recorder packaging; existing ingestion callbacks get shared tombstone guards. Agent /root/phone_verification owns lifecycle and Go integration, /root/phone_backend owns recorder hooks, root owns deployment/Help/contracts.
+### recording-account-privacy — retain owner boundaries through partial failures and retries
+- [x] recording-export-purge — paginated owner-bound exports exclude PINs, verifiers, capabilities and credential data; deletion marks state before side effects, validates provider/recording/object identity, removes versions and metadata only after successful media cleanup, and preserves retry evidence. No actual account-delete request is executed.
+Definition of done: `python -B -m unittest discover -s tools/phone-trial -p 'test_*.py'`, `go test ./cmd/account-purge ./internal/webapp -count=1`, `go test ./internal/webapp -run TestHelpDrawer -count=1` and `git diff --check` exit 0. GitHub deployments reach terminal success; live destructive acceptance stays unperformed.
+Supervision:20-minute tests,60-minute delivery, three classified attempts; inherit root Stop conditions. Data deletion tests use isolated fakes only.
+
 ## Scope references
 
 These named sections define requirements and evidence; they are not executable milestones. The milestone graph and commands below govern execution.
 
 #### phone-access — Twilio calling with an Azure backend
 
-Status: DRAFT. NOT STARTED. Added 2026-10-15. Implementation awaits an explicit start instruction. Only plan editing and the explicitly requested local credential-helper files are authorized now. No phone/job feature implementation, purchases, provider credential collection by the agent, commits, pushes, or deployments during planning. Preserve the linked completed history.
+Status: IMPLEMENTATION AUTHORIZED. Original scope added 2026-10-15; implementation started by later locked decisions. Existing call stop and deployment-only delivery remain in force. Preserve the linked completed history.
 
 ##### phone-outcome — scope and implementation path
 
@@ -241,7 +266,7 @@ The front-loaded batch is recorded in Open decisions and Locked decisions. The b
 
 #### app-calling — make calls inside Live Ninja with optional assistant participation
 
-Status: DRAFT, NOT STARTED. Added 2026-10-15. This expands phone-access planning; the planning-only hold remains. Feasibility is supported by provider building blocks, but the complete media path and takeover behavior have not been proven.
+Status: IMPLEMENTATION AUTHORIZED; expanded call topology remains unproven and its live experiment is blocked by stop-calls. Provider building blocks do not establish end-to-end takeover behavior.
 
 ##### app-call-modes — requested behavior
 
@@ -279,7 +304,7 @@ These are pending product decisions, not additional questions during a running b
 
 #### hotel-internet-job — call five hotels and compare guest Wi-Fi access
 
-Status: DRAFT, NOT STARTED. Depends on assistant-outbound and call-expanded-delivery. The credential-helper exception below authorizes only helper creation now; it does not start this job.
+Status: IMPLEMENTATION AUTHORIZED. Depends on assistant-outbound and call-expanded-delivery; no hotel dialing while stop-calls remains active.
 
 Outcome: the owner submits one job with five specific hotels. Live Ninja calls each property, asks follow-up questions about joining its guest internet, and returns a comparison focused on the owner's restrictive work VPN. A successful phone connection alone is not a successful hotel interview. A hotel's answer is reported evidence, not a verified VPN compatibility test.
 
@@ -383,8 +408,8 @@ Workstream done: every contained milestone gate exits 0; run "scripts\verify-pho
 ### phone-account-session — preserve account behavior and permissions
 depends on: phone-targets
 
-- [!] phone-session-binding — fresh owner conversation selected on 2026-10-17; private PIN setup remains blocked on the owner. Then add short-lived service authentication and call-bound account context. Reuse existing persona, rules, memory, tools, and transcript logic. Never trust a caller-supplied user ID or model argument as identity. No unrestricted account impersonation or direct AWS credentials in the Azure bridge.
-- [ ] phone-tool-filter — support the phone surface explicitly. Exclude unsupported camera/volume/device controls. Preserve tool authorization, confirmation, and idempotency. Phone location follows existing explicit-current/home rules; a phone number is not GPS.
+- [~] phone-session-binding — fresh owner conversation implementation now uses short-lived call-bound authentication; private PIN enrollment and explicit call activation remain owner actions. Reuse existing persona, rules, memory, tools, and transcript logic. Never trust a caller-supplied user ID or model argument as identity. No unrestricted account impersonation or direct AWS credentials in the Azure bridge.
+- [x] phone-tool-filter — support the phone surface explicitly. Exclude unsupported camera/volume/device controls. Preserve tool authorization, confirmation, and idempotency. Phone location follows existing explicit-current/home rules; a phone number is not GPS.
 
 
 
@@ -550,7 +575,7 @@ depends on: recording-capture
 - [ ] recording-object-copy — use an AWS-owned worker with the existing workload role to fetch authenticated Twilio media and write the owner-scoped S3 object. Azure handles voice/orchestration; no static AWS keys in Azure or Twilio. Accept only known provider recording endpoints and validated IDs; restrict redirects and size/type. Stream bytes with bounded memory and record integrity checksum, byte count, duration, content type, and source RecordingSid.
 - [ ] recording-storage-index — use private encrypted S3 plus existing owner-scoped index patterns. Reuse the deliverables bucket only if the locked retention fits its 180-day lifecycle; otherwise define a recording-specific bucket/lifecycle without changing unrelated deliverables. Playback-ready requires a verified S3 object and metadata commit. Never overwrite a different recording on a repeated event.
 - [ ] recording-recovery — retain pending work durably and reconcile missed callbacks without redialing. Limit transfer attempts to three total across queue/worker retries with 30-second then 60-second delay. Keep failed records visible for explicit retry. Never delete a provider source before verified S3 persistence; provider-copy cleanup and S3 expiration require the locked retention policy.
-- [ ] recording-data-lifecycle — cover user deletion/account purge/export, object versions if enabled, metadata, provider copies, and in-flight callbacks. Deleted calls must not be recreated by late ingestion. Separate recording retention from mandatory 7-day CloudWatch log retention.
+- [x] recording-data-lifecycle — cover user deletion/account purge/export, object versions if enabled, metadata, provider copies, and in-flight callbacks. Deleted calls must not be recreated by late ingestion. Separate recording retention from mandatory 7-day CloudWatch log retention.
 
 
 
@@ -749,6 +774,19 @@ Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat r
 
 
 ## Execution log
+
+- 2026-10-17 — final inbound/lifecycle local integration: `go test ./cmd/web ./cmd/account-purge ./cmd/authorizer ./cmd/realtime-broker ./cmd/phone-trial-bridge ./internal/realtime ./internal/tools ./internal/webapp -count=1` exit0; same packages `go vet` exit0. `python -B -m unittest discover -s tools/phone-trial -p 'test_*.py'` exit0,119 tests. `node --test tests/web/unit/*.test.mjs` exit0,118 tests. PowerShell evidence verifier exit0,38 synthetic checks. Owner media tests cover immediate clear/close before slow cleanup, late created response cancellation, scoped tool/transcript wire, token budgets/malformed usage/duplicate responses and sink failures. Action-bound MAC rejects cross-action replay.
+- 2026-10-17 — account lifecycle tests cover owner-bound export, all S3 versions, provider identity and strict already-gone responses, in-flight transfer barriers, callback-after-deletion, exact lock ownership, and retry after partial callback metadata deletion. No live deletion performed. Phone enrollment only stores a salted verifier and leaves inbound disabled. Fresh account status and logout watermark checked during call heartbeat.
+- 2026-10-17 — Android push run39024286735 attempt2 completed success; all30 instrumented tests passed. Both Android pipelines are terminal success; no tests skipped to repair the transient failure.
+- 2026-10-17 — automatic execution policy rejected cleanup of generated `tools/phone-trial/__pycache__/account_lifecycle.cpython-314.pyc` with reason `blocked by policy`. File is excluded from staging. No alternate deletion path attempted by root.
+
+- 2026-10-17 — Android publication39024285982 success, email step skipped. Public manifest0.3.17/code23 atf2a72a48dd8af99a34888adaa8ec873d7179d132 independently verified by root. APK SHA2561915e1819f2a87052cec6e8eb73b8cc66481e66dc028c1d2055553733ae8ca84; signer SHA2563d6c8b91dddd1e14a8fa457aa4cddae8fdce2eda218d5d381a5ca7d1eeb6b39d matches installed. Agent adb install -r returnedSuccess; installed version readback0.3.17/code23. Push test39024286735 had existing JobsComposeTest SnapshotStateObserver thread race; same-SHA dispatch passed full emulator suite. Classified transient,30-second backoff then gh run rerun39024286735 --failed, attempt2of3; monitored by /root/android_calling.
+
+- 2026-10-17 — recordings code f2a72a48dd8af99a34888adaa8ec873d7179d132: Deploy39024286733 and Phone39024286790 completed success. Main includes full Go/vet/race/browser/accessibility gates; Phone real Azure probe passed and trial job skipped. Public audio-access.mjs returned200 with capture lock implementation.
+
+- 2026-10-17 — read-only runtime preflight: AWS account759775734231; all17 active regions,188 log groups retain7 days, no corrections. CONFIG/OWNER_MESSAGES enabled=false, PHONE#CONTROL/VOICE activeRequest=owner-stop-2026-10-16, CONFIG/INBOUND_OWNER absent. Verified broker physical name live-ninja-realtime-broker and Azure ingress live-ninja-phone-trial.greenmeadow-28b6b789.eastus2.azurecontainerapps.io. No provider configuration changed.
+
+- 2026-10-17 — recordings commit f2a72a48dd8af99a34888adaa8ec873d7179d132 pushed main. Tracked runs: Deploy39024286733, Phone39024286790, Android39024285982 and39024286735. Android publish dispatched with notify_email=false. Root monitors Deploy/Phone; /root/android_calling monitors both Android runs, verifies exact release hash/signature and installs only the matching signed APK if USB remains available. Deadline60 minutes, attempt1 of3.
 
 - 2026-10-17 — Android job 45895: assembleDebug passed; lintDebug failed at unchanged AppUpdateInstaller.kt:123 (NewApi: setRequireUserAction requires API31). No recording-feature lint errors reported. Existing updater code is outside this change and no check was disabled. Release verification continues through the repository workflow.
 

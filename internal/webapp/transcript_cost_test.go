@@ -104,41 +104,45 @@ func TestTranscriptFinalForwardsCost(t *testing.T) {
 }
 
 func TestTranscriptNovaScopeIsBoundToCredentialSession(t *testing.T) {
-	fakeDDB := testutil.NewFakeDynamo()
-	deps := &Deps{
-		Store: store.NewWithClient(fakeDDB, "live-ninja"),
-		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	for _, scope := range []string{realtime.NovaScope, realtime.PhoneScope} {
+		t.Run(scope, func(t *testing.T) {
+			fakeDDB := testutil.NewFakeDynamo()
+			deps := &Deps{
+				Store: store.NewWithClient(fakeDDB, "live-ninja"),
+				Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+			app := fiber.New()
+			app.Use(func(c *fiber.Ctx) error {
+				c.Locals(localUserID, "u1")
+				c.Locals(localSessionID, "sess-credential")
+				c.Locals(localSurface, "web")
+				c.Locals(localScope, scope)
+				return c.Next()
+			})
+			app.Post("/api/v1/transcript", handleTranscript(deps))
+
+			resp, body := doJSON(t, app, http.MethodPost, "/api/v1/transcript", map[string]any{
+				"sessionId": "sess-attacker-chosen",
+				"turns": []map[string]any{
+					{"seq": 1, "role": "user", "text": "wrong session", "engine": "nova-sonic"},
+				},
+			})
+			require.Equal(t, http.StatusForbidden, resp.StatusCode)
+			errBody, ok := body["error"].(map[string]any)
+			require.True(t, ok, "error envelope = %#v", body)
+			require.Equal(t, "session_mismatch", errBody["code"])
+			require.Nil(t, fakeDDB.RawItem("USER#u1", "LOG#sess-attacker-chosen#000001"))
+
+			resp, body = doJSON(t, app, http.MethodPost, "/api/v1/transcript", map[string]any{
+				"sessionId": "sess-credential",
+				"turns": []map[string]any{
+					{"seq": 1, "role": "user", "text": "right session", "engine": "nova-sonic"},
+				},
+			})
+			require.Equal(t, http.StatusOK, resp.StatusCode, "response = %#v", body)
+			require.NotNil(t, fakeDDB.RawItem("USER#u1", "LOG#sess-credential#000001"))
+		})
 	}
-	app := fiber.New()
-	app.Use(func(c *fiber.Ctx) error {
-		c.Locals(localUserID, "u1")
-		c.Locals(localSessionID, "sess-credential")
-		c.Locals(localSurface, "web")
-		c.Locals(localScope, realtime.NovaScope)
-		return c.Next()
-	})
-	app.Post("/api/v1/transcript", handleTranscript(deps))
-
-	resp, body := doJSON(t, app, http.MethodPost, "/api/v1/transcript", map[string]any{
-		"sessionId": "sess-attacker-chosen",
-		"turns": []map[string]any{
-			{"seq": 1, "role": "user", "text": "wrong session", "engine": "nova-sonic"},
-		},
-	})
-	require.Equal(t, http.StatusForbidden, resp.StatusCode)
-	errBody, ok := body["error"].(map[string]any)
-	require.True(t, ok, "error envelope = %#v", body)
-	require.Equal(t, "session_mismatch", errBody["code"])
-	require.Nil(t, fakeDDB.RawItem("USER#u1", "LOG#sess-attacker-chosen#000001"))
-
-	resp, body = doJSON(t, app, http.MethodPost, "/api/v1/transcript", map[string]any{
-		"sessionId": "sess-credential",
-		"turns": []map[string]any{
-			{"seq": 1, "role": "user", "text": "right session", "engine": "nova-sonic"},
-		},
-	})
-	require.Equal(t, http.StatusOK, resp.StatusCode, "response = %#v", body)
-	require.NotNil(t, fakeDDB.RawItem("USER#u1", "LOG#sess-credential#000001"))
 }
 
 func TestSanitizeSessionCost(t *testing.T) {

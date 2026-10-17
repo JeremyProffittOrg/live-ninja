@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/jobs"
+	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	"github.com/JeremyProffittOrg/live-ninja/internal/testutil"
 	"github.com/JeremyProffittOrg/live-ninja/internal/tools"
@@ -21,6 +22,7 @@ import (
 
 type jobsAccessCounter struct {
 	jobs.Store
+	jobs.HistoryStore
 	reads, writes int
 }
 
@@ -42,7 +44,7 @@ func jobsCapabilityApp(t *testing.T, surface, scope string, fake *fakeBrokerLamb
 	fs, err := jobs.NewFileStore(filepath.Join(t.TempDir(), "jobs.json"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = fs.Close() })
-	counted := &jobsAccessCounter{Store: fs}
+	counted := &jobsAccessCounter{Store: fs, HistoryStore: fs}
 	svc := jobs.NewService(counted)
 	job, err := svc.Create(context.Background(), "alice", jobs.Input{Title: "Private saved review", Kind: "review", Instructions: "Private original text"}, "fixture-create")
 	require.NoError(t, err)
@@ -98,6 +100,26 @@ func TestLegacyJobsToolsDeniedBeforeAnyReadOrProposal(t *testing.T) {
 			require.Zero(t, *authCalls, "must reject before registry or proposal execution")
 		})
 	}
+}
+
+func TestPhoneToolsPermitJobReadsWithoutReviewAndRefuseEscalation(t *testing.T) {
+	app, counted, _, id := jobsCapabilityApp(t, "phone", realtime.PhoneScope, nil)
+	for _, name := range []string{"job_list", "job_status"} {
+		args := map[string]any{}
+		if name == "job_status" {
+			args["jobId"] = id
+		}
+		status, body := capabilityJSON(t, app, "/invoke", "", map[string]any{"tool": name, "callId": name, "args": args})
+		require.Equal(t, http.StatusOK, status, body)
+	}
+	reads := counted.reads
+	for _, name := range []string{"job_create", "job_cancel", "memory_write", "phone_message_send", "send_email", "rule_load", "set_volume", "unknown", " memory_search"} {
+		status, body := capabilityJSON(t, app, "/invoke", realtime.JobsReviewCapability, map[string]any{"tool": name, "args": map[string]any{"confirm": true}})
+		require.Equal(t, http.StatusForbidden, status, body)
+		require.Equal(t, "phone_tool_forbidden", body["error"].(map[string]any)["code"])
+	}
+	require.Equal(t, reads, counted.reads)
+	require.Zero(t, counted.writes)
 }
 
 func TestJobsCapabilityRequiresExactTokenAndTrustedSurface(t *testing.T) {

@@ -91,69 +91,124 @@ func scopedAuthRequest(t *testing.T, app *fiber.App, method, target, token, requ
 }
 
 func TestNovaScopedBearerIsLimitedToExactBridgeSinks(t *testing.T) {
-	app, signer, _ := newScopedAuthTestApp(t)
-	token := scopedAuthToken(t, signer, realtime.NovaScope, store.SurfaceWeb, "")
+	for _, scope := range []string{realtime.NovaScope, realtime.PhoneScope} {
+		t.Run(scope, func(t *testing.T) {
+			app, signer, _ := newScopedAuthTestApp(t)
+			surface := store.SurfaceWeb
+			if scope == realtime.PhoneScope {
+				surface = "phone"
+			}
+			token := scopedAuthToken(t, signer, scope, surface, "")
 
-	allowed := []string{
-		"/api/v1/transcript",
-		"/api/v1/transcript?retry=1",
-		"/api/v1/tools/invoke",
-	}
-	for _, target := range allowed {
-		t.Run("allow POST "+target, func(t *testing.T) {
-			resp, body := scopedAuthRequest(t, app, http.MethodPost, target, token, "")
-			require.Equal(t, fiber.StatusNoContent, resp.StatusCode, body)
-		})
-	}
+			allowed := []string{
+				"/api/v1/transcript",
+				"/api/v1/transcript?retry=1",
+				"/api/v1/tools/invoke",
+			}
+			for _, target := range allowed {
+				t.Run("allow POST "+target, func(t *testing.T) {
+					resp, body := scopedAuthRequest(t, app, http.MethodPost, target, token, "")
+					require.Equal(t, fiber.StatusNoContent, resp.StatusCode, body)
+				})
+			}
 
-	blocked := []struct {
-		method string
-		target string
-	}{
-		{http.MethodGet, "/api/v1/transcript"},
-		{http.MethodOptions, "/api/v1/transcript"},
-		{http.MethodPut, "/api/v1/transcript"},
-		{http.MethodPost, "/api/v1/transcript/"},
-		{http.MethodPost, "/v1/transcript"},
-		{http.MethodGet, "/api/v1/tools/invoke"},
-		{http.MethodPost, "/api/v1/tools/invoke/child"},
-		{http.MethodGet, "/api/v1/me"},
-		{http.MethodPost, "/api/v1/fallback/turn"},
-		{http.MethodPost, "/auth/logout"},
-	}
-	for _, tc := range blocked {
-		t.Run("reject "+tc.method+" "+tc.target, func(t *testing.T) {
-			resp, body := scopedAuthRequest(t, app, tc.method, tc.target, token, "")
-			require.Equal(t, fiber.StatusForbidden, resp.StatusCode, body)
-			require.Contains(t, body, `"code":"insufficient_scope"`)
+			blocked := []struct {
+				method string
+				target string
+			}{
+				{http.MethodGet, "/api/v1/transcript"},
+				{http.MethodOptions, "/api/v1/transcript"},
+				{http.MethodPut, "/api/v1/transcript"},
+				{http.MethodPost, "/api/v1/transcript/"},
+				{http.MethodPost, "/v1/transcript"},
+				{http.MethodGet, "/api/v1/tools/invoke"},
+				{http.MethodPost, "/api/v1/tools/invoke/child"},
+				{http.MethodGet, "/api/v1/me"},
+				{http.MethodPost, "/api/v1/fallback/turn"},
+				{http.MethodPost, "/auth/logout"},
+			}
+			for _, tc := range blocked {
+				t.Run("reject "+tc.method+" "+tc.target, func(t *testing.T) {
+					resp, body := scopedAuthRequest(t, app, tc.method, tc.target, token, "")
+					require.Equal(t, fiber.StatusForbidden, resp.StatusCode, body)
+					require.Contains(t, body, `"code":"insufficient_scope"`)
+				})
+			}
 		})
 	}
 }
 
 func TestNovaScopedBearerRequiresLiveRedeemedSession(t *testing.T) {
-	app, signer, fakeDDB := newScopedAuthTestApp(t)
-	token := scopedAuthToken(t, signer, realtime.NovaScope, store.SurfaceWeb, "")
+	for _, scope := range []string{realtime.NovaScope, realtime.PhoneScope} {
+		t.Run(scope, func(t *testing.T) {
+			app, signer, fakeDDB := newScopedAuthTestApp(t)
+			surface := store.SurfaceWeb
+			if scope == realtime.PhoneScope {
+				surface = "phone"
+			}
+			token := scopedAuthToken(t, signer, scope, surface, "")
 
-	for name, item := range map[string]map[string]ddbtypes.AttributeValue{
-		"expired": {
-			"pk":         &ddbtypes.AttributeValueMemberS{Value: "USER#u1"},
-			"sk":         &ddbtypes.AttributeValueMemberS{Value: "BUCKET#sess#sess-1"},
-			"exp":        &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Add(-time.Minute).Unix(), 10)},
-			"redeemedAt": &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Unix(), 10)},
-		},
-		"not redeemed": {
-			"pk":  &ddbtypes.AttributeValueMemberS{Value: "USER#u1"},
-			"sk":  &ddbtypes.AttributeValueMemberS{Value: "BUCKET#sess#sess-1"},
-			"exp": &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10)},
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			fakeDDB.SeedItem(item)
-			resp, body := scopedAuthRequest(t, app, http.MethodPost, "/api/v1/transcript", token, "")
-			require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode, body)
-			require.Contains(t, body, `"code":"session_inactive"`)
+			for name, item := range map[string]map[string]ddbtypes.AttributeValue{
+				"expired": {
+					"pk":         &ddbtypes.AttributeValueMemberS{Value: "USER#u1"},
+					"sk":         &ddbtypes.AttributeValueMemberS{Value: "BUCKET#sess#sess-1"},
+					"exp":        &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Add(-time.Minute).Unix(), 10)},
+					"redeemedAt": &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Unix(), 10)},
+				},
+				"not redeemed": {
+					"pk":  &ddbtypes.AttributeValueMemberS{Value: "USER#u1"},
+					"sk":  &ddbtypes.AttributeValueMemberS{Value: "BUCKET#sess#sess-1"},
+					"exp": &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10)},
+				},
+			} {
+				t.Run(name, func(t *testing.T) {
+					fakeDDB.SeedItem(item)
+					resp, body := scopedAuthRequest(t, app, http.MethodPost, "/api/v1/transcript", token, "")
+					require.Equal(t, fiber.StatusUnauthorized, resp.StatusCode, body)
+					require.Contains(t, body, `"code":"session_inactive"`)
+				})
+			}
 		})
 	}
+}
+
+func TestPhoneScopeRechecksOwnerAndRejectsSurfaceEscalation(t *testing.T) {
+	for _, field := range []string{"role", "status", "tokensValidAfter"} {
+		t.Run(field, func(t *testing.T) {
+			app, signer, ddb := newScopedAuthTestApp(t)
+			token := scopedAuthToken(t, signer, realtime.PhoneScope, "phone", "")
+			context := strings.ReplaceAll(scopedAuthRequestContext, `"surface":"web"`, `"surface":"phone"`)
+			resp, body := scopedAuthRequest(t, app, http.MethodPost, "/api/v1/tools/invoke", token, context)
+			require.Equal(t, 204, resp.StatusCode, body)
+			profile := ddb.RawItem("USER#u1", "PROFILE")
+			switch field {
+			case "role":
+				profile[field] = &ddbtypes.AttributeValueMemberS{Value: store.RoleMember}
+			case "status":
+				profile[field] = &ddbtypes.AttributeValueMemberS{Value: "disabled"}
+			case "tokensValidAfter":
+				profile[field] = &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10)}
+			}
+			ddb.SeedItem(profile)
+			resp, body = scopedAuthRequest(t, app, http.MethodPost, "/api/v1/tools/invoke", token, context)
+			require.Equal(t, 403, resp.StatusCode, body)
+		})
+	}
+	for _, surface := range []string{"web", "android", "device"} {
+		app, signer, _ := newScopedAuthTestApp(t)
+		token := scopedAuthToken(t, signer, realtime.PhoneScope, surface, "")
+		resp, body := scopedAuthRequest(t, app, http.MethodPost, "/api/v1/transcript", token, "")
+		require.Equal(t, 403, resp.StatusCode, body)
+	}
+	app, signer, _ := newScopedAuthTestApp(t)
+	for _, scope := range []string{"", realtime.NovaScope} {
+		token := scopedAuthToken(t, signer, scope, "phone", "")
+		resp, body := scopedAuthRequest(t, app, http.MethodPost, "/api/v1/transcript", token, "")
+		require.Equal(t, 403, resp.StatusCode, body)
+	}
+	token := scopedAuthToken(t, signer, realtime.PhoneScope, "phone", "")
+	resp, body := scopedAuthRequest(t, app, http.MethodPost, "/api/v1/transcript", token, scopedAuthRequestContext)
+	require.Equal(t, 401, resp.StatusCode, body)
 }
 
 func TestNovaScopeGuardAppliesToAuthorizerContextPath(t *testing.T) {

@@ -20,6 +20,19 @@ func manifestNames(manifest []map[string]any) map[string]bool {
 	return out
 }
 
+func TestPhoneManifestIsExactlyReadOnly(t *testing.T) {
+	names := manifestNames(PhoneToolManifest())
+	require.Equal(t, map[string]bool{"memory_search": true, "entity_get": true, "knowledge_search": true, "knowledge_recent": true, "job_list": true, "job_status": true}, names)
+	for _, tool := range []string{"send_email", "phone_message_send", "memory_write", "forget", "job_create", "job_cancel", "rule_load", "set_volume", " memory_search", "MEMORY_SEARCH", "future_read"} {
+		require.False(t, PhoneToolAllowed(tool), tool)
+	}
+	prompt := PhoneInstructions(ResolvePersona(""))
+	for _, name := range []string{"send_email", "memory_write", "rule_load", "set_volume", "start_new_conversation"} {
+		require.NotContains(t, prompt, name)
+	}
+	require.False(t, ClientSupportsJobsReview("phone", []string{JobsReviewCapability}))
+}
+
 func TestToolManifestAndInstructionsAreScopedToSurface(t *testing.T) {
 	tests := []struct {
 		surface  string

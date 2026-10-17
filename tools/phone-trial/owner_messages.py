@@ -65,6 +65,9 @@ def config(owner, sending=False):
             return None
     except (ValueError, TypeError, AttributeError):
         return None
+    import account_lifecycle
+    if r.get(account_lifecycle.owner_key(owner)):
+        return None
     value = r.get(CONFIG_KEY)
     if not value or value.get("ownerUserId") != owner or (sending and value.get("enabled") is not True):
         return None
@@ -99,6 +102,10 @@ def change(key, fields, event_type, event_data, sid=None, release=False):
         old = r.get(key)
         if not old:
             raise ValueError("Unknown message")
+        import account_lifecycle
+        bound = {"ownerUserId": old["ownerUserId"], "runId": namespace(old["ownerUserId"])}
+        if account_lifecycle.blocked(bound):
+            return old
         if sid and old.get("callSid", sid) != sid:
             raise ValueError("Call binding mismatch")
         if r.get(event_key):
@@ -112,6 +119,7 @@ def change(key, fields, event_type, event_data, sid=None, release=False):
         if sid:
             new["callSid"] = sid
         operations = [put(new, old), put({**event_key, "type": event_type, "data": event_data, "createdAt": int(time.time())})]
+        operations.extend(account_lifecycle.ready_conditions(bound))
         if sid:
             call_key = r.call_key(sid, namespace(old["ownerUserId"]))
             call = r.get(call_key)
@@ -119,7 +127,8 @@ def change(key, fields, event_type, event_data, sid=None, release=False):
                 raise ValueError("Call already bound")
             if not call:
                 operations.append(put({**call_key, "version": 1, "runId": namespace(old["ownerUserId"]), "callSid": sid,
-                    "ownerUserId": old["ownerUserId"], "requestId": old["requestId"], "targetId": old["destination"], "recordingStatus": "pending"}))
+                    "ownerUserId": old["ownerUserId"], "requestId": old["requestId"], "targetId": old["destination"],
+                    "direction": old.get("direction", "outbound"), "recordingStatus": "pending"}))
         lock = r.get(VOICE_KEY) if release else None
         if lock and lock.get("activeRequest") == old["lockId"]:
             operations.append({"Update": {"TableName": os.environ["TABLE"], "Key": VOICE_KEY,
@@ -232,7 +241,7 @@ def budget_operation(event):
     return r.response(409, {"error": "Budget changed; retry the same approval request"})
 
 
-def reserve(owner, request_id, alias, message, cfg):
+def reserve(owner, request_id, alias, message, cfg, *, reserve_amount=RESERVE, initial_fields=None, extra_checks=()):
     usage = provider("/Usage/Records/ThisMonth.json?Category=totalprice")
     records = usage.get("usage_records", [])
     if len(records) != 1 or records[0].get("price_unit", "").lower() != "usd" or usage.get("next_page_uri"):
@@ -256,6 +265,7 @@ def reserve(owner, request_id, alias, message, cfg):
     item = {**key, "ownerUserId": owner, "requestId": request_id, "destination": alias, "message": message,
             "scriptTranscript": INTRO + message, "providerStatus": "creating", "version": 1, "createdAt": int(time.time()),
             "lockId": lock_id, "callbackId": callback_id, "fromNumber": cfg["fromNumber"], "toNumber": cfg["destinations"][alias]}
+    item.update(initial_fields or {})
     for _ in range(4):
         prior = r.get(key)
         if prior:
@@ -265,7 +275,7 @@ def reserve(owner, request_id, alias, message, cfg):
         if budget_clock(cfg)[1] != day:
             raise ValueError("Day changed; retry call admission")
         daily_old = r.get(day_key)
-        extra = max(Decimal(0), base + RESERVE - max(LIMIT, base))
+        extra = max(Decimal(0), base + reserve_amount - max(LIMIT, base))
         daily = None
         if extra:
             granted = Decimal(str((daily_old or {}).get("grantedUSD", "0")))
@@ -273,7 +283,7 @@ def reserve(owner, request_id, alias, message, cfg):
             if not daily_old or int(daily_old.get("expiresAt", 0)) <= int(time.time()) or daily_spent + extra > granted:
                 raise ValueError("waiting_approval: Monthly $20 allowance reached; approve $5 for today")
             daily = {**daily_old, "spentUSD": daily_spent + extra, "version": int(daily_old["version"])+1}
-        budget = {**(old or {}), **budget_key, "allocatedUSD": base + RESERVE,
+        budget = {**(old or {}), **budget_key, "allocatedUSD": base + reserve_amount,
                   "observedProviderUSD": observed, "observedAt": int(time.time()),
                   "version": int((old or {}).get("version", 0)) + 1}
         config_check = {"TableName": os.environ["TABLE"], "Key": CONFIG_KEY,
@@ -292,6 +302,9 @@ def reserve(owner, request_id, alias, message, cfg):
             {"Put": {"TableName": os.environ["TABLE"], "Item": {**VOICE_KEY, "activeRequest": lock_id}, "ConditionExpression": "attribute_not_exists(activeRequest)"}},
             put({"PK": "OWNER_CALLBACK#" + callback_id, "SK": "META", "ownerUserId": owner, "requestId": request_id}),
             {"ConditionCheck": config_check}]
+        import account_lifecycle
+        operations.extend(account_lifecycle.ready_conditions({"ownerUserId": owner, "runId": namespace(owner)}))
+        operations.extend(extra_checks)
         if daily:
             item["budgetExpiresAt"] = int(daily["expiresAt"])
             operations.append(put(daily, daily_old))

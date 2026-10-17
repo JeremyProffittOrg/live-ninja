@@ -98,4 +98,18 @@ class RecordingAccessTests(unittest.TestCase):
         with self.assertRaises(ValueError):o.bind_legacy_recordings(main,phone,client)
         client.transact_write_items.assert_not_called()
 
+    def test_deployment_skips_only_completed_owner_deletion(self):
+        main, phone, client = Mock(), Mock(), Mock()
+        main.get_item.return_value = {'Item': {'userId': OWNER}}
+        for marker, accepted in (({'ownerUserId': OWNER, 'complete': True}, True),
+                                 ({'ownerUserId': OWNER, 'complete': False}, False),
+                                 ({'ownerUserId': OTHER, 'complete': True}, False), ({}, False)):
+            phone.get_item.side_effect = [{}, {'Item': marker}]
+            if accepted:
+                o.bind_legacy_recordings(main, phone, client)
+            else:
+                with self.assertRaises(ValueError):
+                    o.bind_legacy_recordings(main, phone, client)
+            client.transact_write_items.assert_not_called()
+
 if __name__=='__main__':unittest.main()

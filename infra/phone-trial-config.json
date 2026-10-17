@@ -6,6 +6,7 @@
   "azureResourceGroup": "rg-liveninja-azure-prod",
   "azureLocation": "eastus2",
   "azureAppName": "live-ninja-phone-trial",
+  "inboundBridgeUrl": "https://live-ninja-phone-trial.greenmeadow-28b6b789.eastus2.azurecontainerapps.io",
   "azureEnvironmentName": "live-ninja-phone-trial",
   "azureRegistryName": "liveninjaphonetrial759775",
   "modelEndpoint": "https://ln-aoai-eastus2.openai.azure.com",

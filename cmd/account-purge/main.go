@@ -52,6 +52,7 @@ import (
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/iot"
 	iottypes "github.com/aws/aws-sdk-go-v2/service/iot/types"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -122,12 +123,14 @@ type emailMessage struct {
 
 // Purger carries every dependency of one purge run.
 type Purger struct {
-	Log   *slog.Logger
-	DDB   ddbAPI
-	S3    s3API
-	IoT   iotAPI
-	SQS   sqsAPI
-	Store *store.Store
+	Log           *slog.Logger
+	DDB           ddbAPI
+	S3            s3API
+	IoT           iotAPI
+	SQS           sqsAPI
+	Store         *store.Store
+	PhoneClient   phoneAccountLambda
+	PhoneFunction string
 
 	// Memory purges the actor's AgentCore events and long-term records
 	// (agentcore-memory). nil skips the step; a *agentmemory.Service that is
@@ -161,6 +164,11 @@ func (p *Purger) Run(ctx context.Context, ev Event) error {
 	}
 	log := p.Log.With(slog.String("userId", ev.UserID))
 	started := time.Now()
+	// Phone deletion fences callbacks and removes provider/S3 copies before
+	// main-table identity disappears. Failure must not send a completion mail.
+	if err := p.purgePhoneAccount(ctx, ev.UserID); err != nil {
+		return err
+	}
 
 	// ---- 1. read metadata before anything is deleted ----
 	email, amazonUserID := ev.Email, ev.AmazonUserID
@@ -580,6 +588,8 @@ func main() {
 		IoT:                iot.NewFromConfig(awsCfg),
 		SQS:                sqs.NewFromConfig(awsCfg),
 		Store:              store.NewWithClient(ddbClient, cfg.TableName),
+		PhoneClient:        lambda.NewFromConfig(awsCfg, func(o *lambda.Options) { o.Region = "us-east-1" }),
+		PhoneFunction:      os.Getenv("PHONE_MESSAGES_FUNCTION_ARN"),
 		Memory:             agentmemory.NewFromAWSConfig(awsCfg, agentmemory.ConfigFromEnv(), logger),
 		Table:              cfg.TableName,
 		DeliverablesBucket: os.Getenv("DELIVERABLES_BUCKET"),

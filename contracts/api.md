@@ -280,6 +280,53 @@ Rules are stored as `pk=USER#<userId>`, `sk=RULE#<name>`. Only each enabled rule
   and serves the confirm page). No separate bind route — and no `/auth/lwa/device/callback`
   route — needed; documented here so no workstream builds a phantom endpoint for it.
 
+## Inbound owner phone sessions (2026-10-17 implementation)
+
+This service path is disabled until private PIN enrollment and explicit call activation.
+It does not attach to an existing app conversation. Deployment does not change Twilio
+number routing, grant spending permission, or release the owner's call stop.
+
+- The existing recorder accepts signed Twilio `POST /inbound-owner/voice` callbacks.
+  It checks the configured inbound number and owner caller allowlist, reserves bounded
+  spending, and collects a six-digit PIN using DTMF before owner context or recording.
+  PIN attempts are bounded; raw digits never enter transcripts, model input or logs.
+- Recording requires explicit keypad consent after authentication. Each admitted call
+  has a provider-enforced 180-second deadline and a fresh Live Ninja conversation.
+- An IAM-only recorder invocation of the realtime broker uses `mode=phone-session`.
+  The broker resolves the active canonical owner, saved persona, rules, guides and
+  profile, checks quotas, and creates a fresh redeemed session. Its signed `scope=phone`
+  token expires at the call deadline plus 60 seconds for final cleanup.
+- The Azure `/owner-media` WebSocket requires a valid provider signature and a one-use,
+  call-bound recorder bootstrap. No owner bearer token appears in TwiML or a URL.
+- A phone token permits only `POST /api/v1/tools/invoke` and
+  `POST /api/v1/transcript` for that live session. The allowed tools are
+  `memory_search`, `entity_get`, `knowledge_search`, `knowledge_recent`, `job_list`
+  and `job_status`. Saved instructions cannot expand this list. Account changes,
+  outgoing calls, device controls and job approvals remain unavailable on this path.
+- Transcript persistence follows the owner's existing privacy settings. Consented
+  recordings use the existing private S3 ingestion and owner recording APIs. Existing
+  web and Android sessions keep their original permissions and behavior.
+
+`scripts/enroll-phone-pin.bat` is the local owner entrypoint. It checks the repository
+and AWS account before hidden input, sends only a salted verifier to an IAM-only
+enrollment operation, and leaves inbound calling disabled. Empty input changes nothing.
+Never put the PIN, verifier, private numbers or bootstrap token in this document.
+
+### Recording account privacy
+
+The existing authenticated account export includes phone records and protected
+download references. Internal pagination is owner-bound and signed; it excludes
+PIN verifiers, callback capabilities, bearer tokens and private routing numbers.
+An incomplete phone export fails the export rather than claiming full coverage.
+
+The existing account-delete worker invokes the recorder with IAM authorization.
+It establishes deletion markers before deleting provider recordings, every S3
+object version under each owned call prefix, callback/link metadata and private
+phone configuration. In-flight copies and failed provider deletion delay completion;
+the main account partition and completion email wait for phone cleanup to finish.
+Minimal deletion markers remain to reject late callback replay. This path runs only
+for an already requested account deletion; deployments never invoke it.
+
 ## Change log
 
 | Date | Change | Motivated by |

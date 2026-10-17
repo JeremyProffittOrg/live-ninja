@@ -13,9 +13,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
+	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	"github.com/JeremyProffittOrg/live-ninja/internal/testutil"
 	"github.com/JeremyProffittOrg/live-ninja/internal/voiceengine"
+	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
 // newTestBroker builds a broker whose only wired dependency is a JSON logger
@@ -25,6 +28,133 @@ import (
 func newTestBroker(buf *bytes.Buffer) *broker {
 	return &broker{
 		log: slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+}
+
+func newPhoneTestBroker(t *testing.T) (*broker, *testutil.FakeDynamo) {
+	t.Helper()
+	ddb := testutil.NewFakeDynamo()
+	st := store.NewWithClient(ddb, "phone-test")
+	ctx := context.Background()
+	require.NoError(t, st.CreateUser(ctx, &store.User{UserID: "owner", AmazonUserID: "amazon-owner", Role: store.RoleOwner, Status: store.UserStatusActive}))
+	require.NoError(t, st.BindOwner(ctx, "amazon-owner", "owner"))
+	kms, err := testutil.NewFakeKMS()
+	require.NoError(t, err)
+	b := newTestBroker(&bytes.Buffer{})
+	b.phoneStore = st
+	b.phoneSigner = auth.NewSignerWithClient(kms, "phone-test-key")
+	b.gate = realtime.NewGate(ddb, "phone-test")
+	b.ddb = ddb
+	b.settings = ddb
+	b.table = "phone-test"
+	return b, ddb
+}
+
+func TestPhoneSessionMintsFreshOwnerContextAndScopedCapability(t *testing.T) {
+	b, ddb := newPhoneTestBroker(t)
+	ddb.SeedItem(map[string]ddbtypes.AttributeValue{"pk": &ddbtypes.AttributeValueMemberS{Value: "USER#owner"}, "sk": &ddbtypes.AttributeValueMemberS{Value: "RULE#brief"}, "name": &ddbtypes.AttributeValueMemberS{Value: "brief"}, "enabled": &ddbtypes.AttributeValueMemberBOOL{Value: true}, "body": &ddbtypes.AttributeValueMemberS{Value: "Keep phone answers brief."}})
+	deadline := time.Now().Add(180 * time.Second).Unix()
+	resp, err := b.Handle(context.Background(), Request{Mode: "phone-session", UserID: "owner", Surface: "phone", PhoneCallSID: "CA" + strings.Repeat("1", 32), PhoneDeadline: deadline})
+	require.NoError(t, err)
+	require.Empty(t, resp.Error)
+	require.Equal(t, "phone", resp.Mode)
+	require.Equal(t, "gpt-live-azure", resp.Engine)
+	require.NotEmpty(t, resp.SessionID)
+	wire, err := json.Marshal(resp)
+	require.NoError(t, err)
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(wire, &decoded))
+	require.Equal(t, "phone", decoded["mode"])
+	require.Equal(t, resp.BridgeToken, decoded["bridgeToken"])
+	require.Equal(t, resp.SessionID, decoded["sessionId"])
+	require.Equal(t, resp.BridgeTokenExpiresAt, decoded["bridgeTokenExpiresAt"])
+	wireConfig, ok := decoded["sessionConfig"].(map[string]any)
+	require.True(t, ok, "sessionConfig must be an object, not an encoded string")
+	require.Len(t, wireConfig["tools"], 6)
+	require.NotEmpty(t, wireConfig["audio"].(map[string]any)["output"].(map[string]any)["voice"])
+	jwks, err := b.phoneSigner.JWKS(context.Background())
+	require.NoError(t, err)
+	claims, err := auth.VerifyJWT(resp.BridgeToken, jwks)
+	require.NoError(t, err)
+	require.Equal(t, "owner", claims.Sub)
+	require.Equal(t, resp.SessionID, claims.Sid)
+	require.Equal(t, "phone", claims.Surface)
+	require.Equal(t, realtime.PhoneScope, claims.Scope)
+	require.Equal(t, deadline+60, claims.Exp)
+	active, err := b.phoneStore.IsRedeemedSessionActive(context.Background(), "owner", resp.SessionID)
+	require.NoError(t, err)
+	require.True(t, active)
+	var config map[string]any
+	require.NoError(t, json.Unmarshal(resp.SessionConfig, &config))
+	require.Contains(t, config["instructions"], "Keep phone answers brief.")
+	require.NotContains(t, config["instructions"], "call rule_load")
+	require.NotContains(t, config["instructions"], "memory_write")
+	require.NotContains(t, config["instructions"], "profile_suggest")
+	manifest := config["tools"].([]any)
+	require.Len(t, manifest, 6)
+	for _, tool := range manifest {
+		require.True(t, realtime.PhoneToolAllowed(tool.(map[string]any)["name"].(string)))
+	}
+	// Final transcript uses this exact slot; closing it invalidates the sinks.
+	require.NoError(t, b.phoneStore.ReleaseSessionSlot(context.Background(), "owner", resp.SessionID))
+	active, err = b.phoneStore.IsRedeemedSessionActive(context.Background(), "owner", resp.SessionID)
+	require.NoError(t, err)
+	require.False(t, active)
+}
+
+func TestPhoneSessionRejectsIdentityAndBootstrapEscalation(t *testing.T) {
+	for _, mutation := range []string{"member", "disabled", "different-owner", "web", "device", "capabilities", "persona", "expired", "unbounded", "invalid-call", "normal-mint"} {
+		t.Run(mutation, func(t *testing.T) {
+			b, ddb := newPhoneTestBroker(t)
+			req := Request{Mode: "phone-session", UserID: "owner", Surface: "phone", PhoneCallSID: "CA" + strings.Repeat("1", 32), PhoneDeadline: time.Now().Add(180 * time.Second).Unix()}
+			profile := ddb.RawItem("USER#owner", "PROFILE")
+			switch mutation {
+			case "member":
+				profile["role"] = &ddbtypes.AttributeValueMemberS{Value: store.RoleMember}
+				ddb.SeedItem(profile)
+				req.Role = "owner"
+			case "disabled":
+				profile["status"] = &ddbtypes.AttributeValueMemberS{Value: "disabled"}
+				ddb.SeedItem(profile)
+			case "different-owner":
+				req.UserID = "other"
+			case "web":
+				req.Surface = "web"
+			case "device":
+				req.DeviceID = "forged-device"
+			case "capabilities":
+				req.Capabilities = []string{realtime.JobsReviewCapability}
+			case "persona":
+				req.Persona = "user:other:private"
+			case "expired":
+				req.PhoneDeadline = time.Now().Add(-time.Second).Unix()
+			case "unbounded":
+				req.PhoneDeadline = time.Now().Add(time.Hour).Unix()
+			case "invalid-call":
+				req.PhoneCallSID = "not-a-call"
+			case "normal-mint":
+				req.Mode = "session-mint"
+			}
+			resp, err := b.Handle(context.Background(), req)
+			require.NoError(t, err)
+			require.NotEmpty(t, resp.Error)
+			require.Empty(t, resp.BridgeToken)
+			require.Empty(t, resp.SessionConfig)
+		})
+	}
+}
+
+func TestPhoneSessionAllowsInternalTopicExtractionOnly(t *testing.T) {
+	var log bytes.Buffer
+	b := newTestBroker(&log)
+	b.fallback = &fakeFallback{}
+	resp, err := b.Handle(context.Background(), Request{Mode: "extract-topics", UserID: "owner", Surface: "phone", Payload: json.RawMessage(`{"transcript":"Owner conversation."}`)})
+	require.NoError(t, err)
+	require.Equal(t, "extract_failed", resp.Error, "the internal extraction path must reach the existing model adapter")
+	for _, mode := range []string{"session-mint", "fallback-turn", "fallback-stt", "fallback-tts"} {
+		resp, err = b.Handle(context.Background(), Request{Mode: mode, UserID: "owner", Surface: "phone"})
+		require.NoError(t, err)
+		require.Equal(t, 400, resp.Code)
 	}
 }
 

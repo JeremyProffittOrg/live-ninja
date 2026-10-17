@@ -136,6 +136,14 @@ class RecorderTests(unittest.TestCase):
         result = self.post("/events", {"runId": "trial", "callSid": CALL, "type": "summary", "targetId": "other"})
         self.assertEqual(result["statusCode"], 409)
 
+    def test_late_trial_registration_cannot_recreate_deleted_run(self):
+        r._table.put_item(Item={'PK': 'RUN#trial', 'SK': 'ACCOUNT_DELETION', 'complete': True})
+        result = self.register()
+        self.assertEqual(result['statusCode'], 200)
+        self.assertEqual(json.loads(result['body'])['recordingStatus'], 'deleted')
+        self.assertIsNone(r.get(r.call_key(CALL)))
+        self.assertEqual(len(r._table.items), 1)
+
     def test_wrong_account_or_unregistered_call_rejected(self):
         self.assertEqual(self.callback()["statusCode"], 409)
         self.register()

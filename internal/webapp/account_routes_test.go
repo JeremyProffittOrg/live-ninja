@@ -29,14 +29,27 @@ import (
 
 // accountFakeLambda records async purge invokes.
 type accountFakeLambda struct {
-	calls []*lambda.InvokeInput
-	err   error
+	calls      []*lambda.InvokeInput
+	err        error
+	phonePages []map[string]any
 }
 
 func (f *accountFakeLambda) Invoke(ctx context.Context, params *lambda.InvokeInput, optFns ...func(*lambda.Options)) (*lambda.InvokeOutput, error) {
 	f.calls = append(f.calls, params)
 	if f.err != nil {
 		return nil, f.err
+	}
+	var request map[string]any
+	_ = json.Unmarshal(params.Payload, &request)
+	if request["operation"] == "owner_account_export" {
+		page := map[string]any{"items": []any{}, "complete": true, "nextCursor": ""}
+		if len(f.phonePages) > 0 {
+			page = f.phonePages[0]
+			f.phonePages = f.phonePages[1:]
+		}
+		body, _ := json.Marshal(page)
+		payload, _ := json.Marshal(map[string]any{"statusCode": 200, "body": string(body)})
+		return &lambda.InvokeOutput{Payload: payload}, nil
 	}
 	return &lambda.InvokeOutput{StatusCode: 202}, nil
 }
@@ -79,6 +92,7 @@ func (f *exportCaptureS3) DeleteObject(ctx context.Context, params *s3.DeleteObj
 // web surface, over a FakeDynamo store + capture-S3 deliv service.
 func newAccountApp(t *testing.T) (*fiber.App, *store.Store, *accountFakeLambda, *exportCaptureS3) {
 	t.Helper()
+	t.Setenv("PHONE_MESSAGES_FUNCTION_ARN", "arn:aws:lambda:us-east-1:759775734231:function:live-ninja-phone-trial-recorder")
 	st := store.NewWithClient(testutil.NewFakeDynamo(), "live-ninja")
 	fakeS3 := &exportCaptureS3{}
 	svc, err := deliv.New(deliv.Config{
@@ -93,10 +107,11 @@ func newAccountApp(t *testing.T) (*fiber.App, *store.Store, *accountFakeLambda, 
 	}
 	fakeLambda := &accountFakeLambda{}
 	deps := &Deps{
-		Store:  st,
-		Deliv:  svc,
-		Lambda: fakeLambda,
-		Log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Store:        st,
+		Deliv:        svc,
+		Lambda:       fakeLambda,
+		PhoneAccount: fakeLambda,
+		Log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	app := fiber.New()
 	app.Use(func(c *fiber.Ctx) error {
@@ -386,5 +401,43 @@ func TestAccountExportEmptyPartitionStillExports(t *testing.T) {
 	}
 	if len(fakeS3.objects) != 1 {
 		t.Fatalf("s3 objects = %d, want 1", len(fakeS3.objects))
+	}
+}
+
+func TestAccountPhoneExportPaginationAndIncompleteFailure(t *testing.T) {
+	app, _, client, objects := newAccountApp(t)
+	client.phonePages = []map[string]any{
+		{"items": []any{map[string]any{"kind": "phone_record", "callSid": "call-one"}}, "complete": false, "nextCursor": "owner-bound-page"},
+		{"items": []any{map[string]any{"kind": "phone_record", "callSid": "call-two"}}, "complete": true, "nextCursor": ""},
+	}
+	resp, body := doJSON(t, app, http.MethodGet, "/api/v1/account/export", nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("export status %d: %v", resp.StatusCode, body)
+	}
+	if len(client.calls) != 2 {
+		t.Fatalf("pages=%d", len(client.calls))
+	}
+	for _, call := range client.calls {
+		var request map[string]any
+		if err := json.Unmarshal(call.Payload, &request); err != nil {
+			t.Fatal(err)
+		}
+		if request["ownerUserId"] != "u1" || request["operation"] != "owner_account_export" {
+			t.Fatalf("wrong export identity: %v", request)
+		}
+	}
+	for _, raw := range objects.objects {
+		if !bytes.Contains(raw, []byte("call-one")) || !bytes.Contains(raw, []byte("call-two")) {
+			t.Fatal("phone pages omitted from export")
+		}
+	}
+	app, _, client, objects = newAccountApp(t)
+	client.phonePages = []map[string]any{
+		{"items": []any{}, "complete": false, "nextCursor": "same"},
+		{"items": []any{}, "complete": false, "nextCursor": "same"},
+	}
+	resp, _ = doJSON(t, app, http.MethodGet, "/api/v1/account/export", nil)
+	if resp.StatusCode != 500 || len(objects.objects) != 0 {
+		t.Fatal("incomplete phone export was published")
 	}
 }

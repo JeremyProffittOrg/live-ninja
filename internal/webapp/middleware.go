@@ -16,6 +16,7 @@ import (
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/observ"
 	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
+	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 )
 
 // Cookie / header names fixed by the shared spec. __Host- prefixed cookies
@@ -342,6 +343,7 @@ func ExtractAuthContext(deps *Deps) fiber.Handler {
 		c.Locals(localDeviceID, claims.Did)
 		c.Locals(localRole, user.Role)
 		c.Locals(localScope, claims.Scope)
+		c.Locals("phoneTokenIssuedAt", claims.Iat)
 		return enforceBearerScope(c, deps, claims.Scope)
 	}
 }
@@ -357,7 +359,10 @@ func continueAuthorizerRequest(c *fiber.Ctx, deps *Deps, token, contextScope str
 	if candidateScope == "" {
 		candidateScope = unverifiedBearerScope(token)
 	}
-	if candidateScope != realtime.NovaScope {
+	if candidateScope != realtime.NovaScope && candidateScope != realtime.PhoneScope {
+		if Surface(c) == "phone" {
+			return errorJSON(c, 403, "insufficient_scope", "A phone capability is required.")
+		}
 		return c.Next()
 	}
 	if token == "" || deps == nil || deps.Signer == nil {
@@ -373,12 +378,13 @@ func continueAuthorizerRequest(c *fiber.Ctx, deps *Deps, token, contextScope str
 			"The scoped bearer token could not be verified.")
 	}
 	claims, err := auth.VerifyJWT(token, jwks)
-	if err != nil || claims.Scope != realtime.NovaScope ||
+	if err != nil || claims.Scope != candidateScope ||
 		!claimsMatchAuthContext(c, claims) {
 		return errorJSON(c, fiber.StatusUnauthorized, "invalid_token",
 			"The scoped bearer token could not be verified.")
 	}
 	c.Locals(localScope, claims.Scope)
+	c.Locals("phoneTokenIssuedAt", claims.Iat)
 	return enforceBearerScope(c, deps, claims.Scope)
 }
 
@@ -423,8 +429,28 @@ func unverifiedBearerScope(token string) string {
 // aliases, descendants, reads, and all other authenticated resources remain
 // unavailable to this short-lived bridge token.
 func enforceBearerScope(c *fiber.Ctx, deps *Deps, scope string) error {
-	if scope != realtime.NovaScope {
+	if Surface(c) == "phone" && scope != realtime.PhoneScope {
+		return errorJSON(c, 403, "insufficient_scope", "A phone capability is required.")
+	}
+	if scope != realtime.NovaScope && scope != realtime.PhoneScope {
 		return c.Next()
+	}
+	if scope == realtime.PhoneScope {
+		if Surface(c) != "phone" || DeviceID(c) != "" {
+			return errorJSON(c, 403, "insufficient_scope", "Invalid phone surface.")
+		}
+		if deps == nil || deps.Store == nil {
+			return errorJSON(c, 503, "session_check_unavailable", "Owner access could not be verified.")
+		}
+		user, err := deps.Store.GetUserConsistent(c.Context(), UserID(c))
+		issued, ok := c.Locals("phoneTokenIssuedAt").(int64)
+		if err != nil {
+			return errorJSON(c, 503, "session_check_unavailable", "Owner access could not be verified.")
+		}
+		if !ok || user == nil || user.Status != store.UserStatusActive || user.Role != store.RoleOwner || (user.TokensValidAfter > 0 && issued < user.TokensValidAfter) {
+			return errorJSON(c, 403, "owner_required", "An active owner account is required.")
+		}
+		c.Locals(localRole, user.Role)
 	}
 	if c.Method() == fiber.MethodPost {
 		switch c.Path() {

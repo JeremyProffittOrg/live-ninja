@@ -127,6 +127,7 @@ func (s *server) routes() http.Handler {
 	m.HandleFunc("/consent", s.consent)
 	m.HandleFunc("/navigate", s.navigate)
 	m.HandleFunc("/media/", s.media)
+	m.HandleFunc("/owner-media", s.ownerMedia)
 	m.HandleFunc("/media-ended", s.mediaEnded)
 	return m
 }

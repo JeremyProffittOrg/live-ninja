@@ -84,8 +84,9 @@ type Deps struct {
 	// gated on RcaEnable), so this is normally always set in production.
 	SQSRcaURL string
 
-	SQS    SQSSendAPI
-	Lambda LambdaInvokeAPI
+	SQS          SQSSendAPI
+	Lambda       LambdaInvokeAPI
+	PhoneAccount LambdaInvokeAPI
 
 	// AndroidArtifacts backs GET /v1/app/android/latest and
 	// /.well-known/assetlinks.json. The object keys are release-CI-owned and

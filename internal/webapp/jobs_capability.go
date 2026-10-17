@@ -13,6 +13,9 @@ func clientCanReviewJobs(c *fiber.Ctx) bool {
 	return Scope(c) == "" && len(raw) <= 2048 && realtime.ClientSupportsJobsReview(Surface(c), parseClientCapabilities(raw))
 }
 func jobsCompatibilityDenial(c *fiber.Ctx, tool, callID string) *tools.Result {
+	if Scope(c) == realtime.PhoneScope && Surface(c) == "phone" && realtime.PhoneToolAllowed(tool) {
+		return nil
+	}
 	if !strings.HasPrefix(strings.TrimSpace(tool), "job_") || clientCanReviewJobs(c) {
 		return nil
 	}

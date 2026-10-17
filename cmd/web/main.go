@@ -247,6 +247,7 @@ func buildDeps(ctx context.Context, cfg config.App, logger *slog.Logger) (*webap
 		SQSRcaURL:              os.Getenv("RCA_QUEUE_URL"),
 		SQS:                    sqs.NewFromConfig(awsCfg),
 		Lambda:                 lambdaClient,
+		PhoneAccount:           lambdasvc.NewFromConfig(awsCfg, func(o *lambdasvc.Options) { o.Region = "us-east-1" }),
 		Firehose:               firehose.NewFromConfig(awsCfg),
 		TelemetryStreamName:    os.Getenv("TELEMETRY_FIREHOSE_STREAM_NAME"),
 		AndroidArtifacts:       s3Client,

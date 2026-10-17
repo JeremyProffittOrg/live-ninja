@@ -181,6 +181,23 @@ func TestHandlerAllowsValidJWTAndInjectsContext(t *testing.T) {
 	assert.Equal(t, store.RoleOwner, resp.Context["role"])
 }
 
+func TestHandlerForwardsPhoneCapabilityIdentityToWebScopeGuard(t *testing.T) {
+	signer, st := setupAuthorizer(t)
+	ctx := context.Background()
+	require.NoError(t, st.CreateUser(ctx, &store.User{UserID: "phone-owner", AmazonUserID: "amazon-phone", Role: store.RoleOwner, Status: store.UserStatusActive}))
+	token, err := signer.SignAccessToken(ctx, auth.Claims{Sub: "phone-owner", Sid: "fresh-phone-session", Surface: "phone", Scope: "phone"})
+	require.NoError(t, err)
+	for _, path := range []string{"/api/v1/tools/invoke", "/api/v1/transcript"} {
+		resp, err := handler(ctx, authorizerRequest(http.MethodPost, path, token))
+		require.NoError(t, err)
+		require.True(t, resp.IsAuthorized)
+		require.Equal(t, "phone-owner", resp.Context["userId"])
+		require.Equal(t, "fresh-phone-session", resp.Context["sessionId"])
+		require.Equal(t, "phone", resp.Context["surface"])
+		require.Equal(t, store.RoleOwner, resp.Context["role"])
+	}
+}
+
 func TestHandlerDeniesUnknownSubject(t *testing.T) {
 	signer, _ := setupAuthorizer(t)
 	token, err := signer.SignAccessToken(context.Background(), auth.Claims{Sub: "uid-ghost", Sid: "s", Surface: "web"})

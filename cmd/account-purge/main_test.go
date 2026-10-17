@@ -20,6 +20,7 @@ import (
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/iot"
 	iottypes "github.com/aws/aws-sdk-go-v2/service/iot/types"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -29,6 +30,25 @@ import (
 )
 
 // ---- fakes ----
+
+type purgePhoneLambda struct {
+	responses []string
+	owners    []string
+}
+
+func (f *purgePhoneLambda) Invoke(_ context.Context, in *lambda.InvokeInput, _ ...func(*lambda.Options)) (*lambda.InvokeOutput, error) {
+	var request map[string]string
+	if err := json.Unmarshal(in.Payload, &request); err != nil {
+		return nil, err
+	}
+	f.owners = append(f.owners, request["ownerUserId"])
+	value := `{"statusCode":200,"body":"{\"complete\":true}"}`
+	if len(f.responses) > 0 {
+		value = f.responses[0]
+		f.responses = f.responses[1:]
+	}
+	return &lambda.InvokeOutput{Payload: []byte(value)}, nil
+}
 
 // purgeDDB adds BatchWriteItem on top of the shared FakeDynamo (which the
 // store fake surface doesn't need). Optionally reports the first request
@@ -237,6 +257,8 @@ func newTestPurger(t *testing.T) (*Purger, *purgeDDB, *purgeS3, *purgeIoT, *purg
 		IoT:                fiot,
 		SQS:                fsqs,
 		Store:              st,
+		PhoneClient:        &purgePhoneLambda{},
+		PhoneFunction:      "phone-recorder",
 		Table:              testTable,
 		DeliverablesBucket: "deliv-bucket",
 		UserBucket:         "user-bucket",
@@ -514,5 +536,40 @@ func TestPurgeRunFailsWhenAgentCoreMemoryFails(t *testing.T) {
 	}
 	if len(items) == 0 {
 		t.Error("USER# partition was deleted before the memory purge succeeded")
+	}
+}
+
+func TestPurgePhonePagesWaitForCopyAndFailBeforeDeletingMainData(t *testing.T) {
+	p, _, s3, _, mail, st := newTestPurger(t)
+	seedUserFootprint(t, st, s3)
+	client := &purgePhoneLambda{responses: []string{
+		`{"statusCode":503,"body":"{\"retryAfterSeconds\":120}"}`,
+		`{"statusCode":200,"body":"{\"complete\":false}"}`,
+		`{"statusCode":409,"body":"{\"error\":\"provider binding mismatch\"}"}`,
+	}}
+	p.PhoneClient = client
+	var waited time.Duration
+	p.Sleep = func(d time.Duration) { waited += d }
+	if err := p.Run(context.Background(), Event{UserID: "u1"}); err == nil {
+		t.Fatal("incomplete phone purge reported success")
+	}
+	if waited != 120*time.Second || len(client.owners) != 3 {
+		t.Fatalf("wait=%v pages=%d", waited, len(client.owners))
+	}
+	items, err := st.QueryUserPartition(context.Background(), "u1")
+	if err != nil || len(items) == 0 {
+		t.Fatal("main account deleted before phone cleanup")
+	}
+	if len(mail.messages) != 0 {
+		t.Fatal("completion email sent before phone cleanup")
+	}
+	for _, owner := range client.owners {
+		if owner != "u1" {
+			t.Fatal("wrong purge owner")
+		}
+	}
+	client.responses = nil
+	if err := p.Run(context.Background(), Event{UserID: "u1"}); err != nil {
+		t.Fatal(err)
 	}
 }

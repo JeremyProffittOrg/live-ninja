@@ -800,6 +800,9 @@ func handleToolsInvoke(deps *Deps, registry *tools.Registry) fiber.Handler {
 		if strings.TrimSpace(body.Tool) == "" {
 			return apiBadRequest(c, "tool is required")
 		}
+		if Scope(c) == realtime.PhoneScope && !realtime.PhoneToolAllowed(body.Tool) {
+			return errorJSON(c, fiber.StatusForbidden, "phone_tool_forbidden", "This phone session permits only the supported read tools.")
+		}
 		if denied := jobsCompatibilityDenial(c, body.Tool, body.CallID); denied != nil {
 			return c.Status(fiber.StatusUpgradeRequired).JSON(denied)
 		}
@@ -879,7 +882,7 @@ func handleTranscript(deps *Deps) fiber.Handler {
 		// A Nova capability token is minted for exactly one broker session.
 		// Never let the bridge use that otherwise-valid sink credential to
 		// write turns under a different conversation id supplied in the body.
-		if Scope(c) == realtime.NovaScope && body.SessionID != SessionID(c) {
+		if (Scope(c) == realtime.NovaScope || Scope(c) == realtime.PhoneScope) && body.SessionID != SessionID(c) {
 			return errorJSON(c, fiber.StatusForbidden, "session_mismatch",
 				"The transcript session does not match the scoped credential.")
 		}

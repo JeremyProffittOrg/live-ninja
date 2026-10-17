@@ -49,6 +49,10 @@ class OwnerMessageTests(unittest.TestCase):
                 elif "ConditionCheck" in operation:
                     value = operation["ConditionCheck"]
                     cfg = r.get(value["Key"])
+                    if value['ConditionExpression'] == 'attribute_not_exists(PK)':
+                        if cfg:
+                            raise Conflict()
+                        continue
                     values = value["ExpressionAttributeValues"]
                     if value["ConditionExpression"].startswith("ownerUserId=:owner"):
                         if not cfg or cfg.get("ownerUserId") != values[":owner"]:

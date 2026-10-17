@@ -98,7 +98,9 @@ type Request struct {
 	// does not send it gets no Azure engine, which is the fail-closed
 	// property the version gate alone cannot provide: two of the three
 	// surfaces do not send a parseable X-LN-Client today.
-	Capabilities []string `json:"capabilities,omitempty"`
+	Capabilities  []string `json:"capabilities,omitempty"`
+	PhoneCallSID  string   `json:"phoneCallSid,omitempty"`
+	PhoneDeadline int64    `json:"phoneDeadline,omitempty"`
 }
 
 type turnPayload struct {
@@ -259,7 +261,9 @@ type broker struct {
 	// novaMint mints the short-lived per-session bridge token for
 	// nova-pinned devices (auth.Signer-backed); nil when JWT_KMS_KEY_ID is
 	// unset, in which case a nova mint returns a "bridge unavailable" error.
-	novaMint realtime.NovaTokenMinter
+	novaMint    realtime.NovaTokenMinter
+	phoneSigner *auth.Signer
+	phoneStore  *store.Store
 	// bridgeBaseURL is the Nova bridge WSS base (NOVA_BRIDGE_URL); empty
 	// falls back to realtime.DefaultBridgeBaseURL.
 	bridgeBaseURL string
@@ -324,7 +328,11 @@ func (b *broker) Handle(ctx context.Context, req Request) (resp Response, _ erro
 		resp = badRequest("userId is required")
 		return
 	}
-	if !validSurfaces[req.Surface] {
+	if mode == "phone-session" {
+		resp = b.handlePhoneSession(ctx, l, req)
+		return
+	}
+	if !validSurfaces[req.Surface] && !(req.Surface == "phone" && mode == "extract-topics") {
 		resp = badRequest("surface must be one of: web, android, device")
 		return
 	}
@@ -1129,6 +1137,7 @@ func main() {
 		ddb:             ddb,
 		table:           appCfg.TableName,
 		settings:        ddb, // *dynamodb.Client satisfies SettingsGetter (GetItem)
+		phoneStore:      store.NewWithClient(ddb, appCfg.TableName),
 		memory:          agentmemory.NewFromAWSConfig(awsCfg, agentmemory.ConfigFromEnv(), logger),
 		bridgeBaseURL:   os.Getenv("NOVA_BRIDGE_URL"),
 	}
@@ -1169,6 +1178,7 @@ func wireNovaBridge(b *broker, logger *slog.Logger, ctx context.Context, kmsKeyI
 		}
 		return tok, time.Now().Add(auth.AccessTokenTTL), nil
 	}
+	b.phoneSigner = signer
 }
 
 // wireSuspendAlerts installs the auto-suspension owner notification: an

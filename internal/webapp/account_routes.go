@@ -150,6 +150,11 @@ func handleAccountExport(deps *Deps) fiber.Handler {
 		if err != nil {
 			return apiInternalError(c, deps, "export: query user partition", err)
 		}
+		phoneItems, err := exportPhoneAccount(c.UserContext(), deps, userID)
+		if err != nil {
+			return apiInternalError(c, deps, "export: phone recordings", err)
+		}
+		items = append(items, phoneItems...)
 		for _, it := range items {
 			for k := range exportStripAttrs {
 				delete(it, k)
