@@ -2,10 +2,8 @@ import base64
 import hashlib
 import hmac
 import json
-import importlib.util
 import io
 import os
-from pathlib import Path
 import sys
 import types
 from decimal import Decimal
@@ -29,10 +27,7 @@ class InboundTests(unittest.TestCase):
 
     def configure(self):
         owners.OwnerMessageTests.configure(self)
-        salt = '1' * 32
-        r._table.put_item(Item={**i.CONFIG, 'version': 1, 'enabled': True, 'ownerUserId': owners.OWNER,
-            'pinSalt': salt, 'pinHash': hashlib.pbkdf2_hmac('sha256', b'123456', bytes.fromhex(salt), i.PIN_ITERATIONS).hex(),
-            'pinIterations': i.PIN_ITERATIONS})
+        r._table.put_item(Item={**i.CONFIG, 'version': 1, 'enabled': True, 'ownerUserId': owners.OWNER})
         self.addCleanup(patch.stopall)
         patch.dict(os.environ, {'INBOUND_BRIDGE_URL': 'https://bridge.example'}).start()
         self.owner_active = patch('account_lifecycle.owner_active', return_value=True).start()
@@ -54,7 +49,7 @@ class InboundTests(unittest.TestCase):
                 cfg = r.get(i.CONFIG) or {}
                 values = check['ExpressionAttributeValues']
                 if cfg.get('enabled') is not True or any(cfg.get(field) != values[name] for field, name in
-                    (('ownerUserId', ':owner'), ('pinHash', ':hash'), ('pinSalt', ':salt'))):
+                    (('ownerUserId', ':owner'), ('version', ':version'))):
                     raise f.Conflict()
                 if (':daily' in values and cfg.get('dailyBudget') != values[':daily']) or (':daily' not in values and 'dailyBudget' in cfg):
                     raise f.Conflict()
@@ -118,12 +113,68 @@ class InboundTests(unittest.TestCase):
         self.assertEqual(self.provider.call_count, 1)
         self.broker.assert_not_called()
 
-    def test_pin_consent_and_single_use_bootstrap_preserve_identity_and_recording(self):
+    def test_unknown_caller_only_hangs_up_without_reservation_even_while_stopped(self):
+        self.assertEqual(self.callback(From='+12025550999')['body'], '<Response><Hangup/></Response>')
         self.configure()
-        self.assertIn('six digit', self.callback()['body'])
-        cap = self.provider.call_args.args[1]
-        self.assertEqual(cap, {'TimeLimit': 180})
-        self.assertIn('Press 1', self.callback('pin/1', Digits='123456')['body'])
+        for enabled in (True, False):
+            cfg=r.get(m.CONFIG_KEY);cfg['enabled']=enabled;r._table.put_item(Item=cfg)
+            r._table.put_item(Item={**m.VOICE_KEY,'activeRequest':'owner-stop'})
+            before=dict(r._table.items)
+            reply=self.callback(From='+12025550999')
+            self.assertEqual(reply['body'],'<Response><Hangup/></Response>')
+            self.assertEqual(r._table.items,before)
+        self.provider.assert_not_called();self.broker.assert_not_called()
+
+    def test_both_configured_owner_aliases_require_only_recording_consent(self):
+        for caller in ('+12025550101','+12025550102'):
+            with self.subTest(caller=caller):
+                r._table=f.Table();self.configure()
+                self.assertNotIn('pinHash',r.get(i.CONFIG));self.assertNotIn('pinSalt',r.get(i.CONFIG))
+                first=self.callback(From=caller)
+                self.assertIn('numDigits="1"',first['body']);self.assertIn('Press 1',first['body']);self.assertNotIn('PIN',first['body'])
+                self.assertEqual(self.item()['inboundState'],'consent')
+                self.assertEqual(self.item()['consentDeadline'],1030)
+                self.assertNotIn('pinAttempts',self.item())
+                self.broker.assert_not_called()
+                self.assertIn('<Connect',self.callback('consent',From=caller,Digits='1')['body'])
+                self.broker.assert_called_once()
+
+    def test_old_pin_routes_are_removed_and_unsigned_callbacks_rejected(self):
+        self.configure();self.callback()
+        before=self.item()
+        self.assertEqual(self.callback('pin/1',Digits='123456')['statusCode'],404)
+        self.assertEqual(i.callback('/inbound-owner/voice',b'',{})['statusCode'],403)
+        self.assertEqual(self.item(),before)
+        self.broker.assert_not_called()
+
+    def test_invalid_inbound_config_version_fails_closed_without_budget(self):
+        self.configure();original=r.get(i.CONFIG)
+        for version in (None,True,0,Decimal('1.5'),Decimal('NaN'),Decimal('Infinity')):
+            value={**original,'version':version}
+            if version is None:value.pop('version')
+            r._table.put_item(Item=value)
+            self.assertIn('<Hangup',self.callback()['body']);self.assertIsNone(self.item())
+        self.provider.assert_not_called()
+        r._table.put_item(Item={**original,'version':Decimal('1')})
+        self.assertIn('Press 1',self.callback()['body'])
+
+    def test_caller_revoked_after_gather_cannot_mint_owner_session(self):
+        self.configure();self.callback()
+        cfg=r.get(m.CONFIG_KEY);cfg['destinations']['primary']='+12025550999';r._table.put_item(Item=cfg)
+        self.assertIn('<Hangup',self.callback('consent',Digits='1')['body'])
+        self.assertEqual(self.item()['endReason'],'admission_revoked')
+        self.broker.assert_not_called()
+        self.assertFalse(any('/Recordings' in call.args[0] for call in self.provider.call_args_list))
+
+    def test_caller_revocation_blocks_active_media_heartbeat(self):
+        self.configure();self.callback();self.callback('consent',Digits='1');self.control()
+        cfg=r.get(m.CONFIG_KEY);cfg['destinations']['primary']='+12025550999';r._table.put_item(Item=cfg)
+        self.assertEqual(self.control('check')['statusCode'],403)
+
+    def test_caller_consent_and_single_use_bootstrap_preserve_identity_and_recording(self):
+        self.configure()
+        self.assertIn('Press 1', self.callback()['body'])
+        self.assertFalse(any(call.args[1] for call in self.provider.call_args_list if len(call.args)>1))
         self.broker.assert_not_called()
         reply = self.callback('consent', Digits='1')
         self.assertIn('wss://bridge.example/owner-media', reply['body'])
@@ -131,7 +182,7 @@ class InboundTests(unittest.TestCase):
         self.broker.assert_called_once()
         call = r.get(r.call_key(f.CALL, m.namespace(owners.OWNER)))
         self.assertEqual(call['recordingStatus'], 'recording')
-        self.assertNotIn('123456', json.dumps(list(r._table.items.values()), default=str))
+        self.assertNotIn('pinAttempts', self.item())
         bootstrap = json.loads(self.control()['body'])
         self.assertEqual(bootstrap['sessionId'], 'fresh-session')
         self.assertEqual(self.control()['statusCode'], 403)
@@ -141,6 +192,70 @@ class InboundTests(unittest.TestCase):
         self.assertEqual(self.control('finish')['statusCode'], 200)
         self.assertEqual(r.get(m.VOICE_KEY)['activeRequest'], 'owner-stop-2026-10-16')
         self.final.assert_called_once()
+
+    def test_inbound_cap_is_armed_only_after_initial_gather_answers(self):
+        self.configure()
+        answered = False
+        caps = []
+        def provider_state(path, form=None):
+            if form and 'TimeLimit' in form:
+                if not answered:
+                    raise m.ProviderError(21220, rejected=True)
+                caps.append(form['TimeLimit'])
+            return self.provider_result(path, form)
+        self.provider.side_effect = provider_state
+        initial = self.callback()
+        self.assertIn('Press 1', initial['body'])
+        self.assertIn('numDigits="1"', initial['body'])
+        self.assertIn('timeout="6"', initial['body'])
+        self.assertIn('actionOnEmptyResult="true"', initial['body'])
+        self.assertIn('<Hangup/>', initial['body'])
+        self.assertNotIn('PIN', initial['body'])
+        self.assertEqual(caps, [])
+        answered = True
+        self.now.return_value = 1005
+        self.assertIn('<Connect', self.callback('consent', Digits='1')['body'])
+        self.assertEqual(caps, [175])
+        self.now.return_value = 1010
+        self.assertIn('<Hangup', self.callback('consent', Digits='1')['body'])
+        self.assertEqual(caps, [175])
+        self.assertEqual(self.item()['deadline'], 1180)
+        self.broker.assert_called_once()
+
+    def test_consent_cap_rejection_stops_before_mint_and_records_only_code(self):
+        self.configure(); self.callback()
+        def reject_cap(path, form=None):
+            if form and 'TimeLimit' in form:
+                error = m.ProviderError(21220, rejected=True)
+                error.args = ('RAW_PROVIDER_RESPONSE_MUST_NOT_BE_STORED',)
+                raise error
+            return self.provider_result(path, form)
+        self.provider.side_effect = reject_cap
+        self.assertIn('<Hangup', self.callback('consent', Digits='1')['body'])
+        self.assertEqual(self.item()['inboundState'], 'ended')
+        self.assertEqual(self.item()['endReason'], 'provider_cap_failed_21220')
+        self.assertNotIn('providerCapSet', self.item())
+        self.assertTrue(self.item()['consented'])
+        self.assertNotIn('activeRequest', r.get(m.VOICE_KEY))
+        self.broker.assert_not_called()
+        self.assertFalse(any('/Recordings' in call.args[0] for call in self.provider.call_args_list))
+        self.assertNotIn('RAW_PROVIDER_RESPONSE', json.dumps(list(r._table.items.values()), default=str))
+
+    def test_consent_cap_response_identity_and_state_fail_closed(self):
+        for bad in ({'sid':'CA'+'9'*32}, {'account_sid':'AC'+'9'*32}, {'status':'ringing'}):
+            with self.subTest(response=bad):
+                r._table = f.Table()
+                self.configure(); self.callback()
+                def bad_cap(path, form=None):
+                    result = self.provider_result(path, form)
+                    return {**result, **bad} if form and 'TimeLimit' in form else result
+                self.provider.side_effect = bad_cap
+                self.assertIn('<Hangup', self.callback('consent', Digits='1')['body'])
+                self.assertEqual(self.item()['endReason'], 'provider_cap_failed')
+                self.assertNotIn('providerCapSet', self.item())
+                self.assertTrue(self.item()['consented'])
+                self.assertNotIn('activeRequest', r.get(m.VOICE_KEY))
+                self.broker.assert_not_called()
 
     def test_recurring_incoming_allowance_survives_monthly_limit_without_generic_grant(self):
         self.configure_daily()
@@ -261,13 +376,6 @@ class InboundTests(unittest.TestCase):
         self.assertEqual(self.incoming_day()['reservedUSD'],Decimal('9.80'))
         self.assertIsNone(self.item()); self.assertIsNone(r.get(m.VOICE_KEY))
 
-    def test_recurring_quota_preserved_when_pin_is_replaced(self):
-        self.configure_daily(); policy=r.get(i.CONFIG)['dailyBudget']
-        result=i.enroll({'ownerUserId':owners.OWNER,'pinSalt':'2'*32,'pinHash':'3'*64,'expectedVersion':1,'replaceExisting':True})
-        self.assertEqual(result['statusCode'],200)
-        self.assertEqual(r.get(i.CONFIG)['dailyBudget'],policy)
-        self.assertFalse(r.get(i.CONFIG)['enabled'])
-
     def test_recurring_policy_version_change_does_not_reset_same_day_counter(self):
         self.configure_daily()
         key=m.inbound_budget_key(owners.OWNER,'2026-10-18')
@@ -305,25 +413,13 @@ class InboundTests(unittest.TestCase):
         self.assertEqual(self.item()['inboundBudgetDay'],'2026-11-01')
         self.assertIsNone(r.get(m.budget_keys('2026-11','2026-11-01')[1]))
 
-    def test_pin_attempt_replay_and_three_rejections_never_mint_or_record(self):
-        self.configure(); self.callback()
-        self.assertIn('six digit', self.callback('pin/1', Digits='000000')['body'])
-        self.assertIn('<Hangup', self.callback('pin/1', Digits='123456')['body'])
-        self.assertEqual(self.item()['pinAttempts'], 1)
-        self.callback('pin/2', Digits='000000')
-        self.assertIn('<Hangup', self.callback('pin/3', Digits='000000')['body'])
-        self.assertEqual(self.item()['endReason'], 'pin_rejected')
-        self.assertNotIn('activeRequest', r.get(m.VOICE_KEY))
-        self.broker.assert_not_called()
-        self.assertFalse(any('/Recordings' in call.args[0] for call in self.provider.call_args_list))
-
-    def test_number_status_early_hangup_before_pin_releases_only_own_lock(self):
+    def test_number_status_early_hangup_before_consent_releases_only_own_lock(self):
         self.configure(); self.callback()
         self.provider.reset_mock()
         self.assertEqual(self.callback('status', CallStatus='completed')['statusCode'], 200)
         self.assertEqual(self.item()['inboundState'], 'ended')
         self.assertEqual(self.item()['providerStatus'], 'completed')
-        self.assertEqual(self.item()['pinAttempts'], 0)
+        self.assertNotIn('pinAttempts', self.item())
         self.assertNotIn('activeRequest', r.get(m.VOICE_KEY))
         self.assertEqual(r.get(r.call_key(f.CALL, m.namespace(owners.OWNER)))['recordingStatus'], 'absent')
         self.canonical.get_item.assert_called_with(Key={'pk':'CONFIG','sk':'OWNER'}, ProjectionExpression='userId', ConsistentRead=True)
@@ -334,7 +430,7 @@ class InboundTests(unittest.TestCase):
         self.final.assert_called_once()
 
     def test_number_status_hangup_before_consent_preserves_owner_stop(self):
-        self.configure(); self.callback(); self.callback('pin/1', Digits='123456')
+        self.configure(); self.callback()
         r._table.put_item(Item={**m.VOICE_KEY, 'activeRequest':'owner-stop-2026-10-16'})
         self.provider.reset_mock()
         self.assertEqual(self.callback('status', CallStatus='completed')['statusCode'], 200)
@@ -384,7 +480,7 @@ class InboundTests(unittest.TestCase):
         self.final.assert_not_called()
 
     def test_ambiguous_mint_never_retries(self):
-        self.configure(); self.callback(); self.callback('pin/1', Digits='123456')
+        self.configure(); self.callback()
         self.broker.side_effect = TimeoutError()
         self.assertIn('<Hangup', self.callback('consent', Digits='1')['body'])
         self.callback('consent', Digits='1')
@@ -392,7 +488,7 @@ class InboundTests(unittest.TestCase):
         self.assertEqual(self.item()['inboundState'], 'ended')
 
     def test_minted_session_finalized_when_bootstrap_persistence_loses_race(self):
-        self.configure(); self.callback(); self.callback('pin/1', Digits='123456')
+        self.configure(); self.callback()
         transition = i.transition
         def lose_after_mint(item, **fields):
             if 'bootstrap' in fields:
@@ -407,7 +503,7 @@ class InboundTests(unittest.TestCase):
         self.assertFalse(any('/Recordings' in call.args[0] for call in self.provider.call_args_list))
 
     def test_failed_provider_hangup_still_finalizes_session_without_releasing_lock(self):
-        self.configure(); self.callback(); self.callback('pin/1', Digits='123456'); self.callback('consent', Digits='1')
+        self.configure(); self.callback(); self.callback('consent', Digits='1')
         item = self.item()
         self.provider.side_effect = m.ProviderError()
         self.assertFalse(i.end(item, 'bridge_failed', hangup=True))
@@ -425,44 +521,31 @@ class InboundTests(unittest.TestCase):
         self.final.assert_called_once()
         self.assertEqual(r.get(m.VOICE_KEY)['activeRequest'], item['lockId'])
 
-    def test_untrusted_forms_and_iam_enrollment_do_not_enable_calls(self):
-        self.configure()
-        self.assertEqual(i.callback('/inbound-owner/voice', b'Digits=123456', {})['statusCode'], 403)
-        before = r.get(m.CONFIG_KEY)
-        event = {'operation': 'owner_inbound_enroll', 'ownerUserId': owners.OWNER, 'pinSalt': '2'*32, 'pinHash': '3'*64,
-                 'expectedVersion': 1, 'replaceExisting': True}
-        self.assertEqual(r.handler({**event, 'requestContext': {}}, None)['statusCode'], 404)
-        self.assertEqual(r.handler(event, None)['statusCode'], 200)
-        self.assertFalse(r.get(i.CONFIG)['enabled'])
-        self.assertEqual(r.get(m.CONFIG_KEY), before)
-        self.assertEqual(r.handler(event, None)['statusCode'], 409)
-
     def test_consent_refusal_and_duplicate_callbacks_do_not_record(self):
         self.configure(); self.callback()
         reservations = r.get(m.budget_keys(*m.budget_clock(r.get(m.CONFIG_KEY))[:2])[0])
         self.callback()
         self.assertEqual(r.get(m.budget_keys(*m.budget_clock(r.get(m.CONFIG_KEY))[:2])[0]), reservations)
-        self.callback('pin/1', Digits='123456')
         self.assertIn('<Hangup', self.callback('consent', Digits='2')['body'])
         self.callback('consent', Digits='1')
         self.assertEqual(self.item()['endReason'], 'consent_declined')
         self.broker.assert_not_called()
         self.assertFalse(any('/Recordings' in call.args[0] for call in self.provider.call_args_list))
 
-    def test_expired_auth_and_session_deadline_never_mint(self):
+    def test_expired_consent_and_session_deadline_never_mint(self):
         self.configure(); self.callback()
         self.now.return_value = 1030
-        self.assertIn('<Hangup', self.callback('pin/1', Digits='123456')['body'])
-        self.assertEqual(self.item()['pinAttempts'], 0)
+        self.assertIn('<Hangup', self.callback('consent', Digits='1')['body'])
+        self.assertNotIn('pinAttempts', self.item())
         self.now.return_value = 1180
-        self.assertIn('<Hangup', self.callback('pin/1', Digits='123456')['body'])
+        self.assertIn('<Hangup', self.callback('consent', Digits='1')['body'])
         self.broker.assert_not_called()
 
-    def test_invalid_account_destination_and_caller_do_not_advance_pin(self):
+    def test_invalid_account_destination_and_caller_do_not_advance_consent(self):
         self.configure(); self.callback()
         for fields in ({'AccountSid': 'AC'+'9'*32}, {'From': '+12025550999'}, {'To': '+12025550999'}):
-            self.assertEqual(self.callback('pin/1', Digits='123456', **fields)['statusCode'], 403)
-        self.assertEqual(self.item()['pinAttempts'], 0)
+            self.assertEqual(self.callback('consent', Digits='1', **fields)['statusCode'], 403)
+        self.assertNotIn('pinAttempts', self.item())
 
     def test_terminal_failure_is_not_reported_as_completed_and_unbound_stop_keeps_lock(self):
         self.configure(); self.callback()
@@ -473,16 +556,8 @@ class InboundTests(unittest.TestCase):
         self.assertEqual(self.item()['providerStatus'], 'failed')
         self.assertNotIn('activeRequest', r.get(m.VOICE_KEY))
 
-    def test_enrollment_requires_explicit_replacement_and_current_version(self):
-        self.configure()
-        event = {'ownerUserId': owners.OWNER, 'pinSalt': '2'*32, 'pinHash': '3'*64, 'expectedVersion': 1}
-        original = r.get(i.CONFIG)
-        self.assertEqual(i.enroll(event)['statusCode'], 409)
-        self.assertEqual(i.enroll({**event, 'expectedVersion': 0, 'replaceExisting': True})['statusCode'], 409)
-        self.assertEqual(r.get(i.CONFIG), original)
-
     def test_finished_bridge_does_not_repeat_transcript_final_on_terminal_callback(self):
-        self.configure(); self.callback(); self.callback('pin/1', Digits='123456'); self.callback('consent', Digits='1')
+        self.configure(); self.callback(); self.callback('consent', Digits='1')
         self.control()
         raw = json.dumps({'capability': self.item()['callbackId'], 'callSid': f.CALL,
                           'transcriptFinalized': True, 'reason': 'remote_hangup', 'inputTokens': 123, 'outputTokens': 45}).encode()
@@ -493,16 +568,15 @@ class InboundTests(unittest.TestCase):
         self.assertEqual(self.item()['endReason'], 'remote_hangup')
         self.assertEqual(self.item()['inputTokens'], 123)
 
-    def test_fresh_account_revocation_blocks_media_heartbeat_and_enrollment(self):
-        self.configure(); self.callback(); self.callback('pin/1', Digits='123456'); self.callback('consent', Digits='1')
+    def test_fresh_account_revocation_blocks_media_heartbeat(self):
+        self.configure(); self.callback(); self.callback('consent', Digits='1')
         self.control()
         self.owner_active.return_value = False
         self.assertEqual(self.control('check')['statusCode'], 403)
         self.owner_active.assert_called_with(owners.OWNER, since=1000)
-        self.assertEqual(i.enroll({'ownerUserId': owners.OWNER})['statusCode'], 403)
 
     def test_control_signature_cannot_be_replayed_across_actions(self):
-        self.configure(); self.callback(); self.callback('pin/1', Digits='123456'); self.callback('consent', Digits='1')
+        self.configure(); self.callback(); self.callback('consent', Digits='1')
         raw = json.dumps({'capability': self.item()['callbackId'], 'callSid': f.CALL}).encode()
         before = self.item()
         for signed_action in ('redeem', 'check', 'finish'):
@@ -514,7 +588,7 @@ class InboundTests(unittest.TestCase):
         self.assertEqual(i.redeem(raw, {'x-ln-signature': r.digest(raw)}, 'redeem')['statusCode'], 403)
 
     def test_dynamodb_decimal_deadline_keeps_integer_bootstrap_wire_type(self):
-        self.configure(); self.callback(); self.callback('pin/1', Digits='123456'); self.callback('consent', Digits='1')
+        self.configure(); self.callback(); self.callback('consent', Digits='1')
         stored = self.item()
         stored['deadline'] = Decimal('1180')
         r._table.put_item(Item=stored)
@@ -528,7 +602,7 @@ class InboundTests(unittest.TestCase):
         self.assertEqual(numeric['fraction'], 1.4)
 
     def test_recording_timeout_keeps_attempted_intent_for_late_cleanup(self):
-        self.configure(); self.callback(); self.callback('pin/1', Digits='123456')
+        self.configure(); self.callback()
         def timeout(path, form=None):
             if path.endswith('/Recordings.json'):
                 self.assertEqual(r.get(r.call_key(f.CALL, m.namespace(owners.OWNER)))['recordingCreateState'], 'attempted')
@@ -549,7 +623,7 @@ class InboundTests(unittest.TestCase):
             copy_audio.assert_not_called()
 
     def test_known_recording_rejection_is_not_an_ambiguous_creation(self):
-        self.configure(); self.callback(); self.callback('pin/1', Digits='123456')
+        self.configure(); self.callback()
         def rejected(path, form=None):
             if path.endswith('/Recordings.json'):
                 raise m.ProviderError(21220, rejected=True)
@@ -573,56 +647,6 @@ class InboundTests(unittest.TestCase):
         self.assertEqual(args['FunctionName'], 'live-ninja-realtime-broker')
         self.assertEqual(json.loads(args['Payload']), {'mode': 'phone-session', 'userId': owners.OWNER,
             'surface': 'phone', 'phoneCallSid': f.CALL, 'phoneDeadline': 1180})
-
-
-class EnrollmentHelperTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        path = Path(__file__).resolve().parents[2] / 'scripts' / 'enroll-phone-pin.py'
-        spec = importlib.util.spec_from_file_location('phone_pin_helper', path)
-        cls.helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(cls.helper)
-
-    def invoke(self, *, existing=False, args=(), pin='123456', interactive=True, repository='JeremyProffittOrg/live-ninja', account='759775734231'):
-        session, table, main, sts, function = Mock(), Mock(), Mock(), Mock(), Mock()
-        owner = owners.OWNER
-        table.get_item.side_effect = [{'Item': {'ownerUserId': owner}}, {'Item': {'pinHash': 'x', 'version': 4}} if existing else {}]
-        main.get_item.return_value = {'Item': {'userId': owner}}
-        session.resource.return_value.Table.side_effect = lambda name: main if name == 'live-ninja' else table
-        sts.get_caller_identity.return_value = {'Account': account}
-        session.client.side_effect = lambda name: sts if name == 'sts' else function
-        function.invoke.return_value = {'Payload': io.BytesIO(json.dumps({'statusCode': 200, 'body': json.dumps({'enrolled': True, 'enabled': False})}).encode())}
-        fake_boto = types.SimpleNamespace(Session=Mock(return_value=session))
-        output = io.StringIO()
-        with patch.dict(sys.modules, {'boto3': fake_boto}), patch.object(sys, 'argv', ['helper', *args]), \
-             patch.object(sys.stdin, 'isatty', return_value=interactive), patch.object(sys, 'stdout', output), \
-             patch.object(self.helper.subprocess, 'run', return_value=types.SimpleNamespace(returncode=0, stdout=repository)) as process, \
-             patch.object(self.helper.getpass, 'getpass', return_value=pin) as prompt:
-            result = self.helper.main()
-        self.assertNotIn(pin, output.getvalue()) if pin else None
-        return result, function, prompt, process
-
-    def test_existing_empty_and_noninteractive_inputs_never_write(self):
-        for values in ({'existing': True}, {'pin': ''}, {'interactive': False}, {'repository': 'other/repo'}, {'account': '000000000000'}):
-            with self.subTest(values=values):
-                _, function, prompt, _ = self.invoke(**values)
-                function.invoke.assert_not_called()
-                if values.get('pin') != '':
-                    prompt.assert_not_called()
-
-    def test_explicit_replacement_sends_only_salted_verifier_with_expected_version(self):
-        result, function, prompt, process = self.invoke(existing=True, args=['--replace-existing'])
-        self.assertEqual(result, 0); prompt.assert_called_once()
-        payload = json.loads(function.invoke.call_args.kwargs['Payload'])
-        self.assertEqual(payload['expectedVersion'], 4)
-        self.assertTrue(payload['replaceExisting'])
-        self.assertNotIn('123456', json.dumps(payload))
-        self.assertEqual(payload['pinHash'], hashlib.pbkdf2_hmac('sha256', b'123456', bytes.fromhex(payload['pinSalt']), 600000).hex())
-        self.assertNotIn('123456', str(process.call_args))
-
-    def test_invalid_pin_and_arguments_do_not_write(self):
-        for values in ({'pin': '123'}, {'args': ['--pin', '123456']}):
-            result, function, _, _ = self.invoke(**values)
-            self.assertEqual(result, 1); function.invoke.assert_not_called()
 
 
 if __name__ == '__main__':

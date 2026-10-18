@@ -27,6 +27,8 @@ test('incoming daily allowance is distinct from manual approval and does not gra
   await nodes.refresh.handlers.click();
   assert.match(nodes.status.textContent, /Incoming calls from your designated number: \$10 daily allowance, \$9\.80 reserved, \$0\.20 remaining/);
   assert.match(nodes.status.textContent, /Resets at midnight/);
+  assert.match(nodes.status.textContent, /recognized without a PIN; recording consent is required/);
+  assert.doesNotMatch(nodes.status.textContent, /PIN and recording consent are required/);
   assert.match(nodes.status.textContent, /Other calls require more budget authorization/);
   assert.doesNotMatch(nodes.status.textContent, /More budget authorization is required before another call/);
   assert.deepEqual(calls, ['/api/v1/me', '/api/v1/phone/budget']);

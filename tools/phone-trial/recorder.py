@@ -434,9 +434,6 @@ def handler(event, context):
         if event.get("operation") in {"owner_account_export", "owner_account_purge"}:
             import account_lifecycle
             return account_lifecycle.operation(event)
-        if event.get("operation") == "owner_inbound_enroll":
-            import inbound_owner
-            return inbound_owner.enroll(event)
         if event.get("operation") in {"owner_recordings_list", "owner_recording_media"}:
             import owner_recordings
             return owner_recordings.operation(event)

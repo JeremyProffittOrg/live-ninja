@@ -280,18 +280,20 @@ Rules are stored as `pk=USER#<userId>`, `sk=RULE#<name>`. Only each enabled rule
   and serves the confirm page). No separate bind route — and no `/auth/lwa/device/callback`
   route — needed; documented here so no workstream builds a phantom endpoint for it.
 
-## Inbound owner phone sessions (2026-10-17 implementation)
+## Inbound owner phone sessions (2026-10-18 implementation)
 
-This service path is disabled until private PIN enrollment and explicit call activation.
+This service path requires configured owner admission and explicit call activation.
 It does not attach to an existing app conversation. Deployment does not change Twilio
 number routing, grant spending permission, or release the owner's call stop.
 
 - The existing recorder accepts signed Twilio `POST /inbound-owner/voice` callbacks.
-  It checks the configured inbound number and owner caller allowlist, reserves bounded
-  spending, and collects a six-digit PIN using DTMF before owner context or recording.
-  PIN attempts are bounded; raw digits never enter transcripts, model input or logs.
-- Recording requires explicit keypad consent after authentication. Each admitted call
-  has a provider-enforced 180-second deadline and a fresh Live Ninja conversation.
+  It checks the configured inbound number and existing two-number owner caller
+  allowlist, then reserves bounded spending. Caller identity needs no PIN. Unknown
+  callers receive a hangup response without a session or recording.
+- Recording requires explicit keypad consent. The initial bounded consent prompt
+  answers the call; its signed consent callback sets the provider call limit before
+  session minting. Each conversation keeps the original 180-second admission deadline
+  or an earlier budget expiry and uses a fresh Live Ninja conversation.
 - An IAM-only recorder invocation of the realtime broker uses `mode=phone-session`.
   The broker resolves the active canonical owner, saved persona, rules, guides and
   profile, checks quotas, and creates a fresh redeemed session. Its signed `scope=phone`
@@ -307,10 +309,10 @@ number routing, grant spending permission, or release the owner's call stop.
   recordings use the existing private S3 ingestion and owner recording APIs. Existing
   web and Android sessions keep their original permissions and behavior.
 
-`scripts/enroll-phone-pin.bat` is the local owner entrypoint. It checks the repository
-and AWS account before hidden input, sends only a salted verifier to an IAM-only
-enrollment operation, and leaves inbound calling disabled. Empty input changes nothing.
-Never put the PIN, verifier, private numbers or bootstrap token in this document.
+The former PIN enrollment helpers and IAM operation are removed. An invocation with
+`operation=owner_inbound_enroll` receives the existing unknown-operation response.
+Deployment does not erase stored private configuration. Never put private numbers,
+legacy verifiers or bootstrap tokens in this document.
 
 ### Recording account privacy
 

@@ -17,7 +17,6 @@ import owner_messages as m
 CONFIG = {"PK": "CONFIG", "SK": "INBOUND_OWNER"}
 MAX_SECONDS = 180
 RESERVE = Decimal("1.40")
-PIN_ITERATIONS = 600000
 APP = "https://live.jeremy.ninja"
 BROKER = "live-ninja-realtime-broker"
 
@@ -37,13 +36,21 @@ def base():
 
 def valid_config(cfg, inbound, since=None):
     import account_lifecycle
+    version = (inbound or {}).get('version')
+    version_valid = (isinstance(version, (int, Decimal)) and not isinstance(version, bool)
+                     and Decimal(version).is_finite() and version >= 1 and version == int(version))
     return bool(cfg and cfg.get('enabled') is True and inbound and inbound.get('enabled') is True
+                and version_valid
                 and inbound.get('ownerUserId') == cfg.get('ownerUserId')
-                and re.fullmatch('[0-9a-f]{64}', inbound.get('pinHash', ''))
-                and re.fullmatch('[0-9a-f]{32}', inbound.get('pinSalt', ''))
-                and inbound.get('pinIterations') == PIN_ITERATIONS
                 and not r.get(account_lifecycle.owner_key(cfg['ownerUserId']))
                 and account_lifecycle.owner_active(cfg['ownerUserId'], since=since))
+
+
+def caller_bound(cfg, item):
+    return bool(cfg and cfg.get('ownerUserId') == item.get('ownerUserId')
+                and item.get('destination') in {'primary', 'secondary'}
+                and cfg.get('destinations', {}).get(item['destination']) == item.get('toNumber')
+                and cfg.get('fromNumber') == item.get('fromNumber'))
 
 
 def signed_form(path, raw, headers):
@@ -67,11 +74,10 @@ def transition(item, **fields):
     return new
 
 
-def gather(item, consent=False):
-    step = 'consent' if consent else 'pin/' + str(item.get('pinAttempts', 0) + 1)
-    action = html.escape(base() + step + '/' + item['callbackId'], quote=True)
-    prompt = 'Press 1 to allow recording this conversation, or any other key to end.' if consent else 'Enter your six digit Live Ninja PIN.'
-    return xml(f'<Gather input="dtmf" numDigits="{1 if consent else 6}" timeout="6" actionOnEmptyResult="true" method="POST" action="{action}"><Say voice="Polly.Joanna-Neural">{prompt}</Say></Gather><Hangup/>')
+def gather(item):
+    action = html.escape(base() + 'consent/' + item['callbackId'], quote=True)
+    prompt = 'Press 1 to allow recording this conversation, or any other key to end.'
+    return xml(f'<Gather input="dtmf" numDigits="1" timeout="6" actionOnEmptyResult="true" method="POST" action="{action}"><Say voice="Polly.Joanna-Neural">{prompt}</Say></Gather><Hangup/>')
 
 
 def final_transcript(item):
@@ -130,21 +136,21 @@ def end(item, reason, hangup=False, finalized=False, provider_status=None):
 
 def start(data):
     cfg, inbound = r.get(m.CONFIG_KEY), r.get(CONFIG)
+    alias = next((alias for alias, number in (cfg or {}).get('destinations', {}).items() if number == data.get('From')), None)
+    if alias not in {'primary', 'secondary'} or data.get('To') != (cfg or {}).get('fromNumber') or data.get('Direction') != 'inbound':
+        return xml('<Hangup/>')
     if not valid_config(cfg, inbound, since=int(time.time())) or (r.get(m.VOICE_KEY) or {}).get('activeRequest'):
         return bye()
     bridge = os.environ.get('INBOUND_BRIDGE_URL', '').rstrip('/')
     parsed = urllib.parse.urlsplit(bridge)
     if parsed.scheme != 'https' or not parsed.hostname or parsed.path or parsed.query or parsed.fragment or parsed.username:
         return bye()
-    alias = next((alias for alias, number in cfg.get('destinations', {}).items() if number == data.get('From')), None)
-    if alias not in {'primary', 'secondary'} or data.get('To') != cfg.get('fromNumber') or data.get('Direction') != 'inbound':
-        return bye()
     sid = data['CallSid']
     now = int(time.time())
     check = {'ConditionCheck': {'TableName': os.environ['TABLE'], 'Key': CONFIG,
-        'ConditionExpression': '#enabled=:yes AND ownerUserId=:owner AND pinHash=:hash AND pinSalt=:salt',
-        'ExpressionAttributeNames': {'#enabled': 'enabled'},
-        'ExpressionAttributeValues': {':yes': True, ':owner': cfg['ownerUserId'], ':hash': inbound['pinHash'], ':salt': inbound['pinSalt']}}}
+        'ConditionExpression': '#enabled=:yes AND ownerUserId=:owner AND #version=:version',
+        'ExpressionAttributeNames': {'#enabled': 'enabled', '#version':'version'},
+        'ExpressionAttributeValues': {':yes': True, ':owner': cfg['ownerUserId'], ':version': inbound['version']}}}
     check['ConditionCheck']['ExpressionAttributeNames']['#daily'] = 'dailyBudget'
     if 'dailyBudget' in inbound:
         check['ConditionCheck']['ConditionExpression'] += ' AND #daily=:daily'
@@ -154,8 +160,8 @@ def start(data):
     try:
         policy = m.inbound_daily_policy(cfg, inbound, data.get('From'))
         item, fresh = m.reserve(cfg['ownerUserId'], 'inbound-' + sid, alias, 'Inbound owner conversation', cfg,
-            reserve_amount=RESERVE, initial_fields={'direction': 'inbound', 'callSid': sid, 'inboundState': 'auth',
-            'pinAttempts': 0, 'deadline': now + MAX_SECONDS, 'authDeadline': now + 30, 'bridge': bridge,
+            reserve_amount=RESERVE, initial_fields={'direction': 'inbound', 'callSid': sid, 'inboundState': 'consent',
+            'deadline': now + MAX_SECONDS, 'consentDeadline': now + 30, 'bridge': bridge,
             'scriptTranscript': '', 'reservedUSD': RESERVE}, extra_checks=[check], inbound_policy=policy)
     except m.InboundDailyLimit:
         return xml('<Say voice="Polly.Joanna-Neural">Your incoming call allowance is used for today. Please call again tomorrow.</Say><Hangup/>')
@@ -169,20 +175,8 @@ def start(data):
         end(item, 'budget_expired', hangup=True)
         return bye()
     item = transition(item, deadline=deadline)
-    try:
-        # Provider hard cap applies even if the bridge or a callback crashes.
-        remaining = deadline - int(time.time())
-        if remaining <= 0:
-            raise ValueError('Admission expired')
-        # Incoming-number configuration owns the signed status callback. Twilio
-        # requires a redirect URL when changing a call's StatusCallback, which
-        # would interrupt this pending PIN response.
-        result = m.provider('/Calls/' + sid + '.json', {'TimeLimit': remaining})
-        if result.get('sid') != sid or result.get('account_sid') != os.environ['TWILIO_ACCOUNT_SID'] or result.get('status') not in m.STATUSES:
-            raise ValueError('Provider cap binding unavailable')
-    except Exception:
-        end(item, 'provider_cap_failed', hangup=True)
-        return bye()
+    # This finite Gather answers the inbound call. Twilio cannot apply a
+    # realtime TimeLimit update while this initial voice webhook is ringing.
     return gather(item)
 
 
@@ -237,7 +231,7 @@ def callback(path, raw, headers):
         return start(data)
     if path == '/inbound-owner/status':
         return number_status(data)
-    match = re.fullmatch(r'/inbound-owner/(pin/[123]|consent|recording|ended)/([0-9a-f]{64})', path)
+    match = re.fullmatch(r'/inbound-owner/(consent|recording|ended)/([0-9a-f]{64})', path)
     if not match:
         return r.response(404)
     kind, token = match.groups()
@@ -263,34 +257,36 @@ def callback(path, raw, headers):
         return bye()
     cfg, inbound = r.get(m.CONFIG_KEY), r.get(CONFIG)
     lock = r.get(m.VOICE_KEY) or {}
-    if not valid_config(cfg, inbound, since=item['createdAt']) or lock.get('activeRequest') != item['lockId'] or int(time.time()) >= item['deadline']:
+    if (not valid_config(cfg, inbound, since=item['createdAt']) or not caller_bound(cfg, item)
+            or lock.get('activeRequest') != item['lockId'] or int(time.time()) >= item['deadline']):
         end(item, 'admission_revoked', hangup=True)
         return bye()
-    if kind.startswith('pin/'):
-        attempt = int(kind[-1])
-        if item.get('inboundState') != 'auth' or attempt != item.get('pinAttempts', 0) + 1 or int(time.time()) >= item['authDeadline']:
-            return bye()
-        item = transition(item, pinAttempts=attempt, inboundState='pin_check')
-        digits = data.get('Digits', '')
-        valid = bool(re.fullmatch('[0-9]{6}', digits)) and hmac.compare_digest(
-            hashlib.pbkdf2_hmac('sha256', digits.encode(), bytes.fromhex(inbound['pinSalt']), PIN_ITERATIONS).hex(), inbound['pinHash'])
-        if not valid:
-            if attempt == 3:
-                end(item, 'pin_rejected', hangup=True)
-                return bye()
-            item = transition(item, inboundState='auth')
-            return gather(item)
-        item = transition(item, inboundState='consent')
-        item = m.change({k: item[k] for k in ('PK', 'SK')}, {}, 'inbound_authenticated',
-                        {'callSid': item['callSid'], 'attempts': attempt}, sid=item['callSid'])
-        return gather(item, consent=True)
     if item.get('inboundState') != 'consent':
+        return bye()
+    if data.get('Direction') != 'inbound' or data.get('From') != item['toNumber'] or data.get('To') != item['fromNumber']:
+        return r.response(403)
+    if int(time.time()) >= item['consentDeadline']:
+        end(item, 'consent_expired', hangup=True)
         return bye()
     if data.get('Digits') != '1':
         end(item, 'consent_declined', hangup=True)
         return bye()
     # Persist before invoking: an ambiguous mint/recording creation is never retried.
     item = transition(item, inboundState='minting', consented=True)
+    try:
+        remaining = int(item['deadline']) - int(time.time())
+        if remaining <= 0:
+            raise ValueError('Call deadline expired')
+        result = m.provider('/Calls/' + item['callSid'] + '.json', {'TimeLimit': remaining})
+        if (result.get('sid') != item['callSid'] or result.get('account_sid') != os.environ['TWILIO_ACCOUNT_SID']
+                or result.get('status') != 'in-progress'):
+            raise ValueError('Provider cap binding unavailable')
+    except Exception as exc:
+        reason = 'provider_cap_failed'
+        if isinstance(exc, m.ProviderError) and type(exc.code) is int:
+            reason += '_' + str(exc.code)
+        end(item, reason, hangup=True)
+        return bye()
     bootstrap = None
     try:
         call = r.get(r.call_key(item['callSid'], m.namespace(item['ownerUserId'])))
@@ -351,7 +347,9 @@ def redeem(raw, headers, action='redeem'):
     required_state = 'ready' if action == 'redeem' else 'redeemed'
     if item.get('inboundState') != required_state or int(time.time()) >= item['deadline']:
         return r.response(403)
-    if not valid_config(r.get(m.CONFIG_KEY), r.get(CONFIG), since=item['createdAt']) or (r.get(m.VOICE_KEY) or {}).get('activeRequest') != item['lockId']:
+    cfg = r.get(m.CONFIG_KEY)
+    if (not valid_config(cfg, r.get(CONFIG), since=item['createdAt']) or not caller_bound(cfg, item)
+            or (r.get(m.VOICE_KEY) or {}).get('activeRequest') != item['lockId']):
         return r.response(403)
     if action == 'check':
         return r.response(200)
@@ -362,31 +360,3 @@ def redeem(raw, headers, action='redeem'):
             raise
         return r.response(409)
     return r.response(200, {**item['bootstrap'], 'callSid': sid, 'deadline': item['deadline']})
-
-
-def enroll(event):
-    """IAM-only salted verifier enrollment. Always leaves inbound calling disabled."""
-    cfg = r.get(m.CONFIG_KEY)
-    if not cfg or cfg.get('ownerUserId') != event.get('ownerUserId'):
-        return r.response(403)
-    import account_lifecycle
-    if r.get(account_lifecycle.owner_key(cfg['ownerUserId'])) or not account_lifecycle.owner_active(cfg['ownerUserId']):
-        return r.response(403)
-    if not re.fullmatch('[0-9a-f]{64}', event.get('pinHash', '')) or not re.fullmatch('[0-9a-f]{32}', event.get('pinSalt', '')):
-        return r.response(400)
-    old = r.get(CONFIG)
-    if event.get('expectedVersion') != int((old or {}).get('version', 0)):
-        return r.response(409, {'error': 'Enrollment changed; restart the local helper'})
-    if old and old.get('pinHash') and event.get('replaceExisting') is not True:
-        return r.response(409, {'error': 'Existing enrollment was not selected for replacement'})
-    new = {**CONFIG, 'version': int((old or {}).get('version', 0)) + 1, 'ownerUserId': cfg['ownerUserId'],
-           'enabled': False, 'pinHash': event['pinHash'], 'pinSalt': event['pinSalt'], 'pinIterations': PIN_ITERATIONS}
-    if old and 'dailyBudget' in old:
-        new['dailyBudget'] = old['dailyBudget']
-    try:
-        m.transact([m.put(new, old), *account_lifecycle.ready_conditions({'ownerUserId': cfg['ownerUserId']})])
-    except Exception as exc:
-        if not r.conditional(exc):
-            raise
-        return r.response(409, {'error': 'Enrollment changed; restart the local helper'})
-    return r.response(200, {'enrolled': True, 'enabled': False})

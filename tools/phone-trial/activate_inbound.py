@@ -98,13 +98,9 @@ def load_state(session, now):
     check(set(targets) == {'primary', 'secondary'} and len(set(targets.values())) == 2
           and all(isinstance(n, str) and re.fullmatch(r'\+[1-9][0-9]{7,14}', n) for n in targets.values())
           and re.fullmatch(r'\+[1-9][0-9]{7,14}', cfg.get('fromNumber', '')), 'exact_two_callers_required')
-    inbound = get(phone, INBOUND, 'ownerUserId,enabled,#v,pinIterations', {'#v':'version'})
-    pin = phone.query(KeyConditionExpression='PK=:pk AND SK=:sk',
-        FilterExpression='ownerUserId=:owner AND pinIterations=:iterations AND size(pinHash)=:hashlen AND size(pinSalt)=:saltlen',
-        ExpressionAttributeValues={':pk':'CONFIG',':sk':'INBOUND_OWNER',':owner':owner,':iterations':600000,':hashlen':64,':saltlen':32},
-        Select='COUNT', ConsistentRead=True).get('Count') == 1
-    check(pin and inbound.get('ownerUserId') == owner and isinstance(inbound.get('enabled'), bool)
-          and int(inbound.get('version', 0)) >= 1, 'pin_enrollment_unavailable')
+    inbound = get(phone, INBOUND, 'ownerUserId,enabled,#v', {'#v':'version'})
+    check(inbound.get('ownerUserId') == owner and isinstance(inbound.get('enabled'), bool)
+          and int(inbound.get('version', 0)) >= 1, 'owner_admission_unavailable')
     check(not get(phone, {'PK':'OWNER#'+owner,'SK':'ACCOUNT_DELETION'}, 'PK'), 'account_deletion_pending')
     check(not get(phone, {'PK':'RUN#owner-messages#'+owner,'SK':'ACCOUNT_DELETION'}, 'PK'), 'recording_deletion_pending')
     zone = cfg.get('timezone') or 'America/New_York'
@@ -189,7 +185,7 @@ def observe(provider, state, now):
     summary = {'routeMatches':route_ok,'voicePath':safe_path(number.get('voice_url','')),'voiceMethod':number.get('voice_method') if number.get('voice_method') in {'GET','POST'} else 'unknown',
                'statusCallbackPath':safe_path(number.get('status_callback','')),'statusCallbackMethod':number.get('status_callback_method') if number.get('status_callback_method') in {'GET','POST'} else 'unknown',
                'routingOverride':override,'ownedActiveCalls':active,'ownerEnabled':cfg['enabled'],'inboundEnabled':state['inbound']['enabled'],
-               'pinEnrolled':True,'budgetReady':state['budgetReady'],'remainingUSD':str(state['remaining']),
+               'ownerAdmissionConfigured':True,'budgetReady':state['budgetReady'],'remainingUSD':str(state['remaining']),
                'latestInboundCallSid':latest['sid'] if latest else None,'latestInboundCallerAllowlisted':latest.get('from') in cfg['destinations'].values() if latest else None,
                'debuggerReadSucceeded':alerts_ok,'debuggerErrors':diagnostics[:5]}
     summary['inboundReady'] = (route_ok and not override and active == 0 and not state['lock'].get('activeRequest')
@@ -220,7 +216,7 @@ def activate(provider, state, number, expected, summary, now):
         {'ConditionCheck':{'TableName':'live-ninja-phone-trial','Key':state['budgetKey'],'ConditionExpression':'#v=:v AND grantedUSD=:ten AND spentUSD=:spent AND expiresAt=:expiry','ExpressionAttributeNames':{'#v':'version'},'ExpressionAttributeValues':{':v':budget['version'],':ten':Decimal('10'),':spent':budget.get('spentUSD',Decimal(0)),':expiry':budget['expiresAt']}}},
         {'ConditionCheck':{'TableName':'live-ninja-phone-trial','Key':state['receiptKey'],'ConditionExpression':'#day=:day AND amountUSD=:ten AND authorizedTotalUSD=:ten AND expiresAt=:expiry AND authorizationScope=:scope','ExpressionAttributeNames':{'#day':'day'},'ExpressionAttributeValues':{':day':DATE,':ten':Decimal('10'),':expiry':budget['expiresAt'],':scope':'owner-only-parked-car-tests'}}},
         {'Update':{'TableName':'live-ninja-phone-trial','Key':CONFIG,'UpdateExpression':'SET #enabled=:yes','ConditionExpression':'ownerUserId=:owner AND fromNumber=:number AND destinations=:targets AND #enabled=:old','ExpressionAttributeNames':{'#enabled':'enabled'},'ExpressionAttributeValues':{':owner':owner,':number':cfg['fromNumber'],':targets':cfg['destinations'],':old':cfg['enabled'],':yes':True}}},
-        {'Update':{'TableName':'live-ninja-phone-trial','Key':INBOUND,'UpdateExpression':'SET #enabled=:yes, #v=:next','ConditionExpression':'ownerUserId=:owner AND #v=:v AND #enabled=:old AND pinIterations=:iterations AND size(pinHash)=:hashlen AND size(pinSalt)=:saltlen','ExpressionAttributeNames':{'#enabled':'enabled','#v':'version'},'ExpressionAttributeValues':{':owner':owner,':v':inbound['version'],':next':int(inbound['version'])+1,':old':inbound['enabled'],':yes':True,':iterations':600000,':hashlen':64,':saltlen':32}}}
+        {'Update':{'TableName':'live-ninja-phone-trial','Key':INBOUND,'UpdateExpression':'SET #enabled=:yes, #v=:next','ConditionExpression':'ownerUserId=:owner AND #v=:v AND #enabled=:old','ExpressionAttributeNames':{'#enabled':'enabled','#v':'version'},'ExpressionAttributeValues':{':owner':owner,':v':inbound['version'],':next':int(inbound['version'])+1,':old':inbound['enabled'],':yes':True}}}
     ]
     if active == STOP:
         operations.append({'Update':{'TableName':'live-ninja-phone-trial','Key':VOICE,'UpdateExpression':'REMOVE activeRequest','ConditionExpression':'activeRequest=:stop','ExpressionAttributeValues':{':stop':STOP}}})

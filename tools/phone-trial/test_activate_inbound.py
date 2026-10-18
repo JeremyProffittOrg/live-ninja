@@ -27,12 +27,6 @@ class Table:
         fields=[(ExpressionAttributeNames or {}).get(field,field) for field in ProjectionExpression.split(',')]
         return {'Item':{field:copy.deepcopy(row[field]) for field in fields if field in row}}
 
-    def query(self,**kwargs):
-        assert kwargs['Select']=='COUNT'
-        row=self.rows.get(('CONFIG','INBOUND_OWNER'),{})
-        valid=row.get('ownerUserId')==OWNER and len(row.get('pinHash',''))==64 and len(row.get('pinSalt',''))==32 and row.get('pinIterations')==600000
-        return {'Count':1 if valid else 0}
-
     def commit(self,TransactItems):
         self.transactions.append(TransactItems)
         # Check all voice/budget guards before applying either enable flag.
@@ -59,7 +53,7 @@ class Session:
         self.main=Table({('CONFIG','OWNER'):{'userId':OWNER},('USER#'+OWNER,'PROFILE'):{'role':'owner','status':'active'}})
         self.phone=Table({
             ('CONFIG','OWNER_MESSAGES'):{'ownerUserId':OWNER,'enabled':True,'fromNumber':'+12025550100','destinations':{'primary':'+12025550101','secondary':'+12025550102'},'timezone':'America/New_York'},
-            ('CONFIG','INBOUND_OWNER'):{'ownerUserId':OWNER,'enabled':False,'version':1,'pinIterations':600000,'pinHash':'a'*64,'pinSalt':'b'*32},
+            ('CONFIG','INBOUND_OWNER'):{'ownerUserId':OWNER,'enabled':False,'version':1},
             ('PHONE#BUDGET#2026-10','DAY#2026-10-17'):{'version':1,'grantedUSD':Decimal('10'),'spentUSD':Decimal('0'),'expiresAt':1792296000,'timezone':'America/New_York'},
             ('OWNER#'+OWNER,'BUDGET_GRANT#'+a.RECEIPT):{'day':a.DATE,'amountUSD':Decimal('10'),'authorizedTotalUSD':Decimal('10'),'authorizationScope':'owner-only-parked-car-tests','expiresAt':1792296000},
             ('PHONE#CONTROL','VOICE'):{}
@@ -106,6 +100,7 @@ class InboundOperationTests(unittest.TestCase):
         session,provider,state,number,expected,summary=self.fixture()
         self.assertFalse(summary['routeMatches']);self.assertEqual(summary['voicePath'],'/unavailable');self.assertEqual(summary['voiceMethod'],'GET')
         self.assertFalse(summary['inboundReady'])
+        self.assertTrue(summary['ownerAdmissionConfigured']);self.assertNotIn('pinEnrolled',summary)
         self.assertTrue(summary['latestInboundCallerAllowlisted']);self.assertEqual(summary['debuggerErrors'][0]['httpStatus'],404)
         text=json.dumps(summary)
         for value in ('+1202','123456','TOPSECRET','pinHash','pinSalt'):self.assertNotIn(value,text)
@@ -124,6 +119,7 @@ class InboundOperationTests(unittest.TestCase):
                 self.assertEqual(provider.number['status_callback'],SERVICE+'/inbound-owner/status')
                 self.assertTrue(session.phone.rows[('CONFIG','INBOUND_OWNER')]['enabled'])
                 self.assertNotIn('activeRequest',session.phone.rows[('PHONE#CONTROL','VOICE')])
+                self.assertNotIn('pin',json.dumps(session.phone.transactions,default=str).lower())
 
     def test_active_shared_or_provider_call_blocks_before_route_write(self):
         for kind in ('lock','provider'):
@@ -155,9 +151,12 @@ class InboundOperationTests(unittest.TestCase):
             self.assertFalse(provider.posts)
         state=a.load_state(Session(),datetime(2026,10,18,12,tzinfo=timezone.utc));self.assertFalse(state['budgetReady'])
 
-    def test_missing_pin_and_inactive_owner_fail_without_secrets_projection(self):
-        session=Session();session.phone.rows[('CONFIG','INBOUND_OWNER')].pop('pinHash')
-        self.assertRaises(a.Blocked,a.load_state,session,NOW)
+    def test_invalid_owner_admission_fails_without_secrets_projection(self):
+        for field,value in [('ownerUserId','another-owner'),('enabled',None),('version',0)]:
+            with self.subTest(field=field):
+                session=Session();session.phone.rows[('CONFIG','INBOUND_OWNER')][field]=value
+                self.assertRaises(a.Blocked,a.load_state,session,NOW)
+                self.assertTrue(all('pin' not in value.lower() for value in session.phone.reads))
 
     def test_correct_route_with_disabled_inbound_never_claims_ready(self):
         session,provider,state,number,expected,summary=self.fixture()

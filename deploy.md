@@ -107,19 +107,19 @@ change number callbacks, grant a budget, or clear `PHONE#CONTROL/VOICE`.
 The recorder role can invoke only the existing `live-ninja-realtime-broker` for
 fresh phone sessions. The Azure bridge receives no AWS credentials.
 
-The owner can enroll a PIN locally with `scripts\enroll-phone-pin.bat` after
-deployment. This stores a salted verifier and keeps inbound calling disabled.
-Enrollment alone does not authorize activation. Before any separately authorized
-activation, verify the existing caller allowlist, private PIN enrollment, budget,
-call stop, exact Twilio number callback, deployed SHA and bounded call acceptance.
-Never copy PINs or configured private numbers into deployment logs.
+Incoming caller identity uses the existing two configured owner numbers; no PIN
+enrollment is required. Before any separately authorized activation, verify the
+caller allowlist, active canonical owner, budget, call stop, exact Twilio number
+callback, deployed SHA and bounded call acceptance. Unknown callers receive a
+hangup response. Never copy configured private numbers into deployment logs.
 
 Before activating inbound owner calling, configure the exact owned number's
 `VoiceUrl` to the recorder ServiceUrl plus `/inbound-owner/voice`, and its
 number-level `StatusCallback` to the same ServiceUrl plus `/inbound-owner/status`.
 Both methods must be POST. Verify those exact values before enabling the private
-owner/PIN rows or releasing the known owner-stop lock. Preserve SMS and unrelated
-number settings. Inbound call admission updates only the provider `TimeLimit`;
+owner/inbound rows or releasing the known owner-stop lock. Preserve SMS and unrelated
+number settings. The initial bounded recording-consent prompt answers the call.
+Its signed consent callback sets the provider `TimeLimit` before session minting;
 do not add a call-level `StatusCallback` update without a `Url`, or redirect the
 live call merely to set its callback. Twilio documents that callback-update
 restriction in https://www.twilio.com/docs/voice/api/call-resource . Number-level
@@ -130,10 +130,11 @@ routing check. Its helper, `tools/phone-trial/activate_inbound.py`, runs only in
 this repository's main-branch GitHub context. A route/configuration mismatch is
 a failing check, not permission to activate. The separately authorized manual
 operation uses `activate_inbound=true` and `authorization_date=2026-10-17`; it
-requires the recorded current-day10USD grant, an active canonical owner, enrolled
-PIN, the existing two caller aliases and no active owned call. It updates only
+requires that date's recorded current-day10USD grant, an active canonical owner,
+the existing two caller aliases and no active owned call. The date guard remains;
+this historical operation does not authorize activation on another date. It updates only
 the exact existing number's four voice/status callback fields, verifies preserved
-settings, then conditionally enables the existing owner/PIN rows. It never places
+settings, then conditionally enables the existing owner/inbound rows. It never places
 a call, purchases a number, changes SMS, or grants budget.
 
 ## Repo bootstrap facts (filled in at creation)
