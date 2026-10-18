@@ -22,10 +22,14 @@ export function initPhoneBudget(root, { apiJSON, onAuthLost = () => {}, storage 
       waiting_approval: 'More budget authorization is required before another call.',
       '': 'No call hold was reported.',
     }[data.pausedReason || ''] || 'Calling is on hold. Check the call status before another attempt.';
-    status.textContent = `Month ${data.month}: $${data.allocatedUSD} allocated; monthly limit $${data.monthlyLimitUSD}. ` +
+    const incoming = data.incomingDailyBudget;
+    const incomingText = incoming?.enabled ?
+      `Incoming calls from your designated number: $${incoming.limitUSD} daily allowance, $${incoming.reservedUSD} reserved, $${incoming.remainingUSD} remaining for ${incoming.day} (${incoming.timezone}). Resets at midnight. If less than $${data.requiredReservationUSD} remains, wait until tomorrow. PIN and recording consent are required. ` : '';
+    status.textContent = incomingText + `Month ${data.month}: $${data.allocatedUSD} allocated; monthly limit $${data.monthlyLimitUSD}. ` +
+      (incoming?.enabled ? 'Other calls use the separate approval allowance. ' : '') +
       `Today ${data.day} (${data.timezone}): $${data.dailyGrantedUSD} authorized, $${data.dailySpentUSD} used, $${data.dailyRemainingUSD} remaining. ` +
-      `Expires ${expiry} (${data.timezone}). ${hold} A grant does not resume calls.` +
-      (data.requiredReservationUSD ? ` A full phone conversation reserves $${data.requiredReservationUSD}; you can approve another $5 when the remaining allowance cannot cover it.` : '');
+      `Expires ${expiry} (${data.timezone}). ${incoming?.enabled && data.pausedReason === 'waiting_approval' ? 'Other calls require more budget authorization.' : hold} A grant does not resume calls.` +
+      (data.requiredReservationUSD ? ` A full phone conversation reserves $${data.requiredReservationUSD}; ${incoming?.enabled ? 'for other calls, ' : ''}you can approve another $5 when the remaining allowance cannot cover it.` : '');
     grant.textContent = pending ? 'Retry the same $5 authorization' : 'Authorize $5 for this day';
   }
   async function load() {

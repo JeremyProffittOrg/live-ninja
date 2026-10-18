@@ -16,6 +16,22 @@ function fixture(apiJSON, storage = new Map()) {
 }
 const budget = { month: '2026-10', day: '2026-10-16', timezone: 'America/New_York', allocatedUSD: '20', monthlyLimitUSD: '20', dailyGrantedUSD: '5', dailySpentUSD: '0', dailyRemainingUSD: '5', requiredReservationUSD: '1.40', expiresAt: 1792209600, pausedReason: 'voice_stop_or_active_call' };
 
+test('incoming daily allowance is distinct from manual approval and does not grant outgoing credit', async () => {
+  const calls = [];
+  const { nodes } = fixture(async path => {
+    calls.push(path);
+    if (path === '/api/v1/me') return { userId: 'owner', role: 'owner' };
+    return { ...budget, dailyGrantedUSD: '0', dailyRemainingUSD: '0', pausedReason: 'waiting_approval',
+      incomingDailyBudget: { enabled: true, limitUSD: '10', reservedUSD: '9.80', remainingUSD: '0.20', day: budget.day, timezone: budget.timezone } };
+  });
+  await nodes.refresh.handlers.click();
+  assert.match(nodes.status.textContent, /Incoming calls from your designated number: \$10 daily allowance, \$9\.80 reserved, \$0\.20 remaining/);
+  assert.match(nodes.status.textContent, /Resets at midnight/);
+  assert.match(nodes.status.textContent, /Other calls require more budget authorization/);
+  assert.doesNotMatch(nodes.status.textContent, /More budget authorization is required before another call/);
+  assert.deepEqual(calls, ['/api/v1/me', '/api/v1/phone/budget']);
+});
+
 test('unknown grant retries same persisted ID across reload and never resumes calls', async () => {
   const requests = [];
   let fail = true;

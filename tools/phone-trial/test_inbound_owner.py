@@ -56,6 +56,8 @@ class InboundTests(unittest.TestCase):
                 if cfg.get('enabled') is not True or any(cfg.get(field) != values[name] for field, name in
                     (('ownerUserId', ':owner'), ('pinHash', ':hash'), ('pinSalt', ':salt'))):
                     raise f.Conflict()
+                if (':daily' in values and cfg.get('dailyBudget') != values[':daily']) or (':daily' not in values and 'dailyBudget' in cfg):
+                    raise f.Conflict()
             else:
                 regular.append(operation)
         owners.OwnerMessageTests.transact(self, regular)
@@ -69,6 +71,21 @@ class InboundTests(unittest.TestCase):
 
     def item(self):
         return r.get(m.request_key(owners.OWNER, 'inbound-' + f.CALL))
+
+    def configure_daily(self):
+        self.configure()
+        cfg = r.get(m.CONFIG_KEY)
+        cfg.update(timezone='America/New_York', budgetFloorUSD=Decimal('20'), budgetFloorMonth='2026-10')
+        r._table.put_item(Item=cfg)
+        inbound = r.get(i.CONFIG)
+        inbound['dailyBudget'] = {'enabled': True, 'callerNumber': cfg['destinations']['primary'],
+                                  'limitUSD': Decimal('10'), 'version': Decimal('1')}
+        r._table.put_item(Item=inbound)
+        self.budget_clock = patch.object(m, 'budget_clock', return_value=('2026-10', '2026-10-18', 'America/New_York', 2000)).start()
+        r._table.put_item(Item={**m.budget_keys('2026-10', '2026-10-18')[0], 'version': 1, 'allocatedUSD': Decimal('20')})
+
+    def incoming_day(self, day='2026-10-18'):
+        return r.get(m.inbound_budget_key(owners.OWNER, day))
 
     def callback(self, kind='voice', **fields):
         path = '/inbound-owner/' + kind
@@ -124,6 +141,169 @@ class InboundTests(unittest.TestCase):
         self.assertEqual(self.control('finish')['statusCode'], 200)
         self.assertEqual(r.get(m.VOICE_KEY)['activeRequest'], 'owner-stop-2026-10-16')
         self.final.assert_called_once()
+
+    def test_recurring_incoming_allowance_survives_monthly_limit_without_generic_grant(self):
+        self.configure_daily()
+        self.assertIn('<Gather', self.callback()['body'])
+        self.assertEqual(self.incoming_day()['reservedUSD'], Decimal('1.40'))
+        self.assertEqual(self.item()['budgetExpiresAt'], 2000)
+        self.assertEqual(self.item()['budgetSource'], 'incoming-daily-policy')
+        self.assertIsNone(r.get(m.budget_keys('2026-10', '2026-10-18')[1]))
+        self.assertEqual(r.get(m.budget_keys('2026-10', '2026-10-18')[0])['allocatedUSD'], Decimal('21.40'))
+        self.callback('status', CallStatus='completed')
+        self.callback()  # Same CallSid cannot reserve again even after releasing its voice lock.
+        self.assertEqual(self.incoming_day()['reservedUSD'], Decimal('1.40'))
+        status = json.loads(r.handler({'operation':'owner_budget_status','ownerUserId':owners.OWNER}, None)['body'])
+        self.assertEqual(status['dailyGrantedUSD'], '0')
+        self.assertEqual(status['pausedReason'], 'waiting_approval')
+        self.assertEqual(status['incomingDailyBudget'], {'enabled': True, 'limitUSD':'10', 'reservedUSD':'1.40',
+            'remainingUSD':'8.60', 'day':'2026-10-18', 'timezone':'America/New_York', 'expiresAt':2000})
+        self.assertNotIn('callerNumber', json.dumps(status)); self.assertNotIn('+12025550101', json.dumps(status))
+        self.assertNotIn('pinHash', json.dumps(status)); self.assertNotIn('pinSalt', json.dumps(status))
+
+    def test_recurring_allowance_does_not_fund_other_caller_outbound_or_hotel(self):
+        self.configure_daily()
+        self.assertIn('<Hangup', self.callback(From='+12025550102')['body'])
+        self.assertIsNone(self.incoming_day())
+        outgoing = r.handler({'operation':'owner_message_send','ownerUserId':owners.OWNER,'requestId':'outbound-policy-test',
+                              'destination':'primary','message':'Test'}, None)
+        self.assertEqual(outgoing['statusCode'], 409)
+        cfg = r.get(m.CONFIG_KEY)
+        with self.assertRaisesRegex(ValueError, 'waiting_approval'):
+            m.reserve(owners.OWNER, 'hotel-policy-test', 'hotel-01', 'Research', cfg,
+                      reserve_amount=Decimal('1.40'), target_number='+12025550109')
+        self.assertIsNone(self.incoming_day())
+        self.assertIsNone(r.get(m.VOICE_KEY))
+        self.assertFalse(any(args.args[0] == '/Calls.json' for args in self.provider.call_args_list))
+
+    def test_recurring_daily_cap_counts_full_reserve_and_does_not_fall_back(self):
+        self.configure_daily()
+        manual_key = m.budget_keys('2026-10', '2026-10-18')[1]
+        manual = {**manual_key,'version':1,'grantedUSD':Decimal('100'),'spentUSD':Decimal('0'),'expiresAt':2000}
+        r._table.put_item(Item=manual)
+        original = self.provider_result
+        def dynamic_call(path, form=None):
+            if path.startswith('/Calls/'):
+                return {'sid':path.split('/')[2].split('.')[0], 'account_sid':f.ACCOUNT,
+                        'status':'completed' if (form or {}).get('Status') == 'completed' else 'in-progress'}
+            return original(path, form)
+        self.provider.side_effect = dynamic_call
+        for number in range(1, 8):
+            sid = 'CA' + format(number, '032x')
+            self.assertIn('<Gather', self.callback(CallSid=sid)['body'])
+            self.callback('status', CallSid=sid, CallStatus='completed')
+        self.assertEqual(self.incoming_day()['reservedUSD'], Decimal('9.80'))
+        exhausted = self.callback(CallSid='CA'+format(8,'032x'))
+        self.assertIn('Please call again tomorrow', exhausted['body'])
+        self.assertEqual(self.incoming_day()['reservedUSD'], Decimal('9.80'))
+        self.assertEqual(r.get(manual_key), manual)
+        self.assertNotIn('activeRequest', r.get(m.VOICE_KEY))
+        self.budget_clock.return_value = ('2026-10', '2026-10-19', 'America/New_York', 4000)
+        self.now.return_value = 3000
+        self.assertIn('<Gather', self.callback(CallSid='CA'+format(9,'032x'))['body'])
+        self.assertEqual(self.incoming_day('2026-10-19')['reservedUSD'], Decimal('1.40'))
+        self.assertEqual(self.incoming_day()['reservedUSD'], Decimal('9.80'))
+
+    def test_policy_revocation_and_absence_are_fenced_in_reservation(self):
+        self.configure_daily()
+        transact = self.transact
+        def revoke(operations):
+            policy = r.get(i.CONFIG); policy['dailyBudget']['enabled'] = False; r._table.put_item(Item=policy)
+            return transact(operations)
+        with patch.object(m, 'transact', side_effect=revoke):
+            self.assertIn('<Hangup', self.callback()['body'])
+        self.assertIsNone(self.incoming_day()); self.assertIsNone(self.item()); self.assertIsNone(r.get(m.VOICE_KEY))
+        # A newly added policy must also prevent a stale manual-path reservation.
+        inbound = r.get(i.CONFIG); inbound.pop('dailyBudget'); r._table.put_item(Item=inbound)
+        cfg = r.get(m.CONFIG_KEY); cfg['budgetFloorUSD'] = Decimal('8'); r._table.put_item(Item=cfg)
+        month = r.get(m.budget_keys('2026-10','2026-10-18')[0]); month['allocatedUSD'] = Decimal('8'); r._table.put_item(Item=month)
+        def install(operations):
+            policy = r.get(i.CONFIG); policy['dailyBudget'] = {'enabled':True,'callerNumber':'+12025550101','limitUSD':Decimal('10'),'version':1}
+            r._table.put_item(Item=policy)
+            return transact(operations)
+        with patch.object(m,'transact',side_effect=install):
+            self.assertIn('<Hangup',self.callback()['body'])
+        self.assertIsNone(self.item()); self.assertIsNone(r.get(m.VOICE_KEY))
+        self.assertEqual(r.get(m.budget_keys('2026-10','2026-10-18')[0])['allocatedUSD'], Decimal('8'))
+
+    def test_malformed_matched_policy_never_uses_manual_allowance(self):
+        self.configure_daily()
+        original = r.get(i.CONFIG)
+        r._table.put_item(Item={**m.budget_keys('2026-10','2026-10-18')[1], 'version':1,
+            'grantedUSD':Decimal('100'),'spentUSD':Decimal('0'),'expiresAt':2000})
+        for field,value in [('limitUSD','NaN'),('limitUSD','Infinity'),('limitUSD','11'),('version',True),('version',Decimal('1.5')),('version',0)]:
+            item = {**original,'dailyBudget':{**original['dailyBudget'],field:value}}
+            r._table.put_item(Item=item)
+            with self.subTest(field=field,value=value):
+                self.assertIn('<Hangup',self.callback()['body'])
+                self.assertIsNone(self.incoming_day()); self.assertIsNone(self.item())
+
+    def test_policy_reservation_still_obeys_stop_deletion_and_owner_binding(self):
+        self.configure_daily()
+        r._table.put_item(Item={**m.VOICE_KEY,'activeRequest':'owner-stop'})
+        self.assertIn('<Hangup',self.callback()['body']); self.assertIsNone(self.incoming_day())
+        r._table.items.pop((m.VOICE_KEY['PK'],m.VOICE_KEY['SK']))
+        r._table.put_item(Item={'PK':'OWNER#'+owners.OWNER,'SK':'ACCOUNT_DELETION','ownerUserId':owners.OWNER})
+        self.assertIn('<Hangup',self.callback()['body']); self.assertIsNone(self.incoming_day())
+
+    def test_policy_counter_conflict_cannot_exceed_cap(self):
+        self.configure_daily()
+        key=m.inbound_budget_key(owners.OWNER,'2026-10-18')
+        row={**key,'ownerUserId':owners.OWNER,'day':'2026-10-18','timezone':'America/New_York',
+             'limitUSD':Decimal('10'),'reservedUSD':Decimal('8.40'),'expiresAt':2000,'version':1}
+        r._table.put_item(Item=row)
+        transact=self.transact
+        def competing_reservation(operations):
+            r._table.put_item(Item={**row,'reservedUSD':Decimal('9.80'),'version':2})
+            return transact(operations)
+        with patch.object(m,'transact',side_effect=competing_reservation):
+            self.assertIn('Please call again tomorrow',self.callback()['body'])
+        self.assertEqual(self.incoming_day()['reservedUSD'],Decimal('9.80'))
+        self.assertIsNone(self.item()); self.assertIsNone(r.get(m.VOICE_KEY))
+
+    def test_recurring_quota_preserved_when_pin_is_replaced(self):
+        self.configure_daily(); policy=r.get(i.CONFIG)['dailyBudget']
+        result=i.enroll({'ownerUserId':owners.OWNER,'pinSalt':'2'*32,'pinHash':'3'*64,'expectedVersion':1,'replaceExisting':True})
+        self.assertEqual(result['statusCode'],200)
+        self.assertEqual(r.get(i.CONFIG)['dailyBudget'],policy)
+        self.assertFalse(r.get(i.CONFIG)['enabled'])
+
+    def test_recurring_policy_version_change_does_not_reset_same_day_counter(self):
+        self.configure_daily()
+        key=m.inbound_budget_key(owners.OWNER,'2026-10-18')
+        r._table.put_item(Item={**key,'ownerUserId':owners.OWNER,'day':'2026-10-18','timezone':'America/New_York',
+            'limitUSD':Decimal('10'),'reservedUSD':Decimal('9.80'),'expiresAt':2000,'version':Decimal('7')})
+        inbound=r.get(i.CONFIG); inbound['dailyBudget']['version']=Decimal('2'); r._table.put_item(Item=inbound)
+        self.assertIn('Please call again tomorrow',self.callback()['body'])
+        self.assertEqual(self.incoming_day()['reservedUSD'],Decimal('9.80'))
+        self.assertIsNone(self.item())
+
+    def test_recurring_allowance_reserves_full_amount_below_monthly_threshold(self):
+        self.configure_daily()
+        cfg=r.get(m.CONFIG_KEY); cfg.update(budgetFloorUSD=Decimal('8')); r._table.put_item(Item=cfg)
+        monthly=r.get(m.budget_keys('2026-10','2026-10-18')[0]); monthly['allocatedUSD']=Decimal('8'); r._table.put_item(Item=monthly)
+        self.assertIn('<Gather',self.callback()['body'])
+        self.assertEqual(self.incoming_day()['reservedUSD'],Decimal('1.40'))
+        self.assertEqual(self.item()['budgetExpiresAt'],2000)
+        self.assertEqual(r.get(m.budget_keys('2026-10','2026-10-18')[0])['allocatedUSD'],Decimal('9.40'))
+        self.assertIsNone(r.get(m.budget_keys('2026-10','2026-10-18')[1]))
+
+    def test_midnight_crossing_before_commit_makes_no_reservation(self):
+        self.configure_daily()
+        self.budget_clock.side_effect=[('2026-10','2026-10-18','America/New_York',2000),
+            ('2026-10','2026-10-18','America/New_York',2000),('2026-10','2026-10-19','America/New_York',4000)]
+        self.assertIn('<Hangup',self.callback()['body'])
+        self.assertIsNone(self.incoming_day()); self.assertIsNone(self.item()); self.assertIsNone(r.get(m.VOICE_KEY))
+        self.assertEqual(r.get(m.budget_keys('2026-10','2026-10-18')[0])['allocatedUSD'],Decimal('20'))
+
+    def test_recurring_quota_renews_at_month_boundary_without_manual_grant(self):
+        self.configure_daily()
+        self.budget_clock.return_value=('2026-11','2026-11-01','America/New_York',4000)
+        self.now.return_value=3000
+        self.assertIn('<Gather',self.callback()['body'])
+        self.assertEqual(self.incoming_day('2026-11-01')['reservedUSD'],Decimal('1.40'))
+        self.assertEqual(self.item()['inboundBudgetDay'],'2026-11-01')
+        self.assertIsNone(r.get(m.budget_keys('2026-11','2026-11-01')[1]))
 
     def test_pin_attempt_replay_and_three_rejections_never_mint_or_record(self):
         self.configure(); self.callback()

@@ -1,10 +1,28 @@
 # Plan
 
+Current task 2026-10-18: incoming-daily-budget is in progress. The October17 manual grant expired; deployed owner_budget_status confirms dailyGrantedUSD0, dailyRemainingUSD0, allocatedUSD20 and waiting_approval. The user now authorizes a recurring incoming-only $10 daily allowance for the exact private primary caller. The dated delivery status below is historical; it does not override this standing policy.
+
 Status: PARTIAL DELIVERY 2026-10-17. One requested owner-message audio call completed with recordingready; it used Twilio TTS, not Azure. Incoming number routing is now corrected from the old/unavailable path, owner/PIN calling is enabled, and the original routing repro passes. Azuredeploymentgpt-realtime-2-1-mini is actualmodelgpt-realtime-2.1-mini/version2026-07-07. The user has been asked to retry an incoming call; actual owner Azureconversation/quality acceptance remains unverified until that call. Today's10USD extra allowance remains subject to local-midnight expiry. Car testing is deferred because the S9 is not in the car. Dialer/takeover, real interviews and provider-copy retention remain open; Android Auto stays in backlog.md. Final routing/release evidence: C:\dev\live-ninja-test-evidence\phone-plan-2026-10-15\inbound-live-route-2026-10-17-final.json.
 
 Single active source: repository-root plan.md; current implementation checkout C:\dev\live-ninja-plan-build\plan.md. Completed history: C:\dev\live-ninja\completed\plan-2026-10-15-history.md and earlier completed/ archives. Deferred work: C:\dev\live-ninja\backlog.md. The current plan covers telephony, Jobs, S3 recordings, car Bluetooth, and their acceptance tests. All Android Auto work is in backlog.md.
 
 ## Locked decisions (user-confirmed; do not revisit)
+
+- 2026-10-18 — user requests a standing $10/day budget for incoming calls from the supplied private number, verified as the existing primary alias. Exact caller stays in private runtime configuration, never this repository. This supersedes one-time daily renewal only for that caller's incoming calls. Reset at midnight America/New_York; preserve PIN, recording consent, duration limits, stop controls, monthly reporting and independent outgoing/hotel approval. No new test call is required to activate this allowance.
+
+## incoming-daily-budget — automatic allowance for the designated incoming caller
+
+Outcome: admit the designated incoming caller with a separate $10 daily reservation cap even when the general monthly allowance is exhausted. Non-goals: change outgoing/hotel grants, caller allowlist, PIN, model, voice, car testing or routing. Files: tools/phone-trial/owner_messages.py, inbound_owner.py and their existing tests; web/static/js/phonebudget.mjs, tests/web/unit/phonebudget.test.mjs, web/templates/pages/conversation.html, plan.md.
+
+### incoming-budget-delivery — test and deploy the isolated daily allowance
+- [x] incoming-budget-reservation — atomic caller-bound daily reservation with local midnight reset, no outgoing credit, and existing stop/deletion guards. Proof: `python -B -m unittest discover -s tools/phone-trial -p 'test_*.py'` exits 0, including exact-caller isolation, exhausted quota and date rollover.
+- [x] incoming-budget-display — separate incoming allowance from manual outgoing approval. Proof: `node --test tests/web/unit/phonebudget.test.mjs` and `go test ./internal/webapp -run TestHelpDrawer -count=1` exit 0.
+- [~] incoming-budget-release — depends on: incoming-budget-reservation, incoming-budget-display. Proof: focused commit pushed to main; every resulting delivery run reaches success via `gh run watch <run-id> --repo JeremyProffittOrg/live-ninja --exit-status`.
+- [ ] incoming-budget-policy — depends on: incoming-budget-release. Install only the private primary-caller policy, using conditional owner/PIN/allowlist checks. Proof: deployed owner_budget_status reports incoming limit10, reserved0, remaining10; general daily grant stays0. No call initiated. Actual caller speech remains unverified until the owner calls.
+
+Supervision: existing 20-minute test and 60-minute workflow deadlines; three total classified attempts, deterministic failures require a fix before retry. No local recurring process. Existing stop conditions apply; the October17 telephone hold is superseded by later explicit call authorization and this standing incoming allowance; physical car tests remain deferred. Private configuration install uses one conditional transaction; an ownership or policy conflict requires re-reading before any retry.
+
+## Earlier locked decisions
 
 - 2026-10-17 — user: "when I call live ninja, I get we are sorry and application error has occured.  I shoudl be connected to a live chat-gpt live model, the from azure". Fix the incoming phone-number path to the existing authenticated Azure Realtime owner conversation; private PIN and recording consent remain. This authorizes the required exact owned-number routing/configuration activation within the current10USD allowance. Physical car testing remains deferred.
 - 2026-10-17 — user: "the audio quality is also quite poor, how do we improve it". Explain and diagnose quality on the correct Azure path before changing model/voice/codecs. Stop the second prerecorded outbound test; the first owner-message test used Twilio default TTS and cannot prove Azure conversation quality.
@@ -790,6 +808,11 @@ Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evi
 
 
 ## Execution log
+
+- 2026-10-18 — incoming-budget-reservation verified: old HEAD source loaded in memory fails the new exact admission regression with the reported unavailable-session goodbye; no source files replaced. New source: `python -B -m unittest discover -s tools/phone-trial -p 'test_*.py'` exits0, 184 tests (root session95452,13.377s; backend session19531,11.681s). `node --test tests/web/unit/*.test.mjs` exits0,127 tests. Final `go test ./internal/webapp -run TestHelpDrawer -count=1` exits0,2.576s. `git diff --check` passes. Independent review found no blocking defect; midnight/month rollover, policy version, full reservation below monthly threshold, concurrent conflict and outgoing isolation are covered. Delivery begins after this focused commit; workflow IDs will be registered when GitHub assigns them.
+
+- 2026-10-18 — incoming-daily-budget diagnosis: deployed IAM `owner_budget_status` returns HTTP200, day2026-10-18 America/New_York, monthly allocated20, manual daily grant0/spent0/remaining0, pausedReason waiting_approval, pendingReservation false. Existing primary caller match, active owner, enabled inbound, valid PIN enrollment and absent deletion/VOICE guards verified with projections/server-side COUNT; no credential values read. Existing signed start catches this reservation refusal and speaks the reported unavailable-session message.
+- 2026-10-18 — incoming-budget-display: `node --test tests/web/unit/phonebudget.test.mjs` exits0, 4/4 pass; independent `go test ./internal/webapp -run TestHelpDrawer -count=1` exits0. Separate incoming display does not create outgoing grants. Reviewer ambiguity about $5 top-ups resolved by explicitly limiting that text to other calls; incoming allowance waits for midnight when less than1.40 remains. Backend and independent review agents are tracked as /root/phone_backend and /root/phone_verification; UI reviewer /root/android_calling completed. No local scheduled job or provider call started.
 
 ### owner-call-now — perform the newly requested controlled owner calls
 - [x] owner-message-first-check — canonical active owner/currentdaygrant verified, only OWNER_MESSAGES enabled and only knownstop cleared atomically. Existing IAM send invoked exactly once for primary alias/request owner-audio-check-20261017-a. Call completed and recordingready; see owner-message-first-result. Inbound/PIN/routing were unchanged by this test.

@@ -145,11 +145,20 @@ def start(data):
         'ConditionExpression': '#enabled=:yes AND ownerUserId=:owner AND pinHash=:hash AND pinSalt=:salt',
         'ExpressionAttributeNames': {'#enabled': 'enabled'},
         'ExpressionAttributeValues': {':yes': True, ':owner': cfg['ownerUserId'], ':hash': inbound['pinHash'], ':salt': inbound['pinSalt']}}}
+    check['ConditionCheck']['ExpressionAttributeNames']['#daily'] = 'dailyBudget'
+    if 'dailyBudget' in inbound:
+        check['ConditionCheck']['ConditionExpression'] += ' AND #daily=:daily'
+        check['ConditionCheck']['ExpressionAttributeValues'][':daily'] = inbound['dailyBudget']
+    else:
+        check['ConditionCheck']['ConditionExpression'] += ' AND attribute_not_exists(#daily)'
     try:
+        policy = m.inbound_daily_policy(cfg, inbound, data.get('From'))
         item, fresh = m.reserve(cfg['ownerUserId'], 'inbound-' + sid, alias, 'Inbound owner conversation', cfg,
             reserve_amount=RESERVE, initial_fields={'direction': 'inbound', 'callSid': sid, 'inboundState': 'auth',
             'pinAttempts': 0, 'deadline': now + MAX_SECONDS, 'authDeadline': now + 30, 'bridge': bridge,
-            'scriptTranscript': '', 'reservedUSD': RESERVE}, extra_checks=[check])
+            'scriptTranscript': '', 'reservedUSD': RESERVE}, extra_checks=[check], inbound_policy=policy)
+    except m.InboundDailyLimit:
+        return xml('<Say voice="Polly.Joanna-Neural">Your incoming call allowance is used for today. Please call again tomorrow.</Say><Hangup/>')
     except (ValueError, m.ProviderError):
         return bye()
     if not fresh:
@@ -372,6 +381,8 @@ def enroll(event):
         return r.response(409, {'error': 'Existing enrollment was not selected for replacement'})
     new = {**CONFIG, 'version': int((old or {}).get('version', 0)) + 1, 'ownerUserId': cfg['ownerUserId'],
            'enabled': False, 'pinHash': event['pinHash'], 'pinSalt': event['pinSalt'], 'pinIterations': PIN_ITERATIONS}
+    if old and 'dailyBudget' in old:
+        new['dailyBudget'] = old['dailyBudget']
     try:
         m.transact([m.put(new, old), *account_lifecycle.ready_conditions({'ownerUserId': cfg['ownerUserId']})])
     except Exception as exc:

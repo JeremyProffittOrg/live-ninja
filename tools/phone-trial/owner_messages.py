@@ -2,7 +2,7 @@
 import base64
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import hashlib
 import hmac
 import html
@@ -32,6 +32,10 @@ REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
 class ProviderError(Exception):
     def __init__(self, code=None, rejected=False):
         self.code, self.rejected = code, rejected
+
+
+class InboundDailyLimit(ValueError):
+    """The separately authorized incoming daily allowance cannot admit a call."""
 
 
 def provider(path, form=None):
@@ -188,6 +192,47 @@ def budget_keys(month, day):
             {"PK": "PHONE#BUDGET#" + month, "SK": "DAY#" + day})
 
 
+def inbound_budget_key(owner, day):
+    return {'PK': 'OWNER#' + owner, 'SK': 'INBOUND_BUDGET#' + day}
+
+
+def inbound_daily_policy(cfg, inbound, caller=None):
+    policy = (inbound or {}).get('dailyBudget')
+    if (not isinstance(policy, dict) or policy.get('enabled') is not True
+            or (caller is not None and policy.get('callerNumber') != caller)):
+        return None
+    try:
+        limit = Decimal(str(policy.get('limitUSD')))
+        version = Decimal(str(policy.get('version')))
+    except (InvalidOperation, ValueError, TypeError):
+        raise ValueError('Incoming daily allowance configuration is invalid') from None
+    if (inbound.get('ownerUserId') != cfg.get('ownerUserId') or not isinstance(policy.get('callerNumber'), str)
+            or not PHONE.fullmatch(policy['callerNumber']) or policy['callerNumber'] not in cfg.get('destinations', {}).values()
+            or not limit.is_finite() or limit != Decimal('10') or not version.is_finite()
+            or version < 1 or version != version.to_integral_value()):
+        raise ValueError('Incoming daily allowance configuration is invalid')
+    return policy
+
+
+def inbound_budget_summary(cfg, day, zone, expires):
+    result = {'enabled': False, 'limitUSD': '0', 'reservedUSD': '0', 'remainingUSD': '0',
+              'day': day, 'timezone': zone, 'expiresAt': expires}
+    inbound = r.get({'PK': 'CONFIG', 'SK': 'INBOUND_OWNER'})
+    try:
+        policy = inbound_daily_policy(cfg, inbound)
+        if policy is None:
+            return result
+        prior = r.get(inbound_budget_key(cfg['ownerUserId'], day)) or {}
+        reserved = Decimal(str(prior.get('reservedUSD', '0')))
+        if (not reserved.is_finite() or reserved < 0 or reserved > Decimal('10')
+                or (prior and (prior.get('ownerUserId') != cfg['ownerUserId'] or prior.get('day') != day or prior.get('timezone') != zone))):
+            return result
+        return {**result, 'enabled': True, 'limitUSD': '10', 'reservedUSD': str(reserved),
+                'remainingUSD': str(Decimal('10') - reserved)}
+    except (ValueError, InvalidOperation, TypeError):
+        return result
+
+
 def budget_status(cfg):
     month, day, zone, expires = budget_clock(cfg)
     month_key, day_key = budget_keys(month, day)
@@ -202,7 +247,8 @@ def budget_status(cfg):
     return {"month": month, "day": day, "timezone": zone, "allocatedUSD": str(allocated),
             "monthlyLimitUSD": str(LIMIT), "dailyGrantedUSD": str(granted), "dailySpentUSD": str(spent),
             "dailyRemainingUSD": str(max(Decimal(0), granted-spent)), "requiredReservationUSD": str(MAX_RESERVE), "expiresAt": expires,
-            "pausedReason": reason, "pendingReservation": stopped}
+            "pausedReason": reason, "pendingReservation": stopped,
+            "incomingDailyBudget": inbound_budget_summary(cfg, day, zone, expires)}
 
 
 def budget_operation(event):
@@ -256,7 +302,7 @@ def budget_operation(event):
     return r.response(409, {"error": "Budget changed; retry the same approval request"})
 
 
-def reserve(owner, request_id, alias, message, cfg, *, reserve_amount=RESERVE, initial_fields=None, extra_checks=(), target_number=None):
+def reserve(owner, request_id, alias, message, cfg, *, reserve_amount=RESERVE, initial_fields=None, extra_checks=(), target_number=None, inbound_policy=None):
     usage = provider("/Usage/Records/ThisMonth.json?Category=totalprice")
     records = usage.get("usage_records", [])
     if len(records) != 1 or records[0].get("price_unit", "").lower() != "usd" or usage.get("next_page_uri"):
@@ -283,6 +329,11 @@ def reserve(owner, request_id, alias, message, cfg, *, reserve_amount=RESERVE, i
     if not PHONE.fullmatch(item['toNumber']):
         raise ValueError('Invalid approved destination')
     item.update(initial_fields or {})
+    if inbound_policy is not None:
+        if (item.get('direction') != 'inbound' or not r.SID.fullmatch(item.get('callSid', ''))
+                or request_id != 'inbound-' + item['callSid'] or target_number is not None or reserve_amount != MAX_RESERVE
+                or inbound_daily_policy(cfg, {'ownerUserId': owner, 'dailyBudget': inbound_policy}, item['toNumber']) is None):
+            raise ValueError('Recurring incoming allowance requires an exact inbound call')
     for _ in range(4):
         prior = r.get(key)
         if prior:
@@ -291,10 +342,22 @@ def reserve(owner, request_id, alias, message, cfg, *, reserve_amount=RESERVE, i
         base = max(floor, Decimal("8") + observed, Decimal(str((old or {}).get("allocatedUSD", "0"))))
         if budget_clock(cfg)[1] != day:
             raise ValueError("Day changed; retry call admission")
-        daily_old = r.get(day_key)
+        daily_key = inbound_budget_key(owner, day) if inbound_policy is not None else day_key
+        daily_old = r.get(daily_key)
         extra = max(Decimal(0), base + reserve_amount - max(LIMIT, base))
         daily = None
-        if extra:
+        if inbound_policy is not None:
+            reserved = Decimal(str((daily_old or {}).get('reservedUSD', '0')))
+            if (not reserved.is_finite() or reserved < 0 or reserved > Decimal('10')
+                    or (daily_old and (daily_old.get('ownerUserId') != owner or daily_old.get('day') != day or daily_old.get('timezone') != zone))):
+                raise ValueError('Incoming daily allowance ledger is invalid')
+            if reserved + reserve_amount > Decimal('10'):
+                raise InboundDailyLimit('Incoming daily allowance is used for today')
+            daily = {**(daily_old or {}), **daily_key, 'ownerUserId': owner, 'day': day, 'timezone': zone,
+                     'limitUSD': Decimal('10'), 'reservedUSD': reserved + reserve_amount, 'expiresAt': expires,
+                     'version': int((daily_old or {}).get('version', 0)) + 1}
+            item.update(budgetSource='incoming-daily-policy', inboundBudgetDay=day)
+        elif extra:
             granted = Decimal(str((daily_old or {}).get("grantedUSD", "0")))
             daily_spent = Decimal(str((daily_old or {}).get("spentUSD", "0")))
             if not daily_old or int(daily_old.get("expiresAt", 0)) <= int(time.time()) or daily_spent + extra > granted:
@@ -325,6 +388,8 @@ def reserve(owner, request_id, alias, message, cfg, *, reserve_amount=RESERVE, i
         if daily:
             item["budgetExpiresAt"] = int(daily["expiresAt"])
             operations.append(put(daily, daily_old))
+        if budget_clock(cfg)[1] != day or int(time.time()) >= expires:
+            raise ValueError('Day changed before call reservation; retry admission')
         try:
             transact(operations)
             return item, True
