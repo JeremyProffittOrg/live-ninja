@@ -90,6 +90,68 @@ func deviceSettingsRequest(t *testing.T, app *fiber.App, method, path, deviceID,
 	return resp, out
 }
 
+func TestPhoneSettingsTargetUsesExistingScopedSettings(t *testing.T) {
+	app, _, st := newDeviceSettingsApp(t, "")
+	interceptShadowPublish(t)
+	require.NoError(t, st.BindOwner(t.Context(), "amazon-owner", "user-1"))
+	require.NoError(t, st.CreateUser(t.Context(), &store.User{UserID: "user-1", AmazonUserID: "amazon-owner", Role: store.RoleOwner, Status: store.UserStatusActive}))
+	seedClientDevice(t, st, "user-1", testDeviceOne, "Browser")
+	resp, out := deviceSettingsRequest(t, app, http.MethodGet, "/api/v1/settings/sections/persona", "", "", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	id := store.PhoneSettingsDeviceID("user-1")
+	found := false
+	for _, raw := range out["devices"].([]any) {
+		row := raw.(map[string]any)
+		if row["deviceId"] == id {
+			found = true
+			assert.Equal(t, "Phone calls", row["name"])
+			assert.Equal(t, "phone", row["surface"])
+			assert.False(t, row["isCurrent"].(bool))
+		}
+	}
+	require.True(t, found)
+	body := map[string]any{"version": 1, "operation": "set", "target": map[string]any{"mode": "selected", "deviceIds": []string{id}}, "settings": map[string]any{"voice": "coral"}}
+	resp, _ = deviceSettingsRequest(t, app, http.MethodPatch, "/api/v1/settings/sections/persona", "", "", body)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	doc, err := st.GetSettings(t.Context(), "user-1")
+	require.NoError(t, err)
+	assert.Equal(t, "coral", store.EffectiveSettings(doc, id)["voice"])
+	assert.Equal(t, doc["voice"], store.EffectiveSettings(doc, testDeviceOne)["voice"])
+	resp, _ = deviceSettingsRequest(t, app, http.MethodPatch, "/api/v1/settings/sections/persona", "", "", body)
+	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	body["version"] = 2
+	body["settings"] = map[string]any{"wakeWord": "computer"}
+	resp, _ = deviceSettingsRequest(t, app, http.MethodPatch, "/api/v1/settings/sections/wakeWord", "", "", body)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	body["target"] = map[string]any{"mode": "all", "deviceIds": []string{}}
+	resp, _ = deviceSettingsRequest(t, app, http.MethodPatch, "/api/v1/settings/sections/wakeWord", "", "", body)
+	require.Equal(t, http.StatusOK, resp.StatusCode, "unsupported phone target must not block existing apply-all")
+	body["version"] = 3
+	body["target"] = map[string]any{"mode": "selected", "deviceIds": []string{store.PhoneSettingsDeviceID("other")}}
+	resp, _ = deviceSettingsRequest(t, app, http.MethodPatch, "/api/v1/settings/sections/wakeWord", "", "", body)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestPhoneSettingsTargetCannotBecomeClientOrBeRenamed(t *testing.T) {
+	app, _, st := newDeviceSettingsApp(t, "")
+	require.NoError(t, st.BindOwner(t.Context(), "amazon-owner", "user-1"))
+	require.NoError(t, st.CreateUser(t.Context(), &store.User{UserID: "user-1", AmazonUserID: "amazon-owner", Role: store.RoleOwner, Status: store.UserStatusActive}))
+	id := store.PhoneSettingsDeviceID("user-1")
+	resp, _ := deviceSettingsRequest(t, app, http.MethodPut, "/api/v1/devices/current", "", "", map[string]any{"deviceId": id})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "reservation applies even before target creation")
+	_, err := st.EnsurePhoneSettingsDevice(t.Context(), "user-1")
+	require.NoError(t, err)
+	for _, claims := range []struct{ header, token string }{{id, ""}, {"", id}} {
+		resp, _ = deviceSettingsRequest(t, app, http.MethodGet, "/api/v1/settings/sections/persona", claims.header, claims.token, nil)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	}
+	resp, _ = deviceSettingsRequest(t, app, http.MethodPatch, "/api/v1/devices/"+id, "", "", map[string]any{"name": "Spoofed"})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	d, err := st.GetDevice(t.Context(), id)
+	require.NoError(t, err)
+	assert.Equal(t, "Phone calls", d.Name)
+}
+
 func seedClientDevice(t *testing.T, st *store.Store, userID, deviceID, name string) {
 	t.Helper()
 	_, err := st.UpsertClientDevice(t.Context(), &store.Device{
@@ -578,6 +640,38 @@ func TestTranscriptHonorsDevicePrivacy(t *testing.T) {
 		})
 	require.Equal(t, http.StatusOK, resp.StatusCode, out)
 	assert.Equal(t, float64(0), out["written"])
+}
+
+func TestTranscriptHonorsPhonePrivacyWithoutHeaderOverride(t *testing.T) {
+	app, deps, st := newDeviceSettingsApp(t, "")
+	doc := store.DefaultSettings()
+	require.NoError(t, store.ApplySettingsSection(doc, store.SettingsSectionPrivacy,
+		map[string]any{"privacy": map[string]any{"storeTranscripts": false, "retentionDays": 0}},
+		[]string{store.PhoneSettingsDeviceID("user-1")}, false, false, time.Now()))
+	_, err := st.PutSettings(t.Context(), "user-1", doc, 1)
+	require.NoError(t, err)
+	app.Post("/api/v1/transcript", func(c *fiber.Ctx) error {
+		c.Locals(localScope, "phone")
+		c.Locals(localSurface, "phone")
+		return handleTranscript(deps)(c)
+	})
+	resp, out := deviceSettingsRequest(t, app, http.MethodPost, "/api/v1/transcript", testDeviceTwo, "", map[string]any{
+		"sessionId": "session-1", "turns": []map[string]any{{"seq": 1, "role": "user", "text": "private phone text", "engine": "gpt-live-azure"}},
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode, out)
+	assert.Equal(t, float64(0), out["written"])
+}
+
+func TestPhoneSettingsTargetCannotBeRevoked(t *testing.T) {
+	app, deps, st := newDeviceSettingsApp(t, "")
+	id := store.PhoneSettingsDeviceID("user-1")
+	require.NoError(t, st.CreateDevice(t.Context(), &store.Device{DeviceID: id, UserID: "user-1", FamilyID: "phone", Surface: store.SurfacePhone}))
+	app.Delete("/api/v1/devices/:id", handleRevokeDevice(deps))
+	resp, _ := deviceSettingsRequest(t, app, http.MethodDelete, "/api/v1/devices/"+id, "", "", nil)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	device, err := st.GetDevice(t.Context(), id)
+	require.NoError(t, err)
+	require.Equal(t, store.DeviceStatusActive, device.Status)
 }
 
 func TestEffectiveSettingsRejectsRevokedSignedDevice(t *testing.T) {

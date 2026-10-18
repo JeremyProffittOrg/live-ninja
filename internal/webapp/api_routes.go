@@ -179,6 +179,10 @@ func handleRevokeDevice(deps *Deps) fiber.Handler {
 			return errorJSON(c, fiber.StatusNotFound, "not_found", "Device not found.")
 		}
 
+		if d.Surface == store.SurfacePhone {
+			return apiBadRequest(c, "Phone calls is a server-managed settings target")
+		}
+
 		// The status flip is the revocation barrier. Registration/rebind
 		// transactions condition on the old device remaining active, so no
 		// session can switch identities after this point to evade the sweep.
@@ -846,9 +850,15 @@ const activeUserMarkerTTL = 48 * time.Hour
 func handleTranscript(deps *Deps) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID, surface := UserID(c), Surface(c)
-		deviceID, responseErr := ownedRequestDeviceID(c, deps, false)
-		if responseErr != nil {
-			return responseErr
+		deviceID := ""
+		if Scope(c) == realtime.PhoneScope {
+			deviceID = store.PhoneSettingsDeviceID(userID)
+		} else {
+			var responseErr error
+			deviceID, responseErr = ownedRequestDeviceID(c, deps, false)
+			if responseErr != nil {
+				return responseErr
+			}
 		}
 
 		var body struct {

@@ -10,7 +10,98 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/google/uuid"
 )
+
+const SurfacePhone = "phone"
+
+// PhoneSettingsDeviceID identifies the owner's server-managed settings target.
+// It is never a client installation or an authentication device.
+func PhoneSettingsDeviceID(userID string) string {
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("live-ninja/phone-settings/"+userID)).String()
+}
+
+// EnsurePhoneSettingsDevice offers one persistent target before the first call.
+// Nonowners have no target. Existing revoked or conflicting rows are never replaced.
+func (s *Store) EnsurePhoneSettingsDevice(ctx context.Context, userID string) (*Device, error) {
+	ownerRow, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{TableName: aws.String(s.table), Key: keyOf(pkConfig, skOwner), ConsistentRead: aws.Bool(true)})
+	if err != nil {
+		return nil, err
+	}
+	var owner OwnerBinding
+	if err = attributevalue.UnmarshalMap(ownerRow.Item, &owner); err != nil {
+		return nil, err
+	}
+	if userID == "" || owner.UserID != userID {
+		return nil, nil
+	}
+	user, err := s.GetUserConsistent(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil || user.Role != RoleOwner || user.Status != UserStatusActive {
+		return nil, nil
+	}
+	id := PhoneSettingsDeviceID(userID)
+	validate := func(d *Device) (*Device, error) {
+		if d == nil || d.UserID != userID {
+			return nil, ErrDeviceOwnership
+		}
+		if d.Status != DeviceStatusActive {
+			return nil, ErrDeviceRevoked
+		}
+		if d.Surface != SurfacePhone || d.DeviceID != id || d.FamilyID != "" || d.ThingName != "" || d.CertID != "" || d.CertArn != "" {
+			return nil, ErrDeviceBindingConflict
+		}
+		return d, nil
+	}
+	existing, err := s.GetDevice(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		return validate(existing)
+	}
+	now := time.Now().UTC()
+	d := Device{DeviceID: id, UserID: userID, Name: "Phone calls", Surface: SurfacePhone, Status: DeviceStatusActive,
+		Capabilities: []string{SettingsSectionAboutYou, SettingsSectionPersona, SettingsSectionPrivacy},
+		Metadata:     map[string]string{"managedBy": "server"}, CreatedAt: now.Unix(), UpdatedAt: now.Unix(), LastSeenAt: now.Unix()}
+	av, err := attributevalue.MarshalMap(deviceItem{PK: devicePK(id), SK: skMeta, Gsi2PK: gsi2pkDevSeen, Gsi2SK: now.Format(time.RFC3339), Device: d})
+	if err != nil {
+		return nil, err
+	}
+	_, err = s.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: []types.TransactWriteItem{
+		{Put: &types.Put{TableName: aws.String(s.table), Item: av, ConditionExpression: aws.String("attribute_not_exists(pk)")}},
+		{ConditionCheck: &types.ConditionCheck{TableName: aws.String(s.table), Key: keyOf(pkConfig, skOwner), ConditionExpression: aws.String("userId = :uid"), ExpressionAttributeValues: map[string]types.AttributeValue{":uid": &types.AttributeValueMemberS{Value: userID}}}},
+		{ConditionCheck: &types.ConditionCheck{TableName: aws.String(s.table), Key: keyOf(userPK(userID), skProfile), ConditionExpression: aws.String("#role = :owner AND #status = :active"), ExpressionAttributeNames: map[string]string{"#role": "role", "#status": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":owner": &types.AttributeValueMemberS{Value: RoleOwner}, ":active": &types.AttributeValueMemberS{Value: UserStatusActive}}}},
+	}})
+	if err != nil {
+		var conflict *types.TransactionCanceledException
+		if !errors.As(err, &conflict) {
+			return nil, err
+		}
+		// Only a create collision may adopt a winner. Never mask an owner or
+		// active-profile condition failure with an existing device row.
+		if len(conflict.CancellationReasons) != 3 || aws.ToString(conflict.CancellationReasons[0].Code) != "ConditionalCheckFailed" {
+			return nil, err
+		}
+		for _, reason := range conflict.CancellationReasons[1:] {
+			if code := aws.ToString(reason.Code); code != "None" && code != "" {
+				return nil, err
+			}
+		}
+		// A simultaneous first call/settings read may have created the same row.
+		winner, readErr := s.GetDevice(ctx, id)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if winner == nil {
+			return nil, err
+		}
+		return validate(winner)
+	}
+	return &d, nil
+}
 
 var (
 	// ErrDeviceOwnership is deliberately ambiguous at the HTTP boundary:
@@ -97,6 +188,22 @@ func (s *Store) UpsertClientDevice(ctx context.Context, proposed *Device) (*Devi
 func (s *Store) upsertClientDevice(ctx context.Context, proposed *Device, attempt int) (*Device, error) {
 	if proposed == nil || proposed.DeviceID == "" || proposed.UserID == "" {
 		return nil, errors.New("store: deviceID and userID are required")
+	}
+	if proposed.DeviceID == PhoneSettingsDeviceID(proposed.UserID) {
+		return nil, ErrDeviceBindingConflict
+	}
+	// Reserve the canonical owner's target even before its first settings read.
+	// Another account must not claim that predictable id as a browser install.
+	ownerRow, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{TableName: aws.String(s.table), Key: keyOf(pkConfig, skOwner), ConsistentRead: aws.Bool(true)})
+	if err != nil {
+		return nil, err
+	}
+	var owner OwnerBinding
+	if err = attributevalue.UnmarshalMap(ownerRow.Item, &owner); err != nil {
+		return nil, err
+	}
+	if owner.UserID != "" && proposed.DeviceID == PhoneSettingsDeviceID(owner.UserID) {
+		return nil, ErrDeviceBindingConflict
 	}
 	if proposed.Surface != SurfaceWeb && proposed.Surface != SurfaceAndroid {
 		return nil, errors.New("store: invalid device surface")

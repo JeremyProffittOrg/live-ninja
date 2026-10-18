@@ -60,6 +60,64 @@ func TestEffectiveSettingsAndSectionMutations(t *testing.T) {
 	assert.Empty(t, overrides, "empty override entries must be pruned")
 }
 
+func TestPhoneSettingsDeviceOwnerLifecycle(t *testing.T) {
+	st, _ := newTestStore()
+	ctx := t.Context()
+	id := PhoneSettingsDeviceID("owner-1")
+	assert.Equal(t, id, PhoneSettingsDeviceID("owner-1"))
+	assert.NotEqual(t, id, PhoneSettingsDeviceID("owner-2"))
+	d, err := st.EnsurePhoneSettingsDevice(ctx, "owner-1")
+	require.NoError(t, err)
+	require.Nil(t, d)
+	require.NoError(t, st.BindOwner(ctx, "amazon-owner", "owner-1"))
+	_, err = st.UpsertClientDevice(ctx, &Device{DeviceID: id, UserID: "another-account", Surface: SurfaceWeb})
+	require.ErrorIs(t, err, ErrDeviceBindingConflict, "a client cannot claim the owner's target before creation")
+	require.NoError(t, st.CreateUser(ctx, &User{UserID: "owner-1", AmazonUserID: "amazon-owner", Role: RoleOwner, Status: UserStatusActive}))
+	d, err = st.EnsurePhoneSettingsDevice(ctx, "owner-1")
+	require.NoError(t, err)
+	require.NotNil(t, d)
+	assert.Equal(t, "Phone calls", d.Name)
+	assert.Equal(t, SurfacePhone, d.Surface)
+	assert.Empty(t, d.FamilyID)
+	assert.ElementsMatch(t, []string{SettingsSectionAboutYou, SettingsSectionPersona, SettingsSectionPrivacy}, d.Capabilities)
+	again, err := st.EnsurePhoneSettingsDevice(ctx, "owner-1")
+	require.NoError(t, err)
+	assert.Equal(t, d, again)
+	_, err = st.UpsertClientDevice(ctx, &Device{DeviceID: id, UserID: "owner-1", Surface: SurfaceWeb})
+	require.ErrorIs(t, err, ErrDeviceBindingConflict)
+	other, err := st.EnsurePhoneSettingsDevice(ctx, "member")
+	require.NoError(t, err)
+	assert.Nil(t, other)
+	require.NoError(t, st.RevokeDevice(ctx, id))
+	_, err = st.EnsurePhoneSettingsDevice(ctx, "owner-1")
+	require.ErrorIs(t, err, ErrDeviceRevoked)
+}
+
+func TestPhoneSettingsDeviceRejectsForeignCollisionAndInactiveOwner(t *testing.T) {
+	for _, state := range []string{"foreign", "inactive"} {
+		t.Run(state, func(t *testing.T) {
+			st, _ := newTestStore()
+			ctx := t.Context()
+			require.NoError(t, st.BindOwner(ctx, "amazon-owner", "owner-1"))
+			status := UserStatusActive
+			if state == "inactive" {
+				status = "disabled"
+			}
+			require.NoError(t, st.CreateUser(ctx, &User{UserID: "owner-1", AmazonUserID: "amazon-owner", Role: RoleOwner, Status: status}))
+			if state == "foreign" {
+				require.NoError(t, st.CreateDevice(ctx, &Device{DeviceID: PhoneSettingsDeviceID("owner-1"), UserID: "other", FamilyID: "other-family"}))
+			}
+			d, err := st.EnsurePhoneSettingsDevice(ctx, "owner-1")
+			if state == "foreign" {
+				require.ErrorIs(t, err, ErrDeviceOwnership)
+			} else {
+				require.NoError(t, err)
+			}
+			require.Nil(t, d)
+		})
+	}
+}
+
 func TestApplySettingsSectionEnforcesDeviceCap(t *testing.T) {
 	doc := DefaultSettings()
 	overrides := doc["deviceOverrides"].(map[string]any)
@@ -348,6 +406,50 @@ type revokeBeforeTransactionDynamo struct {
 	revokeStore *Store
 	deviceID    string
 	once        sync.Once
+}
+
+type phoneCreateRaceDynamo struct {
+	*testutil.FakeDynamo
+	before func()
+}
+
+func (r *phoneCreateRaceDynamo) TransactWriteItems(ctx context.Context, in *dynamodb.TransactWriteItemsInput, options ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+	r.before()
+	return r.FakeDynamo.TransactWriteItems(ctx, in, options...)
+}
+
+func TestPhoneSettingsCreationFencesOwnerAndAdoptsOnlyValidWinner(t *testing.T) {
+	for _, race := range []string{"create", "disable", "create-and-disable"} {
+		t.Run(race, func(t *testing.T) {
+			direct, fake := newTestStore()
+			ctx := t.Context()
+			require.NoError(t, direct.BindOwner(ctx, "amazon-owner", "owner-1"))
+			require.NoError(t, direct.CreateUser(ctx, &User{UserID: "owner-1", AmazonUserID: "amazon-owner", Role: RoleOwner, Status: UserStatusActive}))
+			wrapper := &phoneCreateRaceDynamo{FakeDynamo: fake, before: func() {
+				if race != "disable" {
+					_, err := direct.EnsurePhoneSettingsDevice(ctx, "owner-1")
+					require.NoError(t, err)
+				}
+				if race != "create" {
+					require.NoError(t, direct.SetUserStatus(ctx, "owner-1", "deleting"))
+				}
+			}}
+			racing := NewWithClient(wrapper, "test-table")
+			d, err := racing.EnsurePhoneSettingsDevice(ctx, "owner-1")
+			if race == "create" {
+				require.NoError(t, err)
+				require.NotNil(t, d)
+			} else {
+				require.Error(t, err)
+				require.Nil(t, d)
+			}
+			if race == "disable" {
+				saved, readErr := direct.GetDevice(ctx, PhoneSettingsDeviceID("owner-1"))
+				require.NoError(t, readErr)
+				require.Nil(t, saved)
+			}
+		})
+	}
 }
 
 func (r *revokeBeforeTransactionDynamo) TransactWriteItems(ctx context.Context,

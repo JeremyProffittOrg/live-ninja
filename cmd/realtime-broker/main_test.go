@@ -144,6 +144,49 @@ func TestPhoneSessionRejectsIdentityAndBootstrapEscalation(t *testing.T) {
 	}
 }
 
+func TestPhoneSessionUsesSavedCustomPersona(t *testing.T) {
+	b, _ := newPhoneTestBroker(t)
+	doc := store.DefaultSettings()
+	doc["persona"] = map[string]any{"presetId": "custom", "systemInstructions": "Use the synthetic telephone style."}
+	_, err := b.phoneStore.PutSettings(t.Context(), "owner", doc, 1)
+	require.NoError(t, err)
+	resp, err := b.Handle(t.Context(), Request{Mode: "phone-session", UserID: "owner", Surface: "phone", PhoneCallSID: "CA" + strings.Repeat("2", 32), PhoneDeadline: time.Now().Add(180 * time.Second).Unix()})
+	require.NoError(t, err)
+	require.Empty(t, resp.Error)
+	var config map[string]any
+	require.NoError(t, json.Unmarshal(resp.SessionConfig, &config))
+	require.Contains(t, config["instructions"], "Use the synthetic telephone style.")
+}
+
+func TestPhoneSessionUsesOnlyPhoneSettingsOverrides(t *testing.T) {
+	b, _ := newPhoneTestBroker(t)
+	doc := store.DefaultSettings()
+	doc["profile"] = map[string]any{"displayName": "Account Default Person"}
+	id := store.PhoneSettingsDeviceID("owner")
+	require.NoError(t, store.ApplySettingsSection(doc, store.SettingsSectionAboutYou, map[string]any{"profile": map[string]any{"displayName": "Phone Specific Person"}}, []string{id}, false, false, time.Now()))
+	require.NoError(t, store.ApplySettingsSection(doc, store.SettingsSectionPersona, map[string]any{
+		"persona":      map[string]any{"presetId": "custom", "systemInstructions": "Phone specific synthetic style."},
+		"personaPrefs": map[string]any{"custom": map[string]any{"voice": "marin"}},
+	}, []string{id}, false, false, time.Now()))
+	_, err := b.phoneStore.PutSettings(t.Context(), "owner", doc, 1)
+	require.NoError(t, err)
+	resp, err := b.Handle(t.Context(), Request{Mode: "phone-session", UserID: "owner", Surface: "phone", PhoneCallSID: "CA" + strings.Repeat("3", 32), PhoneDeadline: time.Now().Add(180 * time.Second).Unix()})
+	require.NoError(t, err)
+	require.Empty(t, resp.Error)
+	var config map[string]any
+	require.NoError(t, json.Unmarshal(resp.SessionConfig, &config))
+	require.Contains(t, config["instructions"], "Phone Specific Person")
+	require.Contains(t, config["instructions"], "Phone specific synthetic style.")
+	require.NotContains(t, config["instructions"], "Account Default Person")
+	require.Equal(t, "marin", config["audio"].(map[string]any)["output"].(map[string]any)["voice"])
+	jwks, err := b.phoneSigner.JWKS(t.Context())
+	require.NoError(t, err)
+	claims, err := auth.VerifyJWT(resp.BridgeToken, jwks)
+	require.NoError(t, err)
+	require.Empty(t, claims.Did)
+	require.Equal(t, realtime.PhoneScope, claims.Scope)
+}
+
 func TestPhoneSessionAllowsInternalTopicExtractionOnly(t *testing.T) {
 	var log bytes.Buffer
 	b := newTestBroker(&log)

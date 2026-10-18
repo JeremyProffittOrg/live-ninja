@@ -89,6 +89,16 @@ Known section IDs are `aboutYou`, `wakeWord`, `persona`, `voiceEngine`,
 `turnDetection`, `appearance`, `microphone`, and `privacy`. `account` is device
 management, not a copyable settings section.
 
+The canonical owner also sees a server-managed `Phone calls` target with surface
+`phone`, a stable owned UUID, and capabilities `aboutYou`, `persona`, and `privacy`.
+It uses the same `deviceOverrides` document and version checks. Section reads
+create this directory target if needed; they do not copy or change preferences.
+Clients cannot register it as their current host, rename it, or revoke it.
+Profile/persona/voice settings apply at the next new phone call; phone transcript
+privacy is resolved on future transcript writes. Phone calls remain authenticated
+to the owner account with a fresh call-bound conversation, not the browser's
+current conversation. Account memory, rules and guides remain shared.
+
 Section writes use:
 
 ```json
@@ -117,7 +127,10 @@ Section writes use:
 - `operation:"inherit"` removes the understood section override fields for current/selected
   targets; it does not accept `mode:"all"`.
 - The server rejects fields outside the named section, device IDs not owned by the caller, and
-  devices whose explicit capability list omits the section (including `mode:"all"`). A non-null
+  devices whose explicit capability list omits the section (including `mode:"all"`).
+  The server-managed phone target is excluded from unsupported-section `mode:"all"`
+  capability checks, so it cannot block existing app/device-only settings. Explicit
+  unsupported phone selections are still rejected. A non-null
   `micDeviceId` is host-local and cannot be copied to selected/all devices; selecting system
   default (`null`) is portable.
 

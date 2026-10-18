@@ -241,6 +241,14 @@ test('section GET is version-read-only and conflict retry reuses the clicked set
           metadata: { browser: 'Chrome', platform: 'Android' },
           settings: { privacy: { storeTranscripts: true } },
         },
+        {
+          deviceId: 'phone-id',
+          name: 'Phone calls',
+          surface: 'phone',
+          inherited: false,
+          capabilities: ['aboutYou', 'persona', 'privacy'],
+          settings: { privacy: { storeTranscripts: true } },
+        },
       ],
     };
     window.__apiJSON = async (path, options = {}) => {
@@ -254,7 +262,7 @@ test('section GET is version-read-only and conflict retry reuses the clicked set
           if (window.__patchAttempts === 1) throw new window.__ApiError(409);
           return {
             ...window.__sectionEnvelope,
-            version: window.__patchAttempts === 2 ? 100 : 101,
+            version: window.__patchAttempts + 98,
           };
         }
         return { ...window.__sectionEnvelope, version: 99 };
@@ -364,6 +372,16 @@ test('section GET is version-read-only and conflict retry reuses the clicked set
     privacy: { storeTranscripts: true },
   });
   expect(await page.evaluate(() => window.__doc.privacy.storeTranscripts)).toBe(true);
+  const phoneRow = page.locator('.set-device-row').filter({ hasText: 'Phone calls' });
+  await expect(phoneRow.getByText('Profile and voice apply to your next phone call')).toBeVisible();
+  await phoneRow.locator('[data-device-target]').check();
+  await page.getByRole('button', { name: /Apply these settings to 1 selected device/ }).click();
+  await expect.poll(() => page.evaluate(() => window.__patchAttempts)).toBe(4);
+  const phonePatch = await page.evaluate(() => window.__apiRequests.filter((entry) => entry.options?.method === 'PATCH').at(-1).options.json);
+  expect(phonePatch.target).toEqual({ mode: 'selected', deviceIds: ['phone-id'] });
+  expect(phonePatch.settings).toEqual({ privacy: { storeTranscripts: true } });
+  expect(await page.evaluate(() => window.__doc.privacy.storeTranscripts)).toBe(true);
+  await expect(page.getByRole('button', { name: 'Save name for Phone calls' })).toHaveCount(0);
 });
 
 test('a scope write disables every section so settings PATCHes cannot overlap', async ({ page }) => {
@@ -402,6 +420,11 @@ test('a scope write disables every section so settings PATCHes cannot overlap', 
             section === 'privacy'
               ? { privacy: { storeTranscripts: false } }
               : { theme: 'dark', appearance: { appStyle: 'ninja' } },
+        },
+        {
+          deviceId: 'phone-id', name: 'Phone calls', surface: 'phone',
+          capabilities: ['aboutYou', 'persona', 'privacy'], inherited: true,
+          settings: section === 'privacy' ? { privacy: { storeTranscripts: true } } : {},
         },
       ],
     });
@@ -458,6 +481,8 @@ test('a scope write disables every section so settings PATCHes cannot overlap', 
   await expect(page.locator('[data-device-settings-all]')).toHaveCount(2);
   await expect(page.locator('[data-device-settings-all]').nth(0)).toBeEnabled();
   await expect(page.locator('[data-device-settings-all]').nth(1)).toBeEnabled();
+  await expect(page.locator('[data-device-settings-root="appearance"] [data-device-target][value="phone-id"]')).toBeDisabled();
+  await expect(page.getByText('Not used for phone calls')).toBeVisible();
 
   await page.evaluate(() => {
     const actions = [...document.querySelectorAll('[data-device-settings-all]')];

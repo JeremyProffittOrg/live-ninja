@@ -34,7 +34,7 @@ func handleGetSettingsSection(deps *Deps) fiber.Handler {
 		if err != nil {
 			return apiInternalError(c, deps, "get settings section", err)
 		}
-		devices, err := deps.Store.ListDevices(c.Context(), UserID(c))
+		devices, err := settingsDevices(c, deps)
 		if err != nil {
 			return apiInternalError(c, deps, "list settings devices", err)
 		}
@@ -79,7 +79,7 @@ func handlePatchSettingsSection(deps *Deps) fiber.Handler {
 		if err != nil {
 			return apiInternalError(c, deps, "get settings section", err)
 		}
-		devices, err := deps.Store.ListDevices(c.Context(), userID)
+		devices, err := settingsDevices(c, deps)
 		if err != nil {
 			return apiInternalError(c, deps, "list settings devices", err)
 		}
@@ -181,6 +181,34 @@ func normalizedSettingsSectionPayload(base, patch map[string]any, section string
 	return payload, ""
 }
 
+func settingsDevices(c *fiber.Ctx, deps *Deps) ([]store.Device, error) {
+	phone, err := deps.Store.EnsurePhoneSettingsDevice(c.Context(), UserID(c))
+	if err != nil {
+		return nil, err
+	}
+	devices, err := deps.Store.ListDevices(c.Context(), UserID(c))
+	if err != nil {
+		return nil, err
+	}
+	activeTargets := devices[:0]
+	for _, device := range devices {
+		if device.Surface != store.SurfacePhone || phone != nil {
+			activeTargets = append(activeTargets, device)
+		}
+	}
+	devices = activeTargets
+	if phone != nil {
+		for index, device := range devices {
+			if device.DeviceID == phone.DeviceID {
+				devices[index] = *phone
+				return devices, nil
+			}
+		}
+		devices = append(devices, *phone) // The directory index can lag a fresh creation.
+	}
+	return devices, nil
+}
+
 func resolveSettingsTargets(body settingsSectionPatch, currentDeviceID string,
 	owned map[string]store.Device, section string) ([]string, bool, string) {
 	switch body.Target.Mode {
@@ -227,6 +255,9 @@ func resolveSettingsTargets(body settingsSectionPatch, currentDeviceID string,
 			return nil, false, "target.deviceIds must be empty for mode all"
 		}
 		for _, device := range owned {
+			if device.Surface == store.SurfacePhone && !deviceSupportsSection(device, section) {
+				continue
+			}
 			if !deviceSupportsSection(device, section) {
 				return nil, false, "not every active device supports this settings section"
 			}

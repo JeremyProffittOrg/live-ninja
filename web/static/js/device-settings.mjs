@@ -210,6 +210,7 @@ function make(tag, className, text) {
 }
 
 function hostSummary(device) {
+  if (device?.surface === 'phone') return 'Profile and voice apply to your next phone call';
   const metadata = device?.metadata || {};
   if (metadata.browser && metadata.platform) return `${metadata.browser} on ${metadata.platform}`;
   if (metadata.model) return String(metadata.model);
@@ -459,7 +460,7 @@ export function initDeviceSettingsControls({
       const active = !device.status || device.status === 'active';
       const capable = !capabilities || capabilities.length === 0 || capabilities.includes(section);
       const supported = active && capable;
-      if (active && !capable) unsupportedCount += 1;
+      if (active && !capable && device.surface !== 'phone') unsupportedCount += 1;
       const row = make('div', 'set-device-row');
       const label = make('label', 'set-device-row__select');
       const check = document.createElement('input');
@@ -479,7 +480,7 @@ export function initDeviceSettingsControls({
           !active
             ? 'Signed out on this device'
             : !capable
-            ? 'Not supported on this device'
+            ? (device.surface === 'phone' ? 'Not used for phone calls' : 'Not supported on this device')
             : device.inherited
               ? 'Uses account default'
               : 'Customized for this device',
@@ -653,7 +654,7 @@ export function initDeviceSettingsControls({
       if (deviceIds.length) void runApply({ mode: 'selected', deviceIds });
     });
     root.querySelector('[data-device-settings-all]').addEventListener('click', () => {
-      const count = openPanels.get(section)?.devices?.length || 0;
+      const count = root.querySelectorAll('[data-device-target]:not(:disabled)').length;
       if (
         window.confirm(
           `Apply this section to all ${count || ''} devices? Existing device customizations for this section will be replaced.`,
@@ -745,6 +746,11 @@ export function initDeviceSettingsControls({
             }`,
           ),
         );
+        if (device.surface === 'phone') {
+          form.append(text);
+          list.appendChild(form);
+          continue;
+        }
         const input = document.createElement('input');
         input.className = 'ln-input';
         input.name = 'name';
