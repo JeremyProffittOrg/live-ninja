@@ -302,6 +302,19 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(names)
         self.assertLessEqual(names, recorder.TYPES)
 
+    def test_owner_bridge_stays_warm_after_deploy_and_rehearsal(self):
+        root = Path(__file__).resolve().parents[2]
+        for name in ("phone-trial.yml", "phone-owner-rehearsal.yml"):
+            source = READ_TEXT(root / ".github/workflows" / name)
+            with self.subTest(workflow=name):
+                self.assertNotRegex(source, r"--min-replicas['\"]?\s*[, ]\s*['\"]?0")
+        deployment = READ_TEXT(root / ".github/workflows/phone-trial.yml")
+        self.assertIn("Verify owner bridge remains warm", deployment)
+        self.assertIn("scale != [1, 1]", deployment)
+        rehearsal = READ_TEXT(root / ".github/workflows/phone-owner-rehearsal.yml")
+        self.assertIn("Restore hotel targets and keep the owner bridge warm", rehearsal)
+        self.assertIn("'--min-replicas', '1', '--max-replicas', '1', '--set-env-vars'", rehearsal)
+
 
 if __name__ == "__main__":
     unittest.main()

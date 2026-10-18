@@ -74,10 +74,9 @@ def transition(item, **fields):
     return new
 
 
-def gather(item):
-    action = html.escape(base() + 'consent/' + item['callbackId'], quote=True)
-    prompt = 'Press 1 to allow recording this conversation, or any other key to end.'
-    return xml(f'<Gather input="dtmf" numDigits="1" timeout="6" actionOnEmptyResult="true" method="POST" action="{action}"><Say voice="Polly.Joanna-Neural">{prompt}</Say></Gather><Hangup/>')
+def connect_redirect(item):
+    action = html.escape(base() + 'connect/' + item['callbackId'], quote=True)
+    return xml(f'<Say voice="Polly.Joanna-Neural">Connecting to Live Ninja.</Say><Redirect method="POST">{action}</Redirect><Hangup/>')
 
 
 def final_transcript(item):
@@ -160,8 +159,8 @@ def start(data):
     try:
         policy = m.inbound_daily_policy(cfg, inbound, data.get('From'))
         item, fresh = m.reserve(cfg['ownerUserId'], 'inbound-' + sid, alias, 'Inbound owner conversation', cfg,
-            reserve_amount=RESERVE, initial_fields={'direction': 'inbound', 'callSid': sid, 'inboundState': 'consent',
-            'deadline': now + MAX_SECONDS, 'consentDeadline': now + 30, 'bridge': bridge,
+            reserve_amount=RESERVE, initial_fields={'direction': 'inbound', 'callSid': sid, 'inboundState': 'connecting',
+            'deadline': now + MAX_SECONDS, 'connectDeadline': now + 30, 'bridge': bridge,
             'scriptTranscript': '', 'reservedUSD': RESERVE}, extra_checks=[check], inbound_policy=policy)
     except m.InboundDailyLimit:
         return xml('<Say voice="Polly.Joanna-Neural">Your incoming call allowance is used for today. Please call again tomorrow.</Say><Hangup/>')
@@ -175,9 +174,9 @@ def start(data):
         end(item, 'budget_expired', hangup=True)
         return bye()
     item = transition(item, deadline=deadline)
-    # This finite Gather answers the inbound call. Twilio cannot apply a
+    # Say answers the inbound call before the signed redirect. Twilio cannot apply a
     # realtime TimeLimit update while this initial voice webhook is ringing.
-    return gather(item)
+    return connect_redirect(item)
 
 
 def mint(item):
@@ -231,7 +230,7 @@ def callback(path, raw, headers):
         return start(data)
     if path == '/inbound-owner/status':
         return number_status(data)
-    match = re.fullmatch(r'/inbound-owner/(consent|recording|ended)/([0-9a-f]{64})', path)
+    match = re.fullmatch(r'/inbound-owner/(connect|recording|ended)/([0-9a-f]{64})', path)
     if not match:
         return r.response(404)
     kind, token = match.groups()
@@ -261,18 +260,15 @@ def callback(path, raw, headers):
             or lock.get('activeRequest') != item['lockId'] or int(time.time()) >= item['deadline']):
         end(item, 'admission_revoked', hangup=True)
         return bye()
-    if item.get('inboundState') != 'consent':
+    if item.get('inboundState') != 'connecting':
         return bye()
     if data.get('Direction') != 'inbound' or data.get('From') != item['toNumber'] or data.get('To') != item['fromNumber']:
         return r.response(403)
-    if int(time.time()) >= item['consentDeadline']:
-        end(item, 'consent_expired', hangup=True)
-        return bye()
-    if data.get('Digits') != '1':
-        end(item, 'consent_declined', hangup=True)
+    if int(time.time()) >= item['connectDeadline']:
+        end(item, 'connect_expired', hangup=True)
         return bye()
     # Persist before invoking: an ambiguous mint/recording creation is never retried.
-    item = transition(item, inboundState='minting', consented=True)
+    item = transition(item, inboundState='starting', consented=True, recordingAuthorization='owner-standing')
     try:
         remaining = int(item['deadline']) - int(time.time())
         if remaining <= 0:
@@ -290,7 +286,8 @@ def callback(path, raw, headers):
     bootstrap = None
     try:
         call = r.get(r.call_key(item['callSid'], m.namespace(item['ownerUserId'])))
-        r.commit(call, {**call, 'version': int(call['version']) + 1, 'consentStatus': 'granted'})
+        r.commit(call, {**call, 'version': int(call['version']) + 1, 'consentStatus': 'granted',
+                        'recordingAuthorization': 'owner-standing'})
         bootstrap = mint(item)
         item = transition(item, bootstrap=bootstrap, inboundState='starting')
         run_id = m.namespace(item['ownerUserId'])
@@ -315,7 +312,7 @@ def callback(path, raw, headers):
         end(item, 'bootstrap_failed', hangup=True)
         return bye()
     stream = item['bridge'].replace('https://', 'wss://', 1) + '/owner-media'
-    return xml('<Say voice="Polly.Joanna-Neural">Recording starts now.</Say><Connect method="POST" action="' +
+    return xml('<Connect method="POST" action="' +
         html.escape(base() + 'ended/' + token, quote=True) + '"><Stream url="' + html.escape(stream, quote=True) +
         '"><Parameter name="capability" value="' + token + '"/></Stream></Connect><Hangup/>')
 

@@ -290,9 +290,11 @@ number routing, grant spending permission, or release the owner's call stop.
   It checks the configured inbound number and existing two-number owner caller
   allowlist, then reserves bounded spending. Caller identity needs no PIN. Unknown
   callers receive a hangup response without a session or recording.
-- Recording requires explicit keypad consent. The initial bounded consent prompt
-  answers the call; its signed consent callback sets the provider call limit before
-  session minting. Each conversation keeps the original 180-second admission deadline
+- Recognized owner calls have standing recording authorization. A short connecting
+  announcement answers the call, then a signed `POST /inbound-owner/connect/<token>`
+  redirect sets the provider call limit before session minting and recording. No
+  PIN, recording question or keypad response is required. The old consent route is
+  removed. Each conversation keeps the original 180-second admission deadline
   or an earlier budget expiry and uses a fresh Live Ninja conversation.
 - An IAM-only recorder invocation of the realtime broker uses `mode=phone-session`.
   The broker resolves the active canonical owner, saved persona, rules, guides and
@@ -305,7 +307,7 @@ number routing, grant spending permission, or release the owner's call stop.
   `memory_search`, `entity_get`, `knowledge_search`, `knowledge_recent`, `job_list`
   and `job_status`. Saved instructions cannot expand this list. Account changes,
   outgoing calls, device controls and job approvals remain unavailable on this path.
-- Transcript persistence follows the owner's existing privacy settings. Consented
+- Transcript persistence follows the owner's existing privacy settings. Authorized
   recordings use the existing private S3 ingestion and owner recording APIs. Existing
   web and Android sessions keep their original permissions and behavior.
 

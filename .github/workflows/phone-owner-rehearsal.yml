@@ -151,7 +151,7 @@ jobs:
           client-id: ${{ steps.config.outputs.azureClientId }}
           tenant-id: ${{ steps.config.outputs.azureTenantId }}
           subscription-id: ${{ steps.config.outputs.azureSubscriptionId }}
-      - name: Restore hotel targets and let the idle bridge scale to zero
+      - name: Restore hotel targets and keep the owner bridge warm
         if: always() && steps.config.outcome == 'success'
         shell: python
         run: |
@@ -160,5 +160,5 @@ jobs:
           hotels = json.load(open('tools/phone-trial/targets.json'))['hotels']
           targets = json.dumps([{'id': t['id'], 'name': t['name'], 'phone': t['phone']} for t in hotels], separators=(',', ':'))
           subprocess.run(['az', 'containerapp', 'update', '--resource-group', c['azureResourceGroup'], '--name', c['azureAppName'],
-                          '--min-replicas', '0', '--set-env-vars', 'TARGETS_JSON=' + targets, '--query', 'name', '--output', 'tsv',
+                          '--min-replicas', '1', '--max-replicas', '1', '--set-env-vars', 'TARGETS_JSON=' + targets, '--query', 'name', '--output', 'tsv',
                           '--only-show-errors'], check=True, timeout=300)

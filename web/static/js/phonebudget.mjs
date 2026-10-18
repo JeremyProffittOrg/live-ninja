@@ -24,7 +24,7 @@ export function initPhoneBudget(root, { apiJSON, onAuthLost = () => {}, storage 
     }[data.pausedReason || ''] || 'Calling is on hold. Check the call status before another attempt.';
     const incoming = data.incomingDailyBudget;
     const incomingText = incoming?.enabled ?
-      `Incoming calls from your designated number: $${incoming.limitUSD} daily allowance, $${incoming.reservedUSD} reserved, $${incoming.remainingUSD} remaining for ${incoming.day} (${incoming.timezone}). Resets at midnight. If less than $${data.requiredReservationUSD} remains, wait until tomorrow. Your caller number is recognized without a PIN; recording consent is required. ` : '';
+      `Incoming calls from your designated number: $${incoming.limitUSD} daily allowance, $${incoming.reservedUSD} reserved, $${incoming.remainingUSD} remaining for ${incoming.day} (${incoming.timezone}). Resets at midnight. If less than $${data.requiredReservationUSD} remains, wait until tomorrow. Recognized owner calls connect and record automatically; no PIN or keypad response is needed. ` : '';
     status.textContent = incomingText + `Month ${data.month}: $${data.allocatedUSD} allocated; monthly limit $${data.monthlyLimitUSD}. ` +
       (incoming?.enabled ? 'Other calls use the separate approval allowance. ' : '') +
       `Today ${data.day} (${data.timezone}): $${data.dailyGrantedUSD} authorized, $${data.dailySpentUSD} used, $${data.dailyRemainingUSD} remaining. ` +

@@ -112,13 +112,19 @@ jobs:
                      TARGETS_JSON=json.dumps([{'id':t['id'],'name':t['name'],'phone':t['phone']} for t in targets]))
           subprocess.run(['go','run','./cmd/phone-trial-bridge','-probe'], env=env, check=True, timeout=45)
 
-      - name: Release idle bridge after deployment-only verification
-        if: always() && steps.azure.outcome == 'success' && steps.config.outputs.calls_authorized != 'true'
+      - name: Verify owner bridge remains warm
+        if: always() && steps.azure.outcome == 'success'
         shell: python
         run: |
           import json, subprocess
           c = json.load(open('infra/phone-trial-config.json'))
-          subprocess.run(['az','containerapp','update','--resource-group',c['azureResourceGroup'],'--name',c['azureAppName'],'--min-replicas','0','--query','name','--output','tsv'],check=True,timeout=180)
+          result = subprocess.run(['az','containerapp','show','--resource-group',c['azureResourceGroup'],'--name',c['azureAppName'],
+                                   '--query','[properties.template.scale.minReplicas, properties.template.scale.maxReplicas]',
+                                   '--output','json','--only-show-errors'],check=True,text=True,stdout=subprocess.PIPE,timeout=60)
+          scale = json.loads(result.stdout)
+          if scale != [1, 1]:
+              raise SystemExit('Owner bridge must keep exactly one warm replica.')
+          print('Owner bridge scale verified: minReplicas=1 maxReplicas=1.')
 
   trial:
     needs: deploy
@@ -175,25 +181,3 @@ jobs:
       - name: Email measured results and seven-day recording links
         if: always() && steps.calls.outcome != 'skipped'
         run: python -B tools/phone-trial/send_report.py --function-name live-ninja-phone-trial-recorder --template tools/phone-trial/email-status.html
-      - name: Load cleanup identity
-        if: always()
-        id: cleanup
-        shell: python
-        run: |
-          import json, os
-          c = json.load(open('infra/phone-trial-config.json'))
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-              for k in ['azureClientId','azureTenantId','azureSubscriptionId','azureResourceGroup','azureAppName']:
-                  out.write(k+'='+c[k]+'\n')
-      - uses: azure/login@v2
-        if: always() && steps.cleanup.outcome == 'success'
-        with:
-          client-id: ${{ steps.cleanup.outputs.azureClientId }}
-          tenant-id: ${{ steps.cleanup.outputs.azureTenantId }}
-          subscription-id: ${{ steps.cleanup.outputs.azureSubscriptionId }}
-      - name: Allow the idle bridge to scale to zero
-        if: always() && steps.cleanup.outcome == 'success'
-        env:
-          TRIAL_GROUP: ${{ steps.cleanup.outputs.azureResourceGroup }}
-          TRIAL_APP: ${{ steps.cleanup.outputs.azureAppName }}
-        run: az containerapp update --resource-group "$TRIAL_GROUP" --name "$TRIAL_APP" --min-replicas 0 --query name --output tsv

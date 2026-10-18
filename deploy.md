@@ -118,12 +118,18 @@ Before activating inbound owner calling, configure the exact owned number's
 number-level `StatusCallback` to the same ServiceUrl plus `/inbound-owner/status`.
 Both methods must be POST. Verify those exact values before enabling the private
 owner/inbound rows or releasing the known owner-stop lock. Preserve SMS and unrelated
-number settings. The initial bounded recording-consent prompt answers the call.
-Its signed consent callback sets the provider `TimeLimit` before session minting;
+number settings. Recognized owner calls use standing recording authorization.
+A brief connecting announcement answers the call, then a signed `/connect`
+redirect sets the provider `TimeLimit` before session minting and recording;
 do not add a call-level `StatusCallback` update without a `Url`, or redirect the
 live call merely to set its callback. Twilio documents that callback-update
 restriction in https://www.twilio.com/docs/voice/api/call-resource . Number-level
 callbacks are documented in https://www.twilio.com/docs/phone-numbers/api/incomingphonenumber-resource .
+
+The shared Azure phone bridge must retain minReplicas1/maxReplicas1 after deployment
+and rehearsal cleanup. Do not scale it to zero: an incoming Media Stream can time
+out before a cold container starts. Rehearsal cleanup restores hotel targets while
+preserving the warm instance. This changes no outgoing recording-consent rule.
 
 The existing `phone-test-preflight.yml` workflow now includes a read-only inbound
 routing check. Its helper, `tools/phone-trial/activate_inbound.py`, runs only in
