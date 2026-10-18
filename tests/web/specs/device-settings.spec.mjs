@@ -254,7 +254,7 @@ test('section GET is version-read-only and conflict retry reuses the clicked set
     window.__apiJSON = async (path, options = {}) => {
       window.__apiRequests.push({ path, options });
       if (path === '/api/v1/devices') {
-        return { devices: window.__sectionEnvelope.devices };
+        return { devices: window.__sectionEnvelope.devices.filter((device) => device.surface !== 'phone') };
       }
       if (path === '/api/v1/settings/sections/privacy') {
         if (options.method === 'PATCH') {
@@ -382,6 +382,7 @@ test('section GET is version-read-only and conflict retry reuses the clicked set
   expect(phonePatch.settings).toEqual({ privacy: { storeTranscripts: true } });
   expect(await page.evaluate(() => window.__doc.privacy.storeTranscripts)).toBe(true);
   await expect(page.getByRole('button', { name: 'Save name for Phone calls' })).toHaveCount(0);
+  await expect(page.locator('[data-account-devices-list]').getByText('Phone calls', { exact: true })).toHaveCount(0);
 });
 
 test('a scope write disables every section so settings PATCHes cannot overlap', async ({ page }) => {

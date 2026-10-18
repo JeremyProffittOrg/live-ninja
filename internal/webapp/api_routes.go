@@ -155,6 +155,9 @@ func handleListDevices(deps *Deps) fiber.Handler {
 
 		out := make([]fiber.Map, 0, len(devices))
 		for _, d := range devices {
+			if d.Surface == store.SurfacePhone {
+				continue
+			}
 			out = append(out, deviceResponse(d, d.DeviceID == currentID))
 		}
 		return c.JSON(fiber.Map{"devices": out})

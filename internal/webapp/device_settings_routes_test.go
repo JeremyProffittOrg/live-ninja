@@ -110,6 +110,13 @@ func TestPhoneSettingsTargetUsesExistingScopedSettings(t *testing.T) {
 		}
 	}
 	require.True(t, found)
+	for _, path := range []string{"/api/v1/settings/sections/wakeWord", "/api/v1/settings/sections/appearance", "/api/v1/devices"} {
+		resp, listing := deviceSettingsRequest(t, app, http.MethodGet, path, "", "", nil)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		rows := listing["devices"].([]any)
+		require.Len(t, rows, 1, "only the browser belongs in this list: %s", path)
+		assert.Equal(t, testDeviceOne, rows[0].(map[string]any)["deviceId"])
+	}
 	body := map[string]any{"version": 1, "operation": "set", "target": map[string]any{"mode": "selected", "deviceIds": []string{id}}, "settings": map[string]any{"voice": "coral"}}
 	resp, _ = deviceSettingsRequest(t, app, http.MethodPatch, "/api/v1/settings/sections/persona", "", "", body)
 	require.Equal(t, http.StatusOK, resp.StatusCode)

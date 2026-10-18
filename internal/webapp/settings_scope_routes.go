@@ -288,6 +288,9 @@ func settingsSectionEnvelope(doc map[string]any, devices []store.Device,
 		if device.Status != store.DeviceStatusActive {
 			continue
 		}
+		if device.Surface == store.SurfacePhone && !deviceSupportsSection(device, section) {
+			continue
+		}
 		// Legacy device rows predate metadata/capability declarations. Emit
 		// empty JSON collections rather than null so strict mobile decoders can
 		// adopt the section envelope without falling back to local settings.

@@ -94,6 +94,9 @@ The canonical owner also sees a server-managed `Phone calls` target with surface
 It uses the same `deviceOverrides` document and version checks. Section reads
 create this directory target if needed; they do not copy or change preferences.
 Clients cannot register it as their current host, rename it, or revoke it.
+Only supported section envelopes expose this target; the general physical-device
+directory and unsupported sections omit it so existing native clients retain
+their naming controls and apply-all behavior.
 Profile/persona/voice settings apply at the next new phone call; phone transcript
 privacy is resolved on future transcript writes. Phone calls remain authenticated
 to the owner account with a fresh call-bound conversation, not the browser's

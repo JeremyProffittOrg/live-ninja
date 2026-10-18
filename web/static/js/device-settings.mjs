@@ -746,11 +746,6 @@ export function initDeviceSettingsControls({
             }`,
           ),
         );
-        if (device.surface === 'phone') {
-          form.append(text);
-          list.appendChild(form);
-          continue;
-        }
         const input = document.createElement('input');
         input.className = 'ln-input';
         input.name = 'name';
