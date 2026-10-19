@@ -72,7 +72,7 @@ test('phone research accepts exactly five distinct catalog IDs even when calls a
 test('phone approval shows exact scope provenance budget and recording limits', () => {
   const text = phoneApprovalDetails({ phoneResearch: phoneSnapshot });
   for (const hotel of hotels) { assert.ok(text.includes(hotel.name)); assert.ok(text.includes(hotel.phone)); assert.ok(text.includes(hotel.sourceUrl)); }
-  for (const phrase of ['180 seconds', 'no redial', '$7.00', '$20 monthly', '$5 daily', 'only after permission', 'does not grant a budget or lift a call stop']) assert.ok(text.includes(phrase));
+  for (const phrase of ['180 seconds', 'no redial', '$7.00', '$10 daily', '$100 monthly', 'only after permission', 'does not grant a budget or lift a call stop']) assert.ok(text.includes(phrase));
   assert.throws(() => phoneApprovalDetails({ phoneResearch: { ...phoneSnapshot, maxAttempts: 2 } }), /limits/);
   assert.throws(() => phoneApprovalDetails({ phoneResearch: { ...phoneSnapshot, targets: hotels.slice(1) } }), /exact five/);
 });

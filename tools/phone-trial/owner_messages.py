@@ -21,7 +21,21 @@ CONFIG_KEY = {"PK": "CONFIG", "SK": "OWNER_MESSAGES"}
 VOICE_KEY = {"PK": "PHONE#CONTROL", "SK": "VOICE"}
 RESERVE = Decimal("0.30")
 MAX_RESERVE = Decimal("1.40")
-LIMIT = Decimal("20")
+# Owner decision 2026-10-19: "okay, let's set a daily call allowance of $10
+# with $100 monthly cap". A standing allowance: outgoing calls may reserve up
+# to $10 per owner-local day with no grant, and every call this month,
+# incoming and outgoing, shares the $100 cap. The separate incoming $10/day
+# policy is unchanged. The month total keeps the fixed $8 infrastructure floor.
+DAILY_ALLOWANCE = Decimal("10")
+MONTHLY_CAP = Decimal("100")
+INFRA_FLOOR = Decimal("8")
+# Ledger version 2 records each reservation under "unsettled" and replaces it
+# with the measured cost when the call settles. Version 1 months only summed
+# reservations and over-counted.
+LEDGER_VERSION = 2
+# Model cost rates the phone bridge already reports for live calls.
+INPUT_TOKEN_USD = Decimal("0.000010")
+OUTPUT_TOKEN_USD = Decimal("0.000020")
 TERMINAL = {"completed", "busy", "failed", "no-answer", "canceled"}
 STATUSES = TERMINAL | {"queued", "initiated", "ringing", "in-progress"}
 INTRO = "This is Live Ninja, Jeremy's AI assistant. This owner message is being recorded. "
@@ -36,6 +50,22 @@ class ProviderError(Exception):
 
 class InboundDailyLimit(ValueError):
     """The separately authorized incoming daily allowance cannot admit a call."""
+
+
+class AllowanceRefused(ValueError):
+    """Standing call allowance refusal; reason is daily_allowance_used or monthly_cap_reached."""
+
+    def __init__(self, reason, message):
+        super().__init__(reason + ": " + message)
+        self.reason = reason
+
+
+def monthly_cap_refusal():
+    return AllowanceRefused("monthly_cap_reached", "This month's $100 call cap is reached; no call created")
+
+
+def daily_allowance_refusal():
+    return AllowanceRefused("daily_allowance_used", "Today's $10 outgoing call allowance is used; no call created")
 
 
 def provider(path, form=None):
@@ -236,20 +266,166 @@ def inbound_budget_summary(cfg, day, zone, expires):
         return result
 
 
+def floor_for(cfg, month):
+    floor = Decimal(str(cfg.get("budgetFloorUSD", INFRA_FLOOR)))
+    floor_month = cfg.get("budgetFloorMonth")
+    if not floor.is_finite() or floor < INFRA_FLOOR:
+        raise ValueError("Invalid monthly budget")
+    if floor_month is not None and (not isinstance(floor_month, str) or not re.fullmatch(r"[0-9]{4}-(0[1-9]|1[0-2])", floor_month)):
+        raise ValueError("Invalid budget floor month")
+    if floor > INFRA_FLOOR and floor_month is None:
+        raise ValueError("A budget floor above $8 requires budgetFloorMonth")
+    return floor if floor_month == month else INFRA_FLOOR
+
+
+def observed_provider_usd():
+    usage = provider("/Usage/Records/ThisMonth.json?Category=totalprice")
+    records = usage.get("usage_records", [])
+    if len(records) != 1 or records[0].get("price_unit", "").lower() != "usd" or usage.get("next_page_uri"):
+        raise ValueError("Monthly provider cost unavailable")
+    observed = Decimal(str(records[0].get("price")))
+    if not observed.is_finite() or observed < 0:
+        raise ValueError("Invalid monthly budget")
+    return observed
+
+
+def month_allocated(month_row, floor):
+    """Month total at or above the floor. Admission requires a version 2 row;
+    a version 1 row is only displayed until rebase_month replaces it."""
+    return max(floor, Decimal(str((month_row or {}).get("allocatedUSD", "0"))))
+
+
+def rebase_month(cfg, month, floor, observed=None):
+    """Replace a version 1 month total with the $8 floor plus measured provider cost.
+
+    Runs only while no call holds the shared voice lock, so no reservation is
+    in flight. Any later reservation is tracked and settled individually.
+    """
+    month_key, _ = budget_keys(month, "")
+    for _ in range(3):
+        old = r.get(month_key)
+        if (old or {}).get("ledgerVersion") == LEDGER_VERSION:
+            return old
+        if (r.get(VOICE_KEY) or {}).get("activeRequest"):
+            return old
+        if observed is None:
+            observed = observed_provider_usd()
+        new = {**(old or {}), **month_key, "allocatedUSD": max(floor, INFRA_FLOOR + observed), "ledgerVersion": LEDGER_VERSION,
+               "unsettled": {}, "observedProviderUSD": observed, "observedAt": int(time.time()),
+               "rebasedFromUSD": Decimal(str((old or {}).get("allocatedUSD", "0"))), "rebasedAt": int(time.time()),
+               "version": int((old or {}).get("version", 0)) + 1}
+        try:
+            transact([put(new, old)])
+            return new
+        except Exception as exc:
+            if not r.conditional(exc):
+                raise
+    return r.get(month_key)
+
+
+def measured_cost(item):
+    """Measured cost of a terminal call, or None when it is not known yet."""
+    status = item.get("providerStatus")
+    if status == "rejected" and not item.get("callSid"):
+        return Decimal("0")
+    sid = item.get("callSid", "")
+    if not r.SID.fullmatch(sid) or (r.get(VOICE_KEY) or {}).get("activeRequest") == item.get("lockId"):
+        return None
+    if status not in TERMINAL and item.get("inboundState") != "ended":
+        return None
+    try:
+        call = provider("/Calls/" + sid + ".json")
+    except ProviderError:
+        return None
+    if (call.get("sid") != sid or call.get("account_sid") != os.environ["TWILIO_ACCOUNT_SID"]
+            or call.get("status") not in TERMINAL or str(call.get("price_unit", "")).upper() != "USD"
+            or call.get("price") in (None, "")):
+        return None
+    try:
+        cost = abs(Decimal(str(call["price"])))
+    except (InvalidOperation, ValueError):
+        return None
+    if not cost.is_finite():
+        return None
+    if item.get("direction") == "inbound" or item.get("live") is True or item.get("bridge"):
+        tokens = (item.get("inputTokens"), item.get("outputTokens"))
+        if call.get("status") == "completed" and int(call.get("duration") or 0) > 0:
+            if any(type(value) not in (int, Decimal) or value < 0 for value in tokens):
+                return None
+            cost += Decimal(int(tokens[0])) * INPUT_TOKEN_USD + Decimal(int(tokens[1])) * OUTPUT_TOKEN_USD
+    return cost
+
+
+def settle(cfg, limit=10):
+    """True up terminal calls: replace each reservation with its measured cost.
+
+    The month and day totals move by the same difference. A call whose cost is
+    still unknown keeps its reservation and is retried by a later read.
+    """
+    month, _, _, _ = budget_clock(cfg)
+    owner = cfg["ownerUserId"]
+    month_key, _ = budget_keys(month, "")
+    settled = 0
+    row = r.get(month_key) or {}
+    for request_id in sorted((row.get("unsettled") or {}))[:limit]:
+        for _ in range(3):
+            month_row = r.get(month_key) or {}
+            reserved = (month_row.get("unsettled") or {}).get(request_id)
+            if month_row.get("ledgerVersion") != LEDGER_VERSION or reserved is None:
+                break
+            item = r.get(request_key(owner, request_id))
+            if not item or item.get("budgetMonth") != month:
+                break
+            cost = measured_cost(item)
+            if cost is None:
+                break
+            delta = cost - Decimal(str(reserved))
+            unsettled = {k: v for k, v in month_row["unsettled"].items() if k != request_id}
+            month_new = {**month_row, "allocatedUSD": Decimal(str(month_row.get("allocatedUSD", "0"))) + delta,
+                         "unsettled": unsettled, "version": int(month_row["version"]) + 1}
+            item_new = {**item, "settledUSD": cost, "settledAt": int(time.time()), "version": int(item["version"]) + 1}
+            operations = [put(month_new, month_row), put(item_new, item)]
+            day_key = {"PK": item.get("budgetDayPK", ""), "SK": item.get("budgetDaySK", "")}
+            day_row = r.get(day_key) if day_key["PK"] and day_key["SK"] else None
+            if day_row and "reservedUSD" in day_row:
+                day_reserved = max(Decimal(0), Decimal(str(day_row["reservedUSD"])) + delta)
+                if item.get("budgetSource") == "incoming-daily-policy":
+                    day_reserved = min(DAILY_ALLOWANCE, day_reserved)
+                operations.append(put({**day_row, "reservedUSD": day_reserved, "version": int(day_row["version"]) + 1}, day_row))
+            try:
+                transact(operations)
+                settled += 1
+                break
+            except Exception as exc:
+                if not r.conditional(exc):
+                    raise
+    return settled
+
+
 def budget_status(cfg):
     month, day, zone, expires = budget_clock(cfg)
+    floor = floor_for(cfg, month)
     month_key, day_key = budget_keys(month, day)
+    try:
+        rebase_month(cfg, month, floor)
+        settle(cfg)
+    except (ProviderError, ValueError):
+        # Status still reports the stored ledger; unknown costs keep reservations.
+        pass
     monthly, daily = r.get(month_key) or {}, r.get(day_key) or {}
-    floor = Decimal(str(cfg.get("budgetFloorUSD", "8"))) if cfg.get("budgetFloorMonth") == month else Decimal("8")
-    allocated = max(floor, Decimal(str(monthly.get("allocatedUSD", "0"))))
-    granted, spent = (Decimal(str(daily.get(k, "0"))) for k in ("grantedUSD", "spentUSD"))
+    allocated = month_allocated(monthly, floor)
+    reserved = Decimal(str(daily.get("reservedUSD", "0")))
     lock = r.get(VOICE_KEY) or {}
     stopped = bool(lock.get("activeRequest"))
-    extra = max(Decimal(0), allocated + RESERVE - max(LIMIT, allocated))
-    reason = "disabled" if cfg.get("enabled") is not True else "voice_stop_or_active_call" if stopped else "waiting_approval" if granted - spent < extra else ""
+    month_left = max(Decimal(0), MONTHLY_CAP - allocated)
+    day_left = max(Decimal(0), DAILY_ALLOWANCE - reserved)
+    reason = ("disabled" if cfg.get("enabled") is not True else "voice_stop_or_active_call" if stopped
+              else "monthly_cap_reached" if month_left < RESERVE else "daily_allowance_used" if day_left < RESERVE else "")
     return {"month": month, "day": day, "timezone": zone, "allocatedUSD": str(allocated),
-            "monthlyLimitUSD": str(LIMIT), "dailyGrantedUSD": str(granted), "dailySpentUSD": str(spent),
-            "dailyRemainingUSD": str(max(Decimal(0), granted-spent)), "requiredReservationUSD": str(MAX_RESERVE), "expiresAt": expires,
+            "monthlyCapUSD": str(MONTHLY_CAP), "monthlyRemainingUSD": str(month_left),
+            "dailyAllowanceUSD": str(DAILY_ALLOWANCE), "dailyReservedUSD": str(reserved), "dailyRemainingUSD": str(day_left),
+            "unsettledCalls": len((monthly.get("unsettled") or {}) if monthly.get("ledgerVersion") == LEDGER_VERSION else {}),
+            "requiredReservationUSD": str(MAX_RESERVE), "minimumReservationUSD": str(RESERVE), "expiresAt": expires,
             "pausedReason": reason, "pendingReservation": stopped,
             "incomingDailyBudget": inbound_budget_summary(cfg, day, zone, expires)}
 
@@ -260,69 +436,20 @@ def budget_operation(event):
     cfg = config(event.get("ownerUserId"))
     if not cfg:
         return r.response(403, {"error": "Owner budget is not configured for this identity"})
-    if event["operation"] == "owner_budget_status":
-        return r.response(200, budget_status(cfg))
-    request_id = event.get("requestId", "")
-    if not isinstance(request_id, str) or not REQUEST_ID.fullmatch(request_id):
-        return r.response(400, {"error": "Invalid requestId"})
-    month, day, zone, expires = budget_clock(cfg)
-    if event.get("expectedDay") != day:
-        return r.response(409, {"error": "Day changed; refresh the budget before approval"})
-    grant_key = {"PK": "OWNER#" + cfg["ownerUserId"], "SK": "BUDGET_GRANT#" + request_id}
-    _, day_key = budget_keys(month, day)
-    for _ in range(4):
-        previous = r.get(grant_key)
-        if previous:
-            if previous["day"] != day:
-                return r.response(409, {"error": "Approval request belongs to an expired day"})
-            return r.response(200, budget_status(cfg))
-        if budget_clock(cfg)[1] != day:
-            return r.response(409, {"error": "Day changed; refresh the budget before approval"})
-        old = r.get(day_key)
-        remaining = Decimal(str((old or {}).get("grantedUSD", "0"))) - Decimal(str((old or {}).get("spentUSD", "0")))
-        if remaining >= MAX_RESERVE:
-            return r.response(409, {"error": "Today's allowance covers the next supported call reservation; another approval is not needed"})
-        daily = {**(old or {}), **day_key, "version": int((old or {}).get("version", 0))+1,
-                 "grantedUSD": Decimal(str((old or {}).get("grantedUSD", "0")))+Decimal("5"),
-                 "spentUSD": Decimal(str((old or {}).get("spentUSD", "0"))), "expiresAt": expires, "timezone": zone}
-        config_check = {"TableName": os.environ["TABLE"], "Key": CONFIG_KEY,
-                        "ConditionExpression": "ownerUserId=:owner",
-                        "ExpressionAttributeNames": {"#zone": "timezone"},
-                        "ExpressionAttributeValues": {":owner": cfg["ownerUserId"]}}
-        if "timezone" in cfg:
-            config_check["ConditionExpression"] += " AND #zone=:zone"
-            config_check["ExpressionAttributeValues"][":zone"] = cfg["timezone"]
-        else:
-            config_check["ConditionExpression"] += " AND attribute_not_exists(#zone)"
-        try:
-            transact([put(daily, old), put({**grant_key, "day": day, "amountUSD": Decimal("5"),
-                      "createdAt": int(time.time()), "expiresAt": expires}),
-                      {"ConditionCheck": config_check}])
-            return r.response(200, budget_status(cfg))
-        except Exception as exc:
-            if not r.conditional(exc):
-                raise
-    return r.response(409, {"error": "Budget changed; retry the same approval request"})
+    if event["operation"] == "owner_budget_grant":
+        # Retired 2026-10-19: the standing daily allowance needs no approval.
+        return r.response(410, {"error": "Daily approvals are retired. Outgoing calls use a standing $10 daily allowance within the $100 monthly cap."})
+    return r.response(200, budget_status(cfg))
 
 
 def reserve(owner, request_id, alias, message, cfg, *, reserve_amount=RESERVE, initial_fields=None, extra_checks=(), target_number=None, inbound_policy=None):
-    usage = provider("/Usage/Records/ThisMonth.json?Category=totalprice")
-    records = usage.get("usage_records", [])
-    if len(records) != 1 or records[0].get("price_unit", "").lower() != "usd" or usage.get("next_page_uri"):
-        raise ValueError("Monthly provider cost unavailable")
-    observed = Decimal(str(records[0].get("price")))
-    floor = Decimal(str(cfg.get("budgetFloorUSD", "8")))
-    if not observed.is_finite() or observed < 0 or not floor.is_finite() or floor < 8:
-        raise ValueError("Invalid monthly budget")
+    observed = observed_provider_usd()
     month, day, zone, expires = budget_clock(cfg)
-    floor_month = cfg.get("budgetFloorMonth")
-    if floor_month is not None and (not isinstance(floor_month, str) or not re.fullmatch(r"[0-9]{4}-(0[1-9]|1[0-2])", floor_month)):
-        raise ValueError("Invalid budget floor month")
-    if floor > 8 and floor_month is None:
-        raise ValueError("A budget floor above $8 requires budgetFloorMonth")
-    if floor_month != month:
-        floor = Decimal("8")
+    floor = floor_for(cfg, month)
     budget_key, day_key = budget_keys(month, day)
+    if not r.get(request_key(owner, request_id)):
+        rebase_month(cfg, month, floor, observed)
+        settle(cfg, limit=3)
     key = request_key(owner, request_id)
     callback_id = r.digest(("owner-message\n" + owner + "\n" + request_id).encode())
     lock_id = "owner:" + owner + ":" + request_id
@@ -342,12 +469,15 @@ def reserve(owner, request_id, alias, message, cfg, *, reserve_amount=RESERVE, i
         if prior:
             return prior, False
         old = r.get(budget_key)
-        base = max(floor, Decimal("8") + observed, Decimal(str((old or {}).get("allocatedUSD", "0"))))
+        if (old or {}).get("ledgerVersion") != LEDGER_VERSION:
+            raise ValueError("Monthly ledger is being rebased; retry call admission")
+        base = max(floor, INFRA_FLOOR + observed, month_allocated(old, floor))
         if budget_clock(cfg)[1] != day:
             raise ValueError("Day changed; retry call admission")
+        if base + reserve_amount > MONTHLY_CAP:
+            raise monthly_cap_refusal()
         daily_key = inbound_budget_key(owner, day) if inbound_policy is not None else day_key
         daily_old = r.get(daily_key)
-        extra = max(Decimal(0), base + reserve_amount - max(LIMIT, base))
         daily = None
         if inbound_policy is not None:
             reserved = Decimal(str((daily_old or {}).get('reservedUSD', '0')))
@@ -360,15 +490,21 @@ def reserve(owner, request_id, alias, message, cfg, *, reserve_amount=RESERVE, i
                      'limitUSD': Decimal('10'), 'reservedUSD': reserved + reserve_amount, 'expiresAt': expires,
                      'version': int((daily_old or {}).get('version', 0)) + 1}
             item.update(budgetSource='incoming-daily-policy', inboundBudgetDay=day)
-        elif extra:
-            granted = Decimal(str((daily_old or {}).get("grantedUSD", "0")))
-            daily_spent = Decimal(str((daily_old or {}).get("spentUSD", "0")))
-            if not daily_old or int(daily_old.get("expiresAt", 0)) <= int(time.time()) or daily_spent + extra > granted:
-                raise ValueError("waiting_approval: Monthly $20 allowance reached; approve $5 for today")
-            daily = {**daily_old, "spentUSD": daily_spent + extra, "version": int(daily_old["version"])+1}
-        budget = {**(old or {}), **budget_key, "allocatedUSD": base + reserve_amount,
+        else:
+            reserved = Decimal(str((daily_old or {}).get("reservedUSD", "0")))
+            if not reserved.is_finite() or reserved < 0:
+                raise ValueError("Daily call allowance ledger is invalid")
+            if reserved + reserve_amount > DAILY_ALLOWANCE:
+                raise daily_allowance_refusal()
+            daily = {**(daily_old or {}), **daily_key, "day": day, "timezone": zone, "limitUSD": DAILY_ALLOWANCE,
+                     "reservedUSD": reserved + reserve_amount, "expiresAt": expires,
+                     "version": int((daily_old or {}).get("version", 0)) + 1}
+            item.update(budgetSource="standing-daily-allowance")
+        item.update(reservedUSD=reserve_amount, budgetMonth=month, budgetDayPK=daily_key["PK"], budgetDaySK=daily_key["SK"])
+        unsettled = {**(old.get("unsettled") or {}), request_id: reserve_amount}
+        budget = {**old, **budget_key, "allocatedUSD": base + reserve_amount, "unsettled": unsettled,
                   "observedProviderUSD": observed, "observedAt": int(time.time()),
-                  "version": int((old or {}).get("version", 0)) + 1}
+                  "version": int(old.get("version", 0)) + 1}
         config_check = {"TableName": os.environ["TABLE"], "Key": CONFIG_KEY,
             "ConditionExpression": "#enabled=:enabled AND #owner=:owner AND #from=:from AND #destinations=:destinations",
             "ExpressionAttributeNames": {"#enabled": "enabled", "#owner": "ownerUserId", "#from": "fromNumber", "#destinations": "destinations"},
@@ -388,9 +524,10 @@ def reserve(owner, request_id, alias, message, cfg, *, reserve_amount=RESERVE, i
         import account_lifecycle
         operations.extend(account_lifecycle.ready_conditions({"ownerUserId": owner, "runId": namespace(owner)}))
         operations.extend(extra_checks)
-        if daily:
+        if inbound_policy is not None:
+            # The incoming allowance stays bounded to its own local day.
             item["budgetExpiresAt"] = int(daily["expiresAt"])
-            operations.append(put(daily, daily_old))
+        operations.append(put(daily, daily_old))
         if budget_clock(cfg)[1] != day or int(time.time()) >= expires:
             raise ValueError('Day changed before call reservation; retry admission')
         try:
@@ -453,7 +590,7 @@ def operation(event):
                       'bridge': bridge, 'reservedUSD': MAX_RESERVE}
         item, fresh = reserve(owner, request_id, alias, message, cfg, reserve_amount=MAX_RESERVE if live else RESERVE, initial_fields=fields)
     except ValueError as exc:
-        return r.response(409, {"error": str(exc)})
+        return r.response(409, {"error": str(exc), **({"reason": exc.reason} if isinstance(exc, AllowanceRefused) else {})})
     except ProviderError:
         return r.response(409, {"error": "Provider usage cannot be verified; no call created"})
     if not fresh:

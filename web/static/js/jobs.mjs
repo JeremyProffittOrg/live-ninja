@@ -21,7 +21,7 @@ export function phoneApprovalDetails(job, run = null) {
   if (caps?.purpose !== PHONE_RESEARCH_PURPOSE || caps?.maxCallSeconds !== 180 || caps?.maxAttempts !== 1 || caps?.maxCostUSD !== '7.00') throw new Error('Call limits could not be verified. Refresh before approving calls.');
   return [PHONE_RESEARCH_PURPOSE, ...research.targets.map(t => `${t.name} · ${t.city || ''} · ${t.phone}\nSource: ${t.sourceUrl || 'Unavailable'}${run ? `\nCurrent outcome: ${research.properties?.find(p => p.targetId === t.id)?.status || 'not_started'}` : ''}`),
     'Recording starts only after permission. At most 180 seconds per hotel. One attempt per hotel; no redial.',
-    'Conservative total limit: $7.00. The $20 monthly limit and any explicit $5 daily grant still apply.',
+    'Conservative total limit: $7.00. The standing $10 daily outgoing allowance and the $100 monthly cap still apply.',
     'Approval does not grant a budget or lift a call stop. Unknown call outcomes are reconciled before any further call.',
     ...(run?.approvalExpiresAt ? [`Approval expires: ${dateLabel(run.approvalExpiresAt)}`] : []),
     ...(run ? ['Resume continues only the remaining approved hotels. Completed or attempted hotels are not redialed.'] : []),

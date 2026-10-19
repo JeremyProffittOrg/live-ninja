@@ -68,10 +68,14 @@ Twilio signatures, account, call and request bindings before updating state.
 
 Phone sends share a durable voice lock with the hotel runner. Unknown creation
 outcomes retain their lock and request record for reconciliation. Calls last at
-most 90 seconds; there is no automatic redial. Each message reserves $0.30 under
-the $20 monthly allocation. Additional daily spending needs explicit owner
-permission in the owner’s Phone budget panel; the MCP tools cannot authorize it themselves. Each grant adds $5 for the displayed local day. It expires at midnight and does not clear a stopped-call setting. A new grant is rejected while the remaining allowance can fund another owner message. The allocation includes
-the existing fixed reserve and a month-scoped floor carried from hotel trials.
+most 90 seconds; there is no automatic redial. Each message reserves $0.30.
+Outgoing calls use a standing $10 daily allowance (owner-local day) that needs no
+approval, and every call this month, incoming and outgoing, shares a $100 cap.
+At either limit admission refuses with `daily_allowance_used` or
+`monthly_cap_reached`. The month total includes a fixed $8 infrastructure floor.
+When a call settles with a measured provider cost (plus recorded model usage for
+live calls), that cost replaces its reservation in the day and month totals; an
+unknown cost keeps the reservation.
 
 Live message calls instead reserve $1.40 and last at most three minutes. They use
 the outgoing allowance; the separate $10/day incoming allowance does not fund
@@ -103,12 +107,12 @@ Sources:
 
 ## Owner web phone controls
 
-The signed-in owner can read `GET /api/v1/phone/budget` and explicitly authorize
-`POST /api/v1/phone/budget/grant` with `{requestId, expectedDay}`. The server fixes
-the amount at $5 and derives the day from configured timezone (America/New_York
-by default). Grants require a fresh active owner, personal web session, and CSRF
-protection. Reuse the same requestId after an uncertain response. MCP and model
-tools cannot grant spending. The dated hotel runner retains its stricter $20 cap.
+The signed-in owner can read `GET /api/v1/phone/budget`: today's outgoing use of
+the $10 allowance and this month's use of the $100 cap. The day comes from the
+configured timezone (America/New_York by default). The former
+`POST /api/v1/phone/budget/grant` approval was retired on 2026-10-19 and returns
+410. MCP and model tools cannot change spending. The dated hotel runner retains
+its stricter $20 cap.
 
 History exposes `GET /api/v1/phone/recordings?source=messages&limit=25` with a
 bounded cursor, and `GET /api/v1/phone/recordings/{CallSid}/media` with source and

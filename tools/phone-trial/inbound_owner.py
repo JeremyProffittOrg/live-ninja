@@ -174,6 +174,8 @@ def start(data):
             'scriptTranscript': '', 'reservedUSD': RESERVE}, extra_checks=[check], inbound_policy=policy)
     except m.InboundDailyLimit:
         return xml('<Say voice="Polly.Joanna-Neural">Your incoming call allowance is used for today. Please call again tomorrow.</Say><Hangup/>')
+    except m.AllowanceRefused:
+        return xml('<Say voice="Polly.Joanna-Neural">The monthly call allowance is used. Calls resume next month.</Say><Hangup/>')
     except (ValueError, m.ProviderError):
         return bye()
     if not fresh:

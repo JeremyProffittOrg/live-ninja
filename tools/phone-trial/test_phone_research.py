@@ -279,19 +279,21 @@ class PhoneResearchTests(unittest.TestCase):
         self.assertEqual(self.callback(item, status='ringing')['statusCode'], 200)
         self.assertEqual(len(self.creates), 1)
 
-    def test_budget_stops_partial_batch_without_implicit_daily_grant(self):
+    def test_budget_stops_partial_batch_at_the_standing_daily_allowance(self):
         cfg = r.get(m.CONFIG_KEY); month, day, zone, expiry = m.budget_clock(cfg)
-        cfg.update(budgetFloorUSD=Decimal('19.70'), budgetFloorMonth=month); r._table.put_item(Item=cfg)
-        r._table.put_item(Item={**m.budget_keys(month, day)[1], 'version':1, 'grantedUSD':Decimal('5'),
-            'spentUSD':Decimal('0'), 'expiresAt':expiry, 'timezone':zone})
+        # 5.80 already reserved today leaves room for three 1.40 research calls.
+        r._table.put_item(Item={**m.budget_keys(month, day)[1], 'version':1, 'reservedUSD':Decimal('5.80'),
+            'expiresAt':expiry, 'timezone':zone})
         self.invoke()
         for _ in range(3):
             self.callback()
         self.assertEqual(len(self.creates), 3)
-        self.assertEqual(self.control()['status'], 'blocked')
+        control = self.control()
+        self.assertEqual(control['status'], 'blocked')
+        self.assertIn('daily_allowance_used', control['reason'])
         daily = r.get(m.budget_keys(month, day)[1])
-        self.assertEqual(daily['grantedUSD'], Decimal('5'))
-        self.assertEqual(daily['spentUSD'], Decimal('3.90'))
+        self.assertEqual(daily['reservedUSD'], Decimal('10.00'))
+        self.assertNotIn('grantedUSD', daily)
 
     def test_expired_approval_cannot_place_first_call(self):
         self.record['runs'][0]['approvalExpiresAt'] = '1970-01-01T00:16:41Z'

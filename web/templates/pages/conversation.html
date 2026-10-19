@@ -356,10 +356,9 @@
 
     <section class="ln-card" id="phoneBudgetPanel" aria-labelledby="phoneBudgetTitle">
       <h2 id="phoneBudgetTitle">Phone budget</h2>
-      <p>Only the owner can authorize an extra $5 for the displayed day. This does not start or resume calls.</p>
-      <p data-budget-status role="status" aria-live="polite">Select Refresh budget to see the current allocation and call hold.</p>
+      <p>Outgoing calls have a standing $10 daily allowance, and all calls share a $100 monthly cap. No approval is needed.</p>
+      <p data-budget-status role="status" aria-live="polite">Select Refresh budget to see today's and this month's use.</p>
       <button class="ln-btn" type="button" data-budget-refresh>Refresh budget</button>
-      <button class="ln-btn" type="button" data-budget-grant disabled>Authorize $5 for this day</button>
     </section>
 
     <!-- ============ About you (M15 Base Knowledge) ============
@@ -1367,7 +1366,7 @@
         <p class="ln-muted">Open the <em>⚙</em> tab in the top-left corner. Changes save automatically for the device you're on — open <em>Device settings</em> in any section to compare devices or copy that section elsewhere.</p>
         <dl class="conv-help__defs">
           <dt>Phone budget</dt>
-          <dd>The owner can check the monthly call allocation and today’s allowances. When enabled, incoming calls from your designated number have a separate $10 daily allowance that resets at midnight in the displayed timezone. Each full phone conversation reserves $1.40, with a three-minute limit; Recognized owner calls record automatically under your standing permission; no PIN or keypad response is needed. If less than $1.40 remains in the incoming allowance, wait until the next day. Other calls still require an extra $5 approval after the $20 monthly limit; when the remaining approval cannot cover a full call, you can approve another $5. Unused daily permission expires at midnight. A budget approval does not resume stopped calls.</dd>
+          <dd>The owner can check today’s and this month’s call use. Outgoing calls have a standing $10 daily allowance that resets at midnight in the displayed timezone; no approval is needed. All calls this month, incoming and outgoing, share a $100 cap that includes a fixed $8 base. Each full phone conversation reserves $1.40, with a three-minute limit; once a call ends and its measured cost arrives, the reservation is replaced by that cost. When enabled, incoming calls from your designated number keep their separate $10 daily allowance. Recognized owner calls record automatically under your standing permission; no PIN or keypad response is needed. If a call is refused because today’s allowance is used, try again after midnight; if the monthly cap is reached, calls resume next month. The budget does not resume stopped calls.</dd>
           <dt>About you</dt>
           <dd>What Live Ninja knows before you say anything — your name, your home and work places, and facts worth keeping. Picking a place from the list is what makes weather and local time reliable. Suggestions it makes while you talk wait here for your approval.</dd>
           <dt>Wake word</dt>

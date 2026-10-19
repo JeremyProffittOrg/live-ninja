@@ -10,22 +10,17 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-func TestPhoneBudgetOwnerCSRFAndFixedGrant(t *testing.T) {
+func TestPhoneBudgetIsOwnerOnlyAndApprovalIsRetired(t *testing.T) {
 	for _, tc := range []struct {
-		name, user, role, surface, scope, csrf, body string
-		want                                         int
+		name, user, role, surface, scope string
+		want                             int
 	}{
-		{"owner", "owner-uuid", "owner", "web", "", "match", `{"requestId":"grant-12345678","expectedDay":"2026-10-16"}`, 200},
-		{"anonymous", "", "", "web", "", "match", `{}`, 401},
-		{"member", "member", "member", "web", "", "match", `{}`, 403},
-		{"revoked-owner", "revoked", "owner", "web", "", "match", `{}`, 403},
-		{"mcp", "owner-uuid", "owner", "mcp", "", "match", `{}`, 403},
-		{"scoped", "owner-uuid", "owner", "web", "nova", "match", `{}`, 403},
-		{"missing-csrf", "owner-uuid", "owner", "web", "", "", `{}`, 403},
-		{"wrong-csrf", "owner-uuid", "owner", "web", "", "wrong", `{}`, 403},
-		{"identity-injection", "owner-uuid", "owner", "web", "", "match", `{"ownerUserId":"other","requestId":"grant-12345678","expectedDay":"2026-10-16"}`, 400},
-		{"amount-injection", "owner-uuid", "owner", "web", "", "match", `{"amount":50,"requestId":"grant-12345678","expectedDay":"2026-10-16"}`, 400},
-		{"invalid-day", "owner-uuid", "owner", "web", "", "match", `{"requestId":"grant-12345678","expectedDay":"2026-99-99"}`, 400},
+		{"owner", "owner-uuid", "owner", "web", "", 200},
+		{"anonymous", "", "", "web", "", 401},
+		{"member", "member", "member", "web", "", 403},
+		{"revoked-owner", "revoked", "owner", "web", "", 403},
+		{"mcp", "owner-uuid", "owner", "mcp", "", 403},
+		{"scoped", "owner-uuid", "owner", "web", "nova", 403},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := &phoneLambdaFake{status: 200}
@@ -45,17 +40,13 @@ func TestPhoneBudgetOwnerCSRFAndFixedGrant(t *testing.T) {
 				}
 				return nil
 			})
-			req := httptest.NewRequest("POST", "/api/v1/phone/budget/grant", strings.NewReader(tc.body))
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Cookie", CSRFCookieName+"=match")
-			req.Header.Set(CSRFHeaderName, tc.csrf)
-			res, err := app.Test(req)
+			read, err := app.Test(httptest.NewRequest("GET", "/api/v1/phone/budget", nil))
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer res.Body.Close()
-			if res.StatusCode != tc.want {
-				t.Fatalf("status=%d want=%d", res.StatusCode, tc.want)
+			defer read.Body.Close()
+			if read.StatusCode != tc.want {
+				t.Fatalf("status=%d want=%d", read.StatusCode, tc.want)
 			}
 			if tc.want != 200 {
 				if fake.payload != nil {
@@ -63,32 +54,26 @@ func TestPhoneBudgetOwnerCSRFAndFixedGrant(t *testing.T) {
 				}
 				return
 			}
-			if fake.payload["operation"] != "owner_budget_grant" || fake.payload["ownerUserId"] != "owner-uuid" || fake.payload["requestId"] != "grant-12345678" || fake.payload["expectedDay"] != "2026-10-16" || len(fake.payload) != 4 {
-				t.Fatal(fake.payload)
-			}
-			// An exact HTTP retry carries the same idempotency identity to the ledger.
-			retry := httptest.NewRequest("POST", "/api/v1/phone/budget/grant", strings.NewReader(tc.body))
-			retry.Header = req.Header.Clone()
-			again, err := app.Test(retry)
-			if err != nil {
-				t.Fatal(err)
-			}
-			again.Body.Close()
-			if fake.payload["requestId"] != "grant-12345678" {
-				t.Fatal(fake.payload)
-			}
-			fake.payload = nil
-			read, err := app.Test(httptest.NewRequest("GET", "/api/v1/phone/budget", nil))
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer read.Body.Close()
-			if read.StatusCode != 200 || fake.payload["operation"] != "owner_budget_status" || fake.payload["ownerUserId"] != "owner-uuid" || len(fake.payload) != 2 {
+			if fake.payload["operation"] != "owner_budget_status" || fake.payload["ownerUserId"] != "owner-uuid" || len(fake.payload) != 2 {
 				t.Fatal(fake.payload)
 			}
 			var body map[string]any
 			if err := json.NewDecoder(read.Body).Decode(&body); err != nil {
 				t.Fatal(err)
+			}
+			// The retired $5 approval never reaches the ledger.
+			fake.payload = nil
+			req := httptest.NewRequest("POST", "/api/v1/phone/budget/grant", strings.NewReader(`{"requestId":"grant-12345678","expectedDay":"2026-10-16"}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Cookie", CSRFCookieName+"=match")
+			req.Header.Set(CSRFHeaderName, "match")
+			grant, err := app.Test(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer grant.Body.Close()
+			if grant.StatusCode != 410 || fake.payload != nil {
+				t.Fatalf("grant status=%d payload=%v", grant.StatusCode, fake.payload)
 			}
 		})
 	}

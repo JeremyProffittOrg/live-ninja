@@ -71,9 +71,6 @@ func (p *phoneMessages) Status(ctx context.Context, owner, id string) (map[strin
 func (p *phoneMessages) BudgetStatus(ctx context.Context, owner string) (map[string]any, *tools.ToolError) {
 	return p.invoke(ctx, map[string]any{"operation": "owner_budget_status", "ownerUserId": owner})
 }
-func (p *phoneMessages) BudgetGrant(ctx context.Context, owner, id, day string) (map[string]any, *tools.ToolError) {
-	return p.invoke(ctx, map[string]any{"operation": "owner_budget_grant", "ownerUserId": owner, "requestId": id, "expectedDay": day})
-}
 func newPhoneMessages(cfg aws.Config, function string) (tools.PhoneMessages, error) {
 	if function == "" {
 		return nil, nil

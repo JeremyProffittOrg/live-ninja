@@ -2,14 +2,8 @@ package webapp
 
 import (
 	"context"
-	"crypto/subtle"
-	"encoding/json"
 	"errors"
-	"io"
 	"os"
-	"regexp"
-	"strings"
-	"time"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	"github.com/JeremyProffittOrg/live-ninja/internal/tools"
@@ -19,7 +13,6 @@ import (
 
 type phoneBudgetService interface {
 	BudgetStatus(context.Context, string) (map[string]any, *tools.ToolError)
-	BudgetGrant(context.Context, string, string, string) (map[string]any, *tools.ToolError)
 }
 
 func RegisterPhoneBudgetRoutes(app *fiber.App, deps *Deps) {
@@ -67,35 +60,10 @@ func registerPhoneBudgetAPI(app *fiber.App, service phoneBudgetService, authoriz
 		result, err := service.BudgetStatus(c.UserContext(), UserID(c))
 		return phoneBudgetResponse(c, result, err)
 	})
+	// The $5 daily approval was retired on 2026-10-19: outgoing calls use a
+	// standing $10 daily allowance inside the $100 monthly cap.
 	api.Post("/grant", func(c *fiber.Ctx) error {
-		cookie, header := c.Cookies(CSRFCookieName), c.Get(CSRFHeaderName)
-		if cookie == "" || header == "" || subtle.ConstantTimeCompare([]byte(cookie), []byte(header)) != 1 {
-			return errorJSON(c, 403, "csrf_failed", "Refresh the page before authorizing a budget.")
-		}
-		if len(c.Body()) > 1024 {
-			return apiBadRequest(c, "Budget request is too large.")
-		}
-		var body struct {
-			RequestID   string `json:"requestId"`
-			ExpectedDay string `json:"expectedDay"`
-		}
-		decoder := json.NewDecoder(strings.NewReader(string(c.Body())))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&body); err != nil {
-			return apiBadRequest(c, "Invalid budget request.")
-		}
-		if decoder.Decode(new(any)) != io.EOF {
-			return apiBadRequest(c, "Invalid budget request.")
-		}
-		if !regexp.MustCompile(`^[a-zA-Z0-9_-]{8,100}$`).MatchString(body.RequestID) {
-			return apiBadRequest(c, "A valid requestId is required.")
-		}
-		day, err := time.Parse("2006-01-02", body.ExpectedDay)
-		if err != nil || day.Format("2006-01-02") != body.ExpectedDay {
-			return apiBadRequest(c, "A valid expectedDay is required.")
-		}
-		result, toolErr := service.BudgetGrant(c.UserContext(), UserID(c), body.RequestID, body.ExpectedDay)
-		return phoneBudgetResponse(c, result, toolErr)
+		return errorJSON(c, 410, "approval_retired", "Daily approvals are retired. Outgoing calls use a standing $10 daily allowance within the $100 monthly cap.")
 	})
 }
 
@@ -114,5 +82,5 @@ func phoneBudgetResponse(c *fiber.Ctx, result map[string]any, err *tools.ToolErr
 	case tools.CodeNotConfigured:
 		status = 503
 	}
-	return c.Status(status).JSON(fiber.Map{"error": err.Code, "message": "Budget request was not confirmed. Retry the same request; do not create a second grant.", "details": err.Details})
+	return c.Status(status).JSON(fiber.Map{"error": err.Code, "message": "Phone budget could not be read. Refresh to try again.", "details": err.Details})
 }

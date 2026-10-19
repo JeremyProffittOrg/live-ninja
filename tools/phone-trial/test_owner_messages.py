@@ -78,7 +78,11 @@ class OwnerMessageTests(unittest.TestCase):
 
     def provider(self, path, form=None):
         if path.startswith("/Usage/"):
-            return {"usage_records": [{"price_unit": "usd", "price": "0"}]}
+            return {"usage_records": [{"price_unit": "usd", "price": getattr(self, "observed", "0")}]}
+        if path == "/Calls/" + CALL + ".json" and form is None:
+            self.lookups = getattr(self, "lookups", 0) + 1
+            return {"sid": CALL, "account_sid": ACCOUNT, "status": "completed", "duration": "20",
+                    "price": getattr(self, "call_price", None), "price_unit": "USD"}
         self.forms.append(form)
         return {"sid": CALL, "account_sid": ACCOUNT, "status": "queued"}
 
@@ -173,8 +177,11 @@ class OwnerMessageTests(unittest.TestCase):
         self.assertIsNone(r.get(m.request_key(OWNER, "request-one")))
         self.assertEqual(self.forms, [])
         r._table.put_item(Item=m.VOICE_KEY)
-        self.configure(budgetFloorUSD=Decimal("19.80"), budgetFloorMonth=m.datetime.now(m.timezone.utc).strftime("%Y-%m"))
-        self.assertEqual(self.send()["statusCode"], 409)
+        self.configure(budgetFloorUSD=Decimal("99.80"), budgetFloorMonth=m.budget_clock({})[0])
+        reply = self.send()
+        self.assertEqual(reply["statusCode"], 409)
+        self.assertIn("monthly_cap_reached", json.loads(reply["body"])["error"])
+        self.assertEqual(json.loads(reply["body"])["reason"], "monthly_cap_reached")
         self.assertEqual(self.forms, [])
 
     def test_unknown_create_keeps_lock_and_never_redials(self):
@@ -256,18 +263,6 @@ class OwnerMessageTests(unittest.TestCase):
         self.assertEqual(call["recordingStatus"], "absent")
         self.assertEqual(call["recordingReason"], "call_no-answer")
 
-    def test_budget_preserves_existing_higher_allocation(self):
-        self.setup_send()
-        month = m.datetime.now(m.timezone.utc).strftime("%Y-%m")
-        key = {"PK": "PHONE#BUDGET#" + month, "SK": "MONTH"}
-        r._table.put_item(Item={**key, "version": 7, "allocatedUSD": Decimal("19.70")})
-        self.assertEqual(self.send()["statusCode"], 200)
-        self.assertEqual(r.get(key)["allocatedUSD"], Decimal("20.00"))
-        self.callback("status", CallStatus="completed")
-        self.assertEqual(self.send(requestId="next")["statusCode"], 409)
-        self.assertEqual(len(self.forms), 1)
-        self.assertEqual(r.get(key)["version"], 8)
-
     def test_provider_usage_unavailable_never_reserves_or_calls(self):
         self.setup_send()
         with patch.object(m, "provider", return_value={"usage_records": []}):
@@ -291,10 +286,10 @@ class OwnerMessageTests(unittest.TestCase):
 
     def test_budget_floor_month_rollover_and_missing_month(self):
         self.setup_send()
-        self.configure(budgetFloorUSD=Decimal("19.80"))
+        self.configure(budgetFloorUSD=Decimal("99.80"))
         self.assertEqual(self.send()["statusCode"], 409)
         self.assertIsNone(r.get(m.request_key(OWNER, "request-one")))
-        self.configure(budgetFloorUSD=Decimal("19.80"), budgetFloorMonth="2026-10")
+        self.configure(budgetFloorUSD=Decimal("99.80"), budgetFloorMonth="2026-10")
         with patch.object(m, "budget_clock") as clock:
             clock.return_value = ("2026-10", "2026-10-31", "America/New_York", 9999999999)
             self.assertEqual(self.send()["statusCode"], 409)
@@ -302,23 +297,6 @@ class OwnerMessageTests(unittest.TestCase):
             self.assertEqual(self.send()["statusCode"], 200)
         budget = r.get({"PK": "PHONE#BUDGET#2026-11", "SK": "MONTH"})
         self.assertEqual(budget["allocatedUSD"], Decimal("8.30"))
-
-    def test_explicit_daily_grant_can_cover_larger_call_reservation(self):
-        self.setup_send()
-        cfg = r.get(m.CONFIG_KEY)
-        month, day, zone, expiry = m.budget_clock(cfg)
-        day_key = m.budget_keys(month, day)[1]
-        for index, remaining in enumerate(('0.30', '1.39', '1.40')):
-            r._table.put_item(Item={**day_key, 'version': 1, 'grantedUSD': Decimal('5'),
-                'spentUSD': Decimal('5')-Decimal(remaining), 'expiresAt': expiry, 'timezone': zone})
-            event = {'operation': 'owner_budget_grant', 'ownerUserId': OWNER, 'requestId': 'bound-'+str(index), 'expectedDay': day}
-            reply = r.handler(event, None)
-            self.assertEqual(reply['statusCode'], 200 if Decimal(remaining)<Decimal('1.40') else 409)
-            if reply['statusCode'] == 200:
-                self.assertEqual(json.loads(reply['body'])['requiredReservationUSD'], '1.40')
-                self.assertEqual(r._table.get_item(Key=day_key)['Item']['grantedUSD'], Decimal('10'))
-                r.handler(event, None)
-                self.assertEqual(r._table.get_item(Key=day_key)['Item']['grantedUSD'], Decimal('10'))
 
     def test_provider_completed_is_not_playback_completed(self):
         self.setup_send()
@@ -343,85 +321,6 @@ class OwnerMessageTests(unittest.TestCase):
         self.callback("status", CallStatus="ringing")
         self.assertEqual(r.get(m.request_key(OWNER, "request-one"))["providerStatus"], "in-progress")
 
-    def grant(self, **fields):
-        return m.budget_operation({"operation": "owner_budget_grant", "ownerUserId": OWNER,
-            "requestId": "grant-one", "expectedDay": m.budget_clock(self.configure())[1], **fields})
-
-    def test_grant_replay_and_reservation_charge_once(self):
-        self.setup_send()
-        month, day, _, _ = m.budget_clock(self.configure())
-        month_key, day_key = m.budget_keys(month, day)
-        r._table.put_item(Item={**month_key, "allocatedUSD": Decimal("20"), "version": 1})
-        self.assertEqual(self.send()["statusCode"], 409)
-        self.assertEqual(self.grant()["statusCode"], 200)
-        self.assertEqual(self.grant()["statusCode"], 200)
-        self.assertEqual(self.grant(requestId="prestack")["statusCode"], 409)
-        self.assertEqual(r.get(day_key)["grantedUSD"], Decimal("5"))
-        self.assertEqual(self.send()["statusCode"], 200)
-        self.assertEqual(self.send()["statusCode"], 200)
-        self.assertEqual(r.get(day_key)["spentUSD"], Decimal("0.30"))
-        self.assertEqual(len(self.forms), 1)
-
-    def test_budget_status_reports_crossing_reservation_hold(self):
-        self.setup_send()
-        cfg = self.configure()
-        month, day, _, expires = m.budget_clock(cfg)
-        month_key, day_key = m.budget_keys(month, day)
-        r._table.put_item(Item={**month_key, "allocatedUSD": Decimal("19.80"), "version": 1})
-        self.assertEqual(m.budget_status(cfg)["pausedReason"], "waiting_approval")
-        self.assertEqual(self.send()["statusCode"], 409)
-        self.assertEqual(self.forms, [])
-        r._table.put_item(Item={**day_key, "grantedUSD": Decimal("5"), "spentUSD": Decimal("4.91"), "version": 1, "expiresAt": expires})
-        self.assertEqual(m.budget_status(cfg)["pausedReason"], "waiting_approval")
-        r._table.put_item(Item={**day_key, "grantedUSD": Decimal("5"), "spentUSD": Decimal("4.90"), "version": 2, "expiresAt": expires})
-        self.assertEqual(m.budget_status(cfg)["pausedReason"], "")
-
-    def test_expired_grant_and_exhaustion_fail_closed(self):
-        self.setup_send()
-        month, day, _, expires = m.budget_clock(self.configure())
-        month_key, day_key = m.budget_keys(month, day)
-        r._table.put_item(Item={**month_key, "allocatedUSD": Decimal("20"), "version": 1})
-        r._table.put_item(Item={**day_key, "grantedUSD": Decimal("5"), "spentUSD": Decimal("4.80"), "version": 1, "expiresAt": expires})
-        self.assertEqual(self.send()["statusCode"], 409)
-        self.grant()
-        old = r.get(day_key)
-        r._table.put_item(Item={**old, "expiresAt": 1})
-        self.assertEqual(self.send()["statusCode"], 409)
-        self.assertEqual(self.forms, [])
-
-    def test_grant_does_not_clear_owner_stop_or_enable_calls(self):
-        self.setup_send()
-        self.configure(enabled=False)
-        r._table.put_item(Item={**m.VOICE_KEY, "activeRequest": "owner-stop"})
-        event = {"operation": "owner_budget_grant", "ownerUserId": OWNER, "requestId": "grant-stop",
-                 "expectedDay": m.budget_clock(r.get(m.CONFIG_KEY))[1]}
-        self.assertEqual(m.budget_operation(event)["statusCode"], 200)
-        self.assertFalse(r.get(m.CONFIG_KEY)["enabled"])
-        self.assertEqual(self.send()["statusCode"], 403)
-        self.configure(enabled=True)
-        self.assertEqual(self.send()["statusCode"], 409)
-        self.assertEqual(r.get(m.VOICE_KEY)["activeRequest"], "owner-stop")
-        self.assertEqual(self.forms, [])
-
-    def test_grant_owner_day_binding_and_concurrent_retry(self):
-        self.setup_send()
-        self.assertEqual(self.grant(ownerUserId=OTHER)["statusCode"], 403)
-        self.assertEqual(self.grant(expectedDay="2000-01-01")["statusCode"], 409)
-        calls = []
-        def competing(operations):
-            calls.append(1)
-            if len(calls) == 1:
-                # Another approval wins the same day-row CAS before this transaction.
-                item = copy.deepcopy(operations[0]["Put"]["Item"])
-                r._table.put_item(Item=item)
-                raise Conflict()
-            return self.transact(operations)
-        with patch.object(m, "transact", competing):
-            self.assertEqual(self.grant()["statusCode"], 409)
-        status = m.budget_status(r.get(m.CONFIG_KEY))
-        self.assertEqual(status["dailyGrantedUSD"], "5")
-        self.assertEqual(len(calls), 1)
-
     def test_local_day_month_and_dst_expiry(self):
         from datetime import datetime
         for instant, month, day, hours in (("2026-11-01T00:00:00", "2026-11", "2026-11-01", 25),
@@ -433,37 +332,134 @@ class OwnerMessageTests(unittest.TestCase):
             self.assertEqual(result[:3], (month, day, "America/New_York"))
             self.assertEqual(result[3]-int(now.timestamp()), hours*3600)
 
-    def test_midnight_expires_authority_and_replay_cannot_extend_it(self):
+    def month_row(self, allocated, **fields):
+        month, _, _, _ = m.budget_clock(r.get(m.CONFIG_KEY))
+        key = m.budget_keys(month, "")[0]
+        r._table.put_item(Item={**key, "version": 7, "allocatedUSD": Decimal(allocated), "ledgerVersion": m.LEDGER_VERSION, "unsettled": {}, **fields})
+        return key
+
+    def test_monthly_cap_counts_every_call_up_to_one_hundred(self):
         self.setup_send()
-        with patch.object(m, "budget_clock", return_value=("2026-10", "2026-10-30", "America/New_York", 9999999999)):
-            self.assertEqual(self.grant()["statusCode"], 200)
-        with patch.object(m, "budget_clock", return_value=("2026-10", "2026-10-31", "America/New_York", 9999999999)):
-            self.assertEqual(self.grant()["statusCode"], 409)
-            status = m.budget_status(r.get(m.CONFIG_KEY))
-            self.assertEqual(status["dailyRemainingUSD"], "0")
-            month_key, _ = m.budget_keys("2026-10", "2026-10-31")
-            r._table.put_item(Item={**month_key, "allocatedUSD": Decimal("20"), "version": 1})
-            self.assertEqual(self.send()["statusCode"], 409)
+        key = self.month_row("99.70")
+        self.assertEqual(self.send()["statusCode"], 200)
+        self.assertEqual(r.get(key)["allocatedUSD"], Decimal("100.00"))
+        self.assertEqual(r.get(key)["unsettled"], {"request-one": Decimal("0.30")})
+        self.callback("status", CallStatus="completed")
+        reply = self.send(requestId="next")
+        self.assertEqual(reply["statusCode"], 409)
+        self.assertEqual(json.loads(reply["body"])["reason"], "monthly_cap_reached")
+        self.assertEqual(len(self.forms), 1)
+        self.assertEqual(m.budget_status(r.get(m.CONFIG_KEY))["pausedReason"], "monthly_cap_reached")
+
+    def test_standing_daily_allowance_needs_no_grant_and_stops_at_ten(self):
+        self.setup_send()
+        cfg = r.get(m.CONFIG_KEY)
+        month, day, zone, expires = m.budget_clock(cfg)
+        day_key = m.budget_keys(month, day)[1]
+        self.month_row("20")
+        status = m.budget_status(cfg)
+        self.assertEqual((status["dailyAllowanceUSD"], status["dailyRemainingUSD"], status["monthlyCapUSD"], status["pausedReason"]),
+                         ("10", "10", "100", ""))
+        self.assertEqual(self.send()["statusCode"], 200)
+        self.assertEqual(r.get(day_key)["reservedUSD"], Decimal("0.30"))
+        self.assertFalse(any(row["SK"].startswith("BUDGET_GRANT#") for row in r._table.items.values()))
+        self.assertEqual(self.forms[0]["TimeLimit"], 90, "the per-call cap is unchanged")
+        self.callback("status", CallStatus="completed")
+        r._table.put_item(Item={**r.get(day_key), "reservedUSD": Decimal("9.80")})
+        self.assertEqual(m.budget_status(cfg)["pausedReason"], "daily_allowance_used")
+        reply = self.send(requestId="over")
+        self.assertEqual(reply["statusCode"], 409)
+        self.assertEqual(json.loads(reply["body"])["reason"], "daily_allowance_used")
+        self.assertEqual(len(self.forms), 1)
+        with patch.object(m, "budget_clock", return_value=(month, "2999-12-31", zone, expires + 86400)):
+            tomorrow = m.budget_status(cfg)
+        self.assertEqual((tomorrow["dailyReservedUSD"], tomorrow["dailyRemainingUSD"], tomorrow["pausedReason"]), ("0", "10", ""))
+
+    def test_live_reservation_must_fit_the_daily_allowance(self):
+        self.setup_send()
+        cfg = r.get(m.CONFIG_KEY)
+        month, day, zone, expires = m.budget_clock(cfg)
+        self.month_row("20")
+        r._table.put_item(Item={**m.budget_keys(month, day)[1], "version": 1, "reservedUSD": Decimal("8.70"), "expiresAt": expires})
+        with self.assertRaises(m.AllowanceRefused) as refused:
+            m.reserve(OWNER, "live-one", "primary", "Live", cfg, reserve_amount=m.MAX_RESERVE)
+        self.assertEqual(refused.exception.reason, "daily_allowance_used")
+        self.assertIsNone(r.get(m.request_key(OWNER, "live-one")))
+        m.reserve(OWNER, "plain-one", "primary", "Plain", cfg, reserve_amount=m.RESERVE)
+        self.assertEqual(r.get(m.budget_keys(month, day)[1])["reservedUSD"], Decimal("9.00"))
         self.assertEqual(self.forms, [])
 
-    def test_daily_call_duration_stays_inside_midnight_authority(self):
+    def test_retired_grant_changes_nothing(self):
         self.setup_send()
-        month, day, _, _ = m.budget_clock(self.configure())
-        month_key, day_key = m.budget_keys(month, day)
-        r._table.put_item(Item={**month_key, "allocatedUSD": Decimal("20"), "version": 1})
-        r._table.put_item(Item={**day_key, "grantedUSD": Decimal("5"), "spentUSD": Decimal("0"), "version": 1, "expiresAt": 1060})
-        with patch.object(m.time, "time", return_value=1000):
-            self.assertEqual(self.send()["statusCode"], 200)
-        self.assertEqual(self.forms[0]["TimeLimit"], 30)
+        self.configure(enabled=False)
+        r._table.put_item(Item={**m.VOICE_KEY, "activeRequest": "owner-stop"})
+        before = copy.deepcopy(r._table.items)
+        reply = m.budget_operation({"operation": "owner_budget_grant", "ownerUserId": OWNER, "requestId": "grant-stop",
+                                    "expectedDay": m.budget_clock(r.get(m.CONFIG_KEY))[1]})
+        self.assertEqual(reply["statusCode"], 410)
+        self.assertEqual(r._table.items, before)
+        self.assertEqual(m.budget_operation({"operation": "owner_budget_grant", "ownerUserId": OTHER})["statusCode"], 403)
 
-    def test_grant_rejects_concurrent_timezone_change(self):
+    def test_version_one_month_is_rebased_to_floor_plus_measured_provider_cost(self):
         self.setup_send()
-        def change_zone(operations):
-            self.configure(timezone="America/Los_Angeles")
-            return self.transact(operations)
-        with patch.object(m, "transact", change_zone):
-            self.assertEqual(self.grant()["statusCode"], 409)
-        self.assertFalse(any(row["SK"].startswith("BUDGET_GRANT#") for row in r._table.items.values()))
+        self.observed = "4.60915"
+        month, _, _, _ = m.budget_clock(r.get(m.CONFIG_KEY))
+        key = m.budget_keys(month, "")[0]
+        r._table.put_item(Item={**key, "version": 3, "allocatedUSD": Decimal("28.4")})
+        status = m.budget_status(r.get(m.CONFIG_KEY))
+        self.assertEqual(status["allocatedUSD"], "12.60915")
+        row = r.get(key)
+        self.assertEqual((row["ledgerVersion"], row["rebasedFromUSD"], row["unsettled"]), (2, Decimal("28.4"), {}))
+        # A held voice lock means a reservation may be in flight: no rebase.
+        r._table.put_item(Item={**key, "version": 3, "allocatedUSD": Decimal("28.4")})
+        r._table.put_item(Item={**m.VOICE_KEY, "activeRequest": "owner:x"})
+        self.assertEqual(m.budget_status(r.get(m.CONFIG_KEY))["allocatedUSD"], "28.4", "shown unchanged until it can be rebased")
+        self.assertNotIn("ledgerVersion", r.get(key))
+
+    def test_settlement_replaces_reservation_with_measured_cost_in_day_and_month(self):
+        self.setup_send()
+        cfg = r.get(m.CONFIG_KEY)
+        month, day, _, _ = m.budget_clock(cfg)
+        month_key, day_key = m.budget_keys(month, day)
+        self.month_row("8")
+        self.assertEqual(self.send()["statusCode"], 200)
+        self.assertEqual(r.get(month_key)["allocatedUSD"], Decimal("8.30"))
+        # Not terminal yet: no lookup, reservation kept.
+        m.budget_status(cfg)
+        self.assertEqual(getattr(self, "lookups", 0), 0)
+        self.callback("status", CallStatus="completed")
+        # Terminal with no provider price yet: the reservation stays.
+        status = m.budget_status(cfg)
+        self.assertEqual((status["allocatedUSD"], status["unsettledCalls"]), ("8.30", 1))
+        self.assertEqual(r.get(day_key)["reservedUSD"], Decimal("0.30"))
+        self.call_price = "-0.01300"
+        status = m.budget_status(cfg)
+        self.assertEqual((Decimal(status["allocatedUSD"]), status["unsettledCalls"]), (Decimal("8.013"), 0))
+        self.assertEqual(r.get(day_key)["reservedUSD"], Decimal("0.013"))
+        self.assertEqual(r.get(m.request_key(OWNER, "request-one"))["settledUSD"], Decimal("0.01300"))
+        lookups = self.lookups
+        m.budget_status(cfg)
+        self.assertEqual(self.lookups, lookups, "a settled call is never charged twice")
+
+    def test_live_settlement_needs_model_usage_and_never_drops_below_measured(self):
+        self.setup_send()
+        cfg = r.get(m.CONFIG_KEY)
+        month, day, _, _ = m.budget_clock(cfg)
+        month_key, day_key = m.budget_keys(month, day)
+        self.month_row("8")
+        self.assertEqual(self.send()["statusCode"], 200)
+        key = m.request_key(OWNER, "request-one")
+        item = r.get(key)
+        r._table.put_item(Item={**item, "live": True, "providerStatus": "completed"})
+        r._table.put_item(Item={**m.VOICE_KEY})
+        self.call_price = "-0.05"
+        m.budget_status(cfg)
+        self.assertEqual(r.get(month_key)["allocatedUSD"], Decimal("8.30"), "unknown model cost keeps the reservation")
+        r._table.put_item(Item={**r.get(key), "inputTokens": 40000, "outputTokens": 10000})
+        m.budget_status(cfg)
+        # 0.05 call + 40000 * 0.00001 + 10000 * 0.00002 = 0.65, above the 0.30 reservation.
+        self.assertEqual(r.get(month_key)["allocatedUSD"], Decimal("8.65"))
+        self.assertEqual(r.get(day_key)["reservedUSD"], Decimal("0.65"))
 
 
 if __name__ == "__main__":

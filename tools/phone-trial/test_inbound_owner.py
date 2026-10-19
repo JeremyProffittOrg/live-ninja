@@ -106,7 +106,8 @@ class InboundTests(unittest.TestCase):
         self.assertIn('<Hangup', self.callback()['body'])
         self.provider.assert_not_called()
         r._table.items.pop((m.VOICE_KEY['PK'], m.VOICE_KEY['SK']))
-        cfg = r.get(m.CONFIG_KEY); cfg['budgetFloorUSD'] = 20
+        # The $100 monthly cap covers incoming calls too.
+        cfg = r.get(m.CONFIG_KEY); cfg['budgetFloorUSD'] = Decimal('99')
         cfg['budgetFloorMonth'] = m.budget_clock(cfg)[0]; r._table.put_item(Item=cfg)
         self.assertIn('<Hangup', self.callback()['body'])
         self.assertIsNone(self.item())
@@ -150,21 +151,23 @@ class InboundTests(unittest.TestCase):
             self.assertEqual(result['statusCode'],400)
         self.provider.assert_not_called()
 
-    def test_outbound_live_deadline_cannot_extend_daily_authority(self):
+    def test_outbound_live_call_keeps_its_cap_under_the_standing_allowance(self):
         self.configure()
         cfg=r.get(m.CONFIG_KEY)
         cfg.update(budgetFloorUSD=Decimal('20'),budgetFloorMonth='2026-10')
         r._table.put_item(Item=cfg)
         patch.object(m,'budget_clock',return_value=('2026-10','2026-10-18','America/New_York',1100)).start()
-        r._table.put_item(Item={**m.budget_keys('2026-10','2026-10-18')[1], 'version':1,'grantedUSD':Decimal('5'),'spentUSD':Decimal('0'),'expiresAt':1100})
         self.item=lambda:r.get(m.request_key(owners.OWNER,'bounded-live'))
         result=r.handler({'operation':'owner_message_send','ownerUserId':owners.OWNER,'requestId':'bounded-live',
                           'destination':'primary','message':'Summary','live':True},None)
         self.assertEqual(result['statusCode'],200)
-        self.assertEqual(self.item()['deadline'],1100)
+        # The reservation is charged to the day it was admitted; it does not shorten the call.
+        self.assertEqual(r.get(m.budget_keys('2026-10','2026-10-18')[1])['reservedUSD'],Decimal('1.40'))
+        self.assertNotIn('budgetExpiresAt',self.item())
+        self.assertEqual(self.item()['deadline'],1180)
         self.assertIn('<Connect',self.callback('connect',From='+12025550100',To='+12025550101',Direction='outbound-api')['body'])
         caps=[call.args[1]['TimeLimit'] for call in self.provider.call_args_list if call.args[0].endswith('/'+f.CALL+'.json') and 'TimeLimit' in call.args[1]]
-        self.assertEqual(caps,[100])
+        self.assertEqual(caps,[180], 'the per-call 180 second cap is unchanged')
 
     def test_unknown_caller_only_hangs_up_without_reservation_even_while_stopped(self):
         self.assertEqual(self.callback(From='+12025550999')['body'], '<Response><Hangup/></Response>')
@@ -323,22 +326,36 @@ class InboundTests(unittest.TestCase):
         self.callback()  # Same CallSid cannot reserve again even after releasing its voice lock.
         self.assertEqual(self.incoming_day()['reservedUSD'], Decimal('1.40'))
         status = json.loads(r.handler({'operation':'owner_budget_status','ownerUserId':owners.OWNER}, None)['body'])
-        self.assertEqual(status['dailyGrantedUSD'], '0')
-        self.assertEqual(status['pausedReason'], 'waiting_approval')
+        self.assertEqual((status['dailyReservedUSD'], status['dailyRemainingUSD']), ('0', '10'), 'incoming calls do not use the outgoing allowance')
+        self.assertEqual(status['pausedReason'], '')
         self.assertEqual(status['incomingDailyBudget'], {'enabled': True, 'limitUSD':'10', 'reservedUSD':'1.40',
             'remainingUSD':'8.60', 'day':'2026-10-18', 'timezone':'America/New_York', 'expiresAt':2000})
         self.assertNotIn('callerNumber', json.dumps(status)); self.assertNotIn('+12025550101', json.dumps(status))
         self.assertNotIn('pinHash', json.dumps(status)); self.assertNotIn('pinSalt', json.dumps(status))
 
+    def test_incoming_calls_count_toward_the_monthly_cap(self):
+        self.configure_daily()
+        r._table.put_item(Item={**m.budget_keys('2026-10', '2026-10-18')[0], 'version': 2, 'allocatedUSD': Decimal('99'),
+                                'ledgerVersion': m.LEDGER_VERSION, 'unsettled': {}})
+        body = self.callback()['body']
+        self.assertIn("monthly call allowance is used. Calls resume next month", body)
+        self.assertIn('<Hangup', body)
+        self.assertIsNone(self.item())
+        self.assertIsNone(self.incoming_day())
+        self.assertIsNone(r.get(m.VOICE_KEY))
+        self.broker.assert_not_called()
+
     def test_recurring_allowance_does_not_fund_other_caller_outbound_or_hotel(self):
         self.configure_daily()
+        # Calls outside the incoming policy draw only on the standing allowance, here used up.
+        r._table.put_item(Item={**m.budget_keys('2026-10', '2026-10-18')[1], 'version': 1, 'reservedUSD': Decimal('9.90'), 'expiresAt': 2000})
         self.assertIn('<Hangup', self.callback(From='+12025550102')['body'])
         self.assertIsNone(self.incoming_day())
         outgoing = r.handler({'operation':'owner_message_send','ownerUserId':owners.OWNER,'requestId':'outbound-policy-test',
                               'destination':'primary','message':'Test'}, None)
         self.assertEqual(outgoing['statusCode'], 409)
         cfg = r.get(m.CONFIG_KEY)
-        with self.assertRaisesRegex(ValueError, 'waiting_approval'):
+        with self.assertRaisesRegex(ValueError, 'daily_allowance_used'):
             m.reserve(owners.OWNER, 'hotel-policy-test', 'hotel-01', 'Research', cfg,
                       reserve_amount=Decimal('1.40'), target_number='+12025550109')
         self.assertIsNone(self.incoming_day())
