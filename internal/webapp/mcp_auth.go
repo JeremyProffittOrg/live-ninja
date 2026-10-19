@@ -277,6 +277,7 @@ func (a *MCPAuth) consent(c *fiber.Ctx) error {
 }
 
 var callbackPage = template.Must(template.New("callback").Parse(`<!doctype html><html lang="en"><meta charset="utf-8"><meta http-equiv="refresh" content="0;url={{.}}"><title>Returning to your client</title><body><main><p>Returning to your client.</p><p><a href="{{.}}">Continue</a></p></main></body></html>`))
+
 func tokenForm(c *fiber.Ctx) (url.Values, error) {
 	if len(c.Body()) > 8192 || !strings.HasPrefix(c.Get("Content-Type"), "application/x-www-form-urlencoded") || c.Get("Authorization") != "" {
 		return nil, mcpauth.ErrInvalidRequest
