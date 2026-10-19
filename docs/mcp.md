@@ -16,8 +16,10 @@ a bearer credential receives an authentication challenge; it is not an app page.
   Optionally include `payload`, a JSON-encoded object string of at most 12,000 UTF-8
   bytes. The live session can use that data to answer follow-up questions, along
   with the owner's saved profile, memory, rules and guides. Payload text is data,
-  not permission to perform actions. The phone session retains its read-only
-  account tools. Omitting `live` keeps the existing spoken playback behavior.
+  not permission to perform actions. On that call the owner can ask for account
+  actions (memory, notes, timers, reminders, email, Jobs and rules); job and rule
+  changes apply after the owner confirms them aloud. The call cannot place calls,
+  send texts or control devices. Omitting `live` keeps the existing spoken playback behavior.
 - phone_message_status: inspect a returned requestId, provider/playback state, the
   exact intended script, and an available private recording link.
 - memory_search, entity_get, recall_note, memory_write, plan_upsert, forget,

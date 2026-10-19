@@ -102,7 +102,7 @@ func TestLegacyJobsToolsDeniedBeforeAnyReadOrProposal(t *testing.T) {
 	}
 }
 
-func TestPhoneToolsPermitJobReadsWithoutReviewAndRefuseEscalation(t *testing.T) {
+func TestPhoneToolsPermitJobActionsAfterSpokenConfirmationAndRefuseEscalation(t *testing.T) {
 	app, counted, _, id := jobsCapabilityApp(t, "phone", realtime.PhoneScope, nil)
 	for _, name := range []string{"job_list", "job_status"} {
 		args := map[string]any{}
@@ -113,13 +113,31 @@ func TestPhoneToolsPermitJobReadsWithoutReviewAndRefuseEscalation(t *testing.T) 
 		require.Equal(t, http.StatusOK, status, body)
 	}
 	reads := counted.reads
-	for _, name := range []string{"job_create", "job_cancel", "memory_write", "phone_message_send", "send_email", "rule_load", "set_volume", "unknown", " memory_search"} {
+	for _, name := range []string{"call_message", "phone_message_send", "device_control", "set_volume", "take_photo", "play_media", "code_update_start", "unknown", " memory_search"} {
 		status, body := capabilityJSON(t, app, "/invoke", realtime.JobsReviewCapability, map[string]any{"tool": name, "args": map[string]any{"confirm": true}})
 		require.Equal(t, http.StatusForbidden, status, body)
 		require.Equal(t, "phone_tool_forbidden", body["error"].(map[string]any)["code"])
 	}
 	require.Equal(t, reads, counted.reads)
 	require.Zero(t, counted.writes)
+
+	// Without the owner's spoken confirmation nothing changes.
+	status, body := capabilityJSON(t, app, "/invoke", "", map[string]any{"tool": "job_cancel", "callId": "ask", "idempotencyKey": "phone-session:ask", "args": map[string]any{"jobId": id}})
+	require.Equal(t, http.StatusBadRequest, status, body)
+	require.Equal(t, "confirmation_required", body["error"].(map[string]any)["code"])
+	require.Zero(t, counted.writes)
+	// A phone action still needs the registry idempotency key.
+	status, body = capabilityJSON(t, app, "/invoke", "", map[string]any{"tool": "job_cancel", "callId": "nokey", "args": map[string]any{"jobId": id, "confirm": true}})
+	require.Equal(t, http.StatusBadRequest, status, body)
+	require.Zero(t, counted.writes)
+	// Confirmed on the call: executes directly, without app review.
+	status, body = capabilityJSON(t, app, "/invoke", "", map[string]any{"tool": "job_cancel", "callId": "yes", "idempotencyKey": "phone-session:yes", "args": map[string]any{"jobId": id, "confirm": true}})
+	require.Equal(t, http.StatusOK, status, body)
+	require.Equal(t, 1, counted.writes)
+	status, body = capabilityJSON(t, app, "/invoke", "", map[string]any{"tool": "job_cancel", "callId": "yes", "idempotencyKey": "phone-session:yes", "args": map[string]any{"jobId": id, "confirm": true}})
+	require.Equal(t, http.StatusOK, status, body)
+	require.Equal(t, true, body["duplicate"])
+	require.Equal(t, 1, counted.writes)
 }
 
 func TestJobsCapabilityRequiresExactTokenAndTrustedSurface(t *testing.T) {

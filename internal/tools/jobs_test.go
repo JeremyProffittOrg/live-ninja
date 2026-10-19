@@ -106,8 +106,9 @@ func TestJobToolsProposeExactActionsWithoutWriting(t *testing.T) {
 				attacker[k] = v
 			}
 			attacker["confirm"] = true
+			// confirm is honored only on an authenticated owner phone call.
 			res := r.Invoke(ctx, invocation(tc.tool, attacker))
-			require.Equal(t, CodeInvalidArgs, res.Error.Code)
+			require.Equal(t, CodeConfirmationRequired, res.Error.Code)
 		})
 	}
 	after, e := d.Jobs.ListHistory(ctx, "user-1", j.ID, jobs.HistoryQuery{})

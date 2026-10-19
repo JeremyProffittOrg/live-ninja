@@ -66,11 +66,10 @@ func ruleSaveDefinition() *Definition {
 			{Name: "body", Type: "string", Required: true, MinLen: 1, MaxLen: store.RuleBodyMaxRunes,
 				Description: "The full instruction to follow when the rule applies, in the " +
 					"user's own words plus any detail they gave."},
-			{Name: "confirm", Type: "boolean",
-				Description: "Legacy argument, ignored. The user must review and save in Memory; " +
-					"no tool argument authorizes a persistent rule change."},
+			phoneConfirmParam(),
 		},
-		Handler: handleRuleSave,
+		PhoneDirect: true,
+		Handler:     handleRuleSave,
 	}
 }
 
@@ -85,11 +84,10 @@ func ruleDeleteDefinition() *Definition {
 			{Name: "name", Type: "string", Required: true, MinLen: store.RuleNameMinLen,
 				MaxLen:      store.RuleNameMaxLen,
 				Description: "The exact name of the rule to delete."},
-			{Name: "confirm", Type: "boolean",
-				Description: "Legacy argument, ignored. The user must review and delete in Memory; " +
-					"no tool argument authorizes a persistent rule change."},
+			phoneConfirmParam(),
 		},
-		Handler: handleRuleDelete,
+		PhoneDirect: true,
+		Handler:     handleRuleDelete,
 	}
 }
 
@@ -168,7 +166,7 @@ func ruleReviewRequired(operation string, fields map[string]string) *ToolError {
 	}
 }
 
-func handleRuleSave(_ context.Context, _ *Deps, _ Invocation, args map[string]any) (map[string]any, *ToolError) {
+func handleRuleSave(ctx context.Context, deps *Deps, inv Invocation, args map[string]any) (map[string]any, *ToolError) {
 	name, terr := ruleNameArg(args)
 	if terr != nil {
 		return nil, terr
@@ -183,15 +181,20 @@ func handleRuleSave(_ context.Context, _ *Deps, _ Invocation, args map[string]an
 	if body == "" || utf8.RuneCountInString(body) > store.RuleBodyMaxRunes {
 		return nil, toolErrf(CodeInvalidArgs, "body must be a non-empty string of at most 4000 characters")
 	}
-	return nil, ruleReviewRequired("save", map[string]string{
-		"name": name, "description": description, "body": body,
-	})
+	proposed := map[string]string{"name": name, "description": description, "body": body}
+	if phoneOwnerCall(inv) {
+		return phoneRuleChange(ctx, deps, inv, args, "save", proposed)
+	}
+	return nil, ruleReviewRequired("save", proposed)
 }
 
-func handleRuleDelete(_ context.Context, _ *Deps, _ Invocation, args map[string]any) (map[string]any, *ToolError) {
+func handleRuleDelete(ctx context.Context, deps *Deps, inv Invocation, args map[string]any) (map[string]any, *ToolError) {
 	name, terr := ruleNameArg(args)
 	if terr != nil {
 		return nil, terr
+	}
+	if phoneOwnerCall(inv) {
+		return phoneRuleChange(ctx, deps, inv, args, "delete", map[string]string{"name": name})
 	}
 	return nil, ruleReviewRequired("delete", map[string]string{"name": name})
 }

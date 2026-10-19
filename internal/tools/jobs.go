@@ -27,20 +27,21 @@ func jobCreateDefinition() *Definition {
 		{Name: "timezone", Type: "string", MaxLen: 128, Description: "IANA timezone for recurring wall-clock schedules."},
 		{Name: "time", Type: "string", MaxLen: 5, Description: "Recurring local time in HH:MM format."},
 		{Name: "weekday", Type: "integer", Min: floatPtr(0), Max: floatPtr(6), Description: "Weekly day: Sunday 0 through Saturday 6."},
-	}, Handler: handleJobCreateProposal}
+		phoneConfirmParam(),
+	}, PhoneDirect: true, Handler: handleJobCreateProposal}
 }
 func jobActionDefinition(action string) *Definition {
-	return &Definition{Name: "job_" + action, Description: "ONLY when explicitly requested by the user, propose " + action + " for an existing saved job. No job changes here. The authenticated user must review the exact saved version and confirm in Jobs. No model argument can approve it.", Params: []ParamSpec{jobIDParam()}, Handler: func(ctx context.Context, d *Deps, inv Invocation, args map[string]any) (map[string]any, *ToolError) {
+	return &Definition{Name: "job_" + action, Description: "ONLY when explicitly requested by the user, propose " + action + " for an existing saved job. No job changes here. The authenticated user must review the exact saved version and confirm in Jobs. No model argument can approve it.", Params: []ParamSpec{jobIDParam(), phoneConfirmParam()}, PhoneDirect: true, Handler: func(ctx context.Context, d *Deps, inv Invocation, args map[string]any) (map[string]any, *ToolError) {
 		return jobActionProposal(ctx, d, inv, args, action)
 	}}
 }
 func jobRetryDefinition() *Definition {
-	return &Definition{Name: "job_retry", Description: "Propose retrying one retained failed or cancelled in-app run. Returns its exact saved content for authenticated human review; does not start work. No coding/browser/email executor is connected.", Params: []ParamSpec{jobIDParam(), {Name: "runId", Type: "string", Required: true, MaxLen: 128, Description: "Exact retained run ID from job_status."}}, Handler: func(ctx context.Context, d *Deps, inv Invocation, args map[string]any) (map[string]any, *ToolError) {
+	return &Definition{Name: "job_retry", Description: "Propose retrying one retained failed or cancelled in-app run. Returns its exact saved content for authenticated human review; does not start work. No coding/browser/email executor is connected.", Params: []ParamSpec{jobIDParam(), {Name: "runId", Type: "string", Required: true, MaxLen: 128, Description: "Exact retained run ID from job_status."}, phoneConfirmParam()}, PhoneDirect: true, Handler: func(ctx context.Context, d *Deps, inv Invocation, args map[string]any) (map[string]any, *ToolError) {
 		return jobActionProposal(ctx, d, inv, args, "retry")
 	}}
 }
 func jobCommandDefinition() *Definition {
-	return &Definition{Name: "job_command", Description: "Propose adding a user's note to a saved job's durable conversation. The note is context only: it does not steer or start a worker and does not change execution instructions. Requires authenticated human confirmation. Do not offer unsupported external commands.", Params: []ParamSpec{jobIDParam(), {Name: "text", Type: "string", Required: true, MinLen: 1, MaxLen: 2000, Description: "The user's exact note to save for review."}, {Name: "runId", Type: "string", MaxLen: 128, Description: "Optional retained run ID the note concerns."}}, Handler: func(ctx context.Context, d *Deps, inv Invocation, args map[string]any) (map[string]any, *ToolError) {
+	return &Definition{Name: "job_command", Description: "Propose adding a user's note to a saved job's durable conversation. The note is context only: it does not steer or start a worker and does not change execution instructions. Requires authenticated human confirmation. Do not offer unsupported external commands.", Params: []ParamSpec{jobIDParam(), {Name: "text", Type: "string", Required: true, MinLen: 1, MaxLen: 2000, Description: "The user's exact note to save for review."}, {Name: "runId", Type: "string", MaxLen: 128, Description: "Optional retained run ID the note concerns."}, phoneConfirmParam()}, PhoneDirect: true, Handler: func(ctx context.Context, d *Deps, inv Invocation, args map[string]any) (map[string]any, *ToolError) {
 		return jobActionProposal(ctx, d, inv, args, "command")
 	}}
 }
@@ -114,7 +115,7 @@ func jobConfirmation(action string, proposed map[string]any, j *jobs.Job, run *j
 	}
 	return &ToolError{Code: CodeConfirmationRequired, Message: "No job was created, started or changed. Review this exact proposal in the signed-in Jobs interface and confirm it there. A model-supplied confirmation cannot authorize it.", Details: details}
 }
-func handleJobCreateProposal(_ context.Context, d *Deps, _ Invocation, args map[string]any) (map[string]any, *ToolError) {
+func handleJobCreateProposal(ctx context.Context, d *Deps, inv Invocation, args map[string]any) (map[string]any, *ToolError) {
 	if e := requireJobs(d); e != nil {
 		return nil, e
 	}
@@ -129,7 +130,11 @@ func handleJobCreateProposal(_ context.Context, d *Deps, _ Invocation, args map[
 	if !d.JobsSchedulingEnabled && (in.Schedule.Kind != "once" || in.Schedule.At != "") {
 		return nil, toolErrf(CodeNotConfigured, "Background scheduling is disabled. Offer a manual job instead.")
 	}
-	return nil, jobConfirmation("create", map[string]any{"title": in.Title, "instructions": in.Instructions, "kind": in.Kind, "schedule": in.Schedule}, nil, nil)
+	proposed := map[string]any{"title": in.Title, "instructions": in.Instructions, "kind": in.Kind, "schedule": in.Schedule}
+	if phoneOwnerCall(inv) {
+		return phoneJobCreate(ctx, d, inv, args, in, proposed)
+	}
+	return nil, jobConfirmation("create", proposed, nil, nil)
 }
 func jobActionProposal(ctx context.Context, d *Deps, inv Invocation, args map[string]any, action string) (map[string]any, *ToolError) {
 	if e := requireJobs(d); e != nil {
@@ -191,6 +196,9 @@ func jobActionProposal(ctx context.Context, d *Deps, inv Invocation, args map[st
 	}
 	if action == "retry" && (run == nil || (run.Status != "failed" && run.Status != "cancelled") || run.Attempt >= 3) {
 		return nil, jobsToolError(jobs.ErrInvalidState)
+	}
+	if phoneOwnerCall(inv) {
+		return phoneJobAction(ctx, d, inv, args, action, j, run, p)
 	}
 	return nil, jobConfirmation(action, p, j, run)
 }

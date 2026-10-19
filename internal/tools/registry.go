@@ -141,6 +141,8 @@ type Invocation struct {
 	Surface   string `json:"-"`
 	DeviceID  string `json:"-"`
 	Role      string `json:"-"`
+	// Scope is the verified token scope; PhoneScope marks an owner phone call.
+	Scope string `json:"-"`
 }
 
 // Result is the outcome of one tool invocation. It is safe to serialize
@@ -332,7 +334,12 @@ type Definition struct {
 	// is absent the registry asks the store, so an older authorizer context
 	// degrades to a fresh lookup, never to an open door.
 	OwnerOnly bool
-	Handler   HandlerFunc
+	// PhoneDirect marks a review-proposal tool that, on an authenticated
+	// owner phone call, executes after spoken confirmation instead of
+	// proposing. There it is treated as SideEffecting: it requires an
+	// idempotencyKey and gets the same IDEMP# claim.
+	PhoneDirect bool
+	Handler     HandlerFunc
 }
 
 // ReauthorizeFunc re-checks, at call time, that the user behind a still-
@@ -841,6 +848,14 @@ func (r *Registry) Invoke(ctx context.Context, inv Invocation) (res *Result) {
 		return res
 	}
 
+	// A phone-scoped token is owner-only and limited to the phone tool set,
+	// whatever the HTTP layer already checked.
+	if inv.Scope == PhoneScope && (inv.Surface != "phone" || !PhoneToolAllowed(def.Name) || !r.isOwner(ctx, inv)) {
+		l.Warn("tools: phone-scoped tool refused", slog.String("role", inv.Role))
+		res.Error = toolErrf(CodeForbidden, "%s is not available on this phone call", def.Name)
+		return res
+	}
+
 	args, verr := validateArgs(def, inv.Args)
 	if verr != nil {
 		res.Error = verr
@@ -871,7 +886,7 @@ func (r *Registry) Invoke(ctx context.Context, inv Invocation) (res *Result) {
 	// claim-before-execute on its own is only half of an at-most-once
 	// protocol, see idempotencyReleasable.
 	claimedIdempotency := false
-	if def.SideEffecting {
+	if def.SideEffecting || (def.PhoneDirect && phoneOwnerCall(inv)) {
 		if inv.IdempotencyKey == "" {
 			res.Error = toolErrf(CodeInvalidArgs, "idempotencyKey is required for %s", def.Name)
 			return res

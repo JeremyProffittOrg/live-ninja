@@ -20,14 +20,33 @@ func manifestNames(manifest []map[string]any) map[string]bool {
 	return out
 }
 
-func TestPhoneManifestIsExactlyReadOnly(t *testing.T) {
+// Owner decision 2026-10-19: an authenticated owner call runs account actions
+// directly after spoken confirmation. Device controls and new outgoing calls
+// stay unavailable on the phone.
+func TestPhoneManifestIsTheOwnerCallToolSet(t *testing.T) {
 	names := manifestNames(PhoneToolManifest())
-	require.Equal(t, map[string]bool{"memory_search": true, "entity_get": true, "knowledge_search": true, "knowledge_recent": true, "job_list": true, "job_status": true}, names)
-	for _, tool := range []string{"send_email", "phone_message_send", "memory_write", "forget", "job_create", "job_cancel", "rule_load", "set_volume", " memory_search", "MEMORY_SEARCH", "future_read"} {
+	require.Equal(t, map[string]bool{
+		"memory_search": true, "entity_get": true, "knowledge_search": true, "knowledge_recent": true,
+		"recall_note": true, "rule_list": true, "rule_load": true, "job_list": true, "job_status": true,
+		"get_weather": true, "phone_message_status": true,
+		"memory_write": true, "forget": true, "remember_note": true, "set_timer": true, "set_reminder": true,
+		"set_current_location": true, "send_email": true,
+		"job_create": true, "job_start": true, "job_pause": true, "job_resume": true, "job_cancel": true,
+		"job_retry": true, "job_command": true, "rule_save": true, "rule_delete": true,
+	}, names)
+	for name := range names {
+		require.True(t, PhoneToolAllowed(name), name)
+	}
+	for _, tool := range []string{"call_message", "phone_message_send", "device_control", "set_volume", "take_photo", "record_video",
+		"play_media", "stop_listening", "start_new_conversation", "code_update_start", "profile_suggest", " memory_search", "MEMORY_SEARCH", "future_read"} {
 		require.False(t, PhoneToolAllowed(tool), tool)
+		require.False(t, names[tool], tool)
 	}
 	prompt := PhoneInstructions(ResolvePersona(""))
-	for _, name := range []string{"send_email", "memory_write", "rule_load", "set_volume", "start_new_conversation"} {
+	for _, want := range []string{"confirm=true", "read the exact change back", "cannot place calls or send texts, control devices, use the camera, or change volume"} {
+		require.Contains(t, prompt, want)
+	}
+	for _, name := range []string{"set_volume", "take_photo", "start_new_conversation", "call_message"} {
 		require.NotContains(t, prompt, name)
 	}
 	require.False(t, ClientSupportsJobsReview("phone", []string{JobsReviewCapability}))

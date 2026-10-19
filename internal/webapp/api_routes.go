@@ -808,7 +808,7 @@ func handleToolsInvoke(deps *Deps, registry *tools.Registry) fiber.Handler {
 			return apiBadRequest(c, "tool is required")
 		}
 		if Scope(c) == realtime.PhoneScope && !realtime.PhoneToolAllowed(body.Tool) {
-			return errorJSON(c, fiber.StatusForbidden, "phone_tool_forbidden", "This phone session permits only the supported read tools.")
+			return errorJSON(c, fiber.StatusForbidden, "phone_tool_forbidden", "This phone call does not support that tool.")
 		}
 		if denied := jobsCompatibilityDenial(c, body.Tool, body.CallID); denied != nil {
 			return c.Status(fiber.StatusUpgradeRequired).JSON(denied)
@@ -827,6 +827,9 @@ func handleToolsInvoke(deps *Deps, registry *tools.Registry) fiber.Handler {
 			// From the verified auth context, never the body: OwnerOnly tools
 			// (knowledge_*) gate on it in Registry.Invoke.
 			Role: Role(c),
+			// Verified token scope: a phone-scoped owner call executes
+			// PhoneDirect tools after spoken confirmation.
+			Scope: Scope(c),
 		})
 		return c.Status(res.StatusCode()).JSON(res)
 	}

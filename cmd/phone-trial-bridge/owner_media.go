@@ -95,6 +95,48 @@ func (s *server) ownerSink(ctx context.Context, token, path string, body any) ([
 	return result, nil
 }
 
+// ownerTool invokes one tool. A refused or failed tool (4xx other than 401)
+// returns the registry Result for that exact tool, which is spoken back to
+// the model as the function output instead of ending the call: account
+// actions on owner calls routinely return confirmation_required or
+// invalid_args. Authentication failures and server errors still end it.
+func (s *server) ownerTool(ctx context.Context, token, name string, body any) ([]byte, error) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", ownerApp+"/api/v1/tools/invoke", bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, errors.New("owner service unavailable")
+	}
+	defer resp.Body.Close()
+	result, err := io.ReadAll(io.LimitReader(resp.Body, 65537))
+	if err != nil || len(result) > 65536 {
+		return nil, errors.New("owner service rejected request")
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return result, nil
+	}
+	if resp.StatusCode < 400 || resp.StatusCode >= 500 || resp.StatusCode == http.StatusUnauthorized {
+		return nil, errors.New("owner service rejected request")
+	}
+	var refused struct {
+		Tool  string          `json:"tool"`
+		OK    bool            `json:"ok"`
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(result, &refused) != nil || refused.Tool != name || refused.OK || len(refused.Error) == 0 {
+		return nil, errors.New("owner service rejected request")
+	}
+	return result, nil
+}
+
 func ownerSession(b ownerBootstrap) (map[string]any, error) {
 	if b.Mode != "phone" || b.SessionID == "" || b.BridgeToken == "" || b.SessionConfig == nil || !sidPattern.MatchString(b.CallSID) {
 		return nil, errors.New("invalid owner bootstrap")
@@ -423,7 +465,7 @@ func (s *server) ownerLoopWithIdleTimeout(ctx context.Context, b *ownerBootstrap
 					}
 					return "owner_hangup"
 				}
-				result, err := s.ownerSink(ctx, b.BridgeToken, "/api/v1/tools/invoke", map[string]any{"tool": name, "args": args, "idempotencyKey": b.SessionID + ":" + id, "callId": id})
+				result, err := s.ownerTool(ctx, b.BridgeToken, name, map[string]any{"tool": name, "args": args, "idempotencyKey": b.SessionID + ":" + id, "callId": id})
 				if err != nil {
 					return "tool_failed"
 				}
