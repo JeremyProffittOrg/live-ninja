@@ -1235,3 +1235,38 @@ Non-goals: do not relax grant replay, accept arbitrary redirect origins, change 
 Primary reference: https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy/form-action
 
 - 2026-10-16 — mcp-consent-redirect release verified: workflow38899020386 success atd851b43b38ab2bbbb446831dfb0da3c8a454a931. Production affected requests identified as Chromium using only sanitized browser-family metadata. CloudFront leaves CSP to app and SecurityHeaders preserves the consent-specific policy. No debug instrumentation added, no tokens/callback query values printed, no phone calls made. Operator asked to close stale consent page and start a fresh client connection; no post-fix token exchange observed yet. Keep mcp-owner-sign-in pending until actual client success.
+
+## ghost-job-control — ask about, summarize, start and command ghost-cli sessions from Live Ninja
+Owner request 2026-10-19, verbatim: "I don't see tool calls for the integration with ghost-cli for remotely starting and controlling jobs ???  is that in there???" then "i'd also like to be able to ask about ghost cli sessions on computers, and to ask for a summary of each or all of those jobs, and be able to send remote commands via that interface" then "yep, let's add all that to plan.md".
+Outcome: from the app, the realtime assistant and MCP (ChatGPT/Claude), the owner can list computers and their ghost-cli sessions, get a summary of one session or all of them, start a new run on a chosen computer, and send control commands to a running session.
+Non-goals: KILL_ALL, UPDATE_AGENT, CONFIG_PATCH, key or rollout changes, or any fleet-wide destructive command. No change to how ghost-cli itself authenticates its nodes.
+Files: internal/ghost/ (client), internal/tools/ (new ghost_* tools, registry), internal/webapp/mcp_routes.go (policies plus a new scope), internal/realtime surface tool filtering, Help drawer, contracts. A ghost-cli change is in C:\dev\ghost-cli (origin JeremyProffittOrg/ghost-cli, branch main), lambda/command/internal_invoke.go.
+
+### ghost-job-facts — what exists, verified 2026-10-19
+- internal/ghost/client.go already calls GET /nodes, GET /history/sessions, GET /history/events, GET and POST /schedule, POST /schedule/preprocess, GET /schedule/preprocess-status and GET /launch/repos. Only code_update_repos, code_update_start and code_update_status use it. None of them is in the MCP policy map (internal/webapp/mcp_routes.go:24).
+- The Jobs tools (job_*) run only the in-app kinds reminder and review: "neither runs an external executor" (internal/tools/jobs.go:24).
+- ghost-cli POST /command supports KILL, LAUNCH, NUDGE, ANSWER, PAUSE, RESUME, SAVE_LOCAL and LIST_SAVED (C:\dev\ghost-cli\lambda\command\envelope.go:24-31). The internal-invoke allowlist that Live Ninja uses deliberately excludes /command (lambda/command/internal_invoke.go:19-20 and 83-88). Remote session commands therefore need a ghost-cli change.
+
+### ghost-session-read — ask about computers and sessions
+- [ ] ghost-nodes-tool — ghost_nodes lists computers with online state, agent version and active session count. Proof: go test ./internal/tools ./internal/ghost -count=1 with fake-client cases for online, offline and an empty fleet.
+- [ ] ghost-sessions-tool — ghost_sessions lists sessions on one computer or on all of them, with status, repo, start time and last activity, and is paged. Proof: focused tests for paging, an unknown node and an upstream error.
+- [ ] ghost-session-summary — ghost_session_summary summarizes one session or all sessions in a time window from /history/events. Bound the number of events read. Use the existing summarization model path. State when a summary is partial because of truncation. Proof: focused tests for a single session, all sessions, truncation and an empty history.
+
+### ghost-session-control — start runs and send commands
+depends on: ghost-session-read
+- [ ] ghost-run-start — ghost_run_start starts a run on a chosen computer and repo through the existing POST /schedule launch path (reuse code_update_start plumbing), and ghost_run_status reads it back. It goes through registry confirmation and idempotency. Proof: focused tests for confirm-required, a duplicate request and an unknown repo.
+- [!] ghost-command-allowlist — ghost-cli change: add POST /command to the internal-invoke allowlist for only the command types the owner approves (see ghost-job-decisions), on a single named node, never KILL_ALL, UPDATE_AGENT or CONFIG_PATCH. Ship it through the ghost-cli repo pipeline. Unblock: the owner answers which command types are allowed.
+- [ ] ghost-session-command — ghost_session_command sends NUDGE (text to the session), ANSWER (reply to a waiting prompt), PAUSE, RESUME and KILL (if approved) to one session on one node, through registry confirmation, and returns the command_id and its result. depends on: ghost-command-allowlist. Proof: focused tests for each allowed type, a rejected type and an unknown session.
+
+### ghost-surfaces — expose the tools where the owner asked
+depends on: ghost-session-control
+- [ ] ghost-mcp-scopes — add ghost:read (nodes, sessions, summaries, run status) and ghost:manage (run start, session commands) to MCP metadata and the policy map, and add the existing code_update_* tools under ghost:manage. Existing connectors keep working without the new tools until the owner reconnects with the new scopes. Proof: go test ./internal/webapp -run 'TestMCP' -count=1.
+- [!] ghost-phone-access — whether a live phone call may use ghost:read and ghost:manage tools. Unblock: owner decision in ghost-job-decisions.
+- [ ] ghost-help — update the Help drawer and contracts in the same commit as each user-visible tool. Proof: go test ./internal/webapp/ -run TestHelpDrawer -count=1.
+- [ ] ghost-release — push each milestone on main and watch Deploy to a terminal success. Verify one real read-only call (ghost_nodes) through MCP as the owner. No session command is sent to a real session without an explicit owner request.
+
+### ghost-job-decisions — owner answers needed before ghost-session-control and ghost-surfaces
+- [!] ghost-decision-commands — which /command types Live Ninja may send: NUDGE, ANSWER, PAUSE, RESUME, KILL. Unblock: owner.
+- [!] ghost-decision-scope — any computer and any repo, or only an approved list. Unblock: owner.
+- [!] ghost-decision-phone — app and MCP only, or also live phone calls. Unblock: owner.
+
