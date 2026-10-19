@@ -1,5 +1,6 @@
 """Manual metric-only release. No configuration, identity, schedule or IAM changes."""
 import copy,json,os,pathlib,subprocess,sys,zipfile
+from original_template_patch import patch_original
 def validate_changes(change, functions, filters):
  if change.get('NextToken'):raise ValueError('Incomplete change set')
  seen=set()
@@ -28,6 +29,7 @@ def main():
  live=cf.get_template(StackName=cfg['stack'],TemplateStage='Processed')['TemplateBody']
  if isinstance(live,str):live=json.loads(live)
  if live.get('Transform'):raise ValueError('Processed template required')
+ original=cf.get_template(StackName=cfg['stack'],TemplateStage='Original')['TemplateBody'];codes={}
  new=copy.deepcopy(live);sha=os.environ['GITHUB_SHA'];prefix='metric-release/'+sha+'/';bucket=cfg['bucket'];out=pathlib.Path('metric-build');out.mkdir(exist_ok=True)
  s.client('s3').head_bucket(Bucket=bucket,ExpectedBucketOwner='759775734231')
  for logical,entry in cfg['functions'].items():
@@ -46,13 +48,14 @@ def main():
   zi=zipfile.ZipInfo('bootstrap');zi.create_system=3;zi.external_attr=0o100755<<16;zi.compress_type=zipfile.ZIP_DEFLATED
   with zipfile.ZipFile(dest/'function.zip','w') as z:z.writestr(zi,(dest/'bootstrap').read_bytes())
   key=prefix+logical+'.zip';s.client('s3').put_object(Bucket=bucket,Key=key,Body=(dest/'function.zip').read_bytes(),ServerSideEncryption='AES256')
-  p['Code']={'S3Bucket':bucket,'S3Key':key}
+  codes[logical]={'S3Bucket':bucket,'S3Key':key}
  for logical in cfg['filters']:
   r=new['Resources'][logical]
   if r['Type']!='AWS::Logs::MetricFilter':raise ValueError('Unexpected filter')
   r['Properties']['FilterPattern']='{ $.__operational_custom_metrics_enabled = true }'
   for transform in r['Properties']['MetricTransformations']:transform.pop('DefaultValue',None)
- key=prefix+'template.json';s.client('s3').put_object(Bucket=bucket,Key=key,Body=json.dumps(new).encode(),ServerSideEncryption='AES256')
+ source=patch_original(original,codes,cfg['filters'])
+ key=prefix+'template.yaml';s.client('s3').put_object(Bucket=bucket,Key=key,Body=source.encode(),ServerSideEncryption='AES256')
  name='metrics-'+os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT']
  cf.create_change_set(StackName=cfg['stack'],ChangeSetName=name,ChangeSetType='UPDATE',TemplateURL='https://'+bucket+'.s3.us-east-1.amazonaws.com/'+key,Capabilities=['CAPABILITY_IAM','CAPABILITY_NAMED_IAM'],Tags=current.get('Tags',[]),Parameters=[{'ParameterKey':p['ParameterKey'],'UsePreviousValue':True} for p in current.get('Parameters',[])])
  cf.get_waiter('change_set_create_complete').wait(StackName=cfg['stack'],ChangeSetName=name)
