@@ -13,6 +13,10 @@ from decimal import Decimal
 
 MAX_AUDIO = 200 * 1024 * 1024
 COPY_ATTEMPTS = 3
+# Owner decision 2026-10-19: delete the Twilio copy once the S3 object is
+# verified. Same three-attempt ceiling as the copy itself.
+PROVIDER_DELETE_ATTEMPTS = 3
+PROVIDER_DELETE_LEASE_SECONDS = 60
 # Longer than the deployed recorder Lambda's 60-second execution limit.
 COPY_LEASE_SECONDS = 120
 LINK_SECONDS = 7 * 86400
@@ -196,7 +200,8 @@ def ingest_recording(sid, recording, status, run_id=None):
             return response(200, {"recordingStatus": "deleted"})
         state = old.get("recordingStatus")
         if state in {"ready", "deleted", "expired"}:
-            return response(200 if research_notify(old) else 503, {"recordingStatus": state})
+            retry = state == "ready" and release_provider_copy(sid, recording, run_id=run_id) == "retry"
+            return response(200 if research_notify(old) and not retry else 503, {"recordingStatus": state})
         if status not in {"completed", "absent"}:
             return response(400)
         now = int(time.time())
@@ -231,15 +236,119 @@ def ingest_recording(sid, recording, status, run_id=None):
     try:
         key, size = copy_audio(sid, recording, run_id=run_id)
         result = set_recording(sid, recording, "ready", run_id=run_id, expected_attempt=attempt,
-                               s3Key=key, audioBytes=size, sourceRetained=True, copyLeaseUntil=0)
-        return response(200 if research_notify(result) else 503, {"recordingStatus": result["recordingStatus"]})
+                               s3Key=key, audioBytes=size, sourceRetained=True, copyLeaseUntil=0,
+                               providerCopyState="pending")
     except Exception:
         exhausted = attempt >= COPY_ATTEMPTS
+        # A failed or unverified copy never deletes the provider audio.
         set_recording(sid, recording, "failed", run_id=run_id, expected_attempt=attempt,
+                      sourceRetained=True, providerCopyState="retained",
                       copyLeaseUntil=0, copyRetryAt=int(time.time()) + (30 if attempt == 1 else 60),
                       recordingReason="copy_attempt_limit" if exhausted else "copy_failed",
                       recordingError="Recording copy attempt limit reached" if exhausted else "Audio copy failed; retry callback")
         return response(200 if exhausted else 503, {"recordingStatus": "failed", "error": "Audio copy failed"})
+    retry = result.get("recordingStatus") == "ready" and release_provider_copy(sid, recording, run_id=run_id) == "retry"
+    return response(200 if research_notify(result) and not retry else 503, {"recordingStatus": result["recordingStatus"]})
+
+
+def provider_copy_update(old, drop=(), **fields):
+    new = {**old, "version": int(old["version"]) + 1, **fields}
+    for name in drop:
+        new.pop(name, None)
+    try:
+        commit(old, new)
+        return new
+    except Exception as exc:
+        if not conditional(exc):
+            raise
+        return None
+
+
+def verified_s3_copy(call):
+    """Re-check the stored object immediately before any provider deletion."""
+    expected = f"phone-trial/{call['runId']}/{call['callSid']}/{call['recordingSid']}.mp3"
+    size = call.get("audioBytes")
+    if call.get("s3Key") != expected or not isinstance(size, (int, Decimal)) or int(size) <= 0:
+        return False
+    try:
+        head = clients()[1].head_object(Bucket=os.environ["BUCKET"], Key=expected)
+    except Exception:
+        return False
+    return (head.get("ContentLength") == int(size) and head.get("ContentType") == "audio/mpeg"
+            and re.fullmatch(r"[a-f0-9]{64}", head.get("Metadata", {}).get("sha256", "")) is not None)
+
+
+def delete_provider_audio(sid, recording):
+    """Identity-checked DELETE; a 404 or already-deleted resource counts as deleted."""
+    import account_lifecycle
+    return account_lifecycle.provider_delete(sid, recording)
+
+
+def release_provider_copy(sid, recording, run_id=None):
+    """Delete the Twilio copy of a ready, S3-verified recording.
+
+    Returns "deleted", "retained" (verification failed or attempts exhausted;
+    the provider copy stays), "busy" (another worker holds the lease),
+    "retry" (a later callback may retry) or "skipped".
+    """
+    import account_lifecycle
+    for _ in range(3):
+        old = get(call_key(sid, run_id))
+        if (not old or old.get("recordingSid") != recording or old.get("recordingStatus") != "ready"
+                or account_lifecycle.blocked(old)):
+            return "skipped"
+        state = old.get("providerCopyState")
+        if state == "deleted":
+            return "deleted"
+        if state not in {"pending", "deleting"}:
+            return "retained" if state else "skipped"
+        now = int(time.time())
+        if state == "deleting" and int(old.get("providerCopyLeaseUntil", 0)) > now:
+            return "busy"
+        attempts = int(old.get("providerCopyDeleteAttempts", 0))
+        if attempts >= PROVIDER_DELETE_ATTEMPTS:
+            if provider_copy_update(old, providerCopyState="retained", providerCopyLeaseUntil=0,
+                                    providerCopyReason="delete_attempt_limit",
+                                    providerCopyError="Provider copy deletion attempt limit reached") is not None:
+                return "retained"
+            continue
+        if int(old.get("providerCopyRetryAt", 0)) > now:
+            return "retry"
+        if not verified_s3_copy(old):
+            if provider_copy_update(old, providerCopyState="retained", providerCopyLeaseUntil=0,
+                                    providerCopyReason="s3_verification_failed",
+                                    providerCopyError="Stored copy could not be verified; provider copy kept") is not None:
+                return "retained"
+            continue
+        claimed = provider_copy_update(old, providerCopyState="deleting", providerCopyDeleteAttempts=attempts + 1,
+                                       providerCopyLeaseUntil=now + PROVIDER_DELETE_LEASE_SECONDS)
+        if claimed is not None:
+            break
+    else:
+        return "retry"
+    attempt = attempts + 1
+    try:
+        delete_provider_audio(sid, recording)
+        fields = dict(providerCopyState="deleted", providerCopyDeletedAt=int(time.time()), sourceRetained=False,
+                      providerCopyLeaseUntil=0)
+        outcome = "deleted"
+    except Exception:
+        exhausted = attempt >= PROVIDER_DELETE_ATTEMPTS
+        fields = dict(providerCopyState="retained" if exhausted else "pending", providerCopyLeaseUntil=0,
+                      providerCopyRetryAt=int(time.time()) + (30 if attempt == 1 else 60),
+                      providerCopyReason="delete_attempt_limit" if exhausted else "delete_failed",
+                      providerCopyError=("Provider copy deletion attempt limit reached" if exhausted
+                                         else "Provider copy deletion failed; retry callback"))
+        outcome = "retained" if exhausted else "retry"
+    for _ in range(3):
+        current = get(call_key(sid, run_id))
+        if (not current or current.get("providerCopyState") != "deleting"
+                or int(current.get("providerCopyDeleteAttempts", 0)) != attempt):
+            return outcome
+        drop = ("providerCopyError", "providerCopyReason", "providerCopyRetryAt") if outcome == "deleted" else ()
+        if provider_copy_update(current, drop=drop, **fields) is not None:
+            return outcome
+    return outcome
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -298,7 +407,8 @@ def copy_audio(sid, recording, run_id=None):
     if account_lifecycle.cleanup_if_deleted(call, key):
         raise ValueError("Recording owner deleted during transfer")
     head = clients()[1].head_object(Bucket=os.environ["BUCKET"], Key=key)
-    if head["ContentLength"] != size or head.get("Metadata", {}).get("sha256") != audio_hash:
+    if (head["ContentLength"] != size or head.get("ContentType") != "audio/mpeg"
+            or head.get("Metadata", {}).get("sha256") != audio_hash):
         raise ValueError("S3 verification failed")
     return key, size
 

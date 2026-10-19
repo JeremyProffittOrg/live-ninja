@@ -48,15 +48,17 @@ class S3:
         self.data = b""
         self.ttl = None
         self.metadata = {}
+        self.content_type = None
 
     def put_object(self, **kwargs):
         assert kwargs["ServerSideEncryption"] == "AES256"
         self.data = kwargs["Body"].read()
         assert kwargs["ChecksumSHA256"] == base64.b64encode(hashlib.sha256(self.data).digest()).decode()
         self.metadata = kwargs["Metadata"]
+        self.content_type = kwargs["ContentType"]
 
     def head_object(self, **kwargs):
-        return {"ContentLength": len(self.data), "Metadata": self.metadata}
+        return {"ContentLength": len(self.data), "ContentType": self.content_type, "Metadata": self.metadata}
 
     def generate_presigned_url(self, operation, **kwargs):
         self.ttl = kwargs["ExpiresIn"]
@@ -79,8 +81,12 @@ class RecorderTests(unittest.TestCase):
         self.commit_patch.start()
         self.clock = patch.object(r.time, "time", return_value=1000)
         self.now = self.clock.start()
+        # Provider deletion never reaches the network in tests.
+        self.provider_delete = patch.object(r, "delete_provider_audio", return_value="deleted")
+        self.deleted = self.provider_delete.start()
 
     def tearDown(self):
+        self.provider_delete.stop()
         self.env.stop()
         self.commit_patch.stop()
         self.clock.stop()
@@ -177,6 +183,95 @@ class RecorderTests(unittest.TestCase):
         with patch.object(r, "copy_audio", side_effect=AssertionError("duplicate fetched")):
             self.assertEqual(self.callback()["statusCode"], 200)
         self.assertEqual(self.callback(RecordingSid="RE" + "5" * 32)["statusCode"], 409)
+
+    def test_verified_copy_deletes_provider_copy_once(self):
+        self.register()
+        key = "phone-trial/trial/" + CALL + "/" + REC + ".mp3"
+        def deleting(sid, recording):
+            row = r.get(r.call_key(CALL))
+            # Never before the S3 object is stored and verified.
+            self.assertEqual((row["recordingStatus"], row["s3Key"], r._s3.data), ("ready", key, b"MP3"))
+            return "deleted"
+        self.deleted.side_effect = deleting
+        opener = unittest.mock.Mock()
+        opener.open.return_value = Audio()
+        with patch.object(r.urllib.request, "build_opener", return_value=opener):
+            self.assertEqual(self.callback()["statusCode"], 200)
+        self.deleted.assert_called_once_with(CALL, REC)
+        call = r.get(r.call_key(CALL))
+        self.assertEqual((call["providerCopyState"], call["providerCopyDeletedAt"], call["sourceRetained"], call["providerCopyDeleteAttempts"]),
+                         ("deleted", 1000, False, 1))
+        self.assertEqual(self.callback()["statusCode"], 200)
+        self.deleted.assert_called_once()
+
+    def test_failed_s3_verification_keeps_provider_copy_and_fails_visibly(self):
+        self.register()
+        opener = unittest.mock.Mock()
+        opener.open.side_effect = lambda *args, **kwargs: Audio()
+        with patch.object(r.urllib.request, "build_opener", return_value=opener),                 patch.object(r._s3, "head_object", return_value={"ContentLength": 3, "ContentType": "audio/mpeg", "Metadata": {"sha256": "mismatch"}}):
+            self.assertEqual(self.callback()["statusCode"], 503)
+        call = r.get(r.call_key(CALL))
+        self.assertEqual((call["recordingStatus"], call["providerCopyState"], call["sourceRetained"]), ("failed", "retained", True))
+        self.assertEqual(call["recordingReason"], "copy_failed")
+        self.deleted.assert_not_called()
+        stored = {**call, "recordingStatus": "ready", "audioBytes": 3, "s3Key": "phone-trial/trial/" + CALL + "/" + REC + ".mp3"}
+        for content_type in ("binary/octet-stream", None):
+            with self.subTest(content_type=content_type), patch.object(r._s3, "head_object", return_value={
+                    "ContentLength": 3, "ContentType": content_type, "Metadata": {"sha256": "a" * 64}}):
+                self.assertFalse(r.verified_s3_copy(stored))
+
+    def test_reverification_failure_before_delete_keeps_provider_copy(self):
+        self.ready()
+        call = r.get(r.call_key(CALL))
+        call.update(audioBytes=3, providerCopyState="pending")
+        r._table.put_item(Item=call)
+        # The stored object is gone or altered: the provider copy is the only one left.
+        self.assertEqual(r.release_provider_copy(CALL, REC), "retained")
+        call = r.get(r.call_key(CALL))
+        self.assertEqual((call["providerCopyState"], call["providerCopyReason"]), ("retained", "s3_verification_failed"))
+        self.assertNotIn("providerCopyDeletedAt", call)
+        self.deleted.assert_not_called()
+        self.assertEqual(self.callback()["statusCode"], 200)
+        self.deleted.assert_not_called()
+
+    def test_provider_copy_delete_retries_are_bounded_to_three(self):
+        self.register()
+        self.deleted.side_effect = RuntimeError("Provider recording deletion failed")
+        opener = unittest.mock.Mock()
+        opener.open.return_value = Audio()
+        with patch.object(r.urllib.request, "build_opener", return_value=opener):
+            self.assertEqual(self.callback()["statusCode"], 503)
+        self.assertEqual(r.get(r.call_key(CALL))["providerCopyState"], "pending")
+        self.assertEqual(self.callback()["statusCode"], 503)
+        self.assertEqual(self.deleted.call_count, 1)
+        self.now.return_value = 1030
+        self.assertEqual(self.callback()["statusCode"], 503)
+        self.now.return_value = 1090
+        self.assertEqual(self.callback()["statusCode"], 200)
+        self.now.return_value = 5000
+        self.assertEqual(self.callback()["statusCode"], 200)
+        self.assertEqual(self.deleted.call_count, 3)
+        call = r.get(r.call_key(CALL))
+        self.assertEqual((call["recordingStatus"], call["providerCopyState"], call["providerCopyReason"], call["sourceRetained"]),
+                         ("ready", "retained", "delete_attempt_limit", True))
+        self.assertEqual(call["providerCopyDeleteAttempts"], 3)
+
+    def test_provider_copy_delete_treats_404_as_already_deleted(self):
+        import account_lifecycle as a
+        import owner_messages as m
+        self.provider_delete.stop()
+        try:
+            with patch.object(m, "provider", side_effect=m.ProviderError(20404, True)),                     patch.object(a.urllib.request, "build_opener") as network:
+                self.assertEqual(r.delete_provider_audio(CALL, REC), "deleted")
+                network.assert_not_called()
+            gone = a.urllib.error.HTTPError("https://api.twilio.com", 404, "Not Found", None, None)
+            opener = unittest.mock.Mock()
+            opener.open.side_effect = gone
+            with patch.object(m, "provider", return_value={"sid": REC, "call_sid": CALL, "account_sid": ACCOUNT, "status": "completed"}),                     patch.object(a.urllib.request, "build_opener", return_value=opener):
+                self.assertEqual(r.delete_provider_audio(CALL, REC), "deleted")
+            self.assertEqual(opener.open.call_args.args[0].method, "DELETE")
+        finally:
+            self.provider_delete.start()
 
     def test_missing_audio_and_failed_copy_are_visible(self):
         self.register()
