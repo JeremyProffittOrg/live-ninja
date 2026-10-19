@@ -208,14 +208,12 @@ func (a *MCPAuth) authorize(c *fiber.Ctx) error {
 	if e != nil {
 		return oauthError(c, e)
 	}
-	// Chromium applies form-action to the POST redirect chain as well.
-	// Permit only this already-bound client's callback origin, never a wildcard.
-	callbackURL, parseErr := url.Parse(pending.Request.RedirectURI)
-	if parseErr != nil || !mcpauth.ValidRedirect(pending.Request.RedirectURI) {
+	if !mcpauth.ValidRedirect(pending.Request.RedirectURI) {
 		return oauthError(c, mcpauth.ErrInvalidRequest)
 	}
-	callbackOrigin := callbackURL.Scheme + "://" + callbackURL.Host
-	c.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' "+callbackOrigin+"; frame-ancestors 'none'; base-uri 'none'")
+	// The consent POST answers with a page, not a redirect, so form-action
+	// only ever needs this origin.
+	c.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 	c.Set("X-Frame-Options", "DENY")
 	c.Type("html")
 	var out bytes.Buffer
@@ -264,8 +262,21 @@ func (a *MCPAuth) consent(c *fiber.Ctx) error {
 	u.RawQuery = q.Encode()
 	c.Set("Cache-Control", "no-store")
 	c.Set("Referrer-Policy", "no-referrer")
-	return c.Redirect(u.String(), 302)
+	// Chromium checks form-action against every hop of a redirect that follows
+	// a form POST. Some clients' callbacks forward again to their own app
+	// scheme (ChatGPT/Codex: chatgpt.com -> codex), which a 302 from here would
+	// get blocked on. A page-initiated navigation is not a form submission.
+	c.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'")
+	c.Set("X-Frame-Options", "DENY")
+	c.Type("html")
+	var out bytes.Buffer
+	if e = callbackPage.Execute(&out, u.String()); e != nil {
+		return oauthError(c, e)
+	}
+	return c.Send(out.Bytes())
 }
+
+var callbackPage = template.Must(template.New("callback").Parse(`<!doctype html><html lang="en"><meta charset="utf-8"><meta http-equiv="refresh" content="0;url={{.}}"><title>Returning to your client</title><body><main><p>Returning to your client.</p><p><a href="{{.}}">Continue</a></p></main></body></html>`))
 func tokenForm(c *fiber.Ctx) (url.Values, error) {
 	if len(c.Body()) > 8192 || !strings.HasPrefix(c.Get("Content-Type"), "application/x-www-form-urlencoded") || c.Get("Authorization") != "" {
 		return nil, mcpauth.ErrInvalidRequest

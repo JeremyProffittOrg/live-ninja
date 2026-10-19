@@ -8,6 +8,7 @@ import (
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	"github.com/JeremyProffittOrg/live-ninja/internal/testutil"
 	"github.com/gofiber/fiber/v2"
+	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -103,10 +104,7 @@ func TestMCPOAuthBrowserConsentAndTokenFlow(t *testing.T) {
 	req, verifier := mcpAuthRequest(t, a)
 	cookie, csrf := mcpBeginConsent(t, app, req, cookie)
 	resp, body := mcpOAuthRequest(t, app, "POST", "/oauth/authorize", url.Values{"csrf": {csrf}, "decision": {"approve"}}.Encode(), cookie, mcpauth.Issuer, "")
-	if resp.StatusCode != 302 {
-		t.Fatalf("%d %s", resp.StatusCode, body)
-	}
-	u, _ := url.Parse(resp.Header.Get("Location"))
+	u := mcpCallbackURL(t, resp, body)
 	if u.Scheme != "https" || u.Host != "client.example" || u.Query().Get("state") != "state-safe" || u.Query().Get("iss") != mcpauth.Issuer {
 		t.Fatal("callback not bound")
 	}
@@ -218,34 +216,42 @@ func TestMCPOAuthRejectsPlainPKCEAndDuplicateParameters(t *testing.T) {
 	}
 }
 
-func TestMCPOAuthConsentPolicyAllowsClientRedirect(t *testing.T) {
+func TestMCPOAuthConsentPolicyKeepsFormOnIssuer(t *testing.T) {
+	// The consent POST returns a navigation page instead of a redirect, so the
+	// form never needs the client's origin, and the client's own onward hops
+	// (chatgpt.com to its app scheme) are not form-action checked.
 	app, a, cookie := mcpOAuthTestApp(t)
 	req, _ := mcpAuthRequest(t, a)
 	resp, _ := mcpOAuthRequest(t, app, "GET", "/oauth/authorize?"+mcpQuery(req), "", cookie, "", "")
 	if resp.StatusCode != 200 {
 		t.Fatal("consent page unavailable")
 	}
-	callback, _ := url.Parse(req.RedirectURI)
-	want := callback.Scheme + "://" + callback.Host
 	sources := ""
 	for _, directive := range strings.Split(resp.Header.Get("Content-Security-Policy"), ";") {
 		if strings.HasPrefix(strings.TrimSpace(directive), "form-action ") {
 			sources = strings.TrimSpace(directive)
 		}
 	}
-	found := false
-	for _, source := range strings.Fields(sources)[1:] {
-		if source == want {
-			found = true
-		}
+	if sources != "form-action 'self'" {
+		t.Fatal("consent form policy:", sources)
 	}
-	if !found {
-		t.Fatal("consent policy blocks registered client callback:", want)
+}
+
+// mcpCallbackURL reads the consent result page's navigation target and checks
+// that the page carries no form-action restriction that could block the
+// client's own onward redirect.
+func mcpCallbackURL(t *testing.T, resp *http.Response, body string) *url.URL {
+	t.Helper()
+	if resp.StatusCode != 200 || resp.Header.Get("Cache-Control") != "no-store" || strings.Contains(resp.Header.Get("Content-Security-Policy"), "form-action") {
+		t.Fatalf("%d %s", resp.StatusCode, body)
 	}
-	if strings.Contains(sources, "*") || !strings.Contains(sources, "'self'") {
-		t.Fatal("consent form policy is too broad")
+	m := regexp.MustCompile(`<a href="([^"]+)">Continue</a>`).FindStringSubmatch(body)
+	if m == nil || !strings.Contains(body, `http-equiv="refresh" content="0;url=`+m[1]+`"`) {
+		t.Fatalf("missing callback navigation: %s", body)
 	}
-	if !strings.Contains(resp.Header.Get("Content-Security-Policy"), "frame-ancestors 'none'") {
-		t.Fatal("clickjacking defense removed")
+	u, e := url.Parse(html.UnescapeString(m[1]))
+	if e != nil {
+		t.Fatal(e)
 	}
+	return u
 }
