@@ -11,7 +11,7 @@ type fakeOwnerPhone struct {
 	sends                           int
 }
 
-func (p *fakeOwnerPhone) Send(_ context.Context, owner, id, destination, message string) (map[string]any, *ToolError) {
+func (p *fakeOwnerPhone) Send(_ context.Context, owner, id, destination, message string, live bool, payload string) (map[string]any, *ToolError) {
 	p.owner = owner
 	p.id = id
 	p.destination = destination
@@ -65,5 +65,26 @@ func TestOwnerPhoneMissingServiceFailsClosed(t *testing.T) {
 	_, e := callMessageDefinition().Handler(context.Background(), &Deps{}, Invocation{}, map[string]any{"message": "Hello"})
 	if e == nil || e.Code != CodeNotConfigured {
 		t.Fatal(e)
+	}
+}
+
+func TestOwnerPhoneLivePayloadValidation(t *testing.T) {
+	fake := &fakeOwnerPhone{}
+	def := callMessageDefinition()
+	for _, args := range []map[string]any{
+		{"message": "Summary", "payload": "{}"},
+		{"message": "Summary", "live": true, "payload": "[]"},
+		{"message": "Summary", "live": true, "payload": "null"},
+		{"message": "Summary", "live": true, "payload": strings.Repeat("x", 12001)},
+	} {
+		if _, err := def.Handler(context.Background(), &Deps{Phone: fake}, Invocation{UserID: "owner", IdempotencyKey: "delivery"}, args); err == nil {
+			t.Fatal("invalid payload accepted")
+		}
+	}
+	if fake.sends != 0 {
+		t.Fatal("invalid payload sent")
+	}
+	if _, err := def.Handler(context.Background(), &Deps{Phone: fake}, Invocation{UserID: "owner", IdempotencyKey: "delivery"}, map[string]any{"message": "Summary", "live": true, "payload": `{"total":12}`}); err != nil {
+		t.Fatal(err)
 	}
 }

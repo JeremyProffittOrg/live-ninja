@@ -378,6 +378,8 @@ fun SettingsScreen(
                             SettingsSection.TURN_DETECTION -> TurnDetectionSection(
                                 turnDetection = sectionDoc.turnDetection,
                                 onSetTurnDetection = viewModel::setTurnDetection,
+                                keepListeningSeconds = sectionDoc.keepListeningSeconds,
+                                onSetKeepListeningSeconds = viewModel::setKeepListeningSeconds,
                             )
                             SettingsSection.APPEARANCE -> AppearanceSection(
                                 appStyle = sectionDoc.appStyle,
@@ -1277,6 +1279,8 @@ private fun PersonaSection(
 private fun TurnDetectionSection(
     turnDetection: String,
     onSetTurnDetection: (String) -> Unit,
+    keepListeningSeconds: Int,
+    onSetKeepListeningSeconds: (Int) -> Unit,
 ) {
     // Turn detection radio.
     LabeledRadioGroup(
@@ -1298,6 +1302,22 @@ private fun TurnDetectionSection(
         selected = turnDetection,
         onSelect = onSetTurnDetection,
     )
+    LabeledRadioGroup(
+        label = stringResource(R.string.settings_listening_timeout),
+        options = listOf(
+            0 to R.string.settings_listening_forever,
+            10 to R.string.settings_listening_10_seconds,
+            30 to R.string.settings_listening_30_seconds,
+            60 to R.string.settings_listening_1_minute,
+            120 to R.string.settings_listening_2_minutes,
+            300 to R.string.settings_listening_5_minutes,
+        ).map { (seconds, label) ->
+            RadioOption(value = seconds.toString(), label = stringResource(label), description = null, enabled = true)
+        },
+        selected = keepListeningSeconds.toString(),
+        onSelect = { onSetKeepListeningSeconds(it.toInt()) },
+    )
+    Text(stringResource(R.string.settings_listening_timeout_desc), style = MaterialTheme.typography.bodySmall)
 }
 
 /** Realtime provider selection plus Gemini's provider-specific voice picker. */

@@ -12,6 +12,12 @@ a bearer credential receives an authentication challenge; it is not an app page.
 
 - call_message: read a supplied plain-text message to primary or secondary, the
   owner's privately configured cell aliases. Arbitrary phone numbers are rejected.
+  Set `live: true` to deliver the message as a summary in an Azure live conversation.
+  Optionally include `payload`, a JSON-encoded object string of at most 12,000 UTF-8
+  bytes. The live session can use that data to answer follow-up questions, along
+  with the owner's saved profile, memory, rules and guides. Payload text is data,
+  not permission to perform actions. The phone session retains its read-only
+  account tools. Omitting `live` keeps the existing spoken playback behavior.
 - phone_message_status: inspect a returned requestId, provider/playback state, the
   exact intended script, and an available private recording link.
 - memory_search, entity_get, recall_note, memory_write, plan_upsert, forget,
@@ -22,6 +28,7 @@ a bearer credential receives an authentication challenge; it is not an app page.
 
 Phone messages return promptly after provider acceptance and continue separately
 from the conversation. This does not add general independent AI-task execution.
+SMS delivery is not available through this MCP endpoint.
 A queued or completed call is not proof that a person heard the message. Only
 the signed callback after the spoken script marks playbackCompleted. The script
 transcript is the intended text, not speech recognition of the listener.
@@ -63,6 +70,14 @@ most 90 seconds; there is no automatic redial. Each message reserves $0.30 under
 the $20 monthly allocation. Additional daily spending needs explicit owner
 permission in the owner’s Phone budget panel; the MCP tools cannot authorize it themselves. Each grant adds $5 for the displayed local day. It expires at midnight and does not clear a stopped-call setting. A new grant is rejected while the remaining allowance can fund another owner message. The allocation includes
 the existing fixed reserve and a month-scoped floor carried from hotel trials.
+
+Live message calls instead reserve $1.40 and last at most three minutes. They use
+the outgoing allowance; the separate $10/day incoming allowance does not fund
+outgoing delivery. Say “hang up” to end a live call, or leave it idle for two
+minutes. Continuous speech pauses the inactivity timer. A stable requestId binds
+the destination, summary, live option and payload; changing those fields requires
+a new explicit delivery request. Provider acceptance does not prove the owner
+answered or heard the summary. No automatic retries place another call.
 
 Owner-message recordings remain private in S3 with the existing 180-day lifecycle.
 Download links last seven days from their first issuance and exchange for

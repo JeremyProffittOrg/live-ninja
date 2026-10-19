@@ -20,6 +20,16 @@ import org.junit.Test
  */
 class SettingsStoreTest {
 
+    @Test
+    fun listeningTimeoutPreservesExplicitUnlimitedAndTwoMinutes() {
+        val store = FakeBacking().store()
+        assertEquals(120, store.document.value.keepListeningSeconds)
+        store.update { it.put("keepListeningSeconds", 0) }
+        assertEquals(0, store.document.value.keepListeningSeconds)
+        store.update { it.put("keepListeningSeconds", 120) }
+        assertEquals(120, store.document.value.keepListeningSeconds)
+    }
+
     /** In-memory prefs backing shared between a store and its "reloaded" twin. */
     private class FakeBacking {
         val storage = HashMap<String, String?>()

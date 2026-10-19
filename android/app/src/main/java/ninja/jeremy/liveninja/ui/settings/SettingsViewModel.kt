@@ -1162,6 +1162,11 @@ class SettingsViewModel @Inject constructor(
     fun setTurnDetection(value: String) =
         editPortableSection(SettingsSection.TURN_DETECTION) { it.put("turnDetection", value) }
 
+    fun setKeepListeningSeconds(value: Int) {
+        require(value in listOf(0, 10, 30, 60, 120, 300))
+        editPortableSection(SettingsSection.TURN_DETECTION) { it.put("keepListeningSeconds", value) }
+    }
+
     /** Voice engine picker (M12 FR-VE-04): sets voiceEngine.default. */
     fun setVoiceEngine(engine: String) {
         editPortableSection(SettingsSection.VOICE_ENGINE) {

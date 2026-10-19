@@ -166,7 +166,10 @@ def view(item, links=False):
     payload = {"requestId": item["requestId"], "destination": item["destination"], "accepted": bool(item.get("callSid")),
                "providerStatus": item["providerStatus"], "playbackCompleted": item.get("playbackCompleted", False),
                "humanHeard": "not_verified", "scriptTranscript": item["scriptTranscript"], "transcriptType": "spoken_script_not_speech_recognition",
-               "recordingStatus": "pending" if item.get("callSid") else "absent", "reservedUSD": str(RESERVE)}
+               "recordingStatus": "pending" if item.get("callSid") else "absent", "reservedUSD": str(item.get('reservedUSD', RESERVE)), "live": item.get('live', False)}
+    if item.get('live') is True:
+        payload['transcriptType'] = 'delivery_summary_not_speech_recognition'
+        payload['scriptTranscript'] = item['message']
     if item.get("providerCode"):
         payload["providerCode"] = item["providerCode"]
     if item.get("callSid"):
@@ -418,30 +421,54 @@ def operation(event):
     if not sending:
         return r.response(200, view(prior, links=True)) if prior else r.response(404, {"error": "Unknown message request"})
     alias, message = event.get("destination"), event.get("message")
+    live, payload = event.get('live', False), event.get('payload', '')
+    if type(live) is not bool or not isinstance(payload, str) or len(payload.encode('utf-8')) > 12000:
+        return r.response(400, {'error': 'Invalid live delivery payload'})
+    if payload:
+        try:
+            parsed = json.loads(payload, parse_constant=lambda value: (_ for _ in ()).throw(ValueError('Invalid JSON number')))
+            if not live or not isinstance(parsed, dict):
+                raise ValueError('Object required')
+        except (ValueError, RecursionError):
+            return r.response(400, {'error': 'Payload must be a JSON object and requires live=true'})
     if alias not in {"primary", "secondary"} or not isinstance(message, str) or not 1 <= len(message.strip()) <= 1000 or len(message) > 1000 or any(ord(c) < 32 and c not in "\n\t" for c in message):
         return r.response(400, {"error": "Use a configured alias and 1–1000 characters of plain text"})
     if prior:
-        if prior["destination"] != alias or prior["message"] != message:
+        if prior["destination"] != alias or prior["message"] != message or prior.get('live', False) != live or prior.get('payload', '') != payload:
             return r.response(409, {"error": "requestId already identifies a different message"})
         return r.response(200, view(prior))
     number = cfg.get("destinations", {}).get(alias, "")
     if not PHONE.fullmatch(number) or not PHONE.fullmatch(cfg.get("fromNumber", "")):
         return r.response(403, {"error": "Destination is not configured"})
     try:
-        item, fresh = reserve(owner, request_id, alias, message, cfg)
+        fields = {}
+        if live:
+            import inbound_owner
+            bridge = os.environ.get('INBOUND_BRIDGE_URL', '').rstrip('/')
+            parsed = urllib.parse.urlsplit(bridge)
+            if parsed.scheme != 'https' or not parsed.hostname or parsed.path or parsed.query or parsed.fragment or parsed.username or not inbound_owner.valid_config(cfg, r.get(inbound_owner.CONFIG), since=int(time.time())):
+                return r.response(403, {'error': 'Live owner conversations are unavailable'})
+            fields = {'live': True, 'payload': payload, 'direction': 'outbound', 'inboundState': 'connecting',
+                      'deadline': int(time.time()) + 180, 'connectDeadline': int(time.time()) + 35,
+                      'bridge': bridge, 'reservedUSD': MAX_RESERVE}
+        item, fresh = reserve(owner, request_id, alias, message, cfg, reserve_amount=MAX_RESERVE if live else RESERVE, initial_fields=fields)
     except ValueError as exc:
         return r.response(409, {"error": str(exc)})
     except ProviderError:
         return r.response(409, {"error": "Provider usage cannot be verified; no call created"})
     if not fresh:
-        if item["destination"] != alias or item["message"] != message:
+        if item["destination"] != alias or item["message"] != message or item.get('live', False) != live or item.get('payload', '') != payload:
             return r.response(409, {"error": "requestId already identifies a different message"})
         return r.response(200, view(item))
+    if live:
+        item = inbound_owner.transition(item, deadline=min(item['deadline'], int(item.get('budgetExpiresAt', item['deadline']))))
     base = os.environ["PUBLIC_BASE_URL"].rstrip("/") + "/owner-message/"
     token = item["callbackId"]
     twiml = '<Response><Say>' + html.escape(item["scriptTranscript"]) + '</Say><Redirect method="POST">' + html.escape(base + "played/" + token) + '</Redirect></Response>'
+    if live:
+        twiml = inbound_owner.connect_redirect(item)['body']
     # Reserve ten seconds for the create request and twenty seconds for ringing.
-    call_seconds = min(90, int(item.get("budgetExpiresAt", int(time.time())+120))-int(time.time())-30)
+    call_seconds = min(180 if live else 90, int(item.get("budgetExpiresAt", int(time.time())+(210 if live else 120)))-int(time.time())-30)
     if call_seconds <= 0:
         item = change(key, {"providerStatus": "rejected"}, "budget_expired", {}, release=True)
         return r.response(409, {"error": "Daily authority expires before a call can connect"})
@@ -468,12 +495,17 @@ def operation(event):
                     if not r.conditional(exc):
                         raise
             return r.response(409, {"error": "Call admission was revoked; no call created"})
-        result = provider("/Calls.json", {"To": item["toNumber"], "From": item["fromNumber"], "Twiml": twiml,
+        form = {"To": item["toNumber"], "From": item["fromNumber"], "Twiml": twiml,
             "Timeout": 20, "TimeLimit": call_seconds, "Record": "true", "RecordingChannels": "dual",
             "StatusCallback": base + "status/" + token, "StatusCallbackMethod": "POST",
             "StatusCallbackEvent": ["initiated", "ringing", "answered", "completed"],
             "RecordingStatusCallback": base + "recording/" + token, "RecordingStatusCallbackMethod": "POST",
-            "RecordingStatusCallbackEvent": ["completed", "absent"]})
+            "RecordingStatusCallbackEvent": ["completed", "absent"]}
+        if live:
+            # Recording starts after the signed answered-call bootstrap.
+            for field in ('Record', 'RecordingChannels', 'RecordingStatusCallback', 'RecordingStatusCallbackMethod', 'RecordingStatusCallbackEvent'):
+                form.pop(field, None)
+        result = provider("/Calls.json", form)
         sid = result.get("sid", "")
         if not r.SID.fullmatch(sid) or result.get("account_sid") != os.environ["TWILIO_ACCOUNT_SID"]:
             raise ProviderError()
@@ -520,6 +552,11 @@ def callback(path, raw, headers):
         status = data.get("CallStatus")
         if status not in STATUSES:
             return r.response(400)
+        if item.get('live') is True and status in TERMINAL:
+            import inbound_owner
+            item = change(key, {}, 'provider_terminal_binding', {'callSid': sid}, sid=sid)
+            inbound_owner.end(item, 'provider_terminal', provider_status=status)
+            return r.response(200)
         item = change(key, {"providerStatus": status}, "status", {"callSid": sid, "status": status, "duration": data.get("CallDuration")}, sid=sid, release=status in TERMINAL)
         if status in {"busy", "failed", "no-answer", "canceled"}:
             call = r.get(r.call_key(sid, namespace(item["ownerUserId"])))

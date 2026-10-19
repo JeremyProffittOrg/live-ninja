@@ -306,6 +306,14 @@
     <string name="settings_section_voice_engine">Voice engine</string>
     <string name="settings_section_voice_engine_desc">Which speech-to-speech model powers your conversations.</string>
     <string name="settings_section_turn_detection">Turn detection</string>
+    <string name="settings_listening_timeout">Stop listening after silence</string>
+    <string name="settings_listening_forever">Until I stop</string>
+    <string name="settings_listening_10_seconds">10 seconds</string>
+    <string name="settings_listening_30_seconds">30 seconds</string>
+    <string name="settings_listening_1_minute">1 minute</string>
+    <string name="settings_listening_2_minutes">2 minutes</string>
+    <string name="settings_listening_5_minutes">5 minutes</string>
+    <string name="settings_listening_timeout_desc">Ends the conversation after neither of you speaks for this long. Applies to the next conversation. If wake words are enabled, they remain available.</string>
     <string name="settings_section_turn_detection_desc">How Live Ninja decides you\'ve finished speaking.</string>
     <string name="settings_section_appearance_desc">Theme and visual style across Live Ninja.</string>
     <string name="settings_section_microphone">Microphone</string>

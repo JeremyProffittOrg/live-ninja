@@ -39,6 +39,51 @@ import org.junit.Test
  */
 class RealtimeSessionCoordinatorTest {
 
+    @Test
+    fun silenceTimeoutResetsForSpeechAndPreservesUnlimited() {
+        var now = 0L
+        val silence = ListeningSilenceState { now }
+        now = 119_999
+        assertFalse(silence.expired(120))
+        now = 120_000
+        assertTrue(silence.expired(120))
+        assertFalse(silence.expired(0))
+        silence.activity(RealtimeEvent.SpeechStarted)
+        now += 300_000
+        assertFalse(silence.expired(120))
+        silence.activity(RealtimeEvent.SpeechStopped)
+        now += 119_999
+        assertFalse(silence.expired(120))
+        silence.activity(RealtimeEvent.AssistantAudioStarted)
+        now += 300_000
+        assertFalse(silence.expired(120))
+        silence.activity(RealtimeEvent.AssistantAudioStopped)
+        now += 120_000
+        assertTrue(silence.expired(120))
+    }
+
+    @Test
+    fun silenceTimeoutClosesTransportAndDoesNotCloseReplacementSession() = runBlocking {
+        val transcriptSink = CapturingTranscriptSink()
+        val coord = coordinator(transcriptSink)
+        var now = 0L
+        coord.silenceClock = { now }
+        val settings = mockk<ninja.jeremy.liveninja.ui.state.SettingsDocument> { every { keepListeningSeconds } returns 120 }
+        coord.settingsStore = mockk { every { document } returns MutableStateFlow(settings) }
+        coord.start()
+        transport.serverEvent(RealtimeEvent.UserTranscriptCompleted("idle-user", "A saved turn"))
+        awaitUntil("turn recorded") { transcriptStore.turns.value.isNotEmpty() }
+        now = 120_000
+        awaitUntil("silence ended conversation") { !coord.connected.value && transport.disconnects == 1 }
+        assertTrue(transport.wasMicMuted)
+        assertTrue(transcriptSink.requests.any { it.final })
+        coord.start()
+        delay(600)
+        assertTrue(coord.connected.value)
+        assertEquals(1, transport.disconnects)
+        coord.stop()
+    }
+
     private class FakeTransport : RealtimeTransport {
         private val _state = MutableStateFlow(TransportState.IDLE)
         override val state: StateFlow<TransportState> = _state
@@ -51,6 +96,7 @@ class RealtimeSessionCoordinatorTest {
         val sentEvents = mutableListOf<JSONObject>()
         var disconnects = 0
         var failConnect = false
+        var wasMicMuted = false
         var beforeConnect: suspend () -> Unit = {}
 
         // M8.3 latency-parallelization instrumentation.
@@ -85,7 +131,7 @@ class RealtimeSessionCoordinatorTest {
             sentEvents += event
         }
 
-        override fun setMicMuted(muted: Boolean) = Unit
+        override fun setMicMuted(muted: Boolean) { wasMicMuted = muted }
         override fun stopPlayback() = Unit
 
         override suspend fun disconnect() {
@@ -123,7 +169,7 @@ class RealtimeSessionCoordinatorTest {
     private val deviceCameraTool = mockk<DeviceCameraToolExecutor>()
     private val transcriptStore = TranscriptStore()
 
-    private fun coordinator(): RealtimeSessionCoordinator {
+    private fun coordinator(transcriptSink: TranscriptSink = NoopTranscriptSink): RealtimeSessionCoordinator {
         coEvery { sessionApi.fetchSession(any()) } returns RealtimeSession(
             clientSecret = "ephemeral-token",
             expiresAt = null,
@@ -137,7 +183,7 @@ class RealtimeSessionCoordinatorTest {
             mockk<android.content.Context>(relaxed = true),
             transport, novaTransport, geminiTransport, voiceLiveTransport, sessionApi, toolRouter, deviceVolumeTool,
             deviceCameraTool,
-            transcriptStore, TranscriptUploader(NoopTranscriptSink, CoroutineScope(SupervisorJob())), auth,
+            transcriptStore, TranscriptUploader(transcriptSink, CoroutineScope(SupervisorJob())), auth,
         )
     }
 

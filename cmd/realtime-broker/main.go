@@ -101,6 +101,8 @@ type Request struct {
 	Capabilities  []string `json:"capabilities,omitempty"`
 	PhoneCallSID  string   `json:"phoneCallSid,omitempty"`
 	PhoneDeadline int64    `json:"phoneDeadline,omitempty"`
+	PhoneSummary  string   `json:"phoneSummary,omitempty"`
+	PhonePayload  string   `json:"phonePayload,omitempty"`
 }
 
 type turnPayload struct {

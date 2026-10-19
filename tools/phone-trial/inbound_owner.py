@@ -53,6 +53,15 @@ def caller_bound(cfg, item):
                 and cfg.get('fromNumber') == item.get('fromNumber'))
 
 
+def conversation_bound(item):
+    return item.get('direction') == 'inbound' or (item.get('direction') == 'outbound' and item.get('live') is True)
+
+
+def provider_bound(item, data):
+    source, target = ('toNumber', 'fromNumber') if item.get('direction') == 'inbound' else ('fromNumber', 'toNumber')
+    return all(data.get(field) is None or data[field] == item[stored] for field, stored in (('From', source), ('To', target)))
+
+
 def signed_form(path, raw, headers):
     pairs = urllib.parse.parse_qs(raw.decode(), keep_blank_values=True, max_num_fields=40)
     signed = os.environ['PUBLIC_BASE_URL'].rstrip('/') + path
@@ -76,7 +85,8 @@ def transition(item, **fields):
 
 def connect_redirect(item):
     action = html.escape(base() + 'connect/' + item['callbackId'], quote=True)
-    return xml(f'<Say voice="Polly.Joanna-Neural">Connecting to Live Ninja.</Say><Redirect method="POST">{action}</Redirect><Hangup/>')
+    announcement = m.INTRO if item.get('live') is True else ''
+    return xml(f'<Say voice="Polly.Joanna-Neural">{html.escape(announcement)}Connecting to Live Ninja.</Say><Redirect method="POST">{action}</Redirect><Hangup/>')
 
 
 def final_transcript(item):
@@ -181,9 +191,12 @@ def start(data):
 
 def mint(item):
     import boto3
+    request = {'mode': 'phone-session', 'userId': item['ownerUserId'], 'surface': 'phone',
+               'phoneCallSid': item['callSid'], 'phoneDeadline': int(item['deadline'])}
+    if item.get('live') is True:
+        request.update(phoneSummary=item['message'], phonePayload=item.get('payload', ''))
     result = boto3.client('lambda').invoke(FunctionName=BROKER, InvocationType='RequestResponse',
-        Payload=json.dumps({'mode': 'phone-session', 'userId': item['ownerUserId'], 'surface': 'phone',
-                            'phoneCallSid': item['callSid'], 'phoneDeadline': int(item['deadline'])}).encode())
+        Payload=json.dumps(request).encode())
     raw = result['Payload'].read(200001)
     if result.get('FunctionError') or len(raw) > 200000:
         raise ValueError('Broker unavailable')
@@ -236,10 +249,14 @@ def callback(path, raw, headers):
     kind, token = match.groups()
     binding = r.get({'PK': 'OWNER_CALLBACK#' + token, 'SK': 'META'})
     item = r.get(m.request_key(binding['ownerUserId'], binding['requestId'])) if binding else None
-    if not item or item.get('direction') != 'inbound' or item.get('callSid') != data['CallSid'] or item.get('callbackId') != token:
+    if not item or not conversation_bound(item) or item.get('callSid', data['CallSid']) != data['CallSid'] or item.get('callbackId') != token:
         return r.response(403)
-    if any(data.get(field) is not None and data[field] != item[stored] for field, stored in (('From', 'toNumber'), ('To', 'fromNumber'))):
+    if not provider_bound(item, data):
         return r.response(403)
+    if not item.get('callSid'):
+        if item.get('live') is not True or kind != 'connect' or data.get('Direction') != 'outbound-api' or data.get('From') != item['fromNumber'] or data.get('To') != item['toNumber']:
+            return r.response(403)
+        item = m.change({k: item[k] for k in ('PK', 'SK')}, {}, 'outbound_answered', {}, sid=data['CallSid'])
     if kind == 'recording':
         recording = data.get('RecordingSid', '')
         if not r.REC.fullmatch(recording) or not item.get('consented'):
@@ -262,13 +279,16 @@ def callback(path, raw, headers):
         return bye()
     if item.get('inboundState') != 'connecting':
         return bye()
-    if data.get('Direction') != 'inbound' or data.get('From') != item['toNumber'] or data.get('To') != item['fromNumber']:
+    direction = 'inbound' if item.get('direction') == 'inbound' else 'outbound-api'
+    source, target = ('toNumber', 'fromNumber') if direction == 'inbound' else ('fromNumber', 'toNumber')
+    if data.get('Direction') != direction or data.get('From') != item[source] or data.get('To') != item[target]:
         return r.response(403)
     if int(time.time()) >= item['connectDeadline']:
         end(item, 'connect_expired', hangup=True)
         return bye()
     # Persist before invoking: an ambiguous mint/recording creation is never retried.
-    item = transition(item, inboundState='starting', consented=True, recordingAuthorization='owner-standing')
+    recording_authorization = 'owner-message' if item.get('live') is True else 'owner-standing'
+    item = transition(item, inboundState='starting', consented=True, recordingAuthorization=recording_authorization)
     try:
         remaining = int(item['deadline']) - int(time.time())
         if remaining <= 0:
@@ -287,7 +307,7 @@ def callback(path, raw, headers):
     try:
         call = r.get(r.call_key(item['callSid'], m.namespace(item['ownerUserId'])))
         r.commit(call, {**call, 'version': int(call['version']) + 1, 'consentStatus': 'granted',
-                        'recordingAuthorization': 'owner-standing'})
+                        'recordingAuthorization': recording_authorization})
         bootstrap = mint(item)
         item = transition(item, bootstrap=bootstrap, inboundState='starting')
         run_id = m.namespace(item['ownerUserId'])
@@ -328,7 +348,7 @@ def redeem(raw, headers, action='redeem'):
         return r.response(400)
     binding = r.get({'PK': 'OWNER_CALLBACK#' + token, 'SK': 'META'})
     item = r.get(m.request_key(binding['ownerUserId'], binding['requestId'])) if binding else None
-    if not item or item.get('direction') != 'inbound' or item.get('callSid') != sid:
+    if not item or not conversation_bound(item) or item.get('callSid') != sid:
         return r.response(403)
     if action == 'finish':
         reason = data.get('reason', 'bridge_finished')

@@ -107,6 +107,9 @@ data class SettingsDocument(
 
     /** Voice for display: schema mandates falling back to cedar on an unknown value. */
     val displayVoice: String get() = if (voice in VOICES) voice else DEFAULT_VOICE
+
+    /** Zero explicitly keeps a conversation open; missing older local settings use two minutes. */
+    val keepListeningSeconds: Int get() = raw.optInt("keepListeningSeconds", 120)
 }
 
 /**

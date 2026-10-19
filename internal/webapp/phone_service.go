@@ -62,8 +62,8 @@ func (p *phoneMessages) invoke(ctx context.Context, payload map[string]any) (map
 	}
 	return nil, &tools.ToolError{Code: code, Message: "Phone message was not accepted. Review the returned status before another request.", Details: body}
 }
-func (p *phoneMessages) Send(ctx context.Context, owner, id, destination, message string) (map[string]any, *tools.ToolError) {
-	return p.invoke(ctx, map[string]any{"operation": "owner_message_send", "ownerUserId": owner, "requestId": id, "destination": destination, "message": message})
+func (p *phoneMessages) Send(ctx context.Context, owner, id, destination, message string, live bool, payload string) (map[string]any, *tools.ToolError) {
+	return p.invoke(ctx, map[string]any{"operation": "owner_message_send", "ownerUserId": owner, "requestId": id, "destination": destination, "message": message, "live": live, "payload": payload})
 }
 func (p *phoneMessages) Status(ctx context.Context, owner, id string) (map[string]any, *tools.ToolError) {
 	return p.invoke(ctx, map[string]any{"operation": "owner_message_status", "ownerUserId": owner, "requestId": id})

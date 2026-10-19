@@ -27,12 +27,16 @@ func (f *phoneLambdaFake) Invoke(_ context.Context, in *lambda.InvokeInput, _ ..
 func TestOwnerPhoneAdapterIdentityAndUnknownOutcome(t *testing.T) {
 	fake := &phoneLambdaFake{status: 200}
 	p := &phoneMessages{client: fake, function: "function"}
-	result, e := p.Send(context.Background(), "owner-uuid", "request-1", "primary", "Hello")
+	result, e := p.Send(context.Background(), "owner-uuid", "request-1", "primary", "Hello", false, "")
 	if e != nil || result["providerStatus"] != "queued" || fake.payload["ownerUserId"] != "owner-uuid" || fake.payload["operation"] != "owner_message_send" {
 		t.Fatal(result, e, fake.payload)
 	}
+	_, e = p.Send(context.Background(), "owner-uuid", "live-request", "primary", "Summary", true, `{"total":12}`)
+	if e != nil || fake.payload["live"] != true || fake.payload["payload"] != `{"total":12}` {
+		t.Fatal("live payload lost", e)
+	}
 	fake.fail = true
-	_, e = p.Send(context.Background(), "owner-uuid", "request-1", "primary", "Hello")
+	_, e = p.Send(context.Background(), "owner-uuid", "request-1", "primary", "Hello", false, "")
 	if e == nil || e.Code != tools.CodeUpstreamError || e.Details["requestId"] != "request-1" {
 		t.Fatal(e)
 	}

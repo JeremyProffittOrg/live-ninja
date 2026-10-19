@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -34,6 +35,28 @@ import ninja.jeremy.liveninja.ui.state.TranscriptRole
 import org.json.JSONObject
 import ninja.jeremy.liveninja.auth.AuthRepository
 import ninja.jeremy.liveninja.auth.AuthState
+import ninja.jeremy.liveninja.ui.state.SettingsStore
+
+/** Silence is measured after speech, not from the beginning of a long spoken turn. */
+internal class ListeningSilenceState(private val clock: () -> Long) {
+    private var lastActivity = clock()
+    private var userSpeaking = false
+    private var assistantSpeaking = false
+
+    @Synchronized fun activity(event: RealtimeEvent? = null) {
+        lastActivity = clock()
+        when (event) {
+            is RealtimeEvent.SpeechStarted -> userSpeaking = true
+            is RealtimeEvent.SpeechStopped -> userSpeaking = false
+            is RealtimeEvent.AssistantAudioStarted -> assistantSpeaking = true
+            is RealtimeEvent.AssistantAudioStopped -> assistantSpeaking = false
+            else -> Unit
+        }
+    }
+
+    @Synchronized fun expired(seconds: Int): Boolean =
+        seconds > 0 && !userSpeaking && !assistantSpeaking && clock() - lastActivity >= seconds * 1000L
+}
 
 /**
  * Generation-bound state for a deferred device-session action.
@@ -206,6 +229,9 @@ class RealtimeSessionCoordinator @Inject constructor(
      */
     @Inject lateinit var carAudioPreferences: CarAudioPreferences
 
+    @Inject lateinit var settingsStore: SettingsStore
+    internal var silenceClock: () -> Long = { android.os.SystemClock.elapsedRealtime() }
+
     /**
      * The transport for the *current* session, selected per the resolved
      * `voiceEngine` pin (FR-VE-03): WebRTC-to-OpenAI for `openai-direct`, the
@@ -241,6 +267,8 @@ class RealtimeSessionCoordinator @Inject constructor(
         @Volatile var valid = true
         @Volatile var transport: RealtimeTransport? = null
         val tools = SupervisorJob()
+        var silence: ListeningSilenceState? = null
+        var silenceJob: Job? = null
 
         /** Car-audio session (service + lease); null in legacy mode or once released. */
         @Volatile var carSession: CarAudioSessionHandle? = null
@@ -288,6 +316,7 @@ class RealtimeSessionCoordinator @Inject constructor(
 
     private fun invalidate(binding: SessionBinding, clearTranscript: Boolean = true, cleanup: Boolean = true) {
         binding.valid = false
+        binding.silenceJob?.cancel()
         binding.tools.cancel()
         if (cleanup && activeBinding === binding) {
             deviceActionState.advanceGeneration()
@@ -572,6 +601,8 @@ class RealtimeSessionCoordinator @Inject constructor(
                 }
             }
             binding.transport = transport
+            val silenceSeconds = if (::settingsStore.isInitialized) settingsStore.document.value.keepListeningSeconds else 0
+            if (silenceSeconds > 0) binding.silence = ListeningSilenceState(silenceClock)
             // Engines needing more than (credential, endpoint) — e.g. the
             // Gemini setup frame — take it from the full bootstrap (no-op
             // for the others).
@@ -600,6 +631,22 @@ class RealtimeSessionCoordinator @Inject constructor(
             // its callback queued a close behind this lock.
             _connected.value = true
             published = true
+            binding.silence?.activity()
+            if (silenceSeconds > 0) {
+                binding.silenceJob = scope.launch {
+                    while (isActive && isCurrent(binding)) {
+                        delay(500)
+                        lifecycleMutex.withLock {
+                            if (isCurrent(binding) && binding.silence?.expired(silenceSeconds) == true) {
+                                silenceIfActive(binding, "after listening timeout")
+                                binding.silenceJob = null
+                                closeBinding(binding, upload = true)
+                                return@launch
+                            }
+                        }
+                    }
+                }
+            }
             session.quotaWarning
                 ?.trim()
                 ?.takeIf { it.isNotEmpty() }
@@ -777,6 +824,15 @@ class RealtimeSessionCoordinator @Inject constructor(
 
     private fun onTransportEvent(event: RealtimeEvent, binding: SessionBinding) {
         if (!isCurrent(binding)) return
+        when (event) {
+            is RealtimeEvent.SpeechStarted, is RealtimeEvent.SpeechStopped,
+            is RealtimeEvent.AssistantAudioStarted, is RealtimeEvent.AssistantAudioStopped,
+            is RealtimeEvent.UserTranscriptDelta, is RealtimeEvent.UserTranscriptCompleted,
+            is RealtimeEvent.AssistantTranscriptDelta, is RealtimeEvent.AssistantTranscriptDone,
+            is RealtimeEvent.ResponseStarted, is RealtimeEvent.ResponseDone,
+            is RealtimeEvent.FunctionCall -> binding.silence?.activity(event)
+            else -> Unit
+        }
         when (event) {
             is RealtimeEvent.SpeechStarted ->
                 emit(SessionUiEvent.UserSpeechStarted)
@@ -1014,6 +1070,7 @@ class RealtimeSessionCoordinator @Inject constructor(
         val binding = activeBinding?.takeIf { isCurrent(it) } ?: return
         val sessionTransport = binding.transport ?: return
         runCatching {
+            binding.silence?.activity()
             sessionTransport.sendEvent(
                 JSONObject()
                     .put("type", "conversation.item.create")

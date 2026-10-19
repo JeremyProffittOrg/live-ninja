@@ -101,8 +101,8 @@
     },
     "keepListeningSeconds": {
       "type": "integer",
-      "description": "How long the web client keeps the session live and the mic listening after a completed reply before ending the conversation itself. 0 (default) = no client-side timeout: the mic keeps listening until the user ends the conversation or the voice provider closes the session (owner decision 2026-07-19 — the provider owns session end). Non-zero values end the session that many seconds after the last reply (the pre-M13 hardcoded behavior was 10). In hands-free/wake-word mode the mic mutes during this window and the wake phrase resumes it; the same timeout (or none, for 0) applies to the muted wait.",
-      "enum": [0, 10, 30, 60, 300],
+      "description": "How long the web client keeps the session live and the mic listening after a completed reply before ending the conversation itself. 0 (default) = no client-side timeout: the mic keeps listening until the user ends the conversation or the voice provider closes the session (owner decision 2026-07-19 — the provider owns session end). Android also uses this setting to end the active conversation after that many seconds without user or assistant speech; speech pauses the timer and the setting applies to the next conversation. Enabled wake-word listening remains available. Non-zero web values end the session that many seconds after the last reply (the pre-M13 hardcoded behavior was 10). In hands-free/wake-word mode the mic mutes during this window and the wake phrase resumes it; the same timeout (or none, for 0) applies to the muted wait.",
+      "enum": [0, 10, 30, 60, 120, 300],
       "default": 0
     },
     "geminiVoice": {

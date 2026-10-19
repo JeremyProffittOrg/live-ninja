@@ -56,6 +56,7 @@ func TestValidateAndNormalizeSettings(t *testing.T) {
 		}, false},
 		{"keepListening 0 ok", func(d map[string]any) { d["keepListeningSeconds"] = float64(0) }, true},
 		{"keepListening 300 ok", func(d map[string]any) { d["keepListeningSeconds"] = float64(300) }, true},
+		{"keepListening 120 ok", func(d map[string]any) { d["keepListeningSeconds"] = float64(120) }, true},
 		{"keepListening off-menu value bad", func(d map[string]any) { d["keepListeningSeconds"] = float64(45) }, false},
 		{"keepListening string bad", func(d map[string]any) { d["keepListeningSeconds"] = "forever" }, false},
 		{"gemini engine default pin ok", func(d map[string]any) {

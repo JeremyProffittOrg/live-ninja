@@ -113,6 +113,59 @@ class InboundTests(unittest.TestCase):
         self.assertEqual(self.provider.call_count, 1)
         self.broker.assert_not_called()
 
+    def test_outbound_live_delivery_reuses_bound_owner_session_and_cleanup(self):
+        self.configure()
+        event = {'operation':'owner_message_send', 'ownerUserId':owners.OWNER, 'requestId':'live-delivery',
+                 'destination':'primary', 'message':'Sales update', 'live':True, 'payload':'{"total":12}'}
+        reply = r.handler(event, None)
+        self.assertEqual(reply['statusCode'], 200)
+        self.item = lambda: r.get(m.request_key(owners.OWNER, 'live-delivery'))
+        self.assertEqual(self.item()['reservedUSD'], Decimal('1.40'))
+        create = next(call.args[1] for call in self.provider.call_args_list if call.args[0] == '/Calls.json')
+        self.assertNotIn('Record',create)
+        self.assertIn('/inbound-owner/connect/',create['Twiml'])
+        self.assertIn('being recorded',create['Twiml'])
+        self.assertNotIn('Sales update',create['Twiml'])
+        self.assertEqual(r.handler(event,None)['statusCode'],200)
+        self.assertEqual(sum(call.args[0]=='/Calls.json' for call in self.provider.call_args_list),1)
+        self.assertEqual(r.handler({**event,'payload':'{"total":13}'},None)['statusCode'],409)
+        self.assertEqual(self.callback('connect')['statusCode'],403)
+        connected = self.callback('connect',From='+12025550100',To='+12025550101',Direction='outbound-api')
+        self.assertIn('<Connect',connected['body'])
+        self.assertEqual(self.item()['recordingAuthorization'],'owner-message')
+        self.assertNotIn('<Connect',self.callback('connect',From='+12025550100',To='+12025550101',Direction='outbound-api')['body'])
+        self.assertEqual(self.broker.call_count,1)
+        self.assertEqual(self.broker.call_args.args[0]['payload'],'{"total":12}')
+        self.assertEqual(self.control()['statusCode'],200)
+        self.assertEqual(self.control('check')['statusCode'],200)
+        self.assertEqual(self.control('finish')['statusCode'],200)
+        self.assertEqual(self.item()['inboundState'],'ended')
+        self.assertNotIn('activeRequest',r.get(m.VOICE_KEY))
+
+    def test_outbound_payload_rejected_before_provider_or_reservation(self):
+        self.configure()
+        for fields in ({'payload':'{}'}, {'live':True,'payload':'[]'}, {'live':True,'payload':'{"x":NaN}'}, {'live':True,'payload':'x'*12001}):
+            result=r.handler({'operation':'owner_message_send','ownerUserId':owners.OWNER,'requestId':'invalid-live',
+                              'destination':'primary','message':'Summary',**fields},None)
+            self.assertEqual(result['statusCode'],400)
+        self.provider.assert_not_called()
+
+    def test_outbound_live_deadline_cannot_extend_daily_authority(self):
+        self.configure()
+        cfg=r.get(m.CONFIG_KEY)
+        cfg.update(budgetFloorUSD=Decimal('20'),budgetFloorMonth='2026-10')
+        r._table.put_item(Item=cfg)
+        patch.object(m,'budget_clock',return_value=('2026-10','2026-10-18','America/New_York',1100)).start()
+        r._table.put_item(Item={**m.budget_keys('2026-10','2026-10-18')[1], 'version':1,'grantedUSD':Decimal('5'),'spentUSD':Decimal('0'),'expiresAt':1100})
+        self.item=lambda:r.get(m.request_key(owners.OWNER,'bounded-live'))
+        result=r.handler({'operation':'owner_message_send','ownerUserId':owners.OWNER,'requestId':'bounded-live',
+                          'destination':'primary','message':'Summary','live':True},None)
+        self.assertEqual(result['statusCode'],200)
+        self.assertEqual(self.item()['deadline'],1100)
+        self.assertIn('<Connect',self.callback('connect',From='+12025550100',To='+12025550101',Direction='outbound-api')['body'])
+        caps=[call.args[1]['TimeLimit'] for call in self.provider.call_args_list if call.args[0].endswith('/'+f.CALL+'.json') and 'TimeLimit' in call.args[1]]
+        self.assertEqual(caps,[100])
+
     def test_unknown_caller_only_hangs_up_without_reservation_even_while_stopped(self):
         self.assertEqual(self.callback(From='+12025550999')['body'], '<Response><Hangup/></Response>')
         self.configure()
@@ -652,6 +705,30 @@ class InboundTests(unittest.TestCase):
         self.assertEqual(args['FunctionName'], 'live-ninja-realtime-broker')
         self.assertEqual(json.loads(args['Payload']), {'mode': 'phone-session', 'userId': owners.OWNER,
             'surface': 'phone', 'phoneCallSid': f.CALL, 'phoneDeadline': 1180})
+        provider.invoke.return_value = {'Payload': io.BytesIO(json.dumps(bootstrap).encode())}
+        with patch.dict(sys.modules, {'boto3': fake_boto}):
+            REAL_MINT({**self.item(), 'live':True, 'message':'Sales update', 'payload':'{"total":12}'})
+        wire=json.loads(provider.invoke.call_args.kwargs['Payload'])
+        self.assertEqual(wire['phoneSummary'],'Sales update')
+        self.assertEqual(wire['phonePayload'],'{"total":12}')
+
+    def test_outbound_terminal_before_create_response_stays_terminal(self):
+        self.configure()
+        self.item=lambda:r.get(m.request_key(owners.OWNER,'early-live'))
+        def early(path, form=None):
+            if path == '/Calls.json':
+                self.assertIn('<Connect',self.callback('connect',From='+12025550100',To='+12025550101',Direction='outbound-api')['body'])
+                self.assertEqual(self.control()['statusCode'],200)
+                self.assertEqual(self.control('finish')['statusCode'],200)
+                return {'sid':f.CALL,'account_sid':f.ACCOUNT,'status':'queued'}
+            return self.provider_result(path,form)
+        self.provider.side_effect=early
+        result=r.handler({'operation':'owner_message_send','ownerUserId':owners.OWNER,'requestId':'early-live',
+                          'destination':'primary','message':'Summary','live':True},None)
+        self.assertEqual(result['statusCode'],200)
+        self.assertEqual(self.item()['providerStatus'],'completed')
+        self.assertEqual(self.item()['inboundState'],'ended')
+        self.assertNotIn('activeRequest',r.get(m.VOICE_KEY))
 
 
 if __name__ == '__main__':

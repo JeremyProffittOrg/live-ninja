@@ -427,8 +427,8 @@ func validateAndNormalizeSettings(doc map[string]any) string {
 		doc["keepListeningSeconds"] = float64(0)
 	default:
 		n, ok := numberVal(v)
-		if !ok || (n != 0 && n != 10 && n != 30 && n != 60 && n != 300) {
-			return "keepListeningSeconds must be one of 0, 10, 30, 60, 300"
+		if !ok || (n != 0 && n != 10 && n != 30 && n != 60 && n != 120 && n != 300) {
+			return "keepListeningSeconds must be one of 0, 10, 30, 60, 120, 300"
 		}
 	}
 	// micEagerness: how quickly semantic VAD decides the user finished a

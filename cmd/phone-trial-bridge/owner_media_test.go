@@ -38,8 +38,11 @@ func TestOwnerSessionUsesBrokerContextAndRejectsExpiredCapability(t *testing.T) 
 	}
 	session := objectAt(config, "session")
 	audio := objectAt(session, "audio")
-	if stringAt(session, "instructions") != "Saved owner persona, rules and memory." || len(session["tools"].([]any)) != 1 {
+	if !strings.HasPrefix(stringAt(session, "instructions"), "Saved owner persona, rules and memory.") || len(session["tools"].([]any)) != 2 {
 		t.Fatal("owner context lost")
+	}
+	if stringAt(session["tools"].([]any)[1].(map[string]any), "name") != ownerEndCallTool || !strings.Contains(stringAt(session, "instructions"), "only when the owner explicitly asks") {
+		t.Fatal("explicit owner hangup tool missing")
 	}
 	if stringAt(objectAt(objectAt(audio, "input"), "format"), "type") != "audio/pcmu" || stringAt(objectAt(audio, "output"), "voice") != "marin" {
 		t.Fatal("wrong owner media configuration")
@@ -52,6 +55,63 @@ func TestOwnerSessionUsesBrokerContextAndRejectsExpiredCapability(t *testing.T) 
 	b.Deadline = time.Now().Add(10 * time.Minute).Unix()
 	if _, err := ownerSession(b); err == nil {
 		t.Fatal("unbounded deadline accepted")
+	}
+}
+
+func TestOwnerLoopHangupStaysLocal(t *testing.T) {
+	s, _ := fixture()
+	b := ownerFixture(t)
+	if _, err := ownerSession(b); err != nil {
+		t.Fatal(err)
+	}
+	s.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Error("hangup must not invoke the owner tool router")
+		return nil, io.ErrUnexpectedEOF
+	})}
+	tw, _ := wsPair(t)
+	az, _ := wsPair(t)
+	events := make(chan wireEvent, 1)
+	events <- wireEvent{Source: "azure", Data: map[string]any{"type": "response.function_call_arguments.done", "name": ownerEndCallTool, "call_id": "hangup-one", "arguments": `{}`}}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if reason := s.ownerLoop(ctx, &b, tw, az, "MZtest", "capability", events); reason != "owner_hangup" {
+		t.Fatalf("hangup did not end the bridge: %s", reason)
+	}
+}
+
+func TestOwnerLoopInactivityEndsCallAndSpeechRestartsWait(t *testing.T) {
+	if ownerIdleTimeout != 120*time.Second {
+		t.Fatalf("phone inactivity timeout=%s; want 2 minutes", ownerIdleTimeout)
+	}
+	s, _ := fixture()
+	b := ownerFixture(t)
+	tw, peer := wsPair(t)
+	az, _ := wsPair(t)
+	events := make(chan wireEvent, 1)
+	done := make(chan string, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() {
+		done <- s.ownerLoopWithIdleTimeout(ctx, &b, tw, az, "MZtest", "capability", events, 200*time.Millisecond)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	events <- wireEvent{Source: "azure", Data: map[string]any{"type": "input_audio_buffer.speech_started"}}
+	if readOwnerEvent(t, peer)["event"] != "clear" {
+		t.Fatal("speech not processed")
+	}
+	select {
+	case reason := <-done:
+		t.Fatalf("speech did not reset inactivity: %s", reason)
+	case <-time.After(250 * time.Millisecond):
+	}
+	events <- wireEvent{Source: "azure", Data: map[string]any{"type": "input_audio_buffer.speech_stopped"}}
+	select {
+	case reason := <-done:
+		if reason != "idle_limit" {
+			t.Fatalf("inactivity reason=%s", reason)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("inactivity did not end call")
 	}
 }
 
@@ -112,6 +172,7 @@ func TestOwnerMediaClosesPlaybackBeforeSlowFinalization(t *testing.T) {
 	b := ownerFixture(t)
 	bootstrap, _ := json.Marshal(b)
 	finalStarted, release := make(chan struct{}), make(chan struct{})
+	finish := make(chan map[string]any, 1)
 	s.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		body := `{}`
 		if strings.HasSuffix(req.URL.Path, "/redeem") {
@@ -120,6 +181,13 @@ func TestOwnerMediaClosesPlaybackBeforeSlowFinalization(t *testing.T) {
 		if req.URL.Path == "/api/v1/transcript" {
 			close(finalStarted)
 			<-release
+		}
+		if strings.HasSuffix(req.URL.Path, "/finish") {
+			var payload map[string]any
+			if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+				t.Error(err)
+			}
+			finish <- payload
 		}
 		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
@@ -141,7 +209,7 @@ func TestOwnerMediaClosesPlaybackBeforeSlowFinalization(t *testing.T) {
 		}
 		_ = conn.WriteJSON(map[string]any{"type": "response.created", "response": map[string]any{"id": "speaking"}})
 		_ = conn.WriteJSON(map[string]any{"type": "response.output_audio.delta", "response_id": "speaking", "item_id": "spoken", "delta": base64.StdEncoding.EncodeToString([]byte("queued telephone audio"))})
-		_ = conn.WriteJSON(map[string]any{"type": "error"})
+		_ = conn.WriteJSON(map[string]any{"type": "response.function_call_arguments.done", "name": ownerEndCallTool, "call_id": "hangup", "arguments": `{}`})
 	}))
 	defer azure.Close()
 	s.cfg.Azure = strings.Replace(azure.URL, "http://", "ws://", 1)
@@ -174,6 +242,15 @@ func TestOwnerMediaClosesPlaybackBeforeSlowFinalization(t *testing.T) {
 	var message map[string]any
 	if err := conn.ReadJSON(&message); err == nil {
 		t.Fatal("phone socket still open during blocked finalization")
+	}
+	release <- struct{}{}
+	select {
+	case payload := <-finish:
+		if payload["reason"] != "owner_hangup" || payload["callSid"] != b.CallSID || payload["transcriptFinalized"] != true {
+			t.Fatalf("hangup cleanup was not sent to recorder: %#v", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("hangup never requested recorder finish")
 	}
 }
 
