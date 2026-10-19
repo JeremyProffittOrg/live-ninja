@@ -143,10 +143,32 @@ func emit(w io.Writer, namespace, metricName string, value float64, unit string,
 		},
 	}
 
+	// Keep structured logs while disabling only reviewed operational metric extraction.
+	// Security/audit-related and unknown metric names retain their existing behavior.
+	if operationalMetric(namespace, metricName, dimensions) && os.Getenv("PUBLISH_OPERATIONAL_CLOUDWATCH_METRICS") != "true" {
+		delete(doc, "_aws")
+		doc["metric_namespace"] = namespace
+		doc["observed_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+	}
 	b, err := json.Marshal(doc)
 	if err != nil {
 		fmt.Fprintf(w, "{\"error\":\"observ: emf marshal failed: %s\"}\n", err)
 		return
 	}
 	fmt.Fprintln(w, string(b))
+}
+
+// Exact reviewed pairs; never disable a namespace wholesale.
+func operationalMetric(namespace, name string, dimensions map[string]string) bool {
+	if namespace == "LiveNinja/Memory" && name == "AgentCoreErrors" {
+		return dimensions["Op"] == "RetrieveMemoryRecords"
+	}
+	switch namespace + "/" + name {
+	case "LiveNinja/Memory/AgentCoreRetrievals",
+		"LiveNinja/RealtimeBroker/EphemeralTokenMintLatency", "LiveNinja/RealtimeBroker/MemoryPreloadErrors",
+		"LiveNinja/RealtimeBroker/MemoryPreloadLatency", "LiveNinja/RealtimeBroker/TopicExtractions",
+		"LiveNinja/TopicsExtract/ConversationsTagged", "LiveNinja/Versioning/ClientVersions":
+		return true
+	}
+	return false
 }

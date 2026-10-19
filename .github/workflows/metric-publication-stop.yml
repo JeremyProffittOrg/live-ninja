@@ -1,0 +1,36 @@
+name: Reviewed operational metric publication stop
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: metric-publication-stop
+  cancel-in-progress: false
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, Linux, X64, home-general-linux-x64]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Scoped tests and change-set guards
+        run: |
+          python -m unittest discover -s scripts -p test_metric_release.py
+          go test ./internal/observ ./cmd/web ./cmd/realtime-broker ./cmd/topics-extract
+          go vet ./internal/observ ./cmd/web ./cmd/realtime-broker ./cmd/topics-extract
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+          allowed-account-ids: '759775734231'
+      - name: Apply only reviewed publisher changes
+        run: python scripts/metric_release.py

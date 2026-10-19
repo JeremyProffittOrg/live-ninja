@@ -1,0 +1,20 @@
+{
+  "stack": "live-ninja",
+  "bucket": "aws-sam-cli-managed-default-samclisourcebucket-vpmvv29iye6w",
+  "functions": {
+    "WebFunction": {
+      "cwd": ".",
+      "package": "./cmd/web"
+    },
+    "RealtimeBrokerFunction": {
+      "cwd": ".",
+      "package": "./cmd/realtime-broker"
+    },
+    "TopicsExtractFunction": {
+      "cwd": ".",
+      "package": "./cmd/topics-extract"
+    }
+  },
+  "filters": [],
+  "repo": "JeremyProffittOrg/live-ninja"
+}
