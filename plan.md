@@ -15,6 +15,7 @@ Files: existing phone tool/service and recorder paths, phone broker and bridge, 
 ### message-controls-release — deploy through the existing pipeline
 - [x] message-controls-verification — 774c36af594c987ff38f6e521eca578a05510afa pushed main; Deploy39240507345 (including web-quality), Phone39240507036, Android push39240507145 and Android release39240513630 all success. Published24/0.3.18, verified package hash and installed on SM-G965U. No calls/texts or app launch. Separate action permissions and live-call acceptance remain blocked above.
 ## Locked decisions (user-confirmed; do not revisit)
+- 2026-10-19 — ghost-job-control answers (question form): commands "NUDGE (send text), ANSWER (reply to prompt), PAUSE / RESUME"; scope "Any computer, any repo"; phone "Read and control".
 - 2026-10-19 — "parked suburban session, ignore" — parked-car items moved to backlog.md.
 - 2026-10-19 — "delivery action, live call can aporove directly" — live owner calls execute actions directly.
 - 2026-10-19 — "provider copy - yes, delete twillio one s3 is verified"
@@ -1255,18 +1256,18 @@ Files: internal/ghost/ (client), internal/tools/ (new ghost_* tools, registry), 
 ### ghost-session-control — start runs and send commands
 depends on: ghost-session-read
 - [ ] ghost-run-start — ghost_run_start starts a run on a chosen computer and repo through the existing POST /schedule launch path (reuse code_update_start plumbing), and ghost_run_status reads it back. It goes through registry confirmation and idempotency. Proof: focused tests for confirm-required, a duplicate request and an unknown repo.
-- [!] ghost-command-allowlist — ghost-cli change: add POST /command to the internal-invoke allowlist for only the command types the owner approves (see ghost-job-decisions), on a single named node, never KILL_ALL, UPDATE_AGENT or CONFIG_PATCH. Ship it through the ghost-cli repo pipeline. Unblock: the owner answers which command types are allowed.
-- [ ] ghost-session-command — ghost_session_command sends NUDGE (text to the session), ANSWER (reply to a waiting prompt), PAUSE, RESUME and KILL (if approved) to one session on one node, through registry confirmation, and returns the command_id and its result. depends on: ghost-command-allowlist. Proof: focused tests for each allowed type, a rejected type and an unknown session.
+- [ ] ghost-command-allowlist — ghost-cli change: add POST /command to the internal-invoke allowlist for NUDGE, ANSWER, PAUSE and RESUME only, on a single named node; reject every other type, including KILL, KILL_ALL, UPDATE_AGENT and CONFIG_PATCH. Ship it through the ghost-cli repo pipeline.
+- [ ] ghost-session-command — ghost_session_command sends NUDGE (text to the session), ANSWER (reply to a waiting prompt), PAUSE and RESUME to one session on one node, through registry confirmation, and returns the command_id and its result. depends on: ghost-command-allowlist. Proof: focused tests for each allowed type, a rejected type and an unknown session.
 
 ### ghost-surfaces — expose the tools where the owner asked
 depends on: ghost-session-control
 - [ ] ghost-mcp-scopes — add ghost:read (nodes, sessions, summaries, run status) and ghost:manage (run start, session commands) to MCP metadata and the policy map, and add the existing code_update_* tools under ghost:manage. Existing connectors keep working without the new tools until the owner reconnects with the new scopes. Proof: go test ./internal/webapp -run 'TestMCP' -count=1.
-- [!] ghost-phone-access — whether a live phone call may use ghost:read and ghost:manage tools. Unblock: owner decision in ghost-job-decisions.
+- [ ] ghost-phone-access — PIN-verified owner calls get the ghost:read and ghost:manage tools; starts and commands need a spoken confirmation through the registry confirmation flow. Proof: surface tool tests in internal/realtime.
 - [ ] ghost-help — update the Help drawer and contracts in the same commit as each user-visible tool. Proof: go test ./internal/webapp/ -run TestHelpDrawer -count=1.
 - [ ] ghost-release — push each milestone on main and watch Deploy to a terminal success. Verify one real read-only call (ghost_nodes) through MCP as the owner. No session command is sent to a real session without an explicit owner request.
 
 ### ghost-job-decisions — owner answers needed before ghost-session-control and ghost-surfaces
-- [!] ghost-decision-commands — which /command types Live Ninja may send: NUDGE, ANSWER, PAUSE, RESUME, KILL. Unblock: owner.
-- [!] ghost-decision-scope — any computer and any repo, or only an approved list. Unblock: owner.
-- [!] ghost-decision-phone — app and MCP only, or also live phone calls. Unblock: owner.
+- [x] ghost-decision-commands — 2026-10-19 owner answer: NUDGE (send text), ANSWER (reply to prompt), PAUSE / RESUME. KILL is not allowed.
+- [x] ghost-decision-scope — 2026-10-19 owner answer: any computer, any repo. Each start or command still needs confirmation.
+- [x] ghost-decision-phone — 2026-10-19 owner answer: read and control on PIN-verified owner calls, with spoken confirmation.
 
