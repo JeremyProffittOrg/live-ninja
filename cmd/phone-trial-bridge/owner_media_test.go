@@ -5,8 +5,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"log"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -19,20 +22,33 @@ func ownerFixture(t *testing.T) ownerBootstrap {
 	t.Helper()
 	// Exact JSON names and session object shape emitted by broker mode phone-session.
 	raw, _ := json.Marshal(map[string]any{"mode": "phone", "engine": "gpt-live-azure", "sessionId": "fresh-owner-session",
-		"bridgeToken": "test-phone-token", "bridgeTokenExpiresAt": time.Now().Add(240 * time.Second).UTC().Format(time.RFC3339),
-		"callSid": "CA" + strings.Repeat("1", 32), "deadline": time.Now().Add(180 * time.Second).Unix(),
+		"bridgeToken": "test-phone-token", "bridgeTokenExpiresAt": time.Now().Add(660 * time.Second).UTC().Format(time.RFC3339),
+		"callSid": "CA" + strings.Repeat("1", 32), "deadline": time.Now().Add(600 * time.Second).Unix(), "costCapUSD": "1.00",
 		"sessionConfig": map[string]any{"type": "realtime", "instructions": "Saved owner persona, rules and memory.", "tool_choice": "auto",
 			"tools": []any{map[string]any{"type": "function", "name": "memory_search"}}, "audio": map[string]any{"output": map[string]any{"voice": "marin"}}}})
 	var b ownerBootstrap
 	if err := json.Unmarshal(raw, &b); err != nil {
 		t.Fatal(err)
 	}
+	setOwnerCap(t, &b, b.CostCapUSD)
 	return b
+}
+
+// setOwnerCap gives a loop-only test the validated cap ownerSession would
+// have parsed from the bootstrap.
+func setOwnerCap(t *testing.T, b *ownerBootstrap, capUSD string) {
+	t.Helper()
+	b.CostCapUSD = capUSD
+	v, err := ownerCostCap(*b)
+	if err != nil {
+		t.Fatalf("test cap %q: %v", capUSD, err)
+	}
+	b.capUSD = v
 }
 
 func TestOwnerSessionUsesBrokerContextAndRejectsExpiredCapability(t *testing.T) {
 	b := ownerFixture(t)
-	config, err := ownerSession(b)
+	config, err := ownerSession(&b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,20 +64,27 @@ func TestOwnerSessionUsesBrokerContextAndRejectsExpiredCapability(t *testing.T) 
 		t.Fatal("wrong owner media configuration")
 	}
 	b.BridgeTokenExpiresAt = time.Now().Add(-time.Second).UTC().Format(time.RFC3339)
-	if _, err := ownerSession(b); err == nil {
+	if _, err := ownerSession(&b); err == nil {
 		t.Fatal("expired capability accepted")
 	}
 	b = ownerFixture(t)
-	b.Deadline = time.Now().Add(10 * time.Minute).Unix()
-	if _, err := ownerSession(b); err == nil {
+	b.Deadline = time.Now().Add(11 * time.Minute).Unix()
+	if _, err := ownerSession(&b); err == nil {
 		t.Fatal("unbounded deadline accepted")
+	}
+	for _, bad := range []string{"", "0", "-1", "10.01", "NaN", "abc"} {
+		b = ownerFixture(t)
+		b.CostCapUSD = bad
+		if _, err := ownerSession(&b); err == nil {
+			t.Fatalf("invalid cost cap %q accepted", bad)
+		}
 	}
 }
 
 func TestOwnerLoopHangupStaysLocal(t *testing.T) {
 	s, _ := fixture()
 	b := ownerFixture(t)
-	if _, err := ownerSession(b); err != nil {
+	if _, err := ownerSession(&b); err != nil {
 		t.Fatal(err)
 	}
 	s.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -92,7 +115,7 @@ func TestOwnerLoopInactivityEndsCallAndSpeechRestartsWait(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	go func() {
-		done <- s.ownerLoopWithIdleTimeout(ctx, &b, tw, az, "MZtest", "capability", events, 200*time.Millisecond)
+		done <- s.ownerLoopWithTiming(ctx, &b, tw, az, "MZtest", "capability", events, ownerLoopTiming{Idle: 200 * time.Millisecond, WrapHard: ownerWrapHardLimit})
 	}()
 	time.Sleep(100 * time.Millisecond)
 	events <- wireEvent{Source: "azure", Data: map[string]any{"type": "input_audio_buffer.speech_started"}}
@@ -172,13 +195,18 @@ func TestOwnerMediaClosesPlaybackBeforeSlowFinalization(t *testing.T) {
 	b := ownerFixture(t)
 	bootstrap, _ := json.Marshal(b)
 	finalStarted, release := make(chan struct{}), make(chan struct{})
-	finish := make(chan map[string]any, 1)
+	finish, final := make(chan map[string]any, 1), make(chan map[string]any, 1)
 	s.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		body := `{}`
 		if strings.HasSuffix(req.URL.Path, "/redeem") {
 			body = string(bootstrap)
 		}
 		if req.URL.Path == "/api/v1/transcript" {
+			var payload map[string]any
+			if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+				t.Error(err)
+			}
+			final <- payload
 			close(finalStarted)
 			<-release
 		}
@@ -209,6 +237,8 @@ func TestOwnerMediaClosesPlaybackBeforeSlowFinalization(t *testing.T) {
 		}
 		_ = conn.WriteJSON(map[string]any{"type": "response.created", "response": map[string]any{"id": "speaking"}})
 		_ = conn.WriteJSON(map[string]any{"type": "response.output_audio.delta", "response_id": "speaking", "item_id": "spoken", "delta": base64.StdEncoding.EncodeToString([]byte("queued telephone audio"))})
+		// 1000 input and 900 output tokens without details: priced at the audio rates, $0.028.
+		_ = conn.WriteJSON(map[string]any{"type": "response.done", "response": map[string]any{"id": "speaking", "status": "completed", "usage": map[string]any{"input_tokens": 1000, "output_tokens": 900, "input_token_details": map[string]any{"cached_tokens": 0}}}})
 		_ = conn.WriteJSON(map[string]any{"type": "response.function_call_arguments.done", "name": ownerEndCallTool, "call_id": "hangup", "arguments": `{}`})
 	}))
 	defer azure.Close()
@@ -249,8 +279,17 @@ func TestOwnerMediaClosesPlaybackBeforeSlowFinalization(t *testing.T) {
 		if payload["reason"] != "owner_hangup" || payload["callSid"] != b.CallSID || payload["transcriptFinalized"] != true {
 			t.Fatalf("hangup cleanup was not sent to recorder: %#v", payload)
 		}
+		// Recorder contract: modelCostUSD is a six-place decimal string priced from every response.done.
+		if payload["modelCostUSD"] != "0.028000" || payload["inputTokens"] != float64(1000) || payload["outputTokens"] != float64(900) || payload["cachedInputTokens"] != float64(0) {
+			t.Fatalf("finish payload cost fields: %#v", payload)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("hangup never requested recorder finish")
+	}
+	sink := <-final
+	cost := objectAt(sink, "cost")
+	if sink["final"] != true || sink["sessionId"] != b.SessionID || math.Abs(cost["usd"].(float64)-0.028) > 1e-9 || cost["textTokens"] != float64(1900) || cost["audioTokens"] != float64(0) || cost["cachedTokens"] != float64(0) {
+		t.Fatalf("final transcript cost: %#v", sink)
 	}
 }
 
@@ -391,8 +430,14 @@ func ownerUsageEvent(id string, input, output any) wireEvent {
 
 func runOwnerUsageEvents(t *testing.T, eventsToSend []wireEvent) (ownerBootstrap, string) {
 	t.Helper()
+	return runOwnerUsageEventsWithCap(t, eventsToSend, "1.00")
+}
+
+func runOwnerUsageEventsWithCap(t *testing.T, eventsToSend []wireEvent, capUSD string) (ownerBootstrap, string) {
+	t.Helper()
 	s, _ := fixture()
 	b := ownerFixture(t)
+	setOwnerCap(t, &b, capUSD)
 	tw, _ := wsPair(t)
 	az, _ := wsPair(t)
 	events := make(chan wireEvent, len(eventsToSend)+1)
@@ -406,31 +451,129 @@ func runOwnerUsageEvents(t *testing.T, eventsToSend []wireEvent) (ownerBootstrap
 	return b, reason
 }
 
-func TestOwnerLoopUsageLimits(t *testing.T) {
-	for _, test := range []struct {
-		name          string
-		count         int
-		input, output float64
-		requestNext   bool
-	}{
-		{"input_response_cap", 1, 12001, 0, false},
-		{"output_response_cap", 1, 0, 513, false},
-		{"input_reservation_stops_next_response", 4, 12000, 1, true},
-		{"output_reservation_stops_next_response", 48, 0, 512, true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			events := []wireEvent{}
-			for i := 0; i < test.count; i++ {
-				events = append(events, ownerUsageEvent("response-"+strings.Repeat("x", i+1), test.input, test.output))
-			}
-			if test.requestNext {
-				events = append(events, wireEvent{Source: "azure", Data: map[string]any{"type": "input_audio_buffer.committed"}})
-			}
-			b, reason := runOwnerUsageEvents(t, events)
-			if reason != "budget_limit" || b.InputTokens != int64(test.input)*int64(test.count) || b.OutputTokens != int64(test.output)*int64(test.count) {
-				t.Fatalf("reason=%s usage=%d/%d", reason, b.InputTokens, b.OutputTokens)
-			}
-		})
+func TestOwnerUsagePricingUsesDetailsAndNeverUndercounts(t *testing.T) {
+	full := map[string]any{
+		"input_token_details": map[string]any{"text_tokens": float64(37700), "audio_tokens": float64(917),
+			"cached_tokens_details": map[string]any{"text_tokens": float64(30000), "audio_tokens": float64(0)}},
+		"output_token_details": map[string]any{"text_tokens": float64(100), "audio_tokens": float64(1913)}}
+	got, cached := ownerUsageCostUSD(full, 38617, 2013)
+	want := (30000*0.06 + 7700*0.60 + 917*10.00 + 100*2.40 + 1913*20.00) / 1e6
+	if math.Abs(got-want) > 1e-12 || cached != 30000 {
+		t.Fatalf("detailed price=%f cached=%d want %f / 30000", got, cached, want)
+	}
+	uncached, cachedNone := ownerUsageCostUSD(map[string]any{
+		"input_token_details":  map[string]any{"text_tokens": float64(37700), "audio_tokens": float64(917)},
+		"output_token_details": map[string]any{"text_tokens": float64(100), "audio_tokens": float64(1913)}}, 38617, 2013)
+	if math.Abs(uncached-(37700*0.60+917*10.00+100*2.40+1913*20.00)/1e6) > 1e-12 || uncached < got || cachedNone != 0 {
+		t.Fatalf("missing cache detail must price uncached: %f", uncached)
+	}
+	// The reported 104 s call: about $0.07, far below any cap.
+	if uncached < 0.06 || uncached > 0.08 {
+		t.Fatalf("reported call priced at %f", uncached)
+	}
+	missing, _ := ownerUsageCostUSD(map[string]any{}, 1000, 100)
+	if math.Abs(missing-(1000*10.00+100*20.00)/1e6) > 1e-12 {
+		t.Fatalf("missing details must use the highest rates: %f", missing)
+	}
+	inconsistent, _ := ownerUsageCostUSD(map[string]any{"input_token_details": map[string]any{"text_tokens": float64(5000), "audio_tokens": float64(0)}}, 1000, 0)
+	if math.Abs(inconsistent-1000*10.00/1e6) > 1e-12 {
+		t.Fatalf("inconsistent details must use the highest rate: %f", inconsistent)
+	}
+}
+
+func TestOwnerLoopLongCallIsNotEndedByTokenCounts(t *testing.T) {
+	events := []wireEvent{}
+	// 38600 input tokens ended the reported call at 104 s; text-heavy turns now continue.
+	for i := 0; i < 12; i++ {
+		event := ownerUsageEvent("text-"+strings.Repeat("x", i+1), float64(13000), float64(600))
+		usage := objectAt(objectAt(event.Data, "response"), "usage")
+		usage["input_token_details"] = map[string]any{"text_tokens": float64(13000), "audio_tokens": float64(0)}
+		usage["output_token_details"] = map[string]any{"text_tokens": float64(0), "audio_tokens": float64(600)}
+		events = append(events, event)
+	}
+	b, reason := runOwnerUsageEventsWithCap(t, events, "10.00")
+	if reason != "remote_hangup" || b.InputTokens != 156000 || b.CostUSD > 0.25 {
+		t.Fatalf("reason=%s input=%d cost=%f", reason, b.InputTokens, b.CostUSD)
+	}
+}
+
+func TestOwnerLoopCostCapSaysGoodbyeThenEnds(t *testing.T) {
+	s, _ := fixture()
+	b := ownerFixture(t)
+	// The fixture session reserves about $0.08 for a reply and $0.06 for the
+	// goodbye (ownerReserveUSD), so a $0.20 cap admits the greeting.
+	setOwnerCap(t, &b, "0.20")
+	tw, twPeer := wsPair(t)
+	az, azPeer := wsPair(t)
+	events := make(chan wireEvent, 16)
+	done := make(chan string, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() { done <- s.ownerLoop(ctx, &b, tw, az, "MZtest", "capability", events) }()
+	emit := func(fields map[string]any) { events <- wireEvent{Source: "azure", Data: fields} }
+	emit(map[string]any{"type": "session.updated"})
+	if readOwnerEvent(t, azPeer)["type"] != "response.create" {
+		t.Fatal("no greeting")
+	}
+	emit(map[string]any{"type": "response.created", "response": map[string]any{"id": "greeting"}})
+	// 1000 input and 3000 output tokens with no details: $0.07. Another reply
+	// ($0.08) plus the goodbye ($0.06) would pass $0.20, so the goodbye starts now.
+	emit(ownerUsageEvent("greeting", float64(1000), float64(3000)).Data)
+	goodbye := readOwnerEvent(t, azPeer)
+	response := objectAt(goodbye, "response")
+	if goodbye["type"] != "response.create" || response["tool_choice"] != "none" || !strings.Contains(stringAt(response, "instructions"), "cost limit") {
+		t.Fatalf("no spoken goodbye before the cost cap: %#v", goodbye)
+	}
+	// Speech during the goodbye neither cancels nor clears it.
+	emit(map[string]any{"type": "input_audio_buffer.speech_started"})
+	emit(map[string]any{"type": "input_audio_buffer.committed"})
+	emit(map[string]any{"type": "response.created", "response": map[string]any{"id": "bye"}})
+	audio := base64.StdEncoding.EncodeToString(make([]byte, 800)) // 100 ms of audio
+	emit(map[string]any{"type": "response.output_audio.delta", "response_id": "bye", "item_id": "bye-item", "delta": audio})
+	if stringAt(objectAt(readOwnerEvent(t, twPeer), "media"), "payload") != audio {
+		t.Fatal("goodbye audio not played")
+	}
+	emit(ownerUsageEvent("bye", float64(100), float64(50)).Data)
+	select {
+	case reason := <-done:
+		if reason != "cost_limit" {
+			t.Fatalf("reason=%s", reason)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("call did not end after the goodbye")
+	}
+	if b.CostUSD > 0.20 {
+		t.Fatalf("call cost %f exceeded its $0.20 cap", b.CostUSD)
+	}
+	azPeer.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	var extra map[string]any
+	if azPeer.ReadJSON(&extra) == nil {
+		t.Fatalf("unexpected Azure message after goodbye: %#v", extra)
+	}
+}
+
+func TestOwnerLoopDurationLimitSaysGoodbyeBeforeDeadline(t *testing.T) {
+	s, _ := fixture()
+	b := ownerFixture(t)
+	b.Deadline = time.Now().Add(31 * time.Second).Unix()
+	tw, _ := wsPair(t)
+	az, azPeer := wsPair(t)
+	events := make(chan wireEvent, 8)
+	done := make(chan string, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() { done <- s.ownerLoop(ctx, &b, tw, az, "MZtest", "capability", events) }()
+	goodbye := readOwnerEvent(t, azPeer)
+	if goodbye["type"] != "response.create" || !strings.Contains(stringAt(objectAt(goodbye, "response"), "instructions"), "time limit") {
+		t.Fatalf("no spoken goodbye before the time limit: %#v", goodbye)
+	}
+	events <- wireEvent{Source: "azure", Data: map[string]any{"type": "response.created", "response": map[string]any{"id": "bye"}}}
+	events <- ownerUsageEvent("bye", float64(10), float64(10))
+	if reason := <-done; reason != "duration_limit" {
+		t.Fatalf("reason=%s", reason)
+	}
+	if ownerCallMaxSeconds != 600 || ownerIdleTimeout != 2*time.Minute {
+		t.Fatal("call limits changed")
 	}
 }
 
@@ -517,5 +660,345 @@ func TestOwnerLoopSinkFailure(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestOwnerSessionAcceptsTenMinuteDeadlineAndRejectsLonger(t *testing.T) {
+	b := ownerFixture(t)
+	b.Deadline = time.Now().Add(600 * time.Second).Unix()
+	b.BridgeTokenExpiresAt = time.Now().Add(700 * time.Second).UTC().Format(time.RFC3339)
+	if _, err := ownerSession(&b); err != nil {
+		t.Fatalf("600 s deadline rejected: %v", err)
+	}
+	for _, seconds := range []int{610, 700} {
+		b = ownerFixture(t)
+		b.Deadline = time.Now().Add(time.Duration(seconds) * time.Second).Unix()
+		b.BridgeTokenExpiresAt = time.Now().Add(time.Duration(seconds+100) * time.Second).UTC().Format(time.RFC3339)
+		if _, err := ownerSession(&b); err == nil || err.Error() != "invalid phone deadline" {
+			t.Fatalf("%d s deadline accepted: %v", seconds, err)
+		}
+	}
+	b = ownerFixture(t)
+	b.CostCapUSD = ""
+	if _, err := ownerSession(&b); err == nil || err.Error() != "invalid call cost cap" {
+		t.Fatalf("missing cost cap accepted: %v", err)
+	}
+	if ownerCallMaxSeconds != 600 || ownerCallMaxCostUSD != 10.0 || ownerWrapBeforeLimit != 30 || ownerWrapCostRatio != 0.9 {
+		t.Fatal("owner call caps changed from the 2026-10-19 decision")
+	}
+}
+
+func TestOwnerUsagePricingReadsCachedTokensWithoutDetails(t *testing.T) {
+	// Azure reports cache hits as input_token_details.cached_tokens; the split
+	// into cached text and cached audio may be missing. Cached tokens of
+	// unknown kind are taken from text first, the smaller discount.
+	split := map[string]any{"input_token_details": map[string]any{"text_tokens": float64(3000), "audio_tokens": float64(500), "cached_tokens": float64(3200)}}
+	got, cached := ownerUsageCostUSD(split, 3500, 0)
+	want := (3000*0.06 + 200*0.30 + 300*10.00) / 1e6
+	if math.Abs(got-want) > 1e-12 || cached != 3200 {
+		t.Fatalf("cached total without split priced %f cached %d want %f / 3200", got, cached, want)
+	}
+	// A known split of 2000 cached text and 500 cached audio discounts 500
+	// audio tokens where the estimate discounted 200, so it is strictly cheaper.
+	detailed := map[string]any{"input_token_details": map[string]any{"text_tokens": float64(3000), "audio_tokens": float64(500), "cached_tokens": float64(2500),
+		"cached_tokens_details": map[string]any{"text_tokens": float64(2000), "audio_tokens": float64(500)}}}
+	d, cachedSplit := ownerUsageCostUSD(detailed, 3500, 0)
+	if wantSplit := (2000*0.06 + 1000*0.60 + 500*0.30) / 1e6; math.Abs(d-wantSplit) > 1e-12 || d >= got || cachedSplit != 2500 {
+		t.Fatalf("known split priced %f cached %d; want %f below the estimate %f", d, cachedSplit, wantSplit, got)
+	}
+	noSplit := map[string]any{"input_token_details": map[string]any{"cached_tokens": float64(1000)}}
+	if got, cached := ownerUsageCostUSD(noSplit, 1500, 0); math.Abs(got-(1000*0.30+500*10.00)/1e6) > 1e-12 || cached != 1000 {
+		t.Fatalf("cached tokens of unknown kind priced %f cached %d", got, cached)
+	}
+	// An impossible cached count is neither discounted nor reported: the
+	// count the finish payload carries is the count the price used.
+	tooMany := map[string]any{"input_token_details": map[string]any{"cached_tokens": float64(2000)}}
+	if got, cached := ownerUsageCostUSD(tooMany, 1500, 0); math.Abs(got-1500*10.00/1e6) > 1e-12 || cached != 0 {
+		t.Fatalf("impossible cached count must not discount or count: %f cached %d", got, cached)
+	}
+	if _, cached := ownerUsageCostUSD(map[string]any{}, 10, 0); cached != 0 {
+		t.Fatal("cached token count misread")
+	}
+	// The loop accumulates the count so a cache hit is visible in the finish payload.
+	first := ownerUsageEvent("a", float64(2000), float64(10))
+	objectAt(objectAt(first.Data, "response"), "usage")["input_token_details"] = map[string]any{"cached_tokens": float64(1536)}
+	second := ownerUsageEvent("b", float64(2500), float64(10))
+	objectAt(objectAt(second.Data, "response"), "usage")["input_token_details"] = map[string]any{"cached_tokens": float64(2048)}
+	b, reason := runOwnerUsageEventsWithCap(t, []wireEvent{first, second}, "10.00")
+	if reason != "remote_hangup" || b.CachedTokens != 3584 || b.InputTokens != 4500 {
+		t.Fatalf("cached accounting: reason=%s cached=%d input=%d", reason, b.CachedTokens, b.InputTokens)
+	}
+}
+
+func TestOwnerLoopGoodbyeThatNeverCompletesStillEndsCall(t *testing.T) {
+	s, _ := fixture()
+	b := ownerFixture(t)
+	setOwnerCap(t, &b, "0.20")
+	tw, _ := wsPair(t)
+	az, azPeer := wsPair(t)
+	events := make(chan wireEvent, 16)
+	done := make(chan string, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	timing := ownerLoopTiming{Idle: ownerIdleTimeout, WrapHard: 300 * time.Millisecond}
+	go func() { done <- s.ownerLoopWithTiming(ctx, &b, tw, az, "MZtest", "capability", events, timing) }()
+	emit := func(fields map[string]any) { events <- wireEvent{Source: "azure", Data: fields} }
+	emit(map[string]any{"type": "session.updated"})
+	if readOwnerEvent(t, azPeer)["type"] != "response.create" {
+		t.Fatal("no greeting")
+	}
+	emit(map[string]any{"type": "response.created", "response": map[string]any{"id": "greeting"}})
+	emit(ownerUsageEvent("greeting", float64(1000), float64(3000)).Data)
+	requested := time.Now()
+	if goodbye := readOwnerEvent(t, azPeer); goodbye["type"] != "response.create" || !strings.Contains(stringAt(objectAt(goodbye, "response"), "instructions"), "cost limit") {
+		t.Fatalf("no spoken goodbye: %#v", goodbye)
+	}
+	// The model never answers the goodbye. The call still ends with the cap reason.
+	select {
+	case reason := <-done:
+		if reason != "cost_limit" {
+			t.Fatalf("reason=%s", reason)
+		}
+		if time.Since(requested) < 250*time.Millisecond {
+			t.Fatal("call ended before the goodbye had any time to play")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("stalled goodbye kept the call open")
+	}
+	if ownerWrapHardLimit < 10*time.Second || ownerWrapHardLimit >= ownerWrapBeforeLimit*time.Second {
+		t.Fatalf("goodbye hard limit %s must fit inside the %d s wrap-up window", ownerWrapHardLimit, ownerWrapBeforeLimit)
+	}
+}
+
+func TestOwnerReserveKeepsReplyAndGoodbyeUnderSmallCap(t *testing.T) {
+	// A real owner session: long instructions, several tools, admitted at the
+	// end of a day with $0.20 left. One reply plus the goodbye cannot fit, so
+	// the only response is the goodbye and the measured cost stays under cap.
+	b := ownerFixture(t)
+	b.SessionConfig["instructions"] = strings.Repeat("Owner persona, rules and remembered facts. ", 550) // ~24000 chars
+	b.SessionConfig["tools"] = []any{map[string]any{"type": "function", "name": "memory_search"}, map[string]any{"type": "function", "name": "weather"}}
+	b.CostCapUSD = "0.20"
+	if _, err := ownerSession(&b); err != nil {
+		t.Fatal(err)
+	}
+	reply, goodbye := ownerReserveUSD(b.SessionConfig)
+	// 6000 context + ~8000 instruction tokens at $10/M plus 1024 or 160 output tokens at $20/M.
+	if reply < 0.14 || reply > 0.20 || goodbye < 0.12 || goodbye > 0.18 || goodbye >= reply || reply+goodbye <= 0.20 {
+		t.Fatalf("reserves reply=%f goodbye=%f", reply, goodbye)
+	}
+	if b.capUSD != 0.20 {
+		t.Fatalf("validated cap not carried: %f", b.capUSD)
+	}
+	s, _ := fixture()
+	tw, _ := wsPair(t)
+	az, azPeer := wsPair(t)
+	events := make(chan wireEvent, 16)
+	done := make(chan string, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() { done <- s.ownerLoop(ctx, &b, tw, az, "MZtest", "capability", events) }()
+	emit := func(fields map[string]any) { events <- wireEvent{Source: "azure", Data: fields} }
+	emit(map[string]any{"type": "session.updated"})
+	first := readOwnerEvent(t, azPeer)
+	response := objectAt(first, "response")
+	if first["type"] != "response.create" || response["tool_choice"] != "none" || !strings.Contains(stringAt(response, "instructions"), "cost limit") || response["max_output_tokens"] != float64(ownerGoodbyeTokens) {
+		t.Fatalf("a cap below one reply plus the goodbye must get the goodbye first: %#v", first)
+	}
+	emit(map[string]any{"type": "response.created", "response": map[string]any{"id": "bye"}})
+	// The goodbye re-reads the whole context: 14000 input tokens without details at $10/M.
+	emit(ownerUsageEvent("bye", float64(14000), float64(120)).Data)
+	select {
+	case reason := <-done:
+		if reason != "cost_limit" {
+			t.Fatalf("reason=%s", reason)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("goodbye-only call did not end")
+	}
+	if b.CostUSD > 0.20 || b.CostUSD < 0.14 {
+		t.Fatalf("goodbye-only call cost %f; want within the $0.20 cap", b.CostUSD)
+	}
+	azPeer.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	var extra map[string]any
+	if azPeer.ReadJSON(&extra) == nil {
+		t.Fatalf("a second response was requested under a one-response cap: %#v", extra)
+	}
+}
+
+func TestOwnerLoopWrapDuringPendingReplyWaitsThenSaysGoodbye(t *testing.T) {
+	s, _ := fixture()
+	b := ownerFixture(t)
+	// The wrap-up timer fires about one second in, while the greeting is still in flight.
+	b.Deadline = time.Now().Add((ownerWrapBeforeLimit + 1) * time.Second).Unix()
+	tw, _ := wsPair(t)
+	az, azPeer := wsPair(t)
+	events := make(chan wireEvent, 16)
+	done := make(chan string, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	go func() { done <- s.ownerLoop(ctx, &b, tw, az, "MZtest", "capability", events) }()
+	// A gorilla connection keeps a read timeout as a permanent error, so the
+	// model side is read by one goroutine and observed through a channel.
+	model := make(chan map[string]any, 8)
+	go func() {
+		for {
+			var v map[string]any
+			if azPeer.ReadJSON(&v) != nil {
+				return
+			}
+			model <- v
+		}
+	}()
+	next := func(wait time.Duration) (map[string]any, bool) {
+		select {
+		case v := <-model:
+			return v, true
+		case <-time.After(wait):
+			return nil, false
+		}
+	}
+	emit := func(fields map[string]any) { events <- wireEvent{Source: "azure", Data: fields} }
+	emit(map[string]any{"type": "session.updated"})
+	greeting, ok := next(2 * time.Second)
+	if !ok || greeting["type"] != "response.create" || objectAt(greeting, "response")["tool_choice"] == "none" {
+		t.Fatalf("no greeting: %#v", greeting)
+	}
+	emit(map[string]any{"type": "response.created", "response": map[string]any{"id": "greeting"}})
+	// Nothing is sent to the model while the greeting is still being generated.
+	if early, ok := next(1500 * time.Millisecond); ok {
+		t.Fatalf("goodbye interrupted the reply in flight: %#v", early)
+	}
+	select {
+	case reason := <-done:
+		t.Fatalf("call ended during the reply in flight: %s", reason)
+	default:
+	}
+	emit(ownerUsageEvent("greeting", float64(500), float64(200)).Data)
+	goodbye, ok := next(2 * time.Second)
+	response := objectAt(goodbye, "response")
+	if !ok || goodbye["type"] != "response.create" || response["tool_choice"] != "none" || !strings.Contains(stringAt(response, "instructions"), "time limit") {
+		t.Fatalf("goodbye did not follow the completed reply: %#v", goodbye)
+	}
+	emit(map[string]any{"type": "response.created", "response": map[string]any{"id": "bye"}})
+	emit(ownerUsageEvent("bye", float64(100), float64(50)).Data)
+	select {
+	case reason := <-done:
+		if reason != "duration_limit" {
+			t.Fatalf("reason=%s", reason)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("call did not end after the goodbye")
+	}
+	if extra, ok := next(100 * time.Millisecond); ok {
+		t.Fatalf("more than one goodbye requested: %#v", extra)
+	}
+}
+
+func TestOwnerLoopGoodbyeOutranksQueuedRequestAtResponseDone(t *testing.T) {
+	s, _ := fixture()
+	b := ownerFixture(t)
+	setOwnerCap(t, &b, "0.20")
+	tw, twPeer := wsPair(t)
+	az, azPeer := wsPair(t)
+	events := make(chan wireEvent, 16)
+	done := make(chan string, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() { done <- s.ownerLoop(ctx, &b, tw, az, "MZtest", "capability", events) }()
+	emit := func(fields map[string]any) { events <- wireEvent{Source: "azure", Data: fields} }
+	emit(map[string]any{"type": "session.updated"})
+	if readOwnerEvent(t, azPeer)["type"] != "response.create" {
+		t.Fatal("no greeting")
+	}
+	emit(map[string]any{"type": "response.created", "response": map[string]any{"id": "greeting"}})
+	// The owner speaks while the greeting is in flight: a reply is queued.
+	emit(map[string]any{"type": "input_audio_buffer.speech_started"})
+	if readOwnerEvent(t, azPeer)["type"] != "response.cancel" {
+		t.Fatal("cancel missing")
+	}
+	if readOwnerEvent(t, twPeer)["event"] != "clear" {
+		t.Fatal("clear missing")
+	}
+	emit(map[string]any{"type": "input_audio_buffer.speech_stopped"})
+	emit(map[string]any{"type": "input_audio_buffer.committed"})
+	// The greeting's usage ($0.07) leaves no room for the queued reply plus a goodbye.
+	emit(ownerUsageEvent("greeting", float64(1000), float64(3000)).Data)
+	next := readOwnerEvent(t, azPeer)
+	response := objectAt(next, "response")
+	if next["type"] != "response.create" || response["tool_choice"] != "none" || !strings.Contains(stringAt(response, "instructions"), "cost limit") {
+		t.Fatalf("queued reply was sent instead of the goodbye: %#v", next)
+	}
+	emit(map[string]any{"type": "response.created", "response": map[string]any{"id": "bye"}})
+	emit(ownerUsageEvent("bye", float64(100), float64(50)).Data)
+	if reason := <-done; reason != "cost_limit" {
+		t.Fatalf("reason=%s", reason)
+	}
+	azPeer.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	var extra map[string]any
+	if azPeer.ReadJSON(&extra) == nil {
+		t.Fatalf("queued reply sent after the goodbye: %#v", extra)
+	}
+}
+
+func TestOwnerLoopContextDeadlineDuringCostGoodbyeKeepsCostReason(t *testing.T) {
+	s, _ := fixture()
+	b := ownerFixture(t)
+	setOwnerCap(t, &b, "0.01") // below the goodbye reserve: the goodbye is the only response
+	tw, _ := wsPair(t)
+	az, azPeer := wsPair(t)
+	events := make(chan wireEvent, 4)
+	done := make(chan string, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	go func() { done <- s.ownerLoop(ctx, &b, tw, az, "MZtest", "capability", events) }()
+	events <- wireEvent{Source: "azure", Data: map[string]any{"type": "session.updated"}}
+	if goodbye := readOwnerEvent(t, azPeer); !strings.Contains(stringAt(objectAt(goodbye, "response"), "instructions"), "cost limit") {
+		t.Fatalf("no cost goodbye: %#v", goodbye)
+	}
+	// The model never answers and the call deadline passes first.
+	select {
+	case reason := <-done:
+		if reason != "cost_limit" {
+			t.Fatalf("deadline during a cost goodbye reported %s; want cost_limit", reason)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("loop did not observe the context deadline")
+	}
+}
+
+func TestOwnerFinishLogsRecorderRejection(t *testing.T) {
+	s, _ := fixture()
+	s.cfg.Events = "https://recorder.example/events"
+	for _, test := range []struct{ name, want string }{{"rejected", "owner finish rejected: status 400 reason cost_limit"}, {"network", "owner finish failed: recorder unavailable reason cost_limit"}} {
+		t.Run(test.name, func(t *testing.T) {
+			var payload map[string]any
+			s.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if !strings.HasSuffix(req.URL.Path, "/inbound-owner/finish") {
+					t.Errorf("unexpected request %s", req.URL.Path)
+				}
+				if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+					t.Error(err)
+				}
+				if test.name == "network" {
+					return nil, io.ErrUnexpectedEOF
+				}
+				return &http.Response{StatusCode: 400, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+			})}
+			var logged strings.Builder
+			log.SetOutput(&logged)
+			defer log.SetOutput(os.Stderr)
+			b := ownerFixture(t)
+			b.InputTokens, b.OutputTokens, b.CachedTokens, b.CostUSD = 156000, 9000, 40000, 1.2345678
+			s.ownerFinish(strings.Repeat("3", 64), b.CallSID, true, "cost_limit", b)
+			if !strings.Contains(logged.String(), test.want) {
+				t.Fatalf("finish failure not logged: %q", logged.String())
+			}
+			if strings.Contains(logged.String(), b.CallSID) || strings.Contains(logged.String(), "333") {
+				t.Fatalf("finish log carries identifiers: %q", logged.String())
+			}
+			if payload["modelCostUSD"] != "1.234568" || payload["inputTokens"] != float64(156000) || payload["cachedInputTokens"] != float64(40000) || payload["reason"] != "cost_limit" {
+				t.Fatalf("finish payload: %#v", payload)
+			}
+		})
 	}
 }

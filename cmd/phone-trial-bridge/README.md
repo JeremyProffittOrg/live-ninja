@@ -78,6 +78,46 @@ Playback timing is a wall-clock estimate, not sample-perfect hardware feedback.
 End-call waits for the final Twilio mark, bounded by 15 seconds. Session duration,
 40-second inactivity, upstream failure, and disconnects also close the call.
 
+## Owner calls (/owner-media)
+
+Recognized owner calls are admitted by the recorder and bridged to the owner's
+saved session through /owner-media. Limits (owner decisions 2026-10-19):
+
+- Time: the recorder admits an owner call for 600 seconds (bootstrap deadline =
+  admission + 600 s) and binds the Twilio TimeLimit to it; the bridge rejects a
+  deadline more than 605 seconds out. The owner path does not read
+  MAX_CALL_SECONDS. Inactivity hangs up after 120 seconds.
+- Cost: the bootstrap carries costCapUSD, a decimal string in (0, 10.00] that the
+  recorder computed as min($10, remaining daily allowance, remaining monthly cap)
+  less its telephone reserve; a missing or invalid cap rejects the bootstrap.
+  Every response.done usage object is priced per token type at the
+  gpt-realtime-2.1-mini GlobalStandard rates in owner_cost.go (unreported kinds
+  at the most expensive applicable rate; the cached count reported is the count
+  the price discounted). There are no token caps.
+- Reserve: before every reply the bridge checks that the reply and the goodbye
+  after it still fit under the cap. ownerReserveUSD prices the 6000-token
+  context window, the instructions and the tool manifest at the audio input
+  rate plus the reply's 1024 (goodbye's 160) output tokens at the audio output
+  rate: about $0.16 and $0.14 for a full owner session. A reply is admitted only
+  while cost + both reserves <= cap, so the reply in flight plus the goodbye
+  cannot carry the call past the cap. A cap below the goodbye reserve alone gets
+  the goodbye as its only response; its measured cost (far below the reserve in
+  practice) settles against the day and month.
+- Wrap-up: when the reserve no longer fits, at 90% of the cap, or 30 seconds
+  before the deadline, the model says one goodbye sentence; a reply already in
+  flight finishes first and no further reply is requested. The call ends after
+  the goodbye audio has played (bounded by 25 seconds if the goodbye never
+  completes) with endReason cost_limit or duration_limit; a goodbye in flight
+  keeps its reason even if the deadline passes during it.
+- Finish: the recorder receives inputTokens, outputTokens, cachedInputTokens and
+  modelCostUSD (six decimals); the final transcript carries the same cost.usd. A
+  finish the recorder rejects is logged (status and endReason only); the
+  recorder then keeps the call's reservation, never less than the measured cost.
+- Prompt cache: the broker orders instructions static-first (persona, accent,
+  guides, rules, permissions) and per-call content last (remembered facts, the
+  base-knowledge clock, delivery data); the tool list is byte-identical per mint.
+  cachedInputTokens stays 0 until Azure actually serves the prefix from cache.
+
 ## Verification
 
 go test ./cmd/phone-trial-bridge -count=1
