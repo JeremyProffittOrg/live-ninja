@@ -36,7 +36,7 @@ Files: existing phone tool/service and recorder paths, phone broker and bridge, 
 ### delivery-context — retain message data for follow-up
 - [x] delivery-context-contract — call_message adds optional live=true and JSON-object-string payload up to 12000 bytes; existing message is the summary. Existing authenticated owner route, outgoing reservation1.40USD and180s cap; preserve plain playback compatibility. Proof: `go test ./internal/tools ./internal/webapp ./cmd/realtime-broker -count=1` passes all three packages; `python -B -m unittest discover -s tools/phone-trial -p 'test_*.py'` passes191 tests, including signed live connect/mint/redeem/finish and duplicate-call prevention.
 - [x] delivery-action-permissions — e3ba852 (2026-10-19). Owner phone calls get 27 tools: reads plus memory/notes/timers/reminders/location/email, and job and rule changes that execute after spoken confirm=true through jobs.Service / ApplyRuleReview with registry owner, phone-scope and IDEMP# checks. Excluded: call_message, device_control, camera, volume, session controls, code_update_start. Bridge passes refused tool results to the model. Tests: `go test ./cmd/realtime-broker ./cmd/phone-trial-bridge ./internal/realtime ./internal/tools ./internal/webapp -count=1` all ok; `go test ./internal/webapp/ -run TestHelpDrawer` ok. Deploy 39326803427 success, Phone trial 39326803539 success. Live call acceptance unverified (no call placed).
-- [!] delivery-live-acceptance — outgoing budget is exhausted: production monthly allocatedUSD27; no2026-10-19 daily grant. Owner can authorize outgoing allowance in Phone budget. No call was placed; incoming10USD/day allowance is separate.
+- [!] delivery-live-acceptance — needs the owner ready to receive a live owner call; the owner deferred the test. Budget no longer blocks this: the standing $10/day, $100/month allowance (call-allowance-policy, 7db4dee) replaced the old $20/$5 rule. No call is placed autonomously. What unblocks it is the owner saying they are ready. The incoming $10/day policy is separate and unchanged. Voice lock owner-stop-2026-10-16: removed on 2026-10-17 by the activation transaction (Execution log, request owner-audio-check-20261017-a); not re-read on 2026-10-19, so no lock release is a known precondition.
 ### mobile-listening-limit — consume the existing listening setting
 - [x] mobile-listening-control — reuse keepListeningSeconds, offer120seconds and existing choices, measure silence in active Android conversation, preserve explicit0 and enabled wake words. Assumption: silence, not total session lifetime, while optional question remains unanswered. Proof: `gradlew.bat :app:testDebugUnitTest --tests ninja.jeremy.liveninja.realtime.RealtimeSessionCoordinatorTest --tests ninja.jeremy.liveninja.ui.state.SettingsStoreTest --tests ninja.jeremy.liveninja.ui.settings.SettingsSectionTargetingTest --no-daemon` passed52 tests; BUILD SUCCESSFUL in1m39s. JAVA_HOME=C:\Program Files\Eclipse Adoptium\jdk-17.0.19.10-hotspot; ANDROID_HOME/ANDROID_SDK_ROOT=C:\Users\Jeremy\AppData\Local\Android\Sdk.
 ### message-controls-release — deploy through the existing pipeline
@@ -109,7 +109,7 @@ Earlier delivery 2026-10-18: incoming-daily-budget is deployed and active for th
 
 Status: PARTIAL DELIVERY 2026-10-17. One requested owner-message audio call completed with recordingready; it used Twilio TTS, not Azure. Incoming number routing is now corrected from the old/unavailable path, owner/PIN calling is enabled, and the original routing repro passes. Azuredeploymentgpt-realtime-2-1-mini is actualmodelgpt-realtime-2.1-mini/version2026-07-07. The user has been asked to retry an incoming call; actual owner Azureconversation/quality acceptance remains unverified until that call. Today's10USD extra allowance remains subject to local-midnight expiry. Car testing is deferred because the S9 is not in the car. Dialer/takeover, real interviews and provider-copy retention remain open; Android Auto stays in backlog.md. Final routing/release evidence: C:\dev\live-ninja-test-evidence\phone-plan-2026-10-15\inbound-live-route-2026-10-17-final.json.
 
-Single active source: repository-root plan.md; current implementation checkout C:\dev\live-ninja-plan-build\plan.md. Completed history: C:\dev\live-ninja\completed\plan-2026-10-15-history.md and earlier completed/ archives. Deferred work: C:\dev\live-ninja\backlog.md. The current plan covers telephony, Jobs, S3 recordings, car Bluetooth, and their acceptance tests. All Android Auto work is in backlog.md.
+Single active source: repository-root plan.md; current implementation checkout C:\dev\live-ninja-plan-build\plan.md. Completed history: C:\dev\live-ninja\completed\plan-2026-10-15-history.md and earlier completed/ archives. Deferred work: C:\dev\live-ninja\backlog.md. The current plan covers telephony, Jobs, S3 recordings and their acceptance tests. Car Bluetooth work (backlog.md car-audio-deferred, next to parked-car-deferred), hotel calling (hotel-calling-dropped) and all Android Auto work are in backlog.md after the 2026-10-19 owner decisions.
 
 ## Locked decisions (user-confirmed; do not revisit)
 
@@ -200,6 +200,8 @@ Historical quotes below remain unchanged. Later dated decisions supersede earlie
 
 ## Verified facts
 
+- 2026-10-19 — plan-reconcile fix pass: verified by reading plan.md only; no live PHONE#CONTROL/VOICE read was made (cloud reads are out of scope for this pass). The last recorded state of the voice lock is the 2026-10-17 Execution log entry for request owner-audio-check-20261017-a: the activation transaction removed owner-stop-2026-10-16; the earlier 2026-10-17 preflight lines that report it intact predate that transaction. No later entry records the lock being set again. Current runtime state is therefore "removed 2026-10-17, not re-read", not "held".
+
 Phone planning evidence read on 2026-10-15 (the older facts below describe earlier work):
 - C:\dev\live-ninja\.github/workflows/deploy.yml triggers deployment on pushes to main. This draft stays local to avoid starting delivery.
 - C:\dev\live-ninja\go.mod uses Go 1.25 and already includes github.com/gorilla/websocket.
@@ -244,9 +246,9 @@ Definition-of-done rule: all commands named by a milestone must exit 0 and all r
 
 One asynchronous question batch was answered on 2026-10-15. The verbatim answers are in Locked decisions. The recording follow-up was also answered: use a friendly AI introduction and ask to record. Remaining resource/access inputs are listed below; they do not block completing the draft. Do not ask another permission question for deployment.
 
-- hotel-target-input — resolved: select five random California hotels. Verify official property numbers and freeze the selected list before dialing. No additional VPN constraints supplied; do not claim verified compatibility.
-- vehicle-test-input — resolved model: 2027 Chevrolet Suburban, stock head unit. Remaining: native app/browser and affected directions, parked test window and a newer phone for modern Bluetooth route checks. Auto-specific phone and Play access are deferred to backlog.md. Discover available resources before asking for anything missing.
-- budget-and-window-input — resolved spending rule: $20 monthly threshold, then explicit $5 daily grants renewed only by owner permission. Test calls share this ledger. No deadline or area preference was supplied: no fixed completion deadline; use an available US local number within budget. Proposed call-duration/concurrency defaults remain 30 minutes normal, 10 minutes hotel, one conversation, no redial.
+- hotel-target-input — DROPPED 2026-10-19 (history only; see backlog.md hotel-calling-dropped). Former resolution: select five random California hotels. Verify official property numbers and freeze the selected list before dialing. No additional VPN constraints supplied; do not claim verified compatibility.
+- vehicle-test-input — DEFERRED 2026-10-19 with car-audio-deferred (backlog.md); history only. Former resolution: model 2027 Chevrolet Suburban, stock head unit. Remaining at the time of deferral: native app/browser and affected directions, parked test window and a newer phone for modern Bluetooth route checks. Auto-specific phone and Play access are deferred to backlog.md android-auto-deferred.
+- budget-and-window-input — SUPERSEDED 2026-10-19 by the standing $10/day outgoing allowance and $100/month cap (call-allowance-policy, 7db4dee); the per-call limits are $10 and 10 minutes (call-cost-cap, call-time-limit). Former resolution: $20 monthly threshold, then explicit $5 daily grants renewed only by owner permission. Test calls share this ledger. No deadline or area preference was supplied: no fixed completion deadline; use an available US local number within budget. Proposed call-duration/concurrency defaults remain 30 minutes normal, 10 minutes hotel, one conversation, no redial.
 - access-and-retention-input — owner response accepted the defaults except disclosure: owner-only plus PIN, explicitly approved tasks, and 180-day S3 retention. The follow-up explicitly requests a friendly AI introduction and a recording request. Wait for affirmative permission before recording; if refused, log the refusal without audio and end politely. Public product release timing remains unspecified; prefer independent verified releases within approved distribution scope.
 
 Discover exact account/resource identities, existing credentials by names only, model quota, eligible credit offer, official hotel numbers, installed artifact SHA and driver/tool availability from the environment before asking the operator to resolve ambiguity. A missing SDK tool is an implementation/preflight dependency, not an operator question by default.
@@ -270,9 +272,9 @@ Each workstream declares its job classes below and inherits this policy. Before 
 - delivery-job — push focused commits on main only after explicit start. Track all triggered runs. Watch using the exact PowerShell command in Execution contract. Deadline 60 minutes per run. On deterministic failure, fix then commit/push; on verified transient failure, "gh run rerun $runId --failed --repo JeremyProffittOrg/live-ninja" uses the captured ID. One shared ceiling of three attempts per milestone; 30-second then 60-second backoff. Never disable a failing check.
 - topology-proof-job — at most two experiments, each bounded by locked call duration/spend. Record the changed approach before retry. End all test call legs on timeout.
 - controlled-call-job — exact scenario command is "scripts\verify-phone-evidence.bat run-case CASE-NAME", where CASE-NAME is one of the fixed scenario names in the milestone's evidence requirements, not an arbitrary dial target. This command must refuse to place calls without a locked destination/budget file and explicit execution-enabled flag. Three attempts per scenario maximum; observed failure, timeout, stop, or budget cap ends the call and preserves evidence. Never use hotels as debugging targets.
-- hotel-call-job — one attempt per approved hotel by default, one active call. Durable job/run/property IDs and provider status are watched; unknown call-creation outcomes are reconciled before retry. Remaining approved hotels continue after one unavailable contact. An amended retry ceiling must be locked before the job starts.
+- hotel-call-job — DROPPED 2026-10-19 (its only consumer hotel-job-execution moved to backlog.md hotel-calling-dropped; history only). Former definition: one attempt per approved hotel by default, one active call. Durable job/run/property IDs and provider status are watched; unknown call-creation outcomes are reconciled before retry. Remaining approved hotels continue after one unavailable contact. An amended retry ceiling must be locked before the job starts.
 - recording-transfer-job — durable callback/queue state; three total transfer attempts including queue redelivery, with 30/60-second delays. Watch ready/absent/failed and the transfer deadline. Retry the same RecordingSid through the recorded worker retry entrypoint; never redial the telephone call. Capture that deployed worker entrypoint in deployment.json so the verifier can invoke it without guessed resource names.
-- human-hardware-job — parked-car test with a named available operator and device. Exact case, duration, observed evidence, and timeout are registered before launch. No response means unverified, not passed. Do independent work while waiting.
+- human-hardware-job — DEFERRED 2026-10-19 (its consumers car-audio and car-call-testing moved to backlog.md car-audio-deferred). Former definition: parked-car test with a named available operator and device. Exact case, duration, observed evidence, and timeout are registered before launch. No response means unverified, not passed. Do independent work while waiting.
 - research-agent-job — existing android_car_research completed. Any later delegation must have a unique name and nonoverlapping scope, include hidden-process rules, and return evidence checked by the parent. No new agents or emails are scheduled by this plan.
 
 At a ceiling, mark the affected item [!] with exact provider/run/hardware dependency and who can supply it; continue independent authorized work. No silent retries, no overlapping budgets, no local Task Scheduler/cron/timer/service creation. Stop the entire run only for the conditions below. Product-level spend waits requested by the owner pause new calls while retaining results and recordings.
@@ -290,9 +292,9 @@ At a ceiling, mark the affected item [!] with exact provider/run/hardware depend
 
 ## Task mirror and execution order
 
-This table of named tasks is the task-system fallback for the current runtime. It is generated from the milestone dependency lines below. [ ] means not started; the credential-helper and USB checks have separate completed evidence. Do not mark a milestone done from a child's report without its gate passing. Before resuming, read this section and Execution log, then compare the working tree; preserve unrelated changes.
+This table of named tasks is the task-system fallback for the current runtime. It is generated from the milestone dependency lines below. [ ] means not started; the credential-helper check has separate completed evidence. Do not mark a milestone done from a child's report without its gate passing. Before resuming, read this section and Execution log, then compare the working tree; preserve unrelated changes.
 
-Execution sequence: resolve the front-loaded batch and verification tools first. Start provider checks and car reproduction access early. Then run independent Bluetooth repair, Azure/call foundation, and media topology work where their actual dependencies permit. Recording ingestion is required before final calling acceptance. Final release verification follows the native-phone and Bluetooth tests. Android Auto is excluded from the active dependency graph.
+Execution sequence: resolve the front-loaded batch and verification tools first. Start provider checks early. Then run independent Azure/call foundation and media topology work where their actual dependencies permit. Recording ingestion is required before final calling acceptance. Final release verification follows the native-phone tests. Car Bluetooth repair and car call testing moved to backlog.md on 2026-10-19 under the backlog heading whose purpose reads "owner parked the Suburban session on 2026-10-19" (owner: "parked suburban session, ignore"); hotel calling moved to backlog.md hotel-calling-dropped the same day (owner: "drop the hotel calling"); Android Auto is excluded from the active dependency graph.
 
 - [~] phone-verification-tools — offline checks and read-only provider/device reconciliation implemented; full run manifest remains pending; gate: powershell.exe -NoProfile -NonInteractive -File scripts/verify-phone-evidence.tests.ps1
 - [ ] phone-targets — blocked by: phone-verification-tools; gate: scripts\verify-phone-evidence.bat phone-targets
@@ -300,7 +302,7 @@ Execution sequence: resolve the front-loaded batch and verification tools first.
 - [~] phone-azure-service — bridge/workflow deployed and audio probe passed; actual telephone cold-start acceptance remains; gate: scripts\verify-phone-evidence.bat phone-azure-service
 - [~] phone-audio-loop — authenticated inbound media and cleanup implemented and tested; actual telephone acceptance remains; gate: scripts\verify-phone-evidence.bat phone-audio-loop
 - [ ] phone-number-routing — blocked by: phone-audio-loop, call-budget-gate; gate: scripts\verify-phone-evidence.bat phone-number-routing
-- [!] call-topology-proof — controlled owner calls authorized2026-10-17 with10USD daily allowance, but user deferred test readiness; concrete conference transport and real audio evidence remain required; gate: scripts\verify-phone-evidence.bat call-topology-proof
+- [!] call-topology-proof — owner deferred the parked test; needs the owner ready for a live controlled owner call. Budget no longer blocks it: the standing $10/day, $100/month allowance (7db4dee) replaced the dated 10 USD grant. No call is placed autonomously; concrete conference transport and real audio evidence remain required. Voice lock owner-stop-2026-10-16: removed on 2026-10-17 by the activation transaction (Execution log, request owner-audio-check-20261017-a); not re-read on 2026-10-19, so no lock release is a known precondition. Gate: scripts\verify-phone-evidence.bat call-topology-proof
 - [ ] call-client — blocked by: call-topology-proof, phone-account-session; gate: scripts\verify-phone-evidence.bat call-client
 - [ ] assistant-call-task — blocked by: call-topology-proof, phone-number-routing, call-budget-gate; gate: scripts\verify-phone-evidence.bat assistant-call-task
 - [ ] recording-capture — blocked by: phone-audio-loop, phone-account-session; gate: scripts\verify-phone-evidence.bat recording-capture
@@ -308,13 +310,21 @@ Execution sequence: resolve the front-loaded batch and verification tools first.
 - [~] recording-app-access — web/native playback and cross-tab capture exclusion are deployed; exact Jobs recording links are implemented. Complete expanded call-mode acceptance remains dependent on call-client; gate: scripts\verify-phone-evidence.bat recording-app-access
 - [ ] phone-acceptance — blocked by: phone-number-routing, recording-app-access; gate: scripts\verify-phone-evidence.bat phone-acceptance
 - [ ] call-modes-acceptance — blocked by: phone-acceptance, call-client, assistant-call-task, recording-app-access; gate: scripts\verify-phone-evidence.bat call-modes-acceptance
-- [~] car-usb-access — S9 access restored and signed0.3.17/code23 installed/verified2026-10-17. Formal evidence gate and physical car test remain open; gate: scripts\verify-phone-evidence.bat car-usb-access
-- [ ] car-repro — blocked by: car-usb-access; gate: scripts\verify-phone-evidence.bat car-repro
-- [ ] car-route-fix — blocked by: car-repro; gate: scripts\verify-phone-evidence.bat car-route-fix
-- [ ] car-test-matrix — blocked by: car-route-fix, call-modes-acceptance, recording-app-access; gate: scripts\verify-phone-evidence.bat car-test-matrix
-- [ ] car-release-proof — blocked by: car-test-matrix; gate: scripts\verify-phone-evidence.bat car-release-proof
-- [ ] recording-live-proof — blocked by: recording-app-access, call-modes-acceptance, car-release-proof; gate: scripts\verify-phone-evidence.bat recording-live-proof
+- [ ] recording-live-proof — blocked by: recording-app-access, call-modes-acceptance; gate: scripts\verify-phone-evidence.bat recording-live-proof; note: the former car and hotel dependencies moved to backlog 2026-10-19 (see the Dependency note under recording-live-proof)
 - [~] call-budget-gate — owner-message daily grants and app controls implemented; complete multi-leg ledger awaits call-topology-proof; gate: scripts\verify-phone-evidence.bat call-budget-gate
+- [~] call-cost-cap — running per-call cost cap priced per token type, min($10, remaining day allowance, remaining month cap), goodbye at 90% of the cap or 30 s before the time limit; gate: go test ./cmd/phone-trial-bridge -count=1 plus the Python budget tests
+- [~] call-time-limit — raise the per-call limit from 180 s to 600 s everywhere it is enforced, keep the 2-minute idle hangup; gate: focused tests in each touched package
+- [~] call-prompt-cache — make the repeated prompt prefix stable so Azure caches it; gate: Azure Monitor cacheReadInputTokens above 0 on the next real owner call (unverified until then)
+- [ ] ghost-nodes-tool — gate: go test ./internal/tools ./internal/ghost -count=1
+- [ ] ghost-sessions-tool — gate: go test ./internal/tools ./internal/ghost -count=1
+- [ ] ghost-session-summary — gate: go test ./internal/tools ./internal/ghost -count=1
+- [ ] ghost-run-start — blocked by: ghost-nodes-tool, ghost-sessions-tool, ghost-session-summary; gate: go test ./internal/tools -count=1
+- [ ] ghost-command-allowlist — blocked by: ghost-nodes-tool, ghost-sessions-tool, ghost-session-summary; gate: ghost-cli repository pipeline reaches success for the /command internal-invoke allowlist change
+- [ ] ghost-session-command — blocked by: ghost-command-allowlist, ghost-nodes-tool, ghost-sessions-tool, ghost-session-summary; gate: go test ./internal/tools -count=1
+- [ ] ghost-mcp-scopes — blocked by: ghost-run-start, ghost-command-allowlist, ghost-session-command; gate: go test ./internal/webapp -run 'TestMCP' -count=1
+- [!] ghost-phone-access — blocked by: ghost-run-start, ghost-command-allowlist, ghost-session-command; ghost:manage on the phone also needs the owner answer named under ghost-decision-phone (PIN admission no longer exists); ghost:read only until then; gate: go test ./internal/realtime -count=1
+- [ ] ghost-help — blocked by: ghost-run-start, ghost-command-allowlist, ghost-session-command; gate: go test ./internal/webapp/ -run TestHelpDrawer -count=1
+- [ ] ghost-release — blocked by: ghost-run-start, ghost-command-allowlist, ghost-session-command; gate: gh run watch <run-id> --repo JeremyProffittOrg/live-ninja --exit-status on the Deploy run reaches success
 
 ## recordings-current-run — deliver independent recording work without calls
 depends on: existing owner-authenticated recording endpoints
@@ -436,7 +446,7 @@ The topology proof is a prerequisite for committing to seamless listen/takeover 
 ##### app-call-decisions — add to the pre-run question batch
 
 Resolve these with phone-decisions once the operator finishes adding requirements:
-- Surfaces: native Android and Bluetooth are explicitly requested; Android Auto is deferred. Native SDK, audio-focus and Telecom integration are in planned scope. Preserve the proposed web dialer; lock whether web and Android ship together before execution.
+- Surfaces: native Android and Bluetooth are explicitly requested; Android Auto is deferred. Native SDK, audio-focus and Telecom integration are in planned scope. Preserve the proposed web dialer; lock whether web and Android ship together before execution. (Bluetooth/car work parked 2026-10-19; see backlog.md car-audio-deferred.)
 - Autonomy: explicit per-call tasks only (recommended initial behavior), or standing authorization for specified tasks/contacts/triggers. Define recipient resolution, caller ID, geographic destinations, duration, daily/monthly spend, voicemail behavior, and retry limits.
 - Participation: assistant off by default or listen by default; user microphone state during takeover; whether the call continues if the user disconnects. Proposed behavior is off by default, user muted but listening during takeover, and continuation only after explicit handoff.
 - Disclosure and data: define how the remote party is told when AI listens or speaks, and whether third-party call transcripts are retained or used for memory. Record all Live Ninja phone conversations in S3 with in-app playback/download per call-recordings. Use the accepted friendly introduction/recording request and 180-day S3 retention; preserve sensitive-input exclusions and do not automatically promote third-party statements into owner rules or memory.
@@ -447,7 +457,7 @@ These are pending product decisions, not additional questions during a running b
 
 #### hotel-internet-job — call five hotels and compare guest Wi-Fi access
 
-Status: IMPLEMENTATION AUTHORIZED. Depends on assistant-outbound and call-expanded-delivery; no hotel dialing while stop-calls remains active.
+Status: DROPPED 2026-10-19 (owner: "drop the hotel calling"). Requirements kept as history only; the open hotel workstream text is in backlog.md hotel-calling-dropped. No hotel dialing.
 
 Outcome: the owner submits one job with five specific hotels. Live Ninja calls each property, asks follow-up questions about joining its guest internet, and returns a comparison focused on the owner's restrictive work VPN. A successful phone connection alone is not a successful hotel interview. A hotel's answer is reported evidence, not a verified VPN compatibility test.
 
@@ -573,6 +583,7 @@ Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evi
 
 ## call-budget — enforce the owner's monthly threshold and daily grants
 depends on: phone-targets
+Note 2026-10-19: the monthly-threshold / daily-grant rule in this heading was superseded by the standing $10/day outgoing allowance and $100/month cap (call-allowance-policy, 7db4dee, below). The workstream name is kept because its gate and Task mirror entries reference it; the allowance is the admission rule.
 
 Jobs: local-test-job, delivery-job, controlled-call-job. Watchers, exact restart commands, and shared ceilings are defined in Job supervision and restart policy; register concrete IDs before launch.
 Authorization: explicit start plus locked account, spending, contact, retention and distribution scope as applicable; standing deployment authorization already applies.
@@ -635,7 +646,7 @@ Workstream done: every contained milestone gate exits 0; run "scripts\verify-pho
 ### call-topology-proof — verify a supported user/remote/assistant connection
 depends on: phone-targets, phone-azure-service
 
-- [!] call-transport-proof — controlled owner calls authorized2026-10-17 within the recorded10USD allowance, but the owner then deferred parked readiness. Calling controls remain disabled pending verified routing and a ready test. Select the exact assistant conference transport from official documentation and existing code before a bounded two-party/assistant experiment. Record all legs, stream directions, disconnects and cost; no unsupported takeover implementation is implied.
+- [!] call-transport-proof — owner deferred the parked test; needs the owner ready for a live controlled owner call. Budget no longer blocks it: the standing $10/day, $100/month allowance (7db4dee) replaced the dated 10 USD grant. No call is placed autonomously; what unblocks it is the owner saying they are ready. Select the exact assistant conference transport from official documentation and existing code before a bounded two-party/assistant experiment. Record all legs, stream directions, disconnects and cost; no unsupported takeover implementation is implied. Voice lock owner-stop-2026-10-16: removed on 2026-10-17 by the activation transaction (Execution log, request owner-audio-check-20261017-a); not re-read on 2026-10-19, so no lock release is a known precondition.
 - [ ] call-cost-model — replace inbound-only totals with separate human, listening, takeover, and assistant-only formulas. Include each telephone/SDK/SIP leg, conference participant-minute, media stream, Azure model, and hosting charge. A single conversation may have multiple billed legs. Recheck current official rates before provisioning: https://www.twilio.com/en-us/voice/pricing/us .
 
 
@@ -692,7 +703,7 @@ Jobs: local-test-job, recording-transfer-job, controlled-call-job, delivery-job.
 Authorization: explicit start plus locked account, spending, contact, retention and distribution scope as applicable; standing deployment authorization already applies.
 Workstream done: every contained milestone gate exits 0; run "scripts\verify-phone-evidence.bat recording-app-access" to check the terminal gate and its dependency evidence.
 
-Outcome: every Live Ninja telephone attempt has an owner-scoped log. Every connected conversation has a recording, linked to the call and any job, with playback and download in the web and Android app. Scope includes inbound, outbound, user-led, Listen, takeover/take-back, assistant-only, hotel calls, and controlled test calls. No-answer, rejected, and failed calls still have logs with an explicit no-audio reason. Unrelated cellular calls outside Live Ninja are not captured.
+Outcome: every Live Ninja telephone attempt has an owner-scoped log. Every connected conversation has a recording, linked to the call and any job, with playback and download in the web and Android app. Scope includes inbound, outbound, user-led, Listen, takeover/take-back, assistant-only, and controlled test calls. Hotel calls were dropped on 2026-10-19 (backlog.md hotel-calling-dropped). No-answer, rejected, and failed calls still have logs with an explicit no-audio reason. Unrelated cellular calls outside Live Ninja are not captured.
 
 Capture the actual call participants, not the phone room microphone continuously. Log authentication success/failure without PINs. Exclude authentication PIN/credential entry from audio and transcripts; show excluded intervals rather than silently claiming an uninterrupted recording. Record call events and audio status separately from infrastructure logs. Never place audio, credentials, or presigned URLs in CloudWatch/debug logs.
 
@@ -727,7 +738,7 @@ Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evi
 ### recording-app-access — play and download from call history and Jobs
 depends on: recording-s3-ingest, call-client
 
-- [ ] recording-call-history — show call details and recording state in Live Ninja history, with links from the corresponding Jobs run and each hotel result. Web and Android both support play/pause/seek, duration, and download. Display processing, failed, absent, expired, and deleted states honestly.
+- [ ] recording-call-history — show call details and recording state in Live Ninja history, with links from the corresponding Jobs run; hotel result links were dropped on 2026-10-19 (backlog.md hotel-calling-dropped). Web and Android both support play/pause/seek, duration, and download. Display processing, failed, absent, expired, and deleted states honestly.
 - [ ] recording-authorized-media — authenticate and reauthorize ownership before issuing short-lived playback or attachment URLs. Support HTTP byte ranges/seeking and audio content types; refresh an expired URL only after fresh authorization. Never expose Twilio credentials or raw provider URLs to clients. Account revocation prevents new links; document remaining lifetime of any already issued signed URL.
 - [ ] recording-client-safety — coordinate playback with live-call/microphone ownership so playback cannot be relayed into an active conversation accidentally. Limit browser media/CORS changes to the selected S3 origin. Do not cache private audio in a service worker. Downloads use safe filenames and the native Android download/share path.
 - [ ] recording-help — update Help, contracts, privacy/retention copy, and history/Jobs guidance in the same feature commits. Recordings are now requested functionality, not a hidden diagnostic feature.
@@ -778,129 +789,19 @@ depends on: phone-acceptance, call-client, assistant-call-task, recording-app-ac
 Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat call-modes-acceptance" exits 0. Required checks: go test ./... -count=1; node --test tests/web/unit/*.test.mjs; scripts\verify-phone-evidence.bat run-case call-live-matrix. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 
-## hotel-job-execution — durable phone tasks within Jobs
-depends on: assistant-call-task, phone-targets, call-budget-gate, call-modes-acceptance, recording-app-access
-
-Jobs: local-test-job, hotel-call-job. Watchers, exact restart commands, and shared ceilings are defined in Job supervision and restart policy; register concrete IDs before launch.
-Authorization: explicit start plus locked account, spending, contact, retention and distribution scope as applicable; standing deployment authorization already applies.
-Workstream done: every contained milestone gate exits 0; run "scripts\verify-phone-evidence.bat hotel-results" to check the terminal gate and its dependency evidence.
-
-
-### hotel-task-provider — add bounded external call execution
-depends on: assistant-call-task, phone-targets, call-budget-gate
-
-
-
-
-Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat hotel-task-provider" exits 0. Required checks: go test ./internal/jobs/ ./cmd/phone-trial-bridge/ ./internal/tools/ ./internal/webapp/ ./cmd/jobs-worker/ -count=1. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
-
-### hotel-results — concise evidence-backed comparison
-depends on: hotel-task-provider, call-modes-acceptance, recording-app-access
-
-- [x] hotel-help-update — Help and Jobs capability copy describe exact five-hotel review, stop/budget holds, pause/cancel, recording links and staff-report limitations in the feature commit. Help test passes.
-
-
-Restart policy: existing phone deployment ceilings apply. Hotel calls have one attempt per property by default, with no automatic redial until a different bounded policy is locked. Call timeout or budget exhaustion ends the active call, preserves results, and prevents further charges. One unavailable hotel does not block the remaining authorized hotels. No local scheduled automation and no actual hotel calls in this planning session.
-
-
-Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat hotel-results" exits 0. Required checks: go test ./internal/webapp/ -run TestHelpDrawer -count=1; node --test tests/web/unit/jobs.test.mjs; scripts\verify-phone-evidence.bat run-case hotel-acceptance-run. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
-
-
-## car-audio — restore car Bluetooth hands-free audio
-depends on: phone-verification-tools
-
-Jobs: local-test-job, human-hardware-job. Watchers, exact restart commands, and shared ceilings are defined in Job supervision and restart policy; register concrete IDs before launch.
-Authorization: explicit start plus locked account, spending, contact, retention and distribution scope as applicable; standing deployment authorization already applies.
-Workstream done: every contained milestone gate exits 0; run "scripts\verify-phone-evidence.bat car-route-fix" to check the terminal gate and its dependency evidence.
-
-Status: DRAFT, NOT STARTED. Research and USB access verification completed on 2026-10-15; implementation remains on hold. Evidence: docs/android-auto-research.md. Interpret the reported symptom as "does not allow car hands-free"; exact failure mode still needs reproduction.
-
-Outcome: use the car microphone and speakers for Live Ninja assistant sessions and the planned app calls. Fix the root routing/lifecycle cause after reproducing it. Do not accept car speaker output with the phone microphone as success.
-
-Non-goals: replacing the phone OS, resetting Bluetooth pairings, moving app data, enabling disabled voice engines, building Android Automotive OS, disguising assistant audio as a music app, or modifying unrelated Jobs work.
-
-Expected files: AndroidManifest.xml; existing realtime transports, SessionOrchestrator, and relevant wake/microphone lifecycle code; a shared routing owner only where existing multiple transport callers justify it; relevant existing unit/instrumentation tests; Help copy. Do not edit these during planning.
-
-### car-usb-access — verified phone control
-depends on: phone-verification-tools
-
-- [x] car-phone-control — Windows enumerates SAMSUNG Mobile USB Composite Device with Status OK. ADB serial 4633424442303098 is authorized and online. Device is SM-G965U, Android 10/API 29, Live Ninja 0.3.15/code 21. KEYCODE_WAKEUP succeeded and MainActivity launch returned Status: ok; mResumedActivity confirmed Live Ninja. Only basic device access/control tested; no calls made.
-- [ ] car-artifact-match — resolve the installed 0.3.15/code 21 artifact and commit before reproducing. Local Gradle declares 0.3.13/code 19; do not silently downgrade/install over the newer app.
-
-
-
-Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat car-usb-access" exits 0. Required checks: "C:\Users\Jeremy\AppData\Local\Android\Sdk\platform-tools\adb.exe" -s 4633424442303098 get-state; installed artifact/commit match. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
-
-### car-repro — capture the exact failure before changing code
-depends on: car-usb-access
-
-- [ ] car-baseline — create a focused two-way audio check and record its exact command before implementation. On the target parked car, test assistant session start, car microphone uplink, car speaker downlink, and end. Record the active engine and selected/routed input and output with a fixed nonprivate test phrase at each end. Run it at least once and record the actual failure; failure to reproduce remains unverified.
-- [ ] car-cause — after the baseline exists, test source-backed hypotheses one at a time: forced speaker on API 29/30; SCO/route lifecycle; transport/capture format differences; wake microphone/focus contention. Inspect the actual installed code/commit. Existing source forces speaker on API 29/30 in WebRTC, Gemini, and Nova paths; that fact is not yet the runtime diagnosis.
-
-
-
-Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat car-repro" exits 0. Required checks: scripts\verify-phone-evidence.bat run-case car-baseline; the gate passes only when a valid red-capable baseline is recorded, not when missing hardware is mislabeled as a reproduced bug. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
-
-### car-route-fix — one route owner and verified cleanup
-depends on: car-repro
-
-- [ ] car-legacy-route — fix the reproduced API 29/30 standalone-assistant path using the appropriate legacy HFP/SCO connection lifecycle. Wait for observed connection, bound timeout, stop/release on failure or end, handle cellular interruption, and preserve user route choices. Do not confuse A2DP playback with two-way HFP.
-- [ ] car-modern-route — on API 31+, observe available communication devices, successful selection, and route-change events; handle HFP/BLE where supported, disconnect/reconnect, and cleanup. Add only required permissions with API-level handling.
-- [ ] car-audio-ownership — coordinate transport, wake microphone, audio focus, and the future Telecom calling owner. Never issue AudioManager routing commands while Telecom owns the call. Preserve existing echo cancellation unless measurements justify a specific change.
-- [ ] car-regression-proof — extend the existing orchestration/voice tests and the correct device test seam. The original failing physical check must pass. Verify all shipped transport families affected by the change, without enabling disabled engines.
-
-
-
-Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat car-route-fix" exits 0. Required checks: Android gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:connectedDebugAndroidTest with ANDROID_SERIAL=4633424442303098; scripts\verify-phone-evidence.bat run-case car-regression-proof. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
-
-
-## car-call-testing — extensive device, head-unit, and real-call verification
-depends on: car-route-fix, call-modes-acceptance, recording-app-access
-
-Jobs: local-test-job, delivery-job, controlled-call-job, human-hardware-job. Watchers, exact restart commands, and shared ceilings are defined in Job supervision and restart policy; register concrete IDs before launch.
-Authorization: explicit start plus locked account, spending, contact, retention and distribution scope as applicable; standing deployment authorization already applies.
-Workstream done: every contained milestone gate exits 0; run "scripts\verify-phone-evidence.bat car-release-proof" to check the terminal gate and its dependency evidence.
-
-
-### car-test-matrix — automated and physical coverage
-depends on: car-route-fix, call-modes-acceptance, recording-app-access
-
-- [ ] car-unit-matrix — test API 29/30 legacy routing and API 31+ routing; connection arriving late; refused route; missing permissions; route removal during capture; focus denied/lost/regained; wake mic contention; duplicate end; process/session cancellation; Telecom endpoint ownership; stale AI output after Take back. Existing tests first, new test classes only for new observable behavior.
-- [ ] car-device-matrix — on the S9, run Bluetooth HFP and handset/wired checks. On a supported newer phone, run modern HFP and BLE if hardware supports it. Unsupported hardware modes are explicitly not covered, never silently passed.
-- [ ] car-real-call-matrix — place controlled inbound and outbound Twilio calls through the parked car, covering human speaking, assistant Listen, Take over, Take back, and assistant-only continuation. Verify separate microphone uplink and speaker downlink with a test phrase at each end. Check remote party cannot hear muted user audio and hears no AI audio in Listen mode.
-- [ ] car-failure-matrix — during controlled calls, test car/Bluetooth disconnect, headset/handset route change, phone lock/background, cellular interruption, network loss, remote hangup, and owner stop. Verify no duplicate dial, no dropped remote leg during an intended handoff, no persistent capture, and no orphaned paid call legs.
-- [ ] car-soak — after basic success, run 10 connect/start/end cycles on the S9 and on the supported modern phone, plus one 20-minute controlled call with interruptions and Bluetooth reconnects. Use the locked budget; lack of budget is not permission to run unbounded calls.
-
-Acceptance thresholds: 10/10 lifecycle cycles release their resources; every required mode has audible two-way evidence; zero duplicate calls, unintended microphone disclosure, AI speech in Listen mode, or orphaned call legs. Capture route-acquisition and handoff timing rather than invent a universal Bluetooth latency limit. Any failed criterion fails its scenario; preserve partial results and fix before repeating. Allow at most three attempts per failing scenario, with a classified change between attempts.
-
-
-
-Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat car-test-matrix" exits 0. Required checks: Android gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:connectedDebugAndroidTest; scripts\verify-phone-evidence.bat run-case car-real-call-matrix; scripts\verify-phone-evidence.bat run-case car-failure-matrix; scripts\verify-phone-evidence.bat run-case car-soak. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
-
-### car-release-proof — publish only verified behavior
-depends on: car-test-matrix
-
-- [ ] car-help-release — update Help in the same feature commits, including Bluetooth setup, route choice, microphone state, call controls, and recovery instructions.
-- [ ] car-ci-release — use existing GitHub Android Release workflow, select a valid version above the installed code 21, verify signature/hash and installed version without reading keys. Preserve existing AWS delivery and APK updates.
-- [ ] car-installed-acceptance — repeat the key parked-car audio and controlled-call checks on the exact released artifact installed through the appropriate channel. Passing a debug build alone does not prove the release.
-
-
-
-
-
-Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat car-release-proof" exits 0. Required checks: go test ./internal/webapp/ -run TestHelpDrawer -count=1; scripts\verify-phone-evidence.bat run-case car-installed-acceptance; GitHub/installed-version checks. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
-
 ## recording-acceptance — verify final call audio and S3 playback
-depends on: recording-app-access, call-modes-acceptance, hotel-results, car-release-proof
+depends on: recording-app-access, call-modes-acceptance
+Dependency note: car-release-proof and hotel-results were removed on 2026-10-19 (car dependency moved to backlog 2026-10-19, backlog.md car-audio-deferred; hotel-results moved to backlog.md hotel-calling-dropped).
 
 Jobs: controlled-call-job, local-test-job, delivery-job. Use the shared watcher/restart registry and ceilings.
 Authorization: explicit start, locked test contacts and budget; standing deployment authorization applies.
 Workstream done: "scripts\verify-phone-evidence.bat recording-live-proof" exits 0.
 
 ### recording-live-proof — recordings are part of every call acceptance test
-depends on: recording-app-access, call-modes-acceptance, hotel-results, car-release-proof
+depends on: recording-app-access, call-modes-acceptance
+Dependency note: car-release-proof and hotel-results were removed on 2026-10-19 (car dependency moved to backlog 2026-10-19, backlog.md car-audio-deferred; hotel-results moved to backlog.md hotel-calling-dropped).
 
-- [ ] recording-live-matrix — after controlled inbound/outbound tests, listen to and download each S3-backed result in both app surfaces. Verify the known spoken phrase from each participant, chronological mode transitions, assistant takeover/take-back audio, duration, integrity, and no unintended private microphone/PIN audio. Verify all five hotel rows link to recordings or a truthful no-audio/failure reason.
+- [ ] recording-live-matrix — after controlled inbound/outbound tests, listen to and download each S3-backed result in both app surfaces. Verify the known spoken phrase from each participant, chronological mode transitions, assistant takeover/take-back audio, duration, integrity, and no unintended private microphone/PIN audio. Hotel-row verification was dropped on 2026-10-19 (backlog.md hotel-calling-dropped); no hotel rows are required.
 - [ ] recording-cost-proof — measure recording minutes, temporary provider storage, S3 capacity/requests/download traffic, and any AWS transfer/processing charges in addition to existing telephone/Azure costs. Include storage volume at the chosen retention in the locked monthly spending rule.
 - [ ] recording-release-proof — verify ingestion and playback on the final deployed backend and released Android artifact, not only local fakes. Keep missing or unverified recording cases open and visible.
 
@@ -1008,8 +909,8 @@ Outcome: verified PIN status and a passing Android lint gate, plus dependency-re
 - [~] call-cost-cap — replace the bridge token caps (cmd/phone-trial-bridge/owner_media.go:314 and :506, which ended call CA135e9806df5fb6a1e8e48431806be645 at 104 s with budget_limit after 38600 input tokens, about $0.07 of Azure cost) with a running cost cap priced per token type for gpt-realtime-2.1-mini GlobalStandard. Per-call cap = min($10, remaining day allowance, remaining month cap). Say one short goodbye at 90% of the cap or 30 s before the time limit; endReason cost_limit or duration_limit. Proof: go test ./cmd/phone-trial-bridge -count=1 plus Python budget tests.
 - [~] call-time-limit — raise the call limit from 180 s to 600 s everywhere it is enforced (Twilio timeLimit, deadline and connectDeadline, bridge, broker, recorder); keep the 2-minute idle hangup. Proof: focused tests in each touched package.
 - [~] call-prompt-cache — Azure reported cacheReadInputTokens = 0 for that call. Find why the repeated prefix is not cached and make it stable. Proof: an Azure Monitor cacheReadInputTokens value above 0 on the next real owner call; until then this stays unverified.
-- [!] inbound-live-acceptance — PIN verified; controlled-call resumption authorized and10USD total grant recorded for2026-10-17. User deferred the actual parked test. Need ready operator/device, corrected status-callback contract and exact owned-number routing verification before activation. Grant expires at local midnight; it is not authority for another day. No routing change or call occurred.
-- [!] expanded-call-topology — user deferred the real parked experiment after authorizing controlled owner tests for2026-10-17. Dialer/listen/takeover/take-back still require a concrete conference transport and measured media proof. Assistant-only phone-research Jobs are already delivered independently; a hotel batch still requires exact target review and is not authorized by the parked-owner-test instruction.
+- [!] inbound-live-acceptance — owner deferred the actual parked test; needs the owner ready to receive a live owner call. Budget no longer blocks it: the dated 10 USD grant for 2026-10-17 was replaced by the standing $10/day, $100/month allowance (call-allowance-policy, 7db4dee). No call is placed autonomously; what unblocks it is the owner saying they are ready. No routing change or call occurred. Voice lock owner-stop-2026-10-16: removed on 2026-10-17 by the activation transaction (Execution log, request owner-audio-check-20261017-a); not re-read on 2026-10-19, so no lock release is a known precondition.
+- [!] expanded-call-topology — owner deferred the parked test; needs the owner ready for a live controlled owner call. Budget no longer blocks it (standing $10/day, $100/month allowance, 7db4dee). Dialer/listen/takeover/take-back still require a concrete conference transport and measured media proof. No call is placed autonomously. Hotel calling was dropped on 2026-10-19 (backlog.md hotel-calling-dropped). Voice lock owner-stop-2026-10-16: removed on 2026-10-17 by the activation transaction (Execution log, request owner-audio-check-20261017-a); not re-read on 2026-10-19, so no lock release is a known precondition.
 - [x] android-existing-lint — resolved by blocker-android-lint on2026-10-17; focused update tests and lintDebug pass with0 errors. Installation behavior is unchanged.
 - [!] generated-cache-cleanup — automatic execution policy rejected deletion of `tools/phone-trial/__pycache__/account_lifecycle.cpython-314.pyc` with reason `blocked by policy`; the generated file is not committed. Local operator cleanup can remove it outside this blocked execution path.
 - Android Auto is deferred exclusively to backlog.md; no Auto implementation, Play publication or Auto hardware acceptance was performed.
@@ -1197,7 +1098,7 @@ Retry policy: each hotel one call; job resumes only verified terminal prior call
 Owner request 2026-10-16, verbatim: `okay, call me acting like a hotel and let's try the ocnversations`.
 Owner answers 2026-10-16 (AskUserQuestion, verbatim): number = owner allowlisted number, stored as secret OWNER_REHEARSAL_NUMBER (not committed); mode = `Several takes` — "Up to 3 calls in a row, so you can play different front-desk behaviours (refuse recording, transfer, IVR menu). Same caps per call."
 - [x] owner-rehearsal-runner — f147c23; 67 python tests pass. batch owner-rehearsal-2026-10-16 in tools/phone-trial/run_trial.py reuses the hotel runner: own CONTROL ledger, existing event namespace, voice lock, intent ledger, consent before recording, 180 s provider+bridge caps, one attempt per take, no redial. Destination comes only from the OWNER_REHEARSAL_NUMBER secret; any other number is refused. Takes 1..3 run strictly in sequence with a 45 s pause after a terminal take; a declined recording or hangup still lets the next take run. Hotel 09:00–17:00 window skipped for this batch only (owner's own phone); 2026-10-16 date guard kept. Budget floor also counts the ten-batch ledger and the shared PHONE#BUDGET month allocation, and each take publishes its reservation there; $20 threshold unchanged, no self-granted allowance.
-- [!] owner-rehearsal-workflow — run 38901224896 placed take 1 then stopped on the cost threshold (see results); takes 2 and 3 not placed. .github/workflows/phone-owner-rehearsal.yml (workflow_dispatch, takes 1..3, default 3) points the existing Azure bridge TARGETS_JSON at the owner target only, runs the Azure audio probe, calls, emails the report through send_report.py --batch-id owner-rehearsal-2026-10-16, then restores the 20 hotel targets and min-replicas 0.
+- [!] owner-rehearsal-workflow — run 38901224896 placed take 1 then stopped on the cost threshold (see results); takes 2 and 3 not placed. .github/workflows/phone-owner-rehearsal.yml (workflow_dispatch, takes 1..3, default 3) points the existing Azure bridge TARGETS_JSON at the owner target only, runs the Azure audio probe, calls, emails the report through send_report.py --batch-id owner-rehearsal-2026-10-16, then restores the 20 hotel targets and min-replicas 0. Blocker (2026-10-19): needs the owner ready to receive a live owner call (the owner deferred the test); no call is placed autonomously; what unblocks it is the owner saying they are ready. The former "$5 daily cost grant" condition is obsolete under the standing $10/day, $100/month allowance (7db4dee); see Unblock below for the voice lock status.
 Definition of done: python -B -m unittest discover -s tools/phone-trial -p 'test_*.py' exits 0; rehearsal workflow reaches a terminal result with each take's CallSid, status, duration, recording state and SES MessageId recorded here, or the exact blocker.
 
 Results 2026-10-16 (run 38901224896, conclusion failure = expected exit for a blocked batch; Azure probe, report and restore steps succeeded):
@@ -1205,14 +1106,14 @@ Results 2026-10-16 (run 38901224896, conclusion failure = expected exit for a bl
 - takes 2 and 3: not placed. take-1 usage was incomplete (usageComplete=false), so it settled at the full $1.40 reserve; month spend 19.70 + 1.40 would pass the $20 threshold.
 - Report email SES MessageId 010001a144b73615-3c888f6c-5b3e-40e4-804a-ae4a401937ff-000000.
 - Bridge restored: 20 hotel targets, min-replicas 0, no active call.
-- Unblock (owner only): an explicit $5 daily cost grant, and release of the voice lock held as `owner-stop-2026-10-16` (not set by this run). A re-test after the repeat fix is the owner's decision.
+- Unblock (owner only): the owner ready to receive a live owner call (owner deferred the test; the former $5 daily cost grant condition is obsolete under the standing $10/day, $100/month allowance, 7db4dee). The voice lock `owner-stop-2026-10-16` was removed on 2026-10-17 by the activation transaction (Execution log, request owner-audio-check-20261017-a) and was not re-read on 2026-10-19, so no lock release is a known precondition. No call is placed autonomously. A re-test after the repeat fix is the owner's decision.
 
 ### rehearsal-repeat-fix — ask each question once, then close
 Owner report 2026-10-16 after take 1, verbatim: "look at the call, it kept asking the same question, over and over again".
 - [x] rehearsal-repeat-diagnosis — call CAdebbeeb654690d3519827db4b7babbad (run 38901224896, 113 s, remote_hangup). Stored events (live-ninja-phone-trial, PK RUN#hotel-trial-2026-10-15) show the room-number/surname/verification question asked five times (12:34:41–12:35:37 UTC) after staff answered "they clicked on a password and that's it", "No.", "the Wi-Fi password.". Transcript: C:\dev\live-ninja-test-evidence\owner-rehearsal-2026-10-16\CAdebbeeb654690d3519827db4b7babbad-transcript.json.
 - [x] rehearsal-repeat-root-cause — cmd/phone-trial-bridge/media.go bridgeLoop sent `response.create` with no instructions on every `input_audio_buffer.committed` (old media.go:259-266, and the queued path :364-368). The model re-derived the whole checklist from the session instructions every turn, with no record of what was already asked or answered, and nothing ever advanced or closed.
 - [x] rehearsal-repeat-fix — new cmd/phone-trial-bridge/dialog.go: the bridge owns questionnaire state (four questions). Each staff turn waits for its whisper transcript (3 s cap; a missing transcript advances, never repeats), classifies answer / non-answer / hold / withdrawal, and sends one explicit step with answered topics and staff replies as data. Non-answer or 10 s silence after playback re-asks once, then closes politely with end_call. Consent-first, recording-after-consent, 180 s cap, transfer/withdrawal rules and token budgets unchanged.
-Definition of done: `go test ./cmd/phone-trial-bridge -count=1 -run TestRehearsalDoesNotRepeatQuestions` fails on the old media.go ("reply to \"Thank you.\" carries no turn instructions") and passes after; full `go vet`/`go test ./cmd/phone-trial-bridge` and `python -B -m unittest discover -s tools/phone-trial -p 'test_*.py'` pass; phone-trial.yml deploys with calls_authorized=false (no call). A re-test call is the owner's decision (needs a $5 daily cost grant; voice lock owner-stop-2026-10-16 held).
+Definition of done: `go test ./cmd/phone-trial-bridge -count=1 -run TestRehearsalDoesNotRepeatQuestions` fails on the old media.go ("reply to \"Thank you.\" carries no turn instructions") and passes after; full `go vet`/`go test ./cmd/phone-trial-bridge` and `python -B -m unittest discover -s tools/phone-trial -p 'test_*.py'` pass; phone-trial.yml deploys with calls_authorized=false (no call). A re-test call is the owner's decision (needs the owner ready to receive it; the $5 daily grant is obsolete under the standing allowance; voice lock owner-stop-2026-10-16 removed 2026-10-17 per Execution log, not re-read on 2026-10-19).
 
 ## mcp-owner-tools — expose phone messages, existing Jobs and memory
 depends on: none; phone-send enablement depends on hotel-ten-results
@@ -1293,7 +1194,7 @@ depends on: ghost-session-read
 ### ghost-surfaces — expose the tools where the owner asked
 depends on: ghost-session-control
 - [ ] ghost-mcp-scopes — add ghost:read (nodes, sessions, summaries, run status) and ghost:manage (run start, session commands) to MCP metadata and the policy map, and add the existing code_update_* tools under ghost:manage. Existing connectors keep working without the new tools until the owner reconnects with the new scopes. Proof: go test ./internal/webapp -run 'TestMCP' -count=1.
-- [ ] ghost-phone-access — PIN-verified owner calls get the ghost:read and ghost:manage tools; starts and commands need a spoken confirmation through the registry confirmation flow. Proof: surface tool tests in internal/realtime.
+- [!] ghost-phone-access — recognized owner calls (admitted by the configured owner caller number on a signed Twilio callback; no PIN since the 2026-10-18 decision) get the ghost:read tools. ghost:manage on the phone is blocked: the recorded owner answer (ghost-decision-phone) names PIN-verified owner calls, inbound PIN verification no longer exists, and caller ID alone is not authentication, so the admission basis for ghost:manage on a caller-number-admitted call is an open owner question. Unblock: an explicit owner answer that caller-number admission plus spoken confirmation through the registry flow is enough for ghost:manage on the phone, or a second factor on the call. Do not implement ghost:manage from caller-ID admission before that answer. Proof: surface tool tests in internal/realtime.
 - [ ] ghost-help — update the Help drawer and contracts in the same commit as each user-visible tool. Proof: go test ./internal/webapp/ -run TestHelpDrawer -count=1.
 - [ ] ghost-release — push each milestone on main and watch Deploy to a terminal success. Verify one real read-only call (ghost_nodes) through MCP as the owner. No session command is sent to a real session without an explicit owner request.
 
@@ -1301,4 +1202,5 @@ depends on: ghost-session-control
 - [x] ghost-decision-commands — 2026-10-19 owner answer: NUDGE (send text), ANSWER (reply to prompt), PAUSE / RESUME. KILL is not allowed.
 - [x] ghost-decision-scope — 2026-10-19 owner answer: any computer, any repo. Each start or command still needs confirmation.
 - [x] ghost-decision-phone — 2026-10-19 owner answer: read and control on PIN-verified owner calls, with spoken confirmation.
+- Note 2026-10-19 (plan-reconcile; the owner answer above is unchanged): inbound PIN verification no longer exists since the 2026-10-18 decision (owner calls are admitted by the configured owner caller number without a PIN; unknown callers are hung up), so the admission basis for ghost:manage on the phone is an open owner question. The locked decision text records only phone "Read and control" and gives no admission basis. Until the owner answers, ghost-phone-access limits the phone surface to ghost:read. Caller ID is caller-supplied and spoofable, and the spoken confirmation comes from the same caller, so it is not a second factor.
 

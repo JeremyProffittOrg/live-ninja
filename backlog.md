@@ -157,9 +157,9 @@ reference; nothing in them is committed work until an item is promoted into `pla
 
 ## android-auto-deferred — owner deferred all Android Auto work on 2026-10-17
 
-Owner instruction, verbatim: "put anything for android auto in the backlog". Not scheduled. Do not implement, test, distribute, or provision Android Auto until the owner explicitly restores it to plan.md. Bluetooth and ordinary native-phone calling remain in the active plan.
+Owner instruction, verbatim: "put anything for android auto in the backlog". Not scheduled. Do not implement, test, distribute, or provision Android Auto until the owner explicitly restores it to plan.md. Ordinary native-phone calling remains in the active plan; car Bluetooth work moved to car-audio-deferred below on 2026-10-19.
 
-The original workstream and mixed car test/release requirements follow verbatim so projection, DHU, Play distribution, supported-phone and acceptance details are retained. The duplicated Bluetooth/native portions below are historical context only; their active requirements remain in plan.md. Original dependency names and commands are retained for a future promotion and are not active gates.
+The original android-auto workstream follows verbatim, and the Android Auto-specific clauses of the former car-call-testing copy are kept verbatim under car-call-testing-auto-only below, so projection, DHU, Play distribution, supported-phone and acceptance details are retained. The Bluetooth/native portions of that former copy are not repeated here; their current text moved from plan.md to car-audio-deferred below on 2026-10-19. Original dependency names and commands are retained for a future promotion and are not active gates.
 
 ## android-auto — integrate real calling with the car display
 depends on: phone-targets, car-route-fix, call-client, assistant-call-task
@@ -205,42 +205,17 @@ depends on: auto-call-integration
 Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat auto-test-distribution" exits 0. Required checks: GitHub/Play artifact receipts and installed-device version/commit checks. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
 
 
-## car-call-testing — extensive device, head-unit, and real-call verification
+## car-call-testing-auto-only — Android Auto-only remainder of the former car-call-testing copy (split 2026-10-19)
 depends on: car-route-fix, auto-test-distribution, call-modes-acceptance, recording-app-access
 
-Jobs: local-test-job, delivery-job, controlled-call-job, human-hardware-job. Watchers, exact restart commands, and shared ceilings are defined in Job supervision and restart policy; register concrete IDs before launch.
-Authorization: explicit start plus locked account, spending, contact, retention and distribution scope as applicable; standing deployment authorization already applies.
-Workstream done: every contained milestone gate exits 0; run "scripts\verify-phone-evidence.bat car-release-proof" to check the terminal gate and its dependency evidence.
+The car-call-testing workstream copy that stood here (car-test-matrix with car-unit-matrix, car-device-matrix, car-real-call-matrix, car-failure-matrix and car-soak; car-release-proof with car-help-release, car-ci-release and car-installed-acceptance) was the plan.md text plus Android Auto-specific clauses. The Bluetooth/native text moved verbatim from plan.md into car-audio-deferred below on 2026-10-19. The Android Auto-specific clauses that existed only in this copy are kept here verbatim, each named by the car-audio-deferred item it extends; the original dependency line above (including auto-test-distribution) is retained for a future promotion and is not an active gate:
 
-
-### car-test-matrix — automated and physical coverage
-depends on: car-route-fix, auto-test-distribution, call-modes-acceptance, recording-app-access
-
-- [ ] car-unit-matrix — test API 29/30 legacy routing and API 31+ routing; connection arriving late; refused route; missing permissions; route removal during capture; focus denied/lost/regained; wake mic contention; duplicate end; process/session cancellation; Telecom endpoint ownership; stale AI output after Take back. Existing tests first, new test classes only for new observable behavior.
-- [ ] car-device-matrix — on the S9, run Bluetooth HFP and handset/wired checks. On a supported newer phone, run modern HFP and BLE if hardware supports it, plus wired/wireless Android Auto where the actual car supports them. Unsupported hardware modes are explicitly not covered, never silently passed.
 - [ ] auto-dhu-matrix — run Google's Desktop Head Unit with the eligible phone; test supported call UI, microphone granted/denied, answer/reject/end/mute, reconnect, screen configurations, and simulated driving restrictions. Record host version and commands. DHU does not prove car acoustics or Bluetooth microphone routing.
-- [ ] car-real-call-matrix — place controlled inbound and outbound Twilio calls through the parked car, covering human speaking, assistant Listen, Take over, Take back, and assistant-only continuation. Verify separate microphone uplink and speaker downlink with a test phrase at each end. Check remote party cannot hear muted user audio and hears no AI audio in Listen mode.
-- [ ] car-failure-matrix — during controlled calls, test car/Bluetooth disconnect, headset/handset route change, USB projection unplug, phone lock/background, cellular interruption, network loss, remote hangup, and owner stop. Verify no duplicate dial, no dropped remote leg during an intended handoff, no persistent capture, and no orphaned paid call legs.
-- [ ] car-soak — after basic success, run 10 connect/start/end cycles on the S9 and on the supported modern phone, plus one 20-minute controlled call with interruptions and projection reconnects. Use the locked budget; lack of budget is not permission to run unbounded calls.
-
-Acceptance thresholds: 10/10 lifecycle cycles release their resources; every required mode has audible two-way evidence; zero duplicate calls, unintended microphone disclosure, AI speech in Listen mode, or orphaned call legs; every supported car remote action is acknowledged within five seconds. Capture route-acquisition and handoff timing rather than invent a universal Bluetooth latency limit. Any failed criterion fails its scenario; preserve partial results and fix before repeating. Allow at most three attempts per failing scenario, with a classified change between attempts.
-
-
-
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat car-test-matrix" exits 0. Required checks: Android gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:connectedDebugAndroidTest; scripts\verify-phone-evidence.bat run-case auto-dhu-matrix; scripts\verify-phone-evidence.bat run-case car-real-call-matrix; scripts\verify-phone-evidence.bat run-case car-failure-matrix; scripts\verify-phone-evidence.bat run-case car-soak. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
-
-### car-release-proof — publish only verified behavior
-depends on: car-test-matrix
-
-- [ ] car-help-release — update Help in the same feature commits, including Bluetooth setup, route choice, microphone state, call controls, supported Android Auto test distribution, and recovery instructions.
-- [ ] car-ci-release — use existing GitHub Android Release workflow, select a valid version above the installed code 21, verify signature/hash and installed version without reading keys. Add the approved Play testing delivery step through GitHub if needed; preserve existing AWS delivery and APK updates.
-- [ ] car-installed-acceptance — repeat the key parked-car audio and controlled-call checks on the exact released artifact installed through the appropriate channel. Passing a debug build alone does not prove the release.
-
-
-
-
-
-Definition of done: from C:\dev\live-ninja, "scripts\verify-phone-evidence.bat car-release-proof" exits 0. Required checks: go test ./internal/webapp/ -run TestHelpDrawer -count=1; scripts\verify-phone-evidence.bat run-case car-installed-acceptance; GitHub/Play/installed-version checks. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+- [ ] auto-device-matrix — extends car-device-matrix: on a supported newer phone, run modern HFP and BLE if hardware supports it, "plus wired/wireless Android Auto where the actual car supports them." Unsupported hardware modes are explicitly not covered, never silently passed.
+- [ ] auto-projection-failures — extends car-failure-matrix and car-soak: the controlled-call failure list includes "USB projection unplug"; the one 20-minute controlled call runs "with interruptions and projection reconnects."
+- [ ] auto-remote-action-latency — extends the car-test-matrix acceptance thresholds: "every supported car remote action is acknowledged within five seconds."
+- [ ] auto-test-distribution-release — extends car-release-proof: car-help-release also covers "supported Android Auto test distribution"; car-ci-release adds "Add the approved Play testing delivery step through GitHub if needed; preserve existing AWS delivery and APK updates."
+- Definitions of done retained from this copy: the car-test-matrix gate also required "scripts\verify-phone-evidence.bat run-case auto-dhu-matrix"; the car-release-proof gate also required "GitHub/Play/installed-version checks" (GitHub/Play artifact receipts and installed-device version/commit checks).
 
 
 ### android-auto-source-context — original related requirements and decisions
@@ -277,6 +252,101 @@ Owner quote: "parked suburban session, ignore". Promote back to plan.md only on 
 - [!] parked-route-release — route never connected during the observation, so release cannot be measured. Sampler session6920 closed after intentional bounded stop; no background monitor remains. Requires an actual connected native test before acceptance.
 - [!] bluetooth-physical-proof — Jeremy must provide the parked Suburban test window and verify actual microphone/speaker audio. S9 USB access, signed installation and existing Bluetooth unit tests pass; vehicle acoustics and full recording playback have not been physically verified.
 
+## car-audio-deferred — owner parked the Suburban session on 2026-10-19
+
+Owner quote: "parked suburban session, ignore" (same decision as parked-car-deferred above). The car-audio and car-call-testing workstreams below moved verbatim out of plan.md on 2026-10-19, including their Task mirror lines (headings demoted one level; names unchanged). Not scheduled. Promote back to plan.md only on an explicit owner decision. Dependency names and gate commands are retained for a future promotion and are not active gates; recording-live-proof in plan.md no longer depends on car-release-proof.
+
+Task mirror lines removed from plan.md on 2026-10-19:
+- [~] car-usb-access — S9 access restored and signed0.3.17/code23 installed/verified2026-10-17. Formal evidence gate and physical car test remain open; gate: scripts\verify-phone-evidence.bat car-usb-access
+- [ ] car-repro — blocked by: car-usb-access; gate: scripts\verify-phone-evidence.bat car-repro
+- [ ] car-route-fix — blocked by: car-repro; gate: scripts\verify-phone-evidence.bat car-route-fix
+- [ ] car-test-matrix — blocked by: car-route-fix, call-modes-acceptance, recording-app-access; gate: scripts\verify-phone-evidence.bat car-test-matrix
+- [ ] car-release-proof — blocked by: car-test-matrix; gate: scripts\verify-phone-evidence.bat car-release-proof
+
+### car-audio — restore car Bluetooth hands-free audio
+depends on: phone-verification-tools
+
+Jobs: local-test-job, human-hardware-job. Watchers, exact restart commands, and shared ceilings are defined in Job supervision and restart policy; register concrete IDs before launch.
+Authorization: explicit start plus locked account, spending, contact, retention and distribution scope as applicable; standing deployment authorization already applies.
+Workstream done: every contained milestone gate exits 0; run "scripts\verify-phone-evidence.bat car-route-fix" to check the terminal gate and its dependency evidence.
+
+Status: DRAFT, NOT STARTED. Research and USB access verification completed on 2026-10-15; implementation remains on hold. Evidence: docs/android-auto-research.md. Interpret the reported symptom as "does not allow car hands-free"; exact failure mode still needs reproduction.
+
+Outcome: use the car microphone and speakers for Live Ninja assistant sessions and the planned app calls. Fix the root routing/lifecycle cause after reproducing it. Do not accept car speaker output with the phone microphone as success.
+
+Non-goals: replacing the phone OS, resetting Bluetooth pairings, moving app data, enabling disabled voice engines, building Android Automotive OS, disguising assistant audio as a music app, or modifying unrelated Jobs work.
+
+Expected files: AndroidManifest.xml; existing realtime transports, SessionOrchestrator, and relevant wake/microphone lifecycle code; a shared routing owner only where existing multiple transport callers justify it; relevant existing unit/instrumentation tests; Help copy. Do not edit these during planning.
+
+#### car-usb-access — verified phone control
+depends on: phone-verification-tools
+
+- [x] car-phone-control — Windows enumerates SAMSUNG Mobile USB Composite Device with Status OK. ADB serial 4633424442303098 is authorized and online. Device is SM-G965U, Android 10/API 29, Live Ninja 0.3.15/code 21. KEYCODE_WAKEUP succeeded and MainActivity launch returned Status: ok; mResumedActivity confirmed Live Ninja. Only basic device access/control tested; no calls made.
+- [ ] car-artifact-match — resolve the installed 0.3.15/code 21 artifact and commit before reproducing. Local Gradle declares 0.3.13/code 19; do not silently downgrade/install over the newer app.
+
+
+
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat car-usb-access" exits 0. Required checks: "C:\Users\Jeremy\AppData\Local\Android\Sdk\platform-tools\adb.exe" -s 4633424442303098 get-state; installed artifact/commit match. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+
+#### car-repro — capture the exact failure before changing code
+depends on: car-usb-access
+
+- [ ] car-baseline — create a focused two-way audio check and record its exact command before implementation. On the target parked car, test assistant session start, car microphone uplink, car speaker downlink, and end. Record the active engine and selected/routed input and output with a fixed nonprivate test phrase at each end. Run it at least once and record the actual failure; failure to reproduce remains unverified.
+- [ ] car-cause — after the baseline exists, test source-backed hypotheses one at a time: forced speaker on API 29/30; SCO/route lifecycle; transport/capture format differences; wake microphone/focus contention. Inspect the actual installed code/commit. Existing source forces speaker on API 29/30 in WebRTC, Gemini, and Nova paths; that fact is not yet the runtime diagnosis.
+
+
+
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat car-repro" exits 0. Required checks: scripts\verify-phone-evidence.bat run-case car-baseline; the gate passes only when a valid red-capable baseline is recorded, not when missing hardware is mislabeled as a reproduced bug. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+
+#### car-route-fix — one route owner and verified cleanup
+depends on: car-repro
+
+- [ ] car-legacy-route — fix the reproduced API 29/30 standalone-assistant path using the appropriate legacy HFP/SCO connection lifecycle. Wait for observed connection, bound timeout, stop/release on failure or end, handle cellular interruption, and preserve user route choices. Do not confuse A2DP playback with two-way HFP.
+- [ ] car-modern-route — on API 31+, observe available communication devices, successful selection, and route-change events; handle HFP/BLE where supported, disconnect/reconnect, and cleanup. Add only required permissions with API-level handling.
+- [ ] car-audio-ownership — coordinate transport, wake microphone, audio focus, and the future Telecom calling owner. Never issue AudioManager routing commands while Telecom owns the call. Preserve existing echo cancellation unless measurements justify a specific change.
+- [ ] car-regression-proof — extend the existing orchestration/voice tests and the correct device test seam. The original failing physical check must pass. Verify all shipped transport families affected by the change, without enabling disabled engines.
+
+
+
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat car-route-fix" exits 0. Required checks: Android gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:connectedDebugAndroidTest with ANDROID_SERIAL=4633424442303098; scripts\verify-phone-evidence.bat run-case car-regression-proof. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+
+
+### car-call-testing — extensive device, head-unit, and real-call verification
+depends on: car-route-fix, call-modes-acceptance, recording-app-access
+
+Jobs: local-test-job, delivery-job, controlled-call-job, human-hardware-job. Watchers, exact restart commands, and shared ceilings are defined in Job supervision and restart policy; register concrete IDs before launch.
+Authorization: explicit start plus locked account, spending, contact, retention and distribution scope as applicable; standing deployment authorization already applies.
+Workstream done: every contained milestone gate exits 0; run "scripts\verify-phone-evidence.bat car-release-proof" to check the terminal gate and its dependency evidence.
+
+
+#### car-test-matrix — automated and physical coverage
+depends on: car-route-fix, call-modes-acceptance, recording-app-access
+
+- [ ] car-unit-matrix — test API 29/30 legacy routing and API 31+ routing; connection arriving late; refused route; missing permissions; route removal during capture; focus denied/lost/regained; wake mic contention; duplicate end; process/session cancellation; Telecom endpoint ownership; stale AI output after Take back. Existing tests first, new test classes only for new observable behavior.
+- [ ] car-device-matrix — on the S9, run Bluetooth HFP and handset/wired checks. On a supported newer phone, run modern HFP and BLE if hardware supports it. Unsupported hardware modes are explicitly not covered, never silently passed.
+- [ ] car-real-call-matrix — place controlled inbound and outbound Twilio calls through the parked car, covering human speaking, assistant Listen, Take over, Take back, and assistant-only continuation. Verify separate microphone uplink and speaker downlink with a test phrase at each end. Check remote party cannot hear muted user audio and hears no AI audio in Listen mode.
+- [ ] car-failure-matrix — during controlled calls, test car/Bluetooth disconnect, headset/handset route change, phone lock/background, cellular interruption, network loss, remote hangup, and owner stop. Verify no duplicate dial, no dropped remote leg during an intended handoff, no persistent capture, and no orphaned paid call legs.
+- [ ] car-soak — after basic success, run 10 connect/start/end cycles on the S9 and on the supported modern phone, plus one 20-minute controlled call with interruptions and Bluetooth reconnects. Use the locked budget; lack of budget is not permission to run unbounded calls.
+
+Acceptance thresholds: 10/10 lifecycle cycles release their resources; every required mode has audible two-way evidence; zero duplicate calls, unintended microphone disclosure, AI speech in Listen mode, or orphaned call legs. Capture route-acquisition and handoff timing rather than invent a universal Bluetooth latency limit. Any failed criterion fails its scenario; preserve partial results and fix before repeating. Allow at most three attempts per failing scenario, with a classified change between attempts.
+
+
+
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat car-test-matrix" exits 0. Required checks: Android gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:connectedDebugAndroidTest; scripts\verify-phone-evidence.bat run-case car-real-call-matrix; scripts\verify-phone-evidence.bat run-case car-failure-matrix; scripts\verify-phone-evidence.bat run-case car-soak. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+
+#### car-release-proof — publish only verified behavior
+depends on: car-test-matrix
+
+- [ ] car-help-release — update Help in the same feature commits, including Bluetooth setup, route choice, microphone state, call controls, and recovery instructions.
+- [ ] car-ci-release — use existing GitHub Android Release workflow, select a valid version above the installed code 21, verify signature/hash and installed version without reading keys. Preserve existing AWS delivery and APK updates.
+- [ ] car-installed-acceptance — repeat the key parked-car audio and controlled-call checks on the exact released artifact installed through the appropriate channel. Passing a debug build alone does not prove the release.
+
+
+
+
+
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat car-release-proof" exits 0. Required checks: go test ./internal/webapp/ -run TestHelpDrawer -count=1; scripts\verify-phone-evidence.bat run-case car-installed-acceptance; GitHub/installed-version checks. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+
 ## hotel-calling-dropped — owner dropped hotel calling on 2026-10-19
 
 Owner quote: "drop the hotel calling". Kept only as a record of what existed; do not rebuild or run without a new decision. Deployed code is unchanged.
@@ -291,3 +361,32 @@ Owner quote: "drop the hotel calling". Kept only as a record of what existed; do
 - [!] hotel-acceptance-run — offline provider/partial-result cases pass; Jeremy must explicitly lift the call stop, grant any needed daily budget and review the exact five-property batch before live calls. No real interviews are claimed. Verify all five have a terminal status and saved result; failed contacts never permit extra retries.
 - [!] trial-twenty-calls — Twilio account owner/Support must resolve outbound restriction 21216 before any retry.  GitHub run_trial.py waits for today's California window, verifies monthly Twilio usage and preserves $8 conservative infrastructure reserve, reserves $1.20 per call, and records actual/capped Azure usage. No call creation outside the dated window. Ambiguous creation or nonterminal prior call prevents retry.
 - [ ] trial-recordings — consent first, validated Twilio recordings copied into private S3; bounded reconciliation must succeed before advancing an accepted recording. Declined/unanswered calls remain honest no-audio outcomes.
+
+Workstream text moved verbatim from plan.md on 2026-10-19 (the status lines above were already here; this is the full definition):
+
+### hotel-job-execution — durable phone tasks within Jobs
+depends on: assistant-call-task, phone-targets, call-budget-gate, call-modes-acceptance, recording-app-access
+
+Jobs: local-test-job, hotel-call-job. Watchers, exact restart commands, and shared ceilings are defined in Job supervision and restart policy; register concrete IDs before launch.
+Authorization: explicit start plus locked account, spending, contact, retention and distribution scope as applicable; standing deployment authorization already applies.
+Workstream done: every contained milestone gate exits 0; run "scripts\verify-phone-evidence.bat hotel-results" to check the terminal gate and its dependency evidence.
+
+
+#### hotel-task-provider — add bounded external call execution
+depends on: assistant-call-task, phone-targets, call-budget-gate
+
+
+
+
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat hotel-task-provider" exits 0. Required checks: go test ./internal/jobs/ ./cmd/phone-trial-bridge/ ./internal/tools/ ./internal/webapp/ ./cmd/jobs-worker/ -count=1. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
+
+#### hotel-results — concise evidence-backed comparison
+depends on: hotel-task-provider, call-modes-acceptance, recording-app-access
+
+- [x] hotel-help-update — Help and Jobs capability copy describe exact five-hotel review, stop/budget holds, pause/cancel, recording links and staff-report limitations in the feature commit. Help test passes.
+
+
+Restart policy: existing phone deployment ceilings apply. Hotel calls have one attempt per property by default, with no automatic redial until a different bounded policy is locked. Call timeout or budget exhaustion ends the active call, preserves results, and prevents further charges. One unavailable hotel does not block the remaining authorized hotels. No local scheduled automation and no actual hotel calls in this planning session.
+
+
+Definition of done: from C:\dev\live-ninja-plan-build, "scripts\verify-phone-evidence.bat hotel-results" exits 0. Required checks: go test ./internal/webapp/ -run TestHelpDrawer -count=1; node --test tests/web/unit/jobs.test.mjs; scripts\verify-phone-evidence.bat run-case hotel-acceptance-run. All acceptance criteria in the items above are mandatory. Android Gradle commands run in C:\dev\live-ninja-plan-build\android with the recorded ANDROID_SERIAL. Gate evidence records exact executed commands and their exit codes.
