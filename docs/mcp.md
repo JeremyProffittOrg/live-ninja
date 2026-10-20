@@ -27,6 +27,42 @@ a bearer credential receives an authentication challenge; it is not an app page.
 - job_list, job_status and job proposal tools: existing Jobs behavior. Create,
   start, pause, resume, cancel, retry and note operations return proposals for
   review in https://live.jeremy.ninja/jobs. They do not start a general AI worker.
+- ghost_nodes, ghost_sessions, ghost_session_summary, ghost_run_status
+  (`ghost:read`): the owner's ghost coding-agent fleet. ghost_nodes lists
+  computers with online state, agent version and the sessions active in the
+  last 30 minutes; ghost_sessions pages the retained sessions of one computer
+  or the whole fleet (follow `nextCursor`) and lists scheduled runs beside, never
+  joined to, sessions; ghost_session_summary returns a deterministic EXTRACTIVE
+  summary (no model call) of one session or of the sessions active in a window,
+  bounded at 200 events, 48 KB and 4 history pages per session and 10 sessions
+  per window, with `partial: true` and `partialReasons` when a bound is hit;
+  ghost_run_status reads a run back by eventId+runId, by requestId, or the
+  latest. Coverage is retained uploads only; an empty list never proves nothing
+  ran.
+- ghost_run_start and ghost_session_command (`ghost:manage`): start a coding run
+  on one computer and repository, or send NUDGE (text), ANSWER (reply to a
+  waiting prompt), PAUSE or RESUME to one session on one computer. KILL is not
+  offered. Without `confirm` both return `confirmation_required` with the exact
+  proposal in `error.details.proposed` and a server-issued
+  `error.details.proposalId`; the client reads the proposal back and, only after
+  the owner agrees, calls again with the SAME arguments, `confirm: true`, that
+  `proposalId` and a NEW `requestId`. The proposal is bound to the signed-in
+  owner and to the exact arguments, lasts 15 minutes and is consumed on use:
+  `confirm: true` without a `proposalId` is refused (`invalid_args`), changed
+  arguments are refused (`invalid_args`), and an unknown, expired or spent
+  `proposalId` is refused (`not_found`); none of those launches or sends
+  anything, on any surface. A connector therefore cannot assert confirmation on
+  its own — the `confirm` flag passes through untouched, but it only works with
+  the proposal the server issued. Success is `launched` (run) or `accepted`
+  (command): ghost queued the work to the computer, which applies it on its own
+  time. Neither result means the run finished or the session acted; use
+  ghost_run_status or ghost_session_summary. `ghost_session_command` depends on
+  a ghost-cli change (POST /command on its internal-invoke allowlist) that ships
+  separately; until it has, the tool returns `not_configured` with "session
+  commands are not enabled on the fleet service yet" and sends nothing.
+- code_update_repos, code_update_start, code_update_status (`ghost:manage`): the
+  existing code-update tools, now granted with the same permission as the ghost
+  manage tools. code_update_start still returns a proposal and starts nothing.
 
 Phone messages return promptly after provider acceptance and continue separately
 from the conversation. This does not add general independent AI-task execution.
@@ -42,9 +78,12 @@ permissions and writes its existing audit record.
 
 ## Permissions and connection lifecycle
 
-Permissions are phone:send, phone:read, jobs:read, jobs:manage, memory:read and
-memory:write. Tools are listed only for granted scopes, and calls enforce the
-same scope again. MCP credentials cannot access ordinary app API routes.
+Permissions are phone:send, phone:read, jobs:read, jobs:manage, memory:read,
+memory:write, ghost:read and ghost:manage. Tools are listed only for granted
+scopes, and calls enforce the same scope again. A connection granted before
+ghost:read and ghost:manage existed carries neither: it keeps listing exactly
+its earlier tools and keeps working, and the ghost tools appear only after the
+owner disconnects and connects again, consenting to the new permissions. MCP credentials cannot access ordinary app API routes.
 The server implements stateless Streamable HTTP with JSON responses, not an
 optional server-initiated SSE stream.
 

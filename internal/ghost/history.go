@@ -17,8 +17,23 @@ var historyNodeID = regexp.MustCompile(`^[A-Za-z0-9:_-]{1,128}$`)
 
 type HistorySession struct {
 	SessionID string `json:"session_id"`
-	Date      string `json:"date"`
+	// Date is the UPLOAD partition (ghost-cli docs/conversation-history-api.md:
+	// "Dates describe upload partitions, not the session's start time").
+	Date string `json:"date"`
+	// UpdatedAt is the newest retained object's LastModified for this session,
+	// RFC3339Nano, or empty when ghost-cli did not report one. It is the only
+	// last-activity signal the archive carries.
+	UpdatedAt string `json:"updated_at,omitempty"`
 }
+
+// ValidNodeID reports whether node has the shape ghost-cli accepts as a fleet
+// node (thing) name. Shape only: existence is a /nodes question.
+func ValidNodeID(node string) bool { return historyNodeID.MatchString(node) }
+
+// ValidSessionID reports whether session has the shape of a provider session
+// id as ghost-cli's history routes serve them (a UUID, or agent-<hex>).
+func ValidSessionID(session string) bool { return historySessionID.MatchString(session) }
+
 type HistorySessionsPage struct {
 	Version    int              `json:"version"`
 	NodeID     string           `json:"node_id"`

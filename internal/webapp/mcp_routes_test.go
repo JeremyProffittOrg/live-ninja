@@ -147,3 +147,124 @@ func TestMCPMemoryUsesExistingRegistryAndIdempotency(t *testing.T) {
 		t.Fatal(out)
 	}
 }
+
+// ghost-job-control (2026-10-19): the fleet tools ride two new scopes. A
+// grant that predates them carries neither, so an existing connector keeps
+// exactly its old tool list until the owner reconnects with the new scopes.
+func TestMCPGhostScopesListOnlyGrantedToolsAndKeepLegacyGrantsIntact(t *testing.T) {
+	listNames := func(t *testing.T, scopes []string) (map[string]map[string]any, []tools.Invocation) {
+		t.Helper()
+		f := &mcpFakeTools{}
+		_, out := mcpRequest(t, mcpTestApp(f, scopes), `{"jsonrpc":"2.0","id":"list","method":"tools/list"}`, nil)
+		byName := map[string]map[string]any{}
+		for _, v := range out["result"].(map[string]any)["tools"].([]any) {
+			tool := v.(map[string]any)
+			byName[tool["name"].(string)] = tool
+		}
+		return byName, f.calls
+	}
+	requestIDRequired := func(tool map[string]any) bool {
+		schema := tool["inputSchema"].(map[string]any)
+		required, _ := schema["required"].([]any)
+		for _, r := range required {
+			if r == "requestId" {
+				return true
+			}
+		}
+		return false
+	}
+	readOnly := func(tool map[string]any) bool {
+		return tool["annotations"].(map[string]any)["readOnlyHint"] == true
+	}
+
+	read, calls := listNames(t, []string{"ghost:read"})
+	if len(calls) != 0 || len(read) != 4 {
+		t.Fatal(read, calls)
+	}
+	for _, name := range []string{"ghost_nodes", "ghost_sessions", "ghost_session_summary", "ghost_run_status"} {
+		tool, ok := read[name]
+		if !ok || requestIDRequired(tool) || !readOnly(tool) || mcpPolicies[name].scope != "ghost:read" {
+			t.Fatal(name, tool)
+		}
+	}
+
+	manage, _ := listNames(t, []string{"ghost:manage"})
+	if len(manage) != 5 {
+		t.Fatal(manage)
+	}
+	for _, name := range []string{"ghost_run_start", "ghost_session_command", "code_update_start"} {
+		tool, ok := manage[name]
+		if !ok || !requestIDRequired(tool) || readOnly(tool) || mcpPolicies[name].scope != "ghost:manage" {
+			t.Fatal(name, tool)
+		}
+		if tool["annotations"].(map[string]any)["openWorldHint"] != true {
+			t.Fatal(name, "reaches the owner's computers; must be marked open-world")
+		}
+	}
+	for _, name := range []string{"code_update_repos", "code_update_status"} {
+		tool, ok := manage[name]
+		if !ok || requestIDRequired(tool) || !readOnly(tool) || mcpPolicies[name].scope != "ghost:manage" {
+			t.Fatal(name, tool)
+		}
+	}
+
+	// Every scope that existed before ghost:* was added: no ghost or
+	// code_update tool appears, and the pre-existing tools all still do.
+	legacy, _ := listNames(t, []string{"phone:send", "phone:read", "jobs:read", "jobs:manage", "memory:read", "memory:write"})
+	for name := range legacy {
+		if strings.HasPrefix(name, "ghost_") || strings.HasPrefix(name, "code_update_") {
+			t.Fatal("legacy grant must not list", name)
+		}
+	}
+	for name, policy := range mcpPolicies {
+		if _, old := legacy[name]; old == strings.HasPrefix(policy.scope, "ghost:") {
+			t.Fatal(name, policy, old)
+		}
+	}
+	if len(legacy) != len(mcpPolicies)-9 {
+		t.Fatal(len(legacy), len(mcpPolicies))
+	}
+}
+
+func TestMCPGhostCallsEnforceScopeAndStableRequest(t *testing.T) {
+	// A read-only grant cannot start a run: insufficient_scope names the
+	// missing scope and nothing reaches the registry.
+	f := &mcpFakeTools{}
+	app := mcpTestApp(f, []string{"ghost:read"})
+	r := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"ghost_run_start","arguments":{"repo":"owner/name","instructions":"fix the flaky test","requestId":"ghost_run_request_1"}}}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Accept", "application/json, text/event-stream")
+	res, err := app.Test(r, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 403 || !strings.Contains(res.Header.Get("WWW-Authenticate"), `scope="ghost:manage"`) || len(f.calls) != 0 {
+		t.Fatal(res.StatusCode, res.Header.Get("WWW-Authenticate"), f.calls)
+	}
+
+	// The read tools invoke with the verified identity and no idempotency key.
+	status, out := mcpRequest(t, app, `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"ghost_nodes","arguments":{"node":"OFFICEPC"}}}`, nil)
+	if status != 200 || out["result"].(map[string]any)["isError"] != false || len(f.calls) != 1 {
+		t.Fatal(status, out, f.calls)
+	}
+	if c := f.calls[0]; c.Tool != "ghost_nodes" || c.IdempotencyKey != "" || c.UserID != "owner-1" || c.Role != "owner" || c.Surface != "mcp" || c.Args["node"] != "OFFICEPC" {
+		t.Fatal(c)
+	}
+
+	// Manage tools need a stable requestId, which becomes the registry's
+	// idempotency key; the confirm flag passes through untouched.
+	f = &mcpFakeTools{}
+	app = mcpTestApp(f, []string{"ghost:manage"})
+	_, out = mcpRequest(t, app, `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"ghost_session_command","arguments":{"node":"OFFICEPC","sessionId":"s1","command":"PAUSE"}}}`, nil)
+	if out["error"] == nil || len(f.calls) != 0 {
+		t.Fatal(out, f.calls)
+	}
+	status, out = mcpRequest(t, app, `{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"ghost_session_command","arguments":{"node":"OFFICEPC","sessionId":"s1","command":"PAUSE","confirm":true,"requestId":"ghost_cmd_request_1"}}}`, nil)
+	if status != 200 || out["result"].(map[string]any)["isError"] != false || len(f.calls) != 1 {
+		t.Fatal(status, out, f.calls)
+	}
+	if c := f.calls[0]; c.IdempotencyKey != "mcp:ghost_session_command:ghost_cmd_request_1" || c.Args["requestId"] != nil || c.Args["confirm"] != true || c.Args["command"] != "PAUSE" {
+		t.Fatal(c)
+	}
+}

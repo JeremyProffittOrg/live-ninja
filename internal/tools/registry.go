@@ -636,6 +636,15 @@ func definitions() []*Definition {
 		codeUpdateReposDefinition(),
 		codeUpdateStartDefinition(),
 		codeUpdateStatusDefinition(),
+		// ghost-job-control: the owner's ghost-cli fleet by voice (ghost_*.go).
+		// Reads: nodes, sessions, an extractive session summary, run status.
+		// Manage (confirmation + idempotency): start a run, command a session.
+		ghostNodesDefinition(),
+		ghostSessionsDefinition(),
+		ghostSessionSummaryDefinition(),
+		ghostRunStatusDefinition(),
+		ghostRunStartDefinition(),
+		ghostSessionCommandDefinition(),
 		// The owner's personal knowledge store by voice, through the
 		// knowledge-plane SQS relay (knowledge.go). Owner-only.
 		knowledgeSearchDefinition(),

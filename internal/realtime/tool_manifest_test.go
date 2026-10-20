@@ -16,10 +16,11 @@ import (
 // from tools.CatalogManifest(), and toolManifestJSON is a package-level
 // func() var initialised from toolManifest. Go resolves package-level
 // dependency order automatically, but this pins it: ToolManifestJSON()
-// must be non-empty and parse to the full 48-tool catalog (29 + the two
+// must be non-empty and parse to the full 54-tool catalog (29 + the two
 // knowledge_* relay tools + the four rule_* tools + set_current_location,
-// plus nine Jobs tools, the Android play_media tool and two owner phone tools), each a
-// complete OpenAI function-tool declaration. Capability-based filtering
+// plus nine Jobs tools, the Android play_media tool, two owner phone tools
+// and the six ghost_* fleet tools), each a complete OpenAI function-tool
+// declaration. Capability-based filtering
 // (Android-only / legacy clients) happens per session, not here: this is
 // the complete catalog.
 func TestToolManifestJSONInitOrder(t *testing.T) {
@@ -28,7 +29,7 @@ func TestToolManifestJSONInitOrder(t *testing.T) {
 
 	var entries []map[string]any
 	require.NoError(t, json.Unmarshal(raw, &entries))
-	require.Len(t, entries, 48, "the full tool catalog must be bound")
+	require.Len(t, entries, 54, "the full tool catalog must be bound")
 
 	names := make([]string, 0, len(entries))
 	for i, e := range entries {
@@ -47,6 +48,10 @@ func TestToolManifestJSONInitOrder(t *testing.T) {
 	assert.Contains(t, names, "phone_message_status")
 	assert.Contains(t, names, "play_media",
 		"the complete catalog must include the Android play_media tool")
+	for _, ghostTool := range []string{"ghost_nodes", "ghost_sessions", "ghost_session_summary",
+		"ghost_run_status", "ghost_run_start", "ghost_session_command"} {
+		assert.Contains(t, names, ghostTool, "the complete catalog must include the ghost fleet tools")
+	}
 }
 
 // TestBrokerBoundManifestMatchesRouterCatalog is THE missing parity test

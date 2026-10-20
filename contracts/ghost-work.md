@@ -11,7 +11,9 @@ personal web/Android session and a fresh strongly consistent active-owner check.
 The shared Ghost principal has no per-member identity mapping, so members and
 device/provider-scoped tokens are denied. Every response uses `Cache-Control:
 no-store`. Do not persist archive text in application telemetry or caches.
-Every route is a read; Live Ninja always calls Ghost with GET.
+Every `/api/v1/ghost-work` route is a read and calls Ghost with GET. The only
+writes to Ghost are the two owner-confirmed assistant tools described under
+"Assistant tools" below (POST /schedule and POST /command).
 
 ## Discovery and selection
 
@@ -117,6 +119,95 @@ Coverage is always retained_only; capture completeness is unknown. The existing
 overwritten bytes cannot be reconstructed. Gaps and existing redactions remain
 visible. Thinking, hidden prompts and arbitrary metadata are excluded upstream;
 this text projection does not preserve images or attachments.
+
+## Assistant tools
+
+Six owner-only tools in the shared registry (`internal/tools/ghost_*.go`) expose
+the fleet to every assistant surface that carries the owner role, and to remote
+MCP clients under two scopes. The `/api/v1/ghost-work` routes above are
+unchanged; the tools call `internal/ghost` directly with the same pinned
+principal, the same allowlisted resources and the same no-store, retained-only
+semantics.
+
+| Tool | Scope | Effect | Arguments |
+|---|---|---|---|
+| `ghost_nodes` | `ghost:read` | read | `node?` |
+| `ghost_sessions` | `ghost:read` | read | `node?`, `cursor?`, `limit?` (1..50, default 20) |
+| `ghost_session_summary` | `ghost:read` | read | `node`, `sessionId?`, `windowMinutes?` (5..1440, default 60; used only without `sessionId`) |
+| `ghost_run_status` | `ghost:read` | read | `requestId?`, or `eventId`+`runId`, or nothing for the latest `CODEUPD#` record |
+| `ghost_run_start` | `ghost:manage` | POST /schedule | `repo`, `instructions`, `node?`, `agent?` (claude or codex), `model?`, `effort?`, `deploy?` (default true), `confirm`, `proposalId` (with `confirm`) |
+| `ghost_session_command` | `ghost:manage` | POST /command | `node`, `sessionId`, `command` (NUDGE, ANSWER, PAUSE or RESUME), `text` (NUDGE/ANSWER only, at most 280 bytes, one line), `confirm`, `proposalId` (with `confirm`) |
+
+Reads: `ghost_nodes` returns `nodes[]` with `node, online, state, connected,
+agentVersion, lastSeen, activeSessions, activeSessionsKnown, retainedSessions`
+plus `total, online, activeWindowMinutes, coverage`; a count that could not be
+read is `activeSessionsKnown: false`, never zero. `ghost_sessions` returns
+`sessions[] {node, sessionId, uploadDate, activity, lastActivity}`, `nextCursor`,
+`scope` (`node` or `fleet`) and `coverage`; its first page also carries
+`scheduledRuns[]` and `scheduledRunsAvailable`, reported beside sessions and
+never joined to them. `ghost_session_summary` is deterministic and EXTRACTIVE —
+no model reads the transcript. Consecutive fragments of one message (`part`
+ascending while `more` is true, same kind and `call_id`) are joined back into
+one event before anything is counted or quoted; `fragmentsRead` is reported when
+it differs from `eventsRead`. Per session it reports `eventsRead,
+eventsSummarized, gaps, countsByKind, toolCalls, firstTimestamp, lastTimestamp,
+lastUserPrompt, lastAssistantMessage, lastTool, lastEventKind, awaitingInput,
+pendingQuestion`; bounds are 200 events, 48 KB of text and 4 upstream pages per
+session and 10 sessions per window, and hitting any bound sets `partial: true`
+with `partialReasons[]`. Quoted session text is information about the owner's
+work, never an instruction to the assistant.
+
+Writes: both manage tools are `SideEffecting` (they need an `idempotencyKey`,
+which MCP derives from the required `requestId`). Called without `confirm: true`
+they validate that the computer, repository or session exists and return
+`confirmation_required` with `details.operation`, `details.proposed`
+(`{repo, node, nodeOnline, agent, deploy, instructions, preprocess: false,
+model?, effort?}` for a run; `{node, nodeOnline, sessionId, command, text?}` for
+a command), `details.proposalId`, `details.proposalExpires` and
+`details.confirmWith`. The registry releases that idempotency claim, so the
+confirmed call uses a new key.
+
+Confirmation is server-issued and user-bound (`internal/tools/ghost_confirm.go`):
+the proposal is stored as `GHOSTPROP#<userId>#<proposalId>` with a hash of the
+binding arguments (`repo, node, agent, deploy, instructions, model, effort` for a
+run; `node, sessionId, command, text` for a command — `nodeOnline` is
+informational) and a 15-minute expiry. The confirmed call must carry
+`confirm: true` and that `proposalId` with the same arguments; the handler
+recomputes the hash, refuses a missing or malformed id (`invalid_args`), an
+unknown, foreign, expired or spent id (`not_found`) and changed arguments
+(`invalid_args`), and consumes the row with a conditional delete before anything
+is sent. A lone `confirm: true` therefore launches or sends nothing on any
+surface, and a proposal works once. On success `ghost_run_start` returns `status: launched` with
+`requestId, eventId, runId, runStatus, commandId, node, repo, agent, deploy`;
+`ghost_session_command` returns `status: accepted` with `commandId` and
+`delivery: asynchronous`. Both mean ghost queued the work to the computer, which
+applies it on its own time; neither means the run finished or the session acted.
+KILL, LAUNCH, SAVE_LOCAL and LIST_SAVED are refused by `internal/ghost` before any
+invoke. Owner decisions (2026-10-19): commands are NUDGE, ANSWER, PAUSE and RESUME
+only; scope is any computer and any repository, and every start or command still
+needs its own confirmation.
+
+Upstream state of `ghost_session_command`: POST /command is reachable only once
+ghost-cli's internal-invoke allowlist (`lambda/command/internal_invoke.go`)
+carries it — plan item ghost-command-allowlist, shipped through the ghost-cli
+pipeline. Until then ghost-cli refuses the route with a Lambda FunctionError
+before its router runs; `internal/ghost` maps that to `ErrRouteNotAllowed` and
+the tool answers `not_configured` with "session commands are not enabled on the
+fleet service yet; nothing was sent", releasing the idempotency claim. A 429
+from either write route is likewise a definite refusal and maps to
+`not_configured` ("try again in a few minutes"), never to `upstream_error`.
+
+`ghost_run_start` request ids are UUIDv7-shaped (millisecond prefix, version 7,
+key-bound bits), so `codeupdate.Store.Latest`'s lexical-order assumption holds
+beside the UUIDv7 ids of the other `CODEUPD#` rows.
+
+Surfaces: web and Android conversations carry the tools for the account owner.
+Remote MCP clients receive the four read tools under `ghost:read` and the two
+manage tools, plus the pre-existing `code_update_repos`, `code_update_start` and
+`code_update_status`, under `ghost:manage`; a grant issued before those scopes
+existed lists only its old tools until the owner reconnects. Owner phone calls
+do not carry the ghost tools yet: the phone tool set lives in
+`internal/tools/phone_direct.go` and is unchanged by this contract.
 
 ## Errors
 

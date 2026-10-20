@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,8 +19,11 @@ type fakeInvoke struct {
 	events    []invokeEvent
 	responses []proxyResponse
 	fnErrors  []string
-	err       error
-	calls     int
+	// fnPayloads, when set for the same index as fnErrors, is the Lambda
+	// error object returned with that FunctionError.
+	fnPayloads []string
+	err        error
+	calls      int
 }
 
 func (f *fakeInvoke) Invoke(_ context.Context, in *lambda.InvokeInput, _ ...func(*lambda.Options)) (*lambda.InvokeOutput, error) {
@@ -35,6 +39,9 @@ func (f *fakeInvoke) Invoke(_ context.Context, in *lambda.InvokeInput, _ ...func
 	if idx < len(f.fnErrors) && f.fnErrors[idx] != "" {
 		out.FunctionError = aws.String(f.fnErrors[idx])
 		out.Payload = []byte(`{"errorMessage":"boom"}`)
+		if idx < len(f.fnPayloads) && f.fnPayloads[idx] != "" {
+			out.Payload = []byte(f.fnPayloads[idx])
+		}
 		return out, nil
 	}
 	resp := proxyResponse{StatusCode: 200, Body: "{}"}
@@ -94,6 +101,12 @@ func TestOnlyAllowlistedResourcesAreUsed(t *testing.T) {
 		"POST /schedule":                  true,
 		"POST /schedule/preprocess":       true,
 		"GET /schedule/preprocess-status": true,
+		// History (docs/conversation-history-api.md, "Live Ninja internal
+		// transport") and POST /command for NUDGE/ANSWER/PAUSE/RESUME on one
+		// named node (ghost-job-control, 2026-10-19).
+		"GET /history/sessions": true,
+		"GET /history/events":   true,
+		"POST /command":         true,
 	}
 	f := &fakeInvoke{responses: []proxyResponse{
 		ok(`{"repos":[]}`),
@@ -102,6 +115,9 @@ func TestOnlyAllowlistedResourcesAreUsed(t *testing.T) {
 		{StatusCode: 202, Body: `{"event_id":"e","run":{"run_id":"r"}}`},
 		ok(`{"events":[]}`),
 		ok(`{"nodes":[]}`),
+		ok(`{"version":1,"node_id":"OFFICEPC","sessions":[],"next_cursor":"","coverage":"retained_only"}`),
+		ok(`{"version":1,"node_id":"OFFICEPC","session_id":"` + testHistorySession + `","events":[],"resume_cursor":"r","coverage":"retained_only","gaps":[]}`),
+		{StatusCode: 202, Body: `{"command_id":"c"}`},
 	}}
 	c := testClient(f)
 	ctx := context.Background()
@@ -111,9 +127,12 @@ func TestOnlyAllowlistedResourcesAreUsed(t *testing.T) {
 	_, _ = c.Launch(ctx, LaunchRequest{}, "")
 	_, _, _ = c.FindRun(ctx, "e", "r", "")
 	_, _ = c.Nodes(ctx, "")
+	_, _ = c.HistorySessions(ctx, "OFFICEPC", "", "")
+	_, _ = c.HistoryEvents(ctx, "OFFICEPC", testHistorySession, "", "")
+	_, _ = c.Command(ctx, CommandRequest{Type: CommandPause, Node: "OFFICEPC", SessionID: testHistorySession}, "")
 
-	if len(f.events) != 6 {
-		t.Fatalf("made %d calls, want 6 (one per client method)", len(f.events))
+	if len(f.events) != 9 {
+		t.Fatalf("made %d calls, want 9 (one per client method)", len(f.events))
 	}
 	for _, ev := range f.events {
 		if key := ev.Method + " " + ev.Resource; !allowed[key] {
@@ -234,6 +253,35 @@ func TestFunctionErrorIsNotParsedAsAResponse(t *testing.T) {
 	_, err := testClient(f).ListRepos(context.Background())
 	if !errors.Is(err, ErrUpstream) {
 		t.Errorf("err = %v, want ErrUpstream", err)
+	}
+}
+
+// ghost-cli refuses a resource outside its internal-invoke allowlist with a
+// Lambda FunctionError BEFORE its router runs ("<METHOD> <resource> is not
+// reachable by internal invoke", lambda/command/internal_invoke.go). That is
+// a definite "not enabled there", not an unknown outcome, so it gets its own
+// sentinel and is NOT ErrUpstream; a FunctionError with any other message
+// (a panic, say) stays ErrUpstream.
+func TestAllowlistRefusalIsRouteNotAllowed(t *testing.T) {
+	f := &fakeInvoke{fnErrors: []string{"Unhandled"},
+		fnPayloads: []string{`{"errorMessage":"internal invoke: POST /command is not reachable by internal invoke","errorType":"InternalInvokeError"}`}}
+	_, err := testClient(f).Command(context.Background(), CommandRequest{
+		Type: CommandPause, Node: "OFFICEPC", SessionID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}, "corr")
+	if !errors.Is(err, ErrRouteNotAllowed) {
+		t.Fatalf("err = %v, want ErrRouteNotAllowed", err)
+	}
+	if errors.Is(err, ErrUpstream) {
+		t.Errorf("an allowlist refusal must not read as an unknown upstream outcome: %v", err)
+	}
+	if !strings.Contains(err.Error(), "POST /command") {
+		t.Errorf("err = %v, want the refused route named", err)
+	}
+
+	panicked := &fakeInvoke{fnErrors: []string{"Unhandled"},
+		fnPayloads: []string{`{"errorMessage":"runtime error: index out of range","errorType":"errorString"}`}}
+	_, err = testClient(panicked).ListRepos(context.Background())
+	if !errors.Is(err, ErrUpstream) || errors.Is(err, ErrRouteNotAllowed) {
+		t.Errorf("err = %v, want ErrUpstream only", err)
 	}
 }
 

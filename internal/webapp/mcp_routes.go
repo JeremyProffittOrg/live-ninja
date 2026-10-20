@@ -28,7 +28,20 @@ var mcpPolicies = map[string]mcpPolicy{
 	"job_create": {"jobs:manage", false}, "job_start": {"jobs:manage", false}, "job_pause": {"jobs:manage", false},
 	"job_resume": {"jobs:manage", false}, "job_cancel": {"jobs:manage", false}, "job_retry": {"jobs:manage", false}, "job_command": {"jobs:manage", false},
 	"call_message": {"phone:send", true}, "phone_message_status": {"phone:read", false},
+	// ghost-job-control (2026-10-19): the owner's coding-agent fleet. Reads
+	// under ghost:read; starts and session commands, and the existing
+	// code_update_* tools, under ghost:manage. A grant issued before these
+	// scopes existed carries neither, so it keeps listing only its old tools
+	// until the owner reconnects and consents again.
+	"ghost_nodes": {"ghost:read", false}, "ghost_sessions": {"ghost:read", false},
+	"ghost_session_summary": {"ghost:read", false}, "ghost_run_status": {"ghost:read", false},
+	"ghost_run_start": {"ghost:manage", true}, "ghost_session_command": {"ghost:manage", true},
+	"code_update_start": {"ghost:manage", true}, "code_update_repos": {"ghost:manage", false}, "code_update_status": {"ghost:manage", false},
 }
+
+// mcpOpenWorld marks the tools whose effect leaves Live Ninja: an outgoing
+// call, or work queued to one of the owner's own computers through ghost.
+var mcpOpenWorld = map[string]bool{"call_message": true, "ghost_run_start": true, "ghost_session_command": true, "code_update_start": true}
 var mcpRequestKey = regexp.MustCompile("^[A-Za-z0-9_-]{8,128}$")
 var mcpNumericID = regexp.MustCompile("^-?[0-9]+$")
 
@@ -83,7 +96,7 @@ func mcpToolList(c *fiber.Ctx, registry mcpToolInvoker) []map[string]any {
 		}
 		readonly := !policy.mutates && !strings.HasPrefix(policy.scope, "jobs:manage")
 		result = append(result, map[string]any{"name": name, "description": tool["description"], "inputSchema": schema,
-			"annotations":     map[string]any{"readOnlyHint": readonly, "destructiveHint": name == "forget", "idempotentHint": readonly, "openWorldHint": name == "call_message"},
+			"annotations":     map[string]any{"readOnlyHint": readonly, "destructiveHint": name == "forget", "idempotentHint": readonly, "openWorldHint": mcpOpenWorld[name]},
 			"securitySchemes": []map[string]any{{"type": "oauth2", "scopes": []string{policy.scope}}}})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i]["name"].(string) < result[j]["name"].(string) })
@@ -158,7 +171,7 @@ func handleMCP(registry mcpToolInvoker, origin string) fiber.Handler {
 			if !mcpVersion(selected) {
 				selected = "2025-11-25"
 			}
-			return mcpResult(c, req.ID, fiber.Map{"protocolVersion": selected, "capabilities": fiber.Map{"tools": fiber.Map{}}, "serverInfo": fiber.Map{"name": "live-ninja", "version": "1.0.0"}, "instructions": "Owner-scoped phone messages, jobs and memory. Job mutation tools return review proposals; they do not launch general AI workers. Queued calls do not prove a message was heard."})
+			return mcpResult(c, req.ID, fiber.Map{"protocolVersion": selected, "capabilities": fiber.Map{"tools": fiber.Map{}}, "serverInfo": fiber.Map{"name": "live-ninja", "version": "1.0.0"}, "instructions": "Owner-scoped phone messages, jobs, memory and the owner's ghost coding-agent fleet. Job mutation tools return review proposals; they do not launch general AI workers. Queued calls do not prove a message was heard. ghost_run_start and ghost_session_command first return confirmation_required with the exact proposal and a proposalId; call again with the same arguments, confirm=true, that proposalId and a new requestId only after the owner agreed — confirm=true without the proposalId is refused. A launched run or an accepted command is queued to the owner's computer, not finished; not_configured from ghost_session_command means session commands are not enabled on the fleet service yet."})
 		case "ping":
 			return mcpResult(c, req.ID, fiber.Map{})
 		case "tools/list":

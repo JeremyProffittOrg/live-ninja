@@ -75,7 +75,28 @@ var (
 	ErrHistoryTooLarge      = errors.New("ghost: history object too large")
 	ErrHistoryMalformed     = errors.New("ghost: malformed retained history")
 	ErrTransportUnavailable = errors.New("ghost: internal transport unavailable")
+	// ErrRouteNotAllowed means ghost-cli's internal-invoke allowlist
+	// (lambda/command/internal_invoke.go) does not carry the resource and
+	// method this client asked for. ghost-cli answers that with a Lambda
+	// FunctionError whose message ends in routeNotAllowedMarker, BEFORE the
+	// router runs, so nothing on the far side was attempted. It is the
+	// deployed state of a route that is coded here but not yet enabled there
+	// (POST /command until ghost-command-allowlist ships), and callers map it
+	// to "not enabled yet", never to "not found" or "unknown outcome".
+	ErrRouteNotAllowed = errors.New("ghost: route not reachable by internal invoke")
 )
+
+// routeNotAllowedMarker is the tail of ghost-cli's InternalInvokeError for a
+// resource outside its allowlist: "internal invoke: <METHOD> <resource> is not
+// reachable by internal invoke" (lambda/command/internal_invoke.go). A
+// CROSS-REPO CONTRACT, matched as a substring so the prefix wording may move.
+const routeNotAllowedMarker = "is not reachable by internal invoke"
+
+// functionErrorPayload is the Lambda error object a FunctionError carries.
+type functionErrorPayload struct {
+	ErrorMessage string `json:"errorMessage"`
+	ErrorType    string `json:"errorType"`
+}
 
 // HTTPError preserves authorization status without retaining private upstream bodies.
 type HTTPError struct {
@@ -185,8 +206,17 @@ func (c *Client) call(ctx context.Context, method, resource, body string, query 
 	// A handled Lambda error (a rejected internal-invoke event, a panic) sets
 	// FunctionError; the payload is then an error object, not our response.
 	if fe := aws.ToString(out.FunctionError); fe != "" {
+		var fep functionErrorPayload
+		_ = json.Unmarshal(out.Payload, &fep)
+		if strings.Contains(fep.ErrorMessage, routeNotAllowedMarker) {
+			// The allowlist refused the route before anything ran there.
+			c.log.Warn("ghost: route not allowed by internal invoke",
+				slog.String("resource", resource), slog.String("method", method))
+			return "", fmt.Errorf("%w: %s %s", ErrRouteNotAllowed, method, resource)
+		}
 		c.log.Error("ghost: function error",
-			slog.String("resource", resource), slog.String("function_error", fe))
+			slog.String("resource", resource), slog.String("function_error", fe),
+			slog.String("error_type", fep.ErrorType))
 		return "", fmt.Errorf("%w: %w", ErrUpstream, ErrTransportUnavailable)
 	}
 

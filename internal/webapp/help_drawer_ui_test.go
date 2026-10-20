@@ -161,6 +161,36 @@ func TestHelpDrawerCoversTheAppsCapabilities(t *testing.T) {
 		assert.Containsf(t, help, want, "help panel must cover rules and current location: %q", want)
 	}
 
+	// The owner's ghost coding-agent fleet (ghost-job-control, 2026-10-19):
+	// the read side, the confirmed start/command side, and the two honesty
+	// clauses a user needs — the summary is quoted, not written, and an
+	// accepted start or command is queued, not finished. The MCP entry says
+	// how a connected assistant gets the same tools.
+	for _, want := range []string{
+		"Check on your coding agents",
+		"Run your coding agents",
+		"reads the exact plan back first",
+		"deploy is on unless you say to hold it",
+		"tied to the plan you heard",
+		"lasts fifteen minutes, works once",
+		"queued to your computer, not finished",
+		"cannot kill a session",
+		"not enabled yet and sends nothing",
+		"With the ghost permissions",
+		"keeps only its old tools until you disconnect and connect again",
+	} {
+		assert.Containsf(t, help, want, "help panel must cover the ghost fleet tools: %q", want)
+	}
+
+	// The two coding bullets must agree: Approvals records a decision and
+	// launches nothing; the confirmed conversation path is the one that
+	// launches. The old "a conversation cannot authorize a launch" sentence
+	// contradicted the bullet below it and must not come back.
+	assert.Contains(t, help, "Approvals records your decision but does not launch anything")
+	assert.Contains(t, help, "launches only after you confirm the exact run in the conversation")
+	assert.NotContains(t, help, "A conversation cannot authorize a launch or deployment")
+	assert.NotContains(t, help, "Coding execution remains unavailable")
+
 	// Every page reachable from the app shell.
 	for _, want := range []string{"History", "Memory", "Personas", "Downloads"} {
 		assert.Containsf(t, help, ">"+want+"<", "help panel must describe the %s page", want)

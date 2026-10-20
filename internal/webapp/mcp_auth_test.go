@@ -177,6 +177,13 @@ func TestMCPOAuthMetadataAndDCR(t *testing.T) {
 		if resp.StatusCode != 200 || !strings.Contains(body, mcpauth.Issuer) {
 			t.Fatal(path)
 		}
+		// ghost-job-control: both ghost scopes are advertised wherever
+		// scopes_supported is published, beside the original six.
+		for _, scope := range []string{"phone:send", "ghost:read", "ghost:manage"} {
+			if !strings.Contains(body, `"`+scope+`"`) {
+				t.Fatal(path, "missing scope", scope)
+			}
+		}
 	}
 	r := httptest.NewRequest("POST", "/oauth/register", strings.NewReader(`{"client_name":"test","redirect_uris":["https://client.example/callback"],"token_endpoint_auth_method":"none"}`))
 	r.Header.Set("Content-Type", "application/json")
