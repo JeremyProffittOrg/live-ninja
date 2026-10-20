@@ -116,7 +116,10 @@ When a call settles with a measured provider cost (plus recorded model usage for
 live calls), that cost replaces its reservation in the day and month totals; an
 unknown cost keeps the reservation.
 
-Live message calls instead reserve $1.40 and last at most three minutes. They use
+Live message calls instead reserve min($10, remaining day allowance, remaining
+month allowance) and last at most ten minutes; the part above the $0.459 telephone
+reserve is the model cost cap, and the bridge says goodbye and ends the call before
+it is reached. They use
 the outgoing allowance; the separate $10/day incoming allowance does not fund
 outgoing delivery. Say “hang up” to end a live call, or leave it idle for two
 minutes. Continuous speech pauses the inactivity timer. A stable requestId binds
