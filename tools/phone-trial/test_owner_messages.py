@@ -380,14 +380,81 @@ class OwnerMessageTests(unittest.TestCase):
         cfg = r.get(m.CONFIG_KEY)
         month, day, zone, expires = m.budget_clock(cfg)
         self.month_row("20")
-        r._table.put_item(Item={**m.budget_keys(month, day)[1], "version": 1, "reservedUSD": Decimal("8.70"), "expiresAt": expires})
+        # $0.40 left cannot fund the $0.459 telephone reserve: the model cost cap would be below zero.
+        r._table.put_item(Item={**m.budget_keys(month, day)[1], "version": 1, "reservedUSD": Decimal("9.60"), "expiresAt": expires})
         with self.assertRaises(m.AllowanceRefused) as refused:
-            m.reserve(OWNER, "live-one", "primary", "Live", cfg, reserve_amount=m.MAX_RESERVE)
+            m.reserve(OWNER, "live-one", "primary", "Live", cfg, telephone_reserve=m.TELEPHONE_RESERVE)
         self.assertEqual(refused.exception.reason, "daily_allowance_used")
         self.assertIsNone(r.get(m.request_key(OWNER, "live-one")))
         m.reserve(OWNER, "plain-one", "primary", "Plain", cfg, reserve_amount=m.RESERVE)
-        self.assertEqual(r.get(m.budget_keys(month, day)[1])["reservedUSD"], Decimal("9.00"))
+        self.assertEqual(r.get(m.budget_keys(month, day)[1])["reservedUSD"], Decimal("9.90"))
         self.assertEqual(self.forms, [])
+
+    def test_live_cost_cap_is_the_remaining_allowance_less_the_telephone_reserve(self):
+        self.setup_send()
+        cfg = r.get(m.CONFIG_KEY)
+        month, day, zone, expires = m.budget_clock(cfg)
+        self.month_row("20")
+        r._table.put_item(Item={**m.budget_keys(month, day)[1], "version": 1, "reservedUSD": Decimal("8.70"), "expiresAt": expires})
+        item, fresh = m.reserve(OWNER, "live-two", "primary", "Live", cfg, telephone_reserve=m.TELEPHONE_RESERVE)
+        self.assertTrue(fresh)
+        self.assertEqual((item["reservedUSD"], item["costCapUSD"], item["telephoneReserveUSD"], item["maxCallSeconds"]),
+                         (Decimal("1.30"), Decimal("0.841"), Decimal("0.459"), 600))
+        self.assertEqual(r.get(m.budget_keys(month, day)[1])["reservedUSD"], Decimal("10"))
+        self.assertEqual(r.get(m.budget_keys(month, "")[0])["unsettled"], {"live-two": Decimal("1.30")})
+        self.assertEqual((m.view(item)["costCapUSD"], m.view(item)["maxCallSeconds"]), ("0.841000", 600))
+        for bad in (Decimal("0"), Decimal("-1"), Decimal("10"), Decimal("NaN")):
+            with self.assertRaises(ValueError):
+                m.reserve(OWNER, "live-bad", "primary", "Live", cfg, telephone_reserve=bad)
+        self.assertIsNone(r.get(m.request_key(OWNER, "live-bad")))
+
+    def test_telephone_estimate_bills_started_minutes_plus_the_recording_charge(self):
+        self.assertEqual(m.telephone_estimate(0), Decimal("0"))
+        self.assertEqual(m.telephone_estimate(1), Decimal("0.2709"))
+        self.assertEqual(m.telephone_estimate(60), Decimal("0.2709"))
+        self.assertEqual(m.telephone_estimate(61), Decimal("0.2918"))
+        self.assertEqual(m.telephone_estimate(600), Decimal("0.459"))
+        self.assertEqual(m.TELEPHONE_RESERVE, m.telephone_estimate(m.MAX_CALL_SECONDS))
+        self.assertEqual(m.cost_cap_string(Decimal("9.541")), "9.541000")
+        self.assertEqual(m.parse_model_cost("0.000000"), Decimal("0"))
+        self.assertEqual(m.parse_model_cost("10.000000"), m.PER_CALL_CAP, "the per-call cap itself is the largest valid model cost")
+        for bad in ("1", "1.0", 1.0, None, "-0.000001", "1e2", "NaN", "10.000001", "12.345678", "9999.999999"):
+            self.assertIsNone(m.parse_model_cost(bad), bad)
+
+    def test_paused_reason_matches_the_owner_conversation_refusal_threshold(self):
+        self.setup_send()
+        cfg = r.get(m.CONFIG_KEY)
+        month, day, zone, expires = m.budget_clock(cfg)
+        day_key = m.budget_keys(month, day)[1]
+        self.month_row("20")
+        for reserved, expected in ((Decimal("9.50"), ""), (Decimal("9.541"), "daily_allowance_used"), (Decimal("9.60"), "daily_allowance_used")):
+            with self.subTest(day_reserved=reserved):
+                r._table.put_item(Item={**day_key, "version": 1, "reservedUSD": reserved, "expiresAt": expires})
+                self.assertEqual(m.budget_status(cfg)["pausedReason"], expected)
+        r._table.items.pop((day_key["PK"], day_key["SK"]))
+        for allocated, expected in (("99.50", ""), ("99.541", "monthly_cap_reached"), ("99.60", "monthly_cap_reached")):
+            with self.subTest(month_allocated=allocated):
+                self.month_row(allocated)
+                self.assertEqual(m.budget_status(cfg)["pausedReason"], expected)
+        # $0.40 left: a conversation is refused, exactly as pausedReason says.
+        with self.assertRaises(m.AllowanceRefused) as refused:
+            m.reserve(OWNER, "live-paused", "primary", "Live", cfg, telephone_reserve=m.TELEPHONE_RESERVE)
+        self.assertEqual(refused.exception.reason, "monthly_cap_reached")
+
+    def test_prerecorded_message_keeps_its_ninety_second_cap_and_fixed_reserve(self):
+        self.setup_send()
+        cfg = r.get(m.CONFIG_KEY)
+        month, day, _, _ = m.budget_clock(cfg)
+        self.month_row("8")
+        self.assertEqual(self.send()["statusCode"], 200)
+        self.assertEqual(self.forms[0]["TimeLimit"], 90, "the prerecorded 90 s cap stays")
+        item = r.get(m.request_key(OWNER, "request-one"))
+        self.assertEqual(item["reservedUSD"], Decimal("0.30"))
+        self.assertNotIn("costCapUSD", item); self.assertNotIn("maxCallSeconds", item); self.assertNotIn("deadline", item)
+        self.assertEqual(r.get(m.budget_keys(month, day)[1])["reservedUSD"], Decimal("0.30"))
+        self.assertNotIn("costCapUSD", json.loads(self.send()["body"]))
+        status = m.budget_status(cfg)
+        self.assertEqual((status["perCallCapUSD"], status["perCallMaxSeconds"], status["telephoneReserveUSD"]), ("10", 600, "0.4590"))
 
     def test_retired_grant_changes_nothing(self):
         self.setup_send()
@@ -450,16 +517,20 @@ class OwnerMessageTests(unittest.TestCase):
         self.assertEqual(self.send()["statusCode"], 200)
         key = m.request_key(OWNER, "request-one")
         item = r.get(key)
-        r._table.put_item(Item={**item, "live": True, "providerStatus": "completed"})
+        # redeemedAt: the bridge received the bootstrap, so a missing model cost is unknown, not zero.
+        r._table.put_item(Item={**item, "live": True, "providerStatus": "completed", "redeemedAt": 1000})
         r._table.put_item(Item={**m.VOICE_KEY})
         self.call_price = "-0.05"
         m.budget_status(cfg)
         self.assertEqual(r.get(month_key)["allocatedUSD"], Decimal("8.30"), "unknown model cost keeps the reservation")
         r._table.put_item(Item={**r.get(key), "inputTokens": 40000, "outputTokens": 10000})
         m.budget_status(cfg)
-        # 0.05 call + 40000 * 0.00001 + 10000 * 0.00002 = 0.65, above the 0.30 reservation.
-        self.assertEqual(r.get(month_key)["allocatedUSD"], Decimal("8.65"))
-        self.assertEqual(r.get(day_key)["reservedUSD"], Decimal("0.65"))
+        self.assertEqual(r.get(month_key)["allocatedUSD"], Decimal("8.30"), "token counts without the bridge's modelCostUSD are not a measured cost")
+        r._table.put_item(Item={**r.get(key), "modelCostUSD": Decimal("0.600000")})
+        m.budget_status(cfg)
+        # 20 s -> one started minute: 0.0209 + 0.25 = 0.2709 (above the 0.05 provider price), plus 0.60 model = 0.8709.
+        self.assertEqual(r.get(month_key)["allocatedUSD"], Decimal("8.8709"))
+        self.assertEqual(r.get(day_key)["reservedUSD"], Decimal("0.8709"))
 
 
 if __name__ == "__main__":

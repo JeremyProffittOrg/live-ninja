@@ -310,8 +310,28 @@ number routing, grant spending permission, or release the owner's call stop.
   announcement answers the call, then a signed `POST /inbound-owner/connect/<token>`
   redirect sets the provider call limit before session minting and recording. No
   PIN, recording question or keypad response is required. The old consent route is
-  removed. Each conversation keeps the original 180-second admission deadline
-  or an earlier budget expiry and uses a fresh Live Ninja conversation.
+  removed. Each conversation is admitted with a 600-second (10-minute) deadline, or an
+  earlier budget expiry, and a per-call cost cap (owner decision 2026-10-19: "cap per
+  call to $10 in cost and a 10 minute limit"). The recorder reserves
+  min($10, remaining day allowance, remaining month allowance); the part above the
+  telephone reserve for a full-length call ($0.459: 10 started minutes at $0.0209 plus
+  the $0.25 recording charge) is handed to the bridge as `costCapUSD`, a decimal string
+  in (0, 10.00]. A cap at or below zero refuses the call (`daily_allowance_used` or
+  `monthly_cap_reached`). The bridge's finish reports `modelCostUSD` (decimal string, six
+  places); settlement replaces the reservation with the telephone estimate for the
+  actual duration (never below the provider's measured price) plus that model cost. A
+  call the bridge never redeemed (provider cap failure, bootstrap failure, connect
+  expiry, revocation, or a hangup during the announcement) has a known model cost of
+  zero and settles at the telephone estimate; a redeemed call whose finish carries no
+  `modelCostUSD` keeps its reservation. The finish control answers 400 to a
+  `modelCostUSD` that is malformed or above $10.00, and 409 to a value that differs
+  from one already stored or arrives after the call settled (the first report is
+  authoritative); each refusal is recorded as an `inbound_usage_rejected` event. A cost
+  above the call's own `costCapUSD` is stored and flagged `costCapExceeded`. The budget
+  status `pausedReason` reports `daily_allowance_used` or `monthly_cap_reached` when
+  the remaining day or month allowance is at or below the $0.459 telephone reserve,
+  i.e. when an owner conversation would be refused. The 2-minute idle hangup is
+  unchanged. Each call uses a fresh Live Ninja conversation.
 - An IAM-only recorder invocation of the realtime broker uses `mode=phone-session`.
   The broker resolves the active canonical owner, saved persona, rules, guides and
   profile, checks quotas, and creates a fresh redeemed session. Its signed `scope=phone`

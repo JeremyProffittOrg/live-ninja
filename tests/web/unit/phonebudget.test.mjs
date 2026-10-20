@@ -15,7 +15,8 @@ function fixture(apiJSON) {
 const budget = {
   month: '2026-10', day: '2026-10-19', timezone: 'America/New_York', allocatedUSD: '12.60915',
   monthlyCapUSD: '100', monthlyRemainingUSD: '87.39085', dailyAllowanceUSD: '10', dailyReservedUSD: '1.40',
-  dailyRemainingUSD: '8.60', unsettledCalls: 1, requiredReservationUSD: '1.40', minimumReservationUSD: '0.30',
+  dailyRemainingUSD: '8.60', unsettledCalls: 1, requiredReservationUSD: '10', minimumReservationUSD: '0.30',
+  perCallCapUSD: '10', perCallMaxSeconds: 600, telephoneReserveUSD: '0.4590',
   expiresAt: 1792468800, pausedReason: '',
 };
 
@@ -31,12 +32,23 @@ test('standing allowance shows day and month use without any approval control', 
   assert.match(text, /\$1\.40 of the \$10 outgoing allowance used, \$8\.60 remaining/);
   assert.match(text, /\$12\.60915 of the \$100 cap used, \$87\.39085 remaining, including incoming calls and the fixed \$8 base/);
   assert.match(text, /1 recent call still count at the reserved amount until the measured cost arrives/);
+  assert.match(text, /Each phone conversation lasts at most 10 minutes and reserves up to \$10 \(its per-call cost cap/);
+  assert.doesNotMatch(text, /180|three minutes|reserves \$1\.40/);
   assert.match(text, /No approval is needed/);
   assert.doesNotMatch(text, /\$5|authoriz|approve/i);
   assert.ok(text.includes(new Date(budget.expiresAt * 1000).toLocaleString(undefined, {
     timeZone: budget.timezone, dateStyle: 'medium', timeStyle: 'short',
   })));
   assert.deepEqual(calls, ['/api/v1/me', '/api/v1/phone/budget']);
+});
+
+test('a backend without the per-call fields still reads 10 minutes and $10', async () => {
+  const { perCallCapUSD, perCallMaxSeconds, telephoneReserveUSD, ...older } = budget;
+  const { nodes } = fixture(async path => path === '/api/v1/me' ? { userId: 'owner', role: 'owner' } : older);
+  await nodes.refresh.handlers.click();
+  const text = nodes.status.textContent;
+  assert.match(text, /Each phone conversation lasts at most 10 minutes and reserves up to \$10 \(its per-call cost cap/);
+  assert.doesNotMatch(text, /NaN|undefined|null/);
 });
 
 test('cap and allowance holds are explained in words', async () => {

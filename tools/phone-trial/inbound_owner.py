@@ -15,8 +15,9 @@ import recorder as r
 import owner_messages as m
 
 CONFIG = {"PK": "CONFIG", "SK": "INBOUND_OWNER"}
-MAX_SECONDS = 180
-RESERVE = Decimal("1.40")
+# Owner decision 2026-10-19: "cap per call to $10 in cost and a 10 minute limit."
+MAX_SECONDS = m.MAX_CALL_SECONDS
+TELEPHONE_RESERVE = m.TELEPHONE_RESERVE
 APP = "https://live.jeremy.ninja"
 BROKER = "live-ninja-realtime-broker"
 
@@ -169,12 +170,14 @@ def start(data):
     try:
         policy = m.inbound_daily_policy(cfg, inbound, data.get('From'))
         item, fresh = m.reserve(cfg['ownerUserId'], 'inbound-' + sid, alias, 'Inbound owner conversation', cfg,
-            reserve_amount=RESERVE, initial_fields={'direction': 'inbound', 'callSid': sid, 'inboundState': 'connecting',
+            telephone_reserve=TELEPHONE_RESERVE, initial_fields={'direction': 'inbound', 'callSid': sid, 'inboundState': 'connecting',
             'deadline': now + MAX_SECONDS, 'connectDeadline': now + 30, 'bridge': bridge,
-            'scriptTranscript': '', 'reservedUSD': RESERVE}, extra_checks=[check], inbound_policy=policy)
+            'scriptTranscript': ''}, extra_checks=[check], inbound_policy=policy)
     except m.InboundDailyLimit:
         return xml('<Say voice="Polly.Joanna-Neural">Your incoming call allowance is used for today. Please call again tomorrow.</Say><Hangup/>')
-    except m.AllowanceRefused:
+    except m.AllowanceRefused as refused:
+        if refused.reason == 'daily_allowance_used':
+            return xml("<Say voice=\"Polly.Joanna-Neural\">Today's call allowance is used. Please call again tomorrow.</Say><Hangup/>")
         return xml('<Say voice="Polly.Joanna-Neural">The monthly call allowance is used. Calls resume next month.</Say><Hangup/>')
     except (ValueError, m.ProviderError):
         return bye()
@@ -357,10 +360,40 @@ def redeem(raw, headers, action='redeem'):
         if not isinstance(reason, str) or not re.fullmatch('[a-z_]{1,60}', reason):
             return r.response(400)
         usage = {key: data.get(key, 0) for key in ('inputTokens', 'outputTokens')}
-        if any(type(value) is not int or not 0 <= value <= 100000 for value in usage.values()):
+        if any(type(value) is not int or not 0 <= value <= 10_000_000 for value in usage.values()):
             return r.response(400)
+        # modelCostUSD: the Azure model cost the bridge priced from every
+        # response.done usage object (decimal string, six places, at most the
+        # per-call cap). A finish without it leaves the model cost unknown, so
+        # the reservation stays. The first reported cost is authoritative: a
+        # different value later, or a report after the ledger settled, is
+        # refused and recorded. A cost above this call's costCapUSD is still
+        # stored but flagged, so the overage stays visible.
+        fields = dict(usage)
         key = {k: item[k] for k in ('PK', 'SK')}
-        item = m.change(key, usage, 'inbound_usage', usage, sid=sid)
+        if 'modelCostUSD' in data:
+            reported = data['modelCostUSD']
+            model_cost = m.parse_model_cost(reported)
+            stored = item.get('modelCostUSD')
+            rejection = None
+            if model_cost is None:
+                rejection, status = 'invalid_model_cost', 400
+            elif stored is not None and Decimal(stored) != model_cost:
+                rejection, status = 'model_cost_already_reported', 409
+            elif stored is None and 'settledUSD' in item:
+                rejection, status = 'call_already_settled', 409
+            if rejection:
+                m.change(key, {}, 'inbound_usage_rejected',
+                         {'reason': rejection, 'reportedModelCostUSD': str(reported)[:24]}, sid=sid)
+                return r.response(status)
+            fields['modelCostUSD'] = model_cost
+            usage['modelCostUSD'] = reported
+            cap = item.get('costCapUSD')
+            if type(cap) in (int, Decimal) and model_cost > Decimal(cap) + Decimal('0.000001'):
+                fields['costCapExceeded'] = True
+                usage['costCapExceeded'] = True
+                usage['costCapUSD'] = m.cost_cap_string(cap)
+        item = m.change(key, fields, 'inbound_usage', usage, sid=sid)
         return r.response(200 if end(item, reason, hangup=True,
                                     finalized=data.get('transcriptFinalized') is True) else 503)
     required_state = 'ready' if action == 'redeem' else 'redeemed'
@@ -372,10 +405,19 @@ def redeem(raw, headers, action='redeem'):
         return r.response(403)
     if action == 'check':
         return r.response(200)
+    # The bridge fails closed without a valid cost cap; so does the recorder.
+    cap = item.get('costCapUSD')
+    if type(cap) not in (int, Decimal) or not Decimal(cap).is_finite() or not 0 < Decimal(cap) <= m.PER_CALL_CAP:
+        return r.response(403)
+    cost_cap = m.cost_cap_string(cap)
+    if Decimal(cost_cap) <= 0:
+        return r.response(403)
     try:
-        item = transition(item, inboundState='redeemed')
+        # redeemedAt marks that the bridge received this bootstrap; settlement
+        # treats a call without it as having a known model cost of zero.
+        item = transition(item, inboundState='redeemed', redeemedAt=int(time.time()))
     except Exception as exc:
         if not r.conditional(exc):
             raise
         return r.response(409)
-    return r.response(200, {**item['bootstrap'], 'callSid': sid, 'deadline': item['deadline']})
+    return r.response(200, {**item['bootstrap'], 'callSid': sid, 'deadline': int(item['deadline']), 'costCapUSD': cost_cap})

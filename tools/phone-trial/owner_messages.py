@@ -20,7 +20,19 @@ import recorder as r
 CONFIG_KEY = {"PK": "CONFIG", "SK": "OWNER_MESSAGES"}
 VOICE_KEY = {"PK": "PHONE#CONTROL", "SK": "VOICE"}
 RESERVE = Decimal("0.30")
-MAX_RESERVE = Decimal("1.40")
+# Owner decision 2026-10-19: "cap per call to $10 in cost and a 10 minute
+# limit." Every owner conversation (incoming, or outgoing live) is admitted
+# with a model cost cap and a 600 second deadline. The cap handed to the bridge
+# is min($10, remaining day allowance, remaining month allowance) minus the
+# telephone reserve for a full-length call; the whole amount is reserved until
+# the call settles at its measured cost.
+PER_CALL_CAP = Decimal("10")
+MAX_CALL_SECONDS = 600
+# Telephone rates already used by the trial ledger (run_trial.py): voice minute
+# with media stream and dual-channel recording, billed per started minute, plus
+# a fixed recording charge for every connected call.
+TELEPHONE_MINUTE_USD = Decimal("0.0209")
+TELEPHONE_CALL_USD = Decimal("0.25")
 # Owner decision 2026-10-19: "okay, let's set a daily call allowance of $10
 # with $100 monthly cap". A standing allowance: outgoing calls may reserve up
 # to $10 per owner-local day with no grant, and every call this month,
@@ -33,9 +45,6 @@ INFRA_FLOOR = Decimal("8")
 # with the measured cost when the call settles. Version 1 months only summed
 # reservations and over-counted.
 LEDGER_VERSION = 2
-# Model cost rates the phone bridge already reports for live calls.
-INPUT_TOKEN_USD = Decimal("0.000010")
-OUTPUT_TOKEN_USD = Decimal("0.000020")
 TERMINAL = {"completed", "busy", "failed", "no-answer", "canceled"}
 STATUSES = TERMINAL | {"queued", "initiated", "ringing", "in-progress"}
 INTRO = "This is Live Ninja, Jeremy's AI assistant. This owner message is being recorded. "
@@ -48,16 +57,49 @@ class ProviderError(Exception):
         self.code, self.rejected = code, rejected
 
 
-class InboundDailyLimit(ValueError):
-    """The separately authorized incoming daily allowance cannot admit a call."""
-
-
 class AllowanceRefused(ValueError):
     """Standing call allowance refusal; reason is daily_allowance_used or monthly_cap_reached."""
 
     def __init__(self, reason, message):
         super().__init__(reason + ": " + message)
         self.reason = reason
+
+
+class InboundDailyLimit(AllowanceRefused):
+    """The separately authorized incoming daily allowance cannot admit a call."""
+
+    def __init__(self, message="Incoming daily allowance is used for today"):
+        super().__init__("daily_allowance_used", message)
+
+
+def telephone_estimate(seconds):
+    """Telephone cost of a connected call of this length, at the ledger rates."""
+    seconds = int(seconds)
+    if seconds <= 0:
+        return Decimal("0")
+    minutes = (Decimal(seconds) / 60).to_integral_value(rounding="ROUND_CEILING")
+    return minutes * TELEPHONE_MINUTE_USD + TELEPHONE_CALL_USD
+
+
+# Telephone reserve for a full 600 second owner conversation: $0.459.
+TELEPHONE_RESERVE = telephone_estimate(MAX_CALL_SECONDS)
+
+
+def cost_cap_string(value):
+    """Wire form of costCapUSD / modelCostUSD: a decimal string with six places."""
+    return str(Decimal(str(value)).quantize(Decimal("0.000001")))
+
+
+def parse_model_cost(value):
+    """modelCostUSD from the bridge finish: a decimal string with six places in
+    [0, PER_CALL_CAP], or None when invalid. One call can never cost the model
+    more than the per-call cap, so a larger figure is a bridge defect, not a cost."""
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]{1,4}\.[0-9]{6}", value):
+        return None
+    cost = Decimal(value)
+    if not cost.is_finite() or cost < 0 or cost > PER_CALL_CAP:
+        return None
+    return cost
 
 
 def monthly_cap_refusal():
@@ -200,6 +242,9 @@ def view(item, links=False):
     if item.get('live') is True:
         payload['transcriptType'] = 'delivery_summary_not_speech_recognition'
         payload['scriptTranscript'] = item['message']
+    if item.get('costCapUSD') is not None:
+        payload['costCapUSD'] = cost_cap_string(item['costCapUSD'])
+        payload['maxCallSeconds'] = int(item.get('maxCallSeconds', MAX_CALL_SECONDS))
     if item.get("providerCode"):
         payload["providerCode"] = item["providerCode"]
     if item.get("callSid"):
@@ -348,11 +393,23 @@ def measured_cost(item):
     if not cost.is_finite():
         return None
     if item.get("direction") == "inbound" or item.get("live") is True or item.get("bridge"):
-        tokens = (item.get("inputTokens"), item.get("outputTokens"))
-        if call.get("status") == "completed" and int(call.get("duration") or 0) > 0:
-            if any(type(value) not in (int, Decimal) or value < 0 for value in tokens):
+        # Owner conversation: telephone estimate for the actual duration (never
+        # below the provider's own measured price) plus the model cost the bridge
+        # priced from every response.done usage object. An unknown model cost
+        # keeps the reservation (owner decision 2026-10-19: never below measured).
+        duration = int(call.get("duration") or 0)
+        cost = max(cost, telephone_estimate(duration))
+        if call.get("status") == "completed" and duration > 0:
+            model = item.get("modelCostUSD")
+            if model is None and "redeemedAt" not in item:
+                # The bridge never redeemed the bootstrap (provider cap failure,
+                # bootstrap failure, connect expiry, revocation, or a hangup
+                # during the announcement): no model turn ever ran, so the
+                # model cost is a known zero rather than an unknown.
+                model = Decimal(0)
+            if type(model) not in (int, Decimal) or model < 0 or not Decimal(model).is_finite():
                 return None
-            cost += Decimal(int(tokens[0])) * INPUT_TOKEN_USD + Decimal(int(tokens[1])) * OUTPUT_TOKEN_USD
+            cost += Decimal(model)
     return cost
 
 
@@ -419,13 +476,19 @@ def budget_status(cfg):
     stopped = bool(lock.get("activeRequest"))
     month_left = max(Decimal(0), MONTHLY_CAP - allocated)
     day_left = max(Decimal(0), DAILY_ALLOWANCE - reserved)
+    # pausedReason reports whether an owner conversation can be admitted: reserve()
+    # refuses one when the remaining day or month allowance is at or below the
+    # telephone reserve (the model cost cap would be zero). A prerecorded message
+    # needs only RESERVE, so it may still be sent in the narrow band between the two.
     reason = ("disabled" if cfg.get("enabled") is not True else "voice_stop_or_active_call" if stopped
-              else "monthly_cap_reached" if month_left < RESERVE else "daily_allowance_used" if day_left < RESERVE else "")
+              else "monthly_cap_reached" if month_left <= TELEPHONE_RESERVE
+              else "daily_allowance_used" if day_left <= TELEPHONE_RESERVE else "")
     return {"month": month, "day": day, "timezone": zone, "allocatedUSD": str(allocated),
             "monthlyCapUSD": str(MONTHLY_CAP), "monthlyRemainingUSD": str(month_left),
             "dailyAllowanceUSD": str(DAILY_ALLOWANCE), "dailyReservedUSD": str(reserved), "dailyRemainingUSD": str(day_left),
             "unsettledCalls": len((monthly.get("unsettled") or {}) if monthly.get("ledgerVersion") == LEDGER_VERSION else {}),
-            "requiredReservationUSD": str(MAX_RESERVE), "minimumReservationUSD": str(RESERVE), "expiresAt": expires,
+            "requiredReservationUSD": str(PER_CALL_CAP), "minimumReservationUSD": str(RESERVE), "expiresAt": expires,
+            "perCallCapUSD": str(PER_CALL_CAP), "perCallMaxSeconds": MAX_CALL_SECONDS, "telephoneReserveUSD": str(TELEPHONE_RESERVE),
             "pausedReason": reason, "pendingReservation": stopped,
             "incomingDailyBudget": inbound_budget_summary(cfg, day, zone, expires)}
 
@@ -442,7 +505,17 @@ def budget_operation(event):
     return r.response(200, budget_status(cfg))
 
 
-def reserve(owner, request_id, alias, message, cfg, *, reserve_amount=RESERVE, initial_fields=None, extra_checks=(), target_number=None, inbound_policy=None):
+def reserve(owner, request_id, alias, message, cfg, *, reserve_amount=RESERVE, initial_fields=None, extra_checks=(), target_number=None, inbound_policy=None, telephone_reserve=None):
+    """Admit one call against the ledger.
+
+    With telephone_reserve set (owner conversations), the reservation is
+    min(PER_CALL_CAP, remaining day allowance, remaining month allowance); the
+    part above the telephone reserve is the model cost cap handed to the bridge
+    as costCapUSD. A cap at or below zero refuses the call. Otherwise the fixed
+    reserve_amount is reserved (prerecorded messages).
+    """
+    if telephone_reserve is not None and (not telephone_reserve.is_finite() or telephone_reserve <= 0 or telephone_reserve >= PER_CALL_CAP):
+        raise ValueError("Invalid telephone reserve")
     observed = observed_provider_usd()
     month, day, zone, expires = budget_clock(cfg)
     floor = floor_for(cfg, month)
@@ -461,7 +534,7 @@ def reserve(owner, request_id, alias, message, cfg, *, reserve_amount=RESERVE, i
     item.update(initial_fields or {})
     if inbound_policy is not None:
         if (item.get('direction') != 'inbound' or not r.SID.fullmatch(item.get('callSid', ''))
-                or request_id != 'inbound-' + item['callSid'] or target_number is not None or reserve_amount != MAX_RESERVE
+                or request_id != 'inbound-' + item['callSid'] or target_number is not None or telephone_reserve is None
                 or inbound_daily_policy(cfg, {'ownerUserId': owner, 'dailyBudget': inbound_policy}, item['toNumber']) is None):
             raise ValueError('Recurring incoming allowance requires an exact inbound call')
     for _ in range(4):
@@ -474,35 +547,47 @@ def reserve(owner, request_id, alias, message, cfg, *, reserve_amount=RESERVE, i
         base = max(floor, INFRA_FLOOR + observed, month_allocated(old, floor))
         if budget_clock(cfg)[1] != day:
             raise ValueError("Day changed; retry call admission")
-        if base + reserve_amount > MONTHLY_CAP:
+        month_left = MONTHLY_CAP - base
+        if telephone_reserve is None and base + reserve_amount > MONTHLY_CAP:
+            raise monthly_cap_refusal()
+        if telephone_reserve is not None and month_left - telephone_reserve <= 0:
             raise monthly_cap_refusal()
         daily_key = inbound_budget_key(owner, day) if inbound_policy is not None else day_key
         daily_old = r.get(daily_key)
         daily = None
+        reserved = Decimal(str((daily_old or {}).get("reservedUSD", "0")))
         if inbound_policy is not None:
-            reserved = Decimal(str((daily_old or {}).get('reservedUSD', '0')))
             if (not reserved.is_finite() or reserved < 0 or reserved > Decimal('10')
                     or (daily_old and (daily_old.get('ownerUserId') != owner or daily_old.get('day') != day or daily_old.get('timezone') != zone))):
                 raise ValueError('Incoming daily allowance ledger is invalid')
-            if reserved + reserve_amount > Decimal('10'):
-                raise InboundDailyLimit('Incoming daily allowance is used for today')
+            day_limit = Decimal('10')
+        else:
+            if not reserved.is_finite() or reserved < 0:
+                raise ValueError("Daily call allowance ledger is invalid")
+            day_limit = DAILY_ALLOWANCE
+        if telephone_reserve is not None:
+            amount = min(PER_CALL_CAP, day_limit - reserved, month_left)
+            cost_cap = amount - telephone_reserve
+            if cost_cap <= 0:
+                raise InboundDailyLimit() if inbound_policy is not None else daily_allowance_refusal()
+            item.update(costCapUSD=cost_cap, telephoneReserveUSD=telephone_reserve, maxCallSeconds=MAX_CALL_SECONDS)
+        else:
+            amount = reserve_amount
+            if reserved + amount > day_limit:
+                raise InboundDailyLimit() if inbound_policy is not None else daily_allowance_refusal()
+        if inbound_policy is not None:
             daily = {**(daily_old or {}), **daily_key, 'ownerUserId': owner, 'day': day, 'timezone': zone,
-                     'limitUSD': Decimal('10'), 'reservedUSD': reserved + reserve_amount, 'expiresAt': expires,
+                     'limitUSD': Decimal('10'), 'reservedUSD': reserved + amount, 'expiresAt': expires,
                      'version': int((daily_old or {}).get('version', 0)) + 1}
             item.update(budgetSource='incoming-daily-policy', inboundBudgetDay=day)
         else:
-            reserved = Decimal(str((daily_old or {}).get("reservedUSD", "0")))
-            if not reserved.is_finite() or reserved < 0:
-                raise ValueError("Daily call allowance ledger is invalid")
-            if reserved + reserve_amount > DAILY_ALLOWANCE:
-                raise daily_allowance_refusal()
             daily = {**(daily_old or {}), **daily_key, "day": day, "timezone": zone, "limitUSD": DAILY_ALLOWANCE,
-                     "reservedUSD": reserved + reserve_amount, "expiresAt": expires,
-                     "version": int((daily_old or {}).get("version", 0)) + 1}
+                     "reservedUSD": reserved + amount, "expiresAt": expires,
+                     "version": int((daily_old or {}).get('version', 0)) + 1}
             item.update(budgetSource="standing-daily-allowance")
-        item.update(reservedUSD=reserve_amount, budgetMonth=month, budgetDayPK=daily_key["PK"], budgetDaySK=daily_key["SK"])
-        unsettled = {**(old.get("unsettled") or {}), request_id: reserve_amount}
-        budget = {**old, **budget_key, "allocatedUSD": base + reserve_amount, "unsettled": unsettled,
+        item.update(reservedUSD=amount, budgetMonth=month, budgetDayPK=daily_key["PK"], budgetDaySK=daily_key["SK"])
+        unsettled = {**(old.get("unsettled") or {}), request_id: amount}
+        budget = {**old, **budget_key, "allocatedUSD": base + amount, "unsettled": unsettled,
                   "observedProviderUSD": observed, "observedAt": int(time.time()),
                   "version": int(old.get("version", 0)) + 1}
         config_check = {"TableName": os.environ["TABLE"], "Key": CONFIG_KEY,
@@ -586,9 +671,10 @@ def operation(event):
             if parsed.scheme != 'https' or not parsed.hostname or parsed.path or parsed.query or parsed.fragment or parsed.username or not inbound_owner.valid_config(cfg, r.get(inbound_owner.CONFIG), since=int(time.time())):
                 return r.response(403, {'error': 'Live owner conversations are unavailable'})
             fields = {'live': True, 'payload': payload, 'direction': 'outbound', 'inboundState': 'connecting',
-                      'deadline': int(time.time()) + 180, 'connectDeadline': int(time.time()) + 35,
-                      'bridge': bridge, 'reservedUSD': MAX_RESERVE}
-        item, fresh = reserve(owner, request_id, alias, message, cfg, reserve_amount=MAX_RESERVE if live else RESERVE, initial_fields=fields)
+                      'deadline': int(time.time()) + MAX_CALL_SECONDS, 'connectDeadline': int(time.time()) + 35,
+                      'bridge': bridge}
+        item, fresh = reserve(owner, request_id, alias, message, cfg, reserve_amount=RESERVE,
+                              telephone_reserve=TELEPHONE_RESERVE if live else None, initial_fields=fields)
     except ValueError as exc:
         return r.response(409, {"error": str(exc), **({"reason": exc.reason} if isinstance(exc, AllowanceRefused) else {})})
     except ProviderError:
@@ -605,7 +691,8 @@ def operation(event):
     if live:
         twiml = inbound_owner.connect_redirect(item)['body']
     # Reserve ten seconds for the create request and twenty seconds for ringing.
-    call_seconds = min(180 if live else 90, int(item.get("budgetExpiresAt", int(time.time())+(210 if live else 120)))-int(time.time())-30)
+    # A live conversation may run MAX_CALL_SECONDS; a prerecorded message keeps its 90 s cap.
+    call_seconds = min(MAX_CALL_SECONDS if live else 90, int(item.get("budgetExpiresAt", int(time.time())+((MAX_CALL_SECONDS + 30) if live else 120)))-int(time.time())-30)
     if call_seconds <= 0:
         item = change(key, {"providerStatus": "rejected"}, "budget_expired", {}, release=True)
         return r.response(409, {"error": "Daily authority expires before a call can connect"})

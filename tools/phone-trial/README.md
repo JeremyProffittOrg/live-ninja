@@ -11,7 +11,8 @@ The `Phone trial 2026-10-15` GitHub workflow tests the bridge/recorder, deploys
 through AWS and Azure OIDC, and runs an actual Azure audio probe before dialing.
 It waits until 09:00 America/Los_Angeles and refuses calls after 17:00 or on
 another date. It makes one attempt per target, never automatically redials,
-and uses both provider and bridge three-minute limits. Existing number routing
+and uses both provider and bridge three-minute limits (hotel trial only; owner
+conversations use the limits under "Owner conversations"). Existing number routing
 is not changed. It uses the uniquely named Live Ninja caller number, or acquires
 a dedicated local number within the reserved allowance if none is designated.
 
@@ -27,6 +28,22 @@ Incomplete model accounting retains the reserve. New calls stop before the
 $20 threshold; an explicit owner $5 daily grant is required to continue beyond
 it. The dated trial keeps its strict $20 cap and does not consume the owner-message daily grants. It never creates a grant itself. The report labels this allocation
 as conservative, not an invoice.
+
+## Owner conversations
+
+Hotel calling is dropped (owner decision 2026-10-19). Owner conversations, incoming
+(`inbound_owner.py`) and outgoing live (`owner_messages.py` with `live=true`), follow
+the 2026-10-19 decision "cap per call to $10 in cost and a 10 minute limit": each
+call is admitted with a 600 s deadline and reserves min($10, remaining day
+allowance, remaining month allowance). The part above the $0.459 telephone reserve
+for a full-length call (10 started minutes at $0.0209 plus the $0.25 recording
+charge) is handed to the bridge as `costCapUSD`; a cap at or below zero refuses the
+call with `daily_allowance_used` or `monthly_cap_reached`. The bridge finish reports
+`modelCostUSD`; settlement replaces the reservation with the telephone estimate for
+the actual duration (never below the provider's price) plus that model cost. A call
+the bridge never redeemed settles with a model cost of zero; a redeemed call without
+a reported model cost keeps its reservation. Prerecorded messages keep the fixed
+$0.30 reserve and 90 s limit. The 2-minute idle hangup is unchanged.
 
 ## Owner rehearsal
 

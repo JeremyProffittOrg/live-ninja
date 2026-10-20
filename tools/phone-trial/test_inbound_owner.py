@@ -106,8 +106,8 @@ class InboundTests(unittest.TestCase):
         self.assertIn('<Hangup', self.callback()['body'])
         self.provider.assert_not_called()
         r._table.items.pop((m.VOICE_KEY['PK'], m.VOICE_KEY['SK']))
-        # The $100 monthly cap covers incoming calls too.
-        cfg = r.get(m.CONFIG_KEY); cfg['budgetFloorUSD'] = Decimal('99')
+        # The $100 monthly cap covers incoming calls too: $0.40 left cannot fund the $0.459 telephone reserve.
+        cfg = r.get(m.CONFIG_KEY); cfg['budgetFloorUSD'] = Decimal('99.60')
         cfg['budgetFloorMonth'] = m.budget_clock(cfg)[0]; r._table.put_item(Item=cfg)
         self.assertIn('<Hangup', self.callback()['body'])
         self.assertIsNone(self.item())
@@ -121,7 +121,9 @@ class InboundTests(unittest.TestCase):
         reply = r.handler(event, None)
         self.assertEqual(reply['statusCode'], 200)
         self.item = lambda: r.get(m.request_key(owners.OWNER, 'live-delivery'))
-        self.assertEqual(self.item()['reservedUSD'], Decimal('1.40'))
+        self.assertEqual(self.item()['reservedUSD'], Decimal('10'))
+        self.assertEqual(self.item()['costCapUSD'], Decimal('9.541'))
+        self.assertEqual(self.item()['telephoneReserveUSD'], m.TELEPHONE_RESERVE)
         create = next(call.args[1] for call in self.provider.call_args_list if call.args[0] == '/Calls.json')
         self.assertNotIn('Record',create)
         self.assertIn('/inbound-owner/connect/',create['Twiml'])
@@ -162,12 +164,14 @@ class InboundTests(unittest.TestCase):
                           'destination':'primary','message':'Summary','live':True},None)
         self.assertEqual(result['statusCode'],200)
         # The reservation is charged to the day it was admitted; it does not shorten the call.
-        self.assertEqual(r.get(m.budget_keys('2026-10','2026-10-18')[1])['reservedUSD'],Decimal('1.40'))
+        self.assertEqual(r.get(m.budget_keys('2026-10','2026-10-18')[1])['reservedUSD'],Decimal('10'))
         self.assertNotIn('budgetExpiresAt',self.item())
-        self.assertEqual(self.item()['deadline'],1180)
+        self.assertEqual(self.item()['deadline'],1600)
+        create=next(call.args[1] for call in self.provider.call_args_list if call.args[0]=='/Calls.json')
+        self.assertEqual(create['TimeLimit'],600,'owner decision 2026-10-19: a 10 minute limit per call')
         self.assertIn('<Connect',self.callback('connect',From='+12025550100',To='+12025550101',Direction='outbound-api')['body'])
         caps=[call.args[1]['TimeLimit'] for call in self.provider.call_args_list if call.args[0].endswith('/'+f.CALL+'.json') and 'TimeLimit' in call.args[1]]
-        self.assertEqual(caps,[180], 'the per-call 180 second cap is unchanged')
+        self.assertEqual(caps,[600], 'the per-call cap is 600 seconds (owner decision 2026-10-19), set after answer')
 
     def test_unknown_caller_only_hangs_up_without_reservation_even_while_stopped(self):
         self.assertEqual(self.callback(From='+12025550999')['body'], '<Response><Hangup/></Response>')
@@ -272,11 +276,11 @@ class InboundTests(unittest.TestCase):
         answered = True
         self.now.return_value = 1005
         self.assertIn('<Connect', self.callback('connect')['body'])
-        self.assertEqual(caps, [175])
+        self.assertEqual(caps, [595])
         self.now.return_value = 1010
         self.assertIn('<Hangup', self.callback('connect')['body'])
-        self.assertEqual(caps, [175])
-        self.assertEqual(self.item()['deadline'], 1180)
+        self.assertEqual(caps, [595])
+        self.assertEqual(self.item()['deadline'], 1600)
         self.broker.assert_called_once()
 
     def test_connect_cap_rejection_stops_before_mint_and_records_only_code(self):
@@ -317,25 +321,28 @@ class InboundTests(unittest.TestCase):
     def test_recurring_incoming_allowance_survives_monthly_limit_without_generic_grant(self):
         self.configure_daily()
         self.assertIn('<Redirect', self.callback()['body'])
-        self.assertEqual(self.incoming_day()['reservedUSD'], Decimal('1.40'))
+        self.assertEqual(self.incoming_day()['reservedUSD'], Decimal('10'))
+        self.assertEqual(self.item()['costCapUSD'], Decimal('9.541'))
         self.assertEqual(self.item()['budgetExpiresAt'], 2000)
         self.assertEqual(self.item()['budgetSource'], 'incoming-daily-policy')
         self.assertIsNone(r.get(m.budget_keys('2026-10', '2026-10-18')[1]))
-        self.assertEqual(r.get(m.budget_keys('2026-10', '2026-10-18')[0])['allocatedUSD'], Decimal('21.40'))
+        self.assertEqual(r.get(m.budget_keys('2026-10', '2026-10-18')[0])['allocatedUSD'], Decimal('30'))
         self.callback('status', CallStatus='completed')
         self.callback()  # Same CallSid cannot reserve again even after releasing its voice lock.
-        self.assertEqual(self.incoming_day()['reservedUSD'], Decimal('1.40'))
+        self.assertEqual(self.incoming_day()['reservedUSD'], Decimal('10'))
         status = json.loads(r.handler({'operation':'owner_budget_status','ownerUserId':owners.OWNER}, None)['body'])
         self.assertEqual((status['dailyReservedUSD'], status['dailyRemainingUSD']), ('0', '10'), 'incoming calls do not use the outgoing allowance')
         self.assertEqual(status['pausedReason'], '')
-        self.assertEqual(status['incomingDailyBudget'], {'enabled': True, 'limitUSD':'10', 'reservedUSD':'1.40',
-            'remainingUSD':'8.60', 'day':'2026-10-18', 'timezone':'America/New_York', 'expiresAt':2000})
+        self.assertEqual(status['incomingDailyBudget'], {'enabled': True, 'limitUSD':'10', 'reservedUSD':'10',
+            'remainingUSD':'0', 'day':'2026-10-18', 'timezone':'America/New_York', 'expiresAt':2000})
+        self.assertEqual((status['perCallCapUSD'], status['perCallMaxSeconds'], status['telephoneReserveUSD'], status['requiredReservationUSD']),
+                         ('10', 600, '0.4590', '10'))
         self.assertNotIn('callerNumber', json.dumps(status)); self.assertNotIn('+12025550101', json.dumps(status))
         self.assertNotIn('pinHash', json.dumps(status)); self.assertNotIn('pinSalt', json.dumps(status))
 
     def test_incoming_calls_count_toward_the_monthly_cap(self):
         self.configure_daily()
-        r._table.put_item(Item={**m.budget_keys('2026-10', '2026-10-18')[0], 'version': 2, 'allocatedUSD': Decimal('99'),
+        r._table.put_item(Item={**m.budget_keys('2026-10', '2026-10-18')[0], 'version': 2, 'allocatedUSD': Decimal('99.60'),
                                 'ledgerVersion': m.LEDGER_VERSION, 'unsettled': {}})
         body = self.callback()['body']
         self.assertIn("monthly call allowance is used. Calls resume next month", body)
@@ -368,27 +375,49 @@ class InboundTests(unittest.TestCase):
         manual = {**manual_key,'version':1,'grantedUSD':Decimal('100'),'spentUSD':Decimal('0'),'expiresAt':2000}
         r._table.put_item(Item=manual)
         original = self.provider_result
+        prices = {}
         def dynamic_call(path, form=None):
-            if path.startswith('/Calls/'):
-                return {'sid':path.split('/')[2].split('.')[0], 'account_sid':f.ACCOUNT,
-                        'status':'completed' if (form or {}).get('Status') == 'completed' else 'in-progress'}
+            if path.startswith('/Calls/') and path.endswith('.json') and '/Recordings' not in path:
+                sid = path.split('/')[2].split('.')[0]
+                result = {'sid':sid, 'account_sid':f.ACCOUNT,
+                          'status':'completed' if form is None or form.get('Status') == 'completed' else 'in-progress'}
+                if form is None and sid in prices:
+                    result.update(price=prices[sid], price_unit='USD', duration='65')
+                return result
             return original(path, form)
         self.provider.side_effect = dynamic_call
-        for number in range(1, 8):
-            sid = 'CA' + format(number, '032x')
-            self.assertIn('<Redirect', self.callback(CallSid=sid)['body'])
-            self.callback('status', CallSid=sid, CallStatus='completed')
-        self.assertEqual(self.incoming_day()['reservedUSD'], Decimal('9.80'))
-        exhausted = self.callback(CallSid='CA'+format(8,'032x'))
+        first = 'CA' + format(1, '032x')
+        self.assertIn('<Redirect', self.callback(CallSid=first)['body'])
+        # A full-length conversation reserves the whole remaining incoming allowance.
+        self.assertEqual(self.incoming_day()['reservedUSD'], Decimal('10'))
+        self.callback('status', CallSid=first, CallStatus='completed')
+        exhausted = self.callback(CallSid='CA'+format(2,'032x'))
         self.assertIn('Please call again tomorrow', exhausted['body'])
-        self.assertEqual(self.incoming_day()['reservedUSD'], Decimal('9.80'))
+        self.assertEqual(self.incoming_day()['reservedUSD'], Decimal('10'))
         self.assertEqual(r.get(manual_key), manual)
         self.assertNotIn('activeRequest', r.get(m.VOICE_KEY))
+        # The bridge finish prices the model; settlement replaces the reservation with the measured cost.
+        raw = json.dumps({'capability': r.get(m.request_key(owners.OWNER, 'inbound-' + first))['callbackId'], 'callSid': first,
+                          'transcriptFinalized': True, 'reason': 'remote_hangup', 'inputTokens': 1200, 'outputTokens': 300,
+                          'modelCostUSD': '0.250000'}).encode()
+        self.assertEqual(i.redeem(raw, {'x-ln-signature': r.digest(b'inbound-owner/finish\n' + raw)}, 'finish')['statusCode'], 200)
+        prices[first] = '-0.0170'
+        m.budget_status(r.get(m.CONFIG_KEY))
+        # 65 s -> 2 started minutes: 2 * 0.0209 + 0.25 = 0.2918 telephone, plus 0.25 model.
+        self.assertEqual(self.incoming_day()['reservedUSD'], Decimal('0.5418'))
+        self.assertEqual(r.get(m.request_key(owners.OWNER, 'inbound-' + first))['settledUSD'], Decimal('0.5418'))
+        self.assertEqual(r.get(m.budget_keys('2026-10', '2026-10-18')[0])['allocatedUSD'], Decimal('20.5418'))
+        # The freed allowance admits the next call with a smaller cap.
+        third = 'CA'+format(3,'032x')
+        self.assertIn('<Redirect', self.callback(CallSid=third)['body'])
+        self.assertEqual(self.incoming_day()['reservedUSD'], Decimal('10'))
+        self.assertEqual(r.get(m.request_key(owners.OWNER, 'inbound-' + third))['costCapUSD'], Decimal('10') - Decimal('0.5418') - m.TELEPHONE_RESERVE)
+        self.callback('status', CallSid=third, CallStatus='completed')
         self.budget_clock.return_value = ('2026-10', '2026-10-19', 'America/New_York', 4000)
         self.now.return_value = 3000
         self.assertIn('<Redirect', self.callback(CallSid='CA'+format(9,'032x'))['body'])
-        self.assertEqual(self.incoming_day('2026-10-19')['reservedUSD'], Decimal('1.40'))
-        self.assertEqual(self.incoming_day()['reservedUSD'], Decimal('9.80'))
+        self.assertEqual(self.incoming_day('2026-10-19')['reservedUSD'], Decimal('10'))
+        self.assertEqual(self.incoming_day()['reservedUSD'], Decimal('10'))
 
     def test_policy_revocation_and_absence_are_fenced_in_reservation(self):
         self.configure_daily()
@@ -462,9 +491,9 @@ class InboundTests(unittest.TestCase):
         cfg=r.get(m.CONFIG_KEY); cfg.update(budgetFloorUSD=Decimal('8')); r._table.put_item(Item=cfg)
         monthly=r.get(m.budget_keys('2026-10','2026-10-18')[0]); monthly['allocatedUSD']=Decimal('8'); r._table.put_item(Item=monthly)
         self.assertIn('<Redirect',self.callback()['body'])
-        self.assertEqual(self.incoming_day()['reservedUSD'],Decimal('1.40'))
+        self.assertEqual(self.incoming_day()['reservedUSD'],Decimal('10'))
         self.assertEqual(self.item()['budgetExpiresAt'],2000)
-        self.assertEqual(r.get(m.budget_keys('2026-10','2026-10-18')[0])['allocatedUSD'],Decimal('9.40'))
+        self.assertEqual(r.get(m.budget_keys('2026-10','2026-10-18')[0])['allocatedUSD'],Decimal('18'))
         self.assertIsNone(r.get(m.budget_keys('2026-10','2026-10-18')[1]))
 
     def test_midnight_crossing_before_commit_makes_no_reservation(self):
@@ -480,7 +509,7 @@ class InboundTests(unittest.TestCase):
         self.budget_clock.return_value=('2026-11','2026-11-01','America/New_York',4000)
         self.now.return_value=3000
         self.assertIn('<Redirect',self.callback()['body'])
-        self.assertEqual(self.incoming_day('2026-11-01')['reservedUSD'],Decimal('1.40'))
+        self.assertEqual(self.incoming_day('2026-11-01')['reservedUSD'],Decimal('10'))
         self.assertEqual(self.item()['inboundBudgetDay'],'2026-11-01')
         self.assertIsNone(r.get(m.budget_keys('2026-11','2026-11-01')[1]))
 
@@ -612,7 +641,7 @@ class InboundTests(unittest.TestCase):
         self.now.return_value = 1030
         self.assertIn('<Hangup', self.callback('connect')['body'])
         self.assertNotIn('pinAttempts', self.item())
-        self.now.return_value = 1180
+        self.now.return_value = 1600
         self.assertIn('<Hangup', self.callback('connect')['body'])
         self.broker.assert_not_called()
 
@@ -635,13 +664,222 @@ class InboundTests(unittest.TestCase):
         self.configure(); self.callback(); self.callback('connect')
         self.control()
         raw = json.dumps({'capability': self.item()['callbackId'], 'callSid': f.CALL,
-                          'transcriptFinalized': True, 'reason': 'remote_hangup', 'inputTokens': 123, 'outputTokens': 45}).encode()
+                          'transcriptFinalized': True, 'reason': 'remote_hangup', 'inputTokens': 123, 'outputTokens': 45,
+                          'modelCostUSD': '0.123456'}).encode()
         self.assertEqual(i.redeem(raw, {'x-ln-signature': r.digest(b'inbound-owner/finish\n' + raw)}, 'finish')['statusCode'], 200)
         self.callback('status', CallStatus='completed')
         self.final.assert_not_called()
         self.assertTrue(self.item()['transcriptFinalized'])
         self.assertEqual(self.item()['endReason'], 'remote_hangup')
         self.assertEqual(self.item()['inputTokens'], 123)
+        self.assertEqual(self.item()['modelCostUSD'], Decimal('0.123456'))
+
+    def finish(self, sid=f.CALL, **fields):
+        item = r.get(m.request_key(owners.OWNER, 'inbound-' + sid))
+        raw = json.dumps({'capability': item['callbackId'], 'callSid': sid, 'transcriptFinalized': True,
+                          'reason': 'remote_hangup', **fields}).encode()
+        return i.redeem(raw, {'x-ln-signature': r.digest(b'inbound-owner/finish\n' + raw)}, 'finish')
+
+    def test_cost_cap_is_ten_dollars_less_the_telephone_reserve_for_a_fresh_day(self):
+        self.configure(); self.callback()
+        item = self.item()
+        self.assertEqual(m.TELEPHONE_RESERVE, Decimal('0.459'), '10 started minutes at 0.0209 plus the 0.25 recording charge')
+        self.assertEqual((item['costCapUSD'], item['telephoneReserveUSD'], item['reservedUSD'], item['maxCallSeconds']),
+                         (Decimal('9.541'), Decimal('0.459'), Decimal('10'), 600))
+        self.assertEqual(item['deadline'], 1600)
+        self.assertEqual(item['connectDeadline'], 1030, 'connectDeadline is unchanged')
+        month, day = m.budget_clock(r.get(m.CONFIG_KEY))[:2]
+        self.assertEqual(r.get(m.budget_keys(month, day)[1])['reservedUSD'], Decimal('10'))
+        self.assertEqual(r.get(m.budget_keys(month, day)[0])['unsettled'], {'inbound-' + f.CALL: Decimal('10')})
+
+    def test_cost_cap_shrinks_to_the_remaining_daily_allowance(self):
+        self.configure()
+        month, day, zone, expires = m.budget_clock(r.get(m.CONFIG_KEY))
+        r._table.put_item(Item={**m.budget_keys(month, day)[1], 'version': 1, 'reservedUSD': Decimal('7'), 'expiresAt': expires})
+        self.assertIn('<Redirect', self.callback()['body'])
+        self.assertEqual((self.item()['costCapUSD'], self.item()['reservedUSD']), (Decimal('2.541'), Decimal('3')))
+        self.assertEqual(r.get(m.budget_keys(month, day)[1])['reservedUSD'], Decimal('10'))
+        self.assertIn('<Connect', self.callback('connect')['body'])
+        self.assertEqual(json.loads(self.control()['body'])['costCapUSD'], '2.541000')
+
+    def test_cost_cap_shrinks_to_the_remaining_monthly_allowance(self):
+        self.configure()
+        month = m.budget_clock(r.get(m.CONFIG_KEY))[0]
+        r._table.put_item(Item={**m.budget_keys(month, '')[0], 'version': 2, 'allocatedUSD': Decimal('95'),
+                                'ledgerVersion': m.LEDGER_VERSION, 'unsettled': {}})
+        self.assertIn('<Redirect', self.callback()['body'])
+        self.assertEqual((self.item()['costCapUSD'], self.item()['reservedUSD']), (Decimal('4.541'), Decimal('5')))
+        self.assertEqual(r.get(m.budget_keys(month, '')[0])['allocatedUSD'], Decimal('100'))
+
+    def test_cost_cap_at_or_below_zero_refuses_with_the_binding_reason(self):
+        self.configure()
+        month, day, zone, expires = m.budget_clock(r.get(m.CONFIG_KEY))
+        day_key = m.budget_keys(month, day)[1]
+        for reserved in (Decimal('9.541'), Decimal('9.60'), Decimal('10')):
+            with self.subTest(reserved=reserved):
+                r._table.put_item(Item={**day_key, 'version': 1, 'reservedUSD': reserved, 'expiresAt': expires})
+                body = self.callback()['body']
+                self.assertIn("Today's call allowance is used. Please call again tomorrow.", body)
+                self.assertIn('<Hangup', body)
+                self.assertIsNone(self.item()); self.assertIsNone(r.get(m.VOICE_KEY))
+                self.assertEqual(r.get(day_key)['reservedUSD'], reserved)
+        r._table.items.pop((day_key['PK'], day_key['SK']))
+        r._table.put_item(Item={**m.budget_keys(month, '')[0], 'version': 2, 'allocatedUSD': Decimal('99.541'),
+                                'ledgerVersion': m.LEDGER_VERSION, 'unsettled': {}})
+        body = self.callback()['body']
+        self.assertIn('The monthly call allowance is used. Calls resume next month.', body)
+        self.assertIsNone(self.item()); self.assertIsNone(r.get(day_key))
+        self.broker.assert_not_called()
+        self.assertFalse(any(call.args[0] == '/Calls.json' for call in self.provider.call_args_list))
+
+    def test_bootstrap_without_a_valid_cost_cap_is_not_redeemable(self):
+        self.configure(); self.callback(); self.callback('connect')
+        stored = self.item()
+        for bad in (None, Decimal('0'), Decimal('-1'), Decimal('10.01'), '9.5'):
+            with self.subTest(cap=bad):
+                item = dict(stored)
+                if bad is None:
+                    item.pop('costCapUSD')
+                else:
+                    item['costCapUSD'] = bad
+                r._table.put_item(Item=item)
+                self.assertEqual(self.control()['statusCode'], 403)
+                self.assertEqual(self.item()['inboundState'], 'ready')
+        r._table.put_item(Item=stored)
+        self.assertEqual(self.control()['statusCode'], 200)
+
+    def test_finish_model_cost_must_be_a_six_place_decimal_string(self):
+        self.configure(); self.callback(); self.callback('connect'); self.control()
+        for bad in ('0.1', '1', 0.25, '-0.000001', 'NaN', '12345.000000', 'abc'):
+            with self.subTest(value=bad):
+                self.assertEqual(self.finish(inputTokens=1, outputTokens=1, modelCostUSD=bad)['statusCode'], 400)
+                self.assertEqual(self.item()['inboundState'], 'redeemed')
+                self.assertNotIn('modelCostUSD', self.item())
+        self.assertEqual(self.finish(inputTokens=1, outputTokens=1, modelCostUSD='0.000000')['statusCode'], 200)
+        self.assertEqual(self.item()['modelCostUSD'], Decimal('0'))
+
+    def settling_provider(self, price=None, duration='125'):
+        original = self.provider_result
+        def lookup(path, form=None):
+            if path == '/Calls/' + f.CALL + '.json' and form is None:
+                result = {'sid': f.CALL, 'account_sid': f.ACCOUNT, 'status': 'completed', 'duration': duration}
+                if price is not None:
+                    result.update(price=price, price_unit='USD')
+                return result
+            return original(path, form)
+        self.provider.side_effect = lookup
+
+    def test_settlement_adds_the_bridge_model_cost_to_the_telephone_estimate(self):
+        self.configure(); self.callback(); self.callback('connect'); self.control()
+        self.assertEqual(self.finish(inputTokens=5000, outputTokens=900, modelCostUSD='1.234567')['statusCode'], 200)
+        self.settling_provider(price='-0.0425', duration='125')
+        cfg = r.get(m.CONFIG_KEY)
+        month, day = m.budget_clock(cfg)[:2]
+        month_key, day_key = m.budget_keys(month, day)
+        status = m.budget_status(cfg)
+        # 125 s -> 3 started minutes: 3 * 0.0209 + 0.25 = 0.3127 (above the provider's 0.0425), plus 1.234567.
+        self.assertEqual(self.item()['settledUSD'], Decimal('1.547267'))
+        self.assertEqual(r.get(day_key)['reservedUSD'], Decimal('1.547267'))
+        self.assertEqual((Decimal(status['allocatedUSD']), status['unsettledCalls']), (Decimal('9.547267'), 0))
+
+    def test_settlement_without_a_model_cost_keeps_the_reservation(self):
+        self.configure(); self.callback(); self.callback('connect'); self.control()
+        self.assertEqual(self.finish(inputTokens=5000, outputTokens=900)['statusCode'], 200)
+        self.settling_provider(price='-0.0425', duration='125')
+        cfg = r.get(m.CONFIG_KEY)
+        month, day = m.budget_clock(cfg)[:2]
+        month_key, day_key = m.budget_keys(month, day)
+        status = m.budget_status(cfg)
+        self.assertNotIn('settledUSD', self.item())
+        self.assertEqual(r.get(day_key)['reservedUSD'], Decimal('10'), 'unknown model cost keeps the reservation')
+        self.assertEqual((Decimal(status['allocatedUSD']), status['unsettledCalls']), (Decimal('18'), 1))
+        self.assertEqual(self.item()['inputTokens'], 5000, 'token counts alone never price an owner conversation')
+
+    def test_finish_accepts_the_token_counts_of_a_ten_minute_call(self):
+        # A 600 s owner call reports well over the old 100000-token bound (the bridge
+        # measures about 156000 input tokens for a normal ten-minute call).
+        self.configure(); self.callback(); self.callback('connect'); self.control()
+        self.assertEqual(self.finish(inputTokens=156000, outputTokens=9000, modelCostUSD='1.900000')['statusCode'], 200)
+        self.assertEqual(self.item()['inputTokens'], 156000)
+        self.assertEqual(self.finish(inputTokens=10_000_001, outputTokens=1)['statusCode'], 400, 'the bound still exists')
+
+    def rejections(self):
+        return [row['data'] for row in r._table.items.values() if row.get('type') == 'inbound_usage_rejected']
+
+    def test_call_that_never_reached_the_bridge_settles_at_the_telephone_estimate(self):
+        self.configure(); self.callback()
+        def reject_cap(path, form=None):
+            if form and 'TimeLimit' in form:
+                raise m.ProviderError(21220, rejected=True)
+            return self.provider_result(path, form)
+        self.provider.side_effect = reject_cap
+        self.assertIn('<Hangup', self.callback('connect')['body'])
+        self.assertEqual(self.item()['endReason'], 'provider_cap_failed_21220')
+        self.assertNotIn('redeemedAt', self.item())
+        self.broker.assert_not_called()
+        self.settling_provider(price='-0.0071', duration='20')
+        cfg = r.get(m.CONFIG_KEY)
+        month, day = m.budget_clock(cfg)[:2]
+        month_key, day_key = m.budget_keys(month, day)
+        status = m.budget_status(cfg)
+        # 20 s -> one started minute: 0.0209 + 0.25 = 0.2709; the bridge never ran a model turn.
+        self.assertEqual(self.item()['settledUSD'], Decimal('0.2709'))
+        self.assertEqual(r.get(day_key)['reservedUSD'], Decimal('0.2709'))
+        self.assertEqual((Decimal(status['allocatedUSD']), status['unsettledCalls']), (Decimal('8.2709'), 0))
+        self.assertEqual(status['pausedReason'], '')
+        # A model cost reported after that settlement is refused and recorded; the ledger is closed.
+        self.assertEqual(self.finish(inputTokens=1, outputTokens=1, modelCostUSD='0.500000')['statusCode'], 409)
+        self.assertNotIn('modelCostUSD', self.item())
+        self.assertEqual(self.rejections(), [{'reason': 'call_already_settled', 'reportedModelCostUSD': '0.500000'}])
+        self.assertEqual(self.item()['settledUSD'], Decimal('0.2709'))
+
+    def test_redeemed_call_without_a_finish_keeps_its_reservation(self):
+        self.configure(); self.callback(); self.callback('connect'); self.control()
+        self.assertEqual(self.item()['inboundState'], 'redeemed')
+        self.assertIsInstance(self.item()['redeemedAt'], int)
+        # The provider reports the call over before any bridge finish arrives (bridge crash).
+        self.callback('status', CallStatus='completed')
+        self.settling_provider(price='-0.0425', duration='125')
+        cfg = r.get(m.CONFIG_KEY)
+        month, day = m.budget_clock(cfg)[:2]
+        m.budget_status(cfg)
+        self.assertNotIn('settledUSD', self.item())
+        self.assertEqual(r.get(m.budget_keys(month, day)[1])['reservedUSD'], Decimal('10'), 'a redeemed call has an unknown model cost until the bridge reports it')
+
+    def test_first_reported_model_cost_is_authoritative(self):
+        self.configure(); self.callback(); self.callback('connect'); self.control()
+        self.assertEqual(self.finish(inputTokens=10, outputTokens=10, modelCostUSD='0.250000')['statusCode'], 200)
+        self.assertEqual(self.finish(inputTokens=10, outputTokens=10, modelCostUSD='0.250000')['statusCode'], 200, 'an identical repeat is idempotent')
+        self.assertEqual(self.finish(inputTokens=10, outputTokens=10, modelCostUSD='0.300000')['statusCode'], 409)
+        self.assertEqual(self.item()['modelCostUSD'], Decimal('0.25'))
+        self.assertEqual(self.rejections(), [{'reason': 'model_cost_already_reported', 'reportedModelCostUSD': '0.300000'}])
+
+    def test_model_cost_above_the_per_call_cap_is_refused_and_above_the_call_cap_is_flagged(self):
+        self.configure(); self.callback(); self.callback('connect'); self.control()
+        self.assertEqual(self.item()['costCapUSD'], Decimal('9.541'))
+        for above in ('10.000001', '12.345678', '9999.999999'):
+            with self.subTest(value=above):
+                self.assertEqual(self.finish(inputTokens=1, outputTokens=1, modelCostUSD=above)['statusCode'], 400)
+                self.assertNotIn('modelCostUSD', self.item())
+                self.assertEqual(self.item()['inboundState'], 'redeemed')
+        self.assertEqual([row['reason'] for row in self.rejections()], ['invalid_model_cost'] * 3)
+        self.assertEqual(sorted(row['reportedModelCostUSD'] for row in self.rejections()), ['10.000001', '12.345678', '9999.999999'])
+        # Within the per-call cap but above this call's own cap: stored, and the overage is visible.
+        self.assertEqual(self.finish(inputTokens=1, outputTokens=1, modelCostUSD='9.600000')['statusCode'], 200)
+        self.assertEqual((self.item()['modelCostUSD'], self.item()['costCapExceeded']), (Decimal('9.6'), True))
+        usage = [row['data'] for row in r._table.items.values() if row.get('type') == 'inbound_usage']
+        self.assertEqual(usage, [{'inputTokens': 1, 'outputTokens': 1, 'modelCostUSD': '9.600000', 'costCapExceeded': True, 'costCapUSD': '9.541000'}])
+
+    def test_settlement_never_drops_below_the_provider_measured_price(self):
+        self.configure(); self.callback(); self.callback('connect'); self.control()
+        self.assertEqual(self.finish(inputTokens=10, outputTokens=10, modelCostUSD='0.010000')['statusCode'], 200)
+        self.settling_provider(price='-0.90', duration='30')
+        cfg = r.get(m.CONFIG_KEY)
+        month, day = m.budget_clock(cfg)[:2]
+        m.budget_status(cfg)
+        # The provider's 0.90 is above the 0.2709 one-minute estimate and is kept.
+        self.assertEqual(self.item()['settledUSD'], Decimal('0.91'))
+        self.assertEqual(r.get(m.budget_keys(month, day)[1])['reservedUSD'], Decimal('0.91'))
 
     def test_fresh_account_revocation_blocks_media_heartbeat(self):
         self.configure(); self.callback(); self.callback('connect')
@@ -665,13 +903,15 @@ class InboundTests(unittest.TestCase):
     def test_dynamodb_decimal_deadline_keeps_integer_bootstrap_wire_type(self):
         self.configure(); self.callback(); self.callback('connect')
         stored = self.item()
-        stored['deadline'] = Decimal('1180')
+        stored['deadline'] = Decimal('1600')
         r._table.put_item(Item=stored)
         reply = self.control()
         self.assertEqual(reply['statusCode'], 200)
-        deadline = json.loads(reply['body'])['deadline']
+        bootstrap = json.loads(reply['body'])
+        deadline = bootstrap['deadline']
         self.assertIs(type(deadline), int)
-        self.assertEqual(deadline, 1180)
+        self.assertEqual(deadline, 1600)
+        self.assertEqual(bootstrap['costCapUSD'], '9.541000', 'a decimal string, never a float')
         numeric = json.loads(r.response(200, {'integer': Decimal('42.000'), 'fraction': Decimal('1.40')})['body'])
         self.assertIs(type(numeric['integer']), int)
         self.assertEqual(numeric['fraction'], 1.4)
@@ -721,7 +961,7 @@ class InboundTests(unittest.TestCase):
         args = provider.invoke.call_args.kwargs
         self.assertEqual(args['FunctionName'], 'live-ninja-realtime-broker')
         self.assertEqual(json.loads(args['Payload']), {'mode': 'phone-session', 'userId': owners.OWNER,
-            'surface': 'phone', 'phoneCallSid': f.CALL, 'phoneDeadline': 1180})
+            'surface': 'phone', 'phoneCallSid': f.CALL, 'phoneDeadline': 1600})
         provider.invoke.return_value = {'Payload': io.BytesIO(json.dumps(bootstrap).encode())}
         with patch.dict(sys.modules, {'boto3': fake_boto}):
             REAL_MINT({**self.item(), 'live':True, 'message':'Sales update', 'payload':'{"total":12}'})

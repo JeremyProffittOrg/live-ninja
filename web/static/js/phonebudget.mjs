@@ -1,6 +1,7 @@
 // Read-only phone budget view. The standing allowance (owner decision
 // 2026-10-19) needs no approval: outgoing calls may reserve up to $10 per
-// local day, and every call this month shares the $100 cap.
+// local day, and every call this month shares the $100 cap. Each conversation
+// is capped at $10 of cost and 10 minutes (owner decision 2026-10-19).
 export function initPhoneBudget(root, { apiJSON, onAuthLost = () => {} }) {
   if (!root) return;
   const status = root.querySelector('[data-budget-status]');
@@ -27,11 +28,16 @@ export function initPhoneBudget(root, { apiJSON, onAuthLost = () => {} }) {
       ` Incoming calls from your designated number have their own $${incoming.limitUSD} daily allowance: $${incoming.reservedUSD} used, $${incoming.remainingUSD} remaining for ${incoming.day}. Recognized owner calls connect and record automatically; no PIN or keypad response is needed.` : '';
     const pending = Number(data.unsettledCalls) > 0 ?
       ` ${data.unsettledCalls} recent call${Number(data.unsettledCalls) === 1 ? '' : 's'} still count at the reserved amount until the measured cost arrives.` : '';
+    // A backend that predates these fields (staggered deploy) means the owner
+    // decision's fixed limits: 600 s and $10 per call.
+    const maxMinutes = Math.round((Number(data.perCallMaxSeconds) || 600) / 60);
+    const perCallCap = data.perCallCapUSD || '10';
     status.textContent =
       `Today ${data.day} (${data.timezone}): $${data.dailyReservedUSD} of the $${data.dailyAllowanceUSD} outgoing allowance used, $${data.dailyRemainingUSD} remaining. Resets ${resets}. ` +
       `Month ${data.month}: $${data.allocatedUSD} of the $${data.monthlyCapUSD} cap used, $${data.monthlyRemainingUSD} remaining, including incoming calls and the fixed $8 base.` +
       incomingText + pending +
-      ` A full phone conversation reserves $${data.requiredReservationUSD}. ${hold} No approval is needed.`;
+      ` Each phone conversation lasts at most ${maxMinutes} minutes and reserves up to $${perCallCap} (its per-call cost cap, never more than the remaining day and month allowance) until its measured cost arrives.` +
+      ` ${hold} No approval is needed.`;
   }
   async function load() {
     if (busy || invalidated) return;
