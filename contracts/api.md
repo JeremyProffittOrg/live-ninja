@@ -352,10 +352,21 @@ number routing, grant spending permission, or release the owner's call stop.
 - The Azure `/owner-media` WebSocket requires a valid provider signature and a one-use,
   call-bound recorder bootstrap. No owner bearer token appears in TwiML or a URL.
 - A phone token permits only `POST /api/v1/tools/invoke` and
-  `POST /api/v1/transcript` for that live session. The allowed tools are
-  `memory_search`, `entity_get`, `knowledge_search`, `knowledge_recent`, `job_list`
-  and `job_status`. Saved instructions cannot expand this list. Account changes,
-  outgoing calls, device controls and job approvals remain unavailable on this path.
+  `POST /api/v1/transcript` for that live session. The allowed tools are the
+  phone set in `internal/tools/phone_direct.go`: the read tools `memory_search`,
+  `entity_get`, `knowledge_search`, `knowledge_recent`, `recall_note`, `rule_list`,
+  `rule_load`, `job_list`, `job_status`, `get_weather`, `phone_message_status`,
+  `ghost_nodes`, `ghost_sessions`, `ghost_session_summary` and `ghost_run_status`;
+  the account actions `memory_write`, `forget`, `remember_note`, `set_timer`,
+  `set_reminder`, `set_current_location` and `send_email`; the job and rule
+  changes `job_create`, `job_start`, `job_pause`, `job_resume`, `job_cancel`,
+  `job_retry`, `job_command`, `rule_save` and `rule_delete`, which execute after
+  the owner's spoken yes (`confirm=true`, owner decision 2026-10-19); and the ghost
+  manage tools `ghost_run_start` and `ghost_session_command`, which execute only
+  with `confirm=true` plus the server-issued `proposalId` of the proposal read back
+  on the call (ghost-phone-access, owner decision 2026-10-19 "read and control").
+  Saved instructions cannot expand this list. Outgoing calls, device controls,
+  `code_update_start` and the review-only tools remain unavailable on this path.
 - Transcript persistence follows the owner's existing privacy settings. Authorized
   recordings use the existing private S3 ingestion and owner recording APIs. Existing
   web and Android sessions keep their original permissions and behavior.
@@ -390,6 +401,7 @@ for 40 days after deleting media. See the [provider deletion contract](https://w
 
 | Date | Change | Motivated by |
 |---|---|---|
+| 2026-10-20 | ghost-phone-access: a recognized owner phone call carries the six ghost fleet tools (`ghost_nodes`, `ghost_sessions`, `ghost_session_summary`, `ghost_run_status` read directly; `ghost_run_start` and `ghost_session_command` execute only with `confirm=true` plus the server-issued `proposalId` of the proposal read back on the call). `PhoneInstructions` teaches the fleet tools and the read-back; `code_update_start` stays off the call. | Owner decision 2026-10-19 (phone "read and control"): the owner could steer the fleet from the web, Android and MCP but not from a call |
 | 2026-07-26 | Named-device and section-scoped settings contract (M31): current-install registration, rename, safe metadata, `X-LN-Device-ID`, sparse `deviceOverrides`, device-effective reads, and atomic current/selected/all/inherit section operations. Existing top-level values and full-document GET/PUT remain the additive compatibility base. | One shared document could not represent different wake, appearance, voice, privacy, or hardware choices across a browser, Android tablet, and paired M5Stack, and users could not identify or compare those hosts |
 | 2026-07-17 | Initial freeze at M0. Full inventory compiled from PRD §5 catalog + all milestone task lists (M1–M12); three route names canonicalized per "Reconciliation notes" above. | WS-G M0 contract-freeze task |
 | 2026-07-18 | RFC 8628 user-code binding added to device pairing: `pair/start` responses gain `userCode` (`XXXX-XXXX`, alphabet `BCDFGHJKLMNPQRSTVWXZ`, displayed on the device); new `POST /auth/device/pair/confirm` route (browser confirm leg — constant-time code match, 5-attempt budget); `pair/poll` gains the terminal `failed` status (`reason: user_code_attempts_exceeded`) and folds the former `pair/claim` step into itself; the shared `lwa/callback` (device leg) now serves the confirm page instead of binding directly. No back-compat shim — the code is required (no device had onboarded). | Pairing anti-phishing gap: an allowlisted attacker could phish a victim into binding a 10-yr device credential to the victim's account |

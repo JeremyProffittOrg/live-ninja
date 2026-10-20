@@ -33,6 +33,8 @@ func TestPhoneManifestIsTheOwnerCallToolSet(t *testing.T) {
 		"set_current_location": true, "send_email": true,
 		"job_create": true, "job_start": true, "job_pause": true, "job_resume": true, "job_cancel": true,
 		"job_retry": true, "job_command": true, "rule_save": true, "rule_delete": true,
+		"ghost_nodes": true, "ghost_sessions": true, "ghost_session_summary": true, "ghost_run_status": true,
+		"ghost_run_start": true, "ghost_session_command": true,
 	}, names)
 	for name := range names {
 		require.True(t, PhoneToolAllowed(name), name)
@@ -43,9 +45,15 @@ func TestPhoneManifestIsTheOwnerCallToolSet(t *testing.T) {
 		require.False(t, names[tool], tool)
 	}
 	prompt := PhoneInstructions(ResolvePersona(""))
-	for _, want := range []string{"confirm=true", "read the exact change back", "cannot place calls or send texts, control devices, use the camera, or change volume"} {
+	for _, want := range []string{"confirm=true", "read the exact change back", "cannot place calls or send texts, control devices, use the camera, or change volume",
+		// ghost-phone-access (owner decision 2026-10-19, "read and control"): the
+		// phone prompt is PhoneInstructions plus base knowledge, never
+		// coreInstructions, so it must teach the fleet tools itself.
+		"coding sessions", "start a coding run", "nudge, answer, pause or resume",
+		"read the proposal back", "confirm=true and that proposalId", "not enabled on the fleet yet"} {
 		require.Contains(t, prompt, want)
 	}
+	require.NotContains(t, prompt, "kill", "KILL is not offered on any surface")
 	for _, name := range []string{"set_volume", "take_photo", "start_new_conversation", "call_message"} {
 		require.NotContains(t, prompt, name)
 	}

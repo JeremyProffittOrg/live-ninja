@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -24,7 +25,8 @@ func TestPhoneToolSetExcludesDeviceControlsAndOutgoingCalls(t *testing.T) {
 		"file_create", "deliverable_create", "code_update_repos", "plan_upsert"} {
 		require.False(t, PhoneToolAllowed(name), name)
 	}
-	for _, name := range []string{"memory_write", "send_email", "set_reminder", "job_create", "job_pause", "rule_save", "rule_delete"} {
+	for _, name := range []string{"memory_write", "send_email", "set_reminder", "job_create", "job_pause", "rule_save", "rule_delete",
+		"ghost_nodes", "ghost_sessions", "ghost_session_summary", "ghost_run_status", "ghost_run_start", "ghost_session_command"} {
 		require.True(t, PhoneToolAllowed(name), name)
 	}
 	byName := map[string]*Definition{}
@@ -148,6 +150,70 @@ func TestPhoneRuleSaveAndDeleteUseRuleReview(t *testing.T) {
 	require.Equal(t, CodeNotFound, res.Error.Code)
 }
 
+// Owner decision 2026-10-19 (ghost-phone-access, "read and control"): a
+// recognized owner call reads the fleet freely and steers it only through the
+// server-issued proposal. A spoken yes is modelled as confirm=true WITH the
+// proposalId of the proposal the model read back; confirm=true alone, from a
+// phone call like from every other surface, executes nothing.
+func TestPhoneGhostToolsReadFreelyAndManageOnlyThroughAProposal(t *testing.T) {
+	f := ghostRunFake(t).
+		static("GET", "/history/sessions", 200, ghostSessionsBody("OFFICEPC", "", ghostSession(ghostSessionA, time.Minute))).
+		static("POST", "/command", 202, `{"command_id":"019a7c3e-cmd"}`)
+	deps, fake := ghostDeps(f)
+	r := newTestRegistry(t, deps)
+	ctx := context.Background()
+
+	for _, tool := range []string{"ghost_nodes", "ghost_sessions"} {
+		res := r.Invoke(ctx, phoneInvocation(tool, nil, "read-"+tool))
+		require.True(t, res.OK, "%s: %+v", tool, res.Error)
+	}
+	res := r.Invoke(ctx, phoneInvocation("ghost_run_status", nil, "read-status"))
+	require.NotNil(t, res.Error)
+	require.NotEqual(t, CodeForbidden, res.Error.Code, "the read tool is on the call; it has no run to report yet")
+
+	args := map[string]any{"node": "OFFICEPC", "sessionId": ghostSessionA, "command": "NUDGE", "text": "run the tests before you push"}
+	res = r.Invoke(ctx, phoneInvocation("ghost_session_command", args, "ask"))
+	terr := requireToolError(t, res, CodeConfirmationRequired)
+	id, _ := terr.Details["proposalId"].(string)
+	require.Regexp(t, `^[a-f0-9]{32}$`, id)
+	require.Equal(t, "ghost_session_command", terr.Details["operation"])
+	require.Empty(t, f.callsTo("POST", "/command"), "a proposal sends nothing")
+
+	lone := map[string]any{"confirm": true}
+	for k, v := range args {
+		lone[k] = v
+	}
+	res = r.Invoke(ctx, phoneInvocation("ghost_session_command", lone, "lone-yes"))
+	requireToolError(t, res, CodeInvalidArgs)
+	require.Empty(t, f.callsTo("POST", "/command"), "a spoken yes without the proposal sends nothing")
+
+	res = r.Invoke(ctx, phoneInvocation("ghost_session_command", ghostConfirmArgs(args, id), "yes"))
+	require.True(t, res.OK, "%+v", res.Error)
+	require.Equal(t, "accepted", res.Output["status"])
+	require.Len(t, f.callsTo("POST", "/command"), 1)
+	require.Nil(t, ghostProposalRow(fake, id), "the proposal is consumed by the send")
+
+	res = r.Invoke(ctx, phoneInvocation("ghost_session_command", ghostConfirmArgs(args, id), "yes-again"))
+	requireToolError(t, res, CodeNotFound)
+	require.Len(t, f.callsTo("POST", "/command"), 1, "a consumed proposal cannot be confirmed twice")
+
+	runArgs := ghostRunArgs(nil)
+	res = r.Invoke(ctx, phoneInvocation("ghost_run_start", runArgs, "run-ask"))
+	terr = requireToolError(t, res, CodeConfirmationRequired)
+	runID, _ := terr.Details["proposalId"].(string)
+	require.Regexp(t, `^[a-f0-9]{32}$`, runID)
+	require.Empty(t, f.callsTo("POST", "/schedule"), "a proposal launches nothing")
+
+	res = r.Invoke(ctx, phoneInvocation("ghost_run_start", ghostConfirmArgs(runArgs, runID), "run-yes"))
+	require.True(t, res.OK, "%+v", res.Error)
+	require.Equal(t, "launched", res.Output["status"])
+	require.Len(t, f.callsTo("POST", "/schedule"), 1)
+
+	// code_update_start stays off the call: ghost_run_start is its launch path.
+	res = r.Invoke(ctx, phoneInvocation("code_update_start", map[string]any{"repo": "JeremyProffittOrg/live-ninja", "instructions": "tighten the retry logic", "confirm": true}, "cu"))
+	requireToolError(t, res, CodeForbidden)
+}
+
 func TestPhoneManifestIsCompactAndMarksDirectActions(t *testing.T) {
 	manifest := CatalogManifestForPhone()
 	require.Len(t, manifest, len(phoneTools))
@@ -159,16 +225,36 @@ func TestPhoneManifestIsCompactAndMarksDirectActions(t *testing.T) {
 		params := tool["parameters"].(map[string]any)
 		props, _ := params["properties"].(map[string]any)
 		_, hasConfirm := props["confirm"]
-		direct := false
-		for _, def := range definitions() {
-			if def.Name == name {
-				direct = def.PhoneDirect
+		_, hasProposal := props["proposalId"]
+		var def *Definition
+		for _, candidate := range definitions() {
+			if candidate.Name == name {
+				def = candidate
 			}
 		}
-		require.Equal(t, direct, hasConfirm, name)
-		if direct {
+		require.NotNil(t, def, name)
+		// confirm is carried by the PhoneDirect tools (spoken confirmation of a
+		// review proposal) and by the ghost manage tools, whose confirmation is
+		// server-issued: confirm=true counts only with the proposalId the owner
+		// heard read back (ghost_confirm.go). Nothing else carries it.
+		require.Equal(t, def.PhoneDirect || hasProposal, hasConfirm, name)
+		if def.PhoneDirect {
+			require.False(t, hasProposal, name)
 			require.Contains(t, description, "confirm=true", name)
 		}
+		if hasProposal {
+			require.True(t, def.SideEffecting, name)
+			require.False(t, def.PhoneDirect, "%s confirms through its proposal on every surface", name)
+			require.Contains(t, description, "confirm=true", name)
+			require.Contains(t, description, "proposalId", name)
+		}
+	}
+	for _, name := range []string{"ghost_run_start", "ghost_session_command"} {
+		var found bool
+		for _, tool := range manifest {
+			found = found || tool["name"] == name
+		}
+		require.True(t, found, name)
 	}
 	require.Equal(t, "Absolute fire time, RFC3339 with offset, e.g. 2026-07-18T09:00:00-04:00.", firstSentence("Absolute fire time, RFC3339 with offset, e.g. 2026-07-18T09:00:00-04:00. More."))
 }
