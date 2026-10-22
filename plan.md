@@ -1,5 +1,47 @@
 # Plan
 
+## transcript-autoremediation — install the daily Ghost review and repair run
+Status: in progress, 2026-10-22. Independent of older work below.
+Outcome: a comprehensive repository prompt runs through Ghost daily at 23:00 America/New_York and on an explicit remediation request. It reviews transcript gaps, uses persona agents, fixes verified defects, deploys through main, replays production text conversations, sends HTML SES reports and returns result.txt. Each issue has at most three remediation attempts.
+Non-goals: run the first full transcript review during setup; change Live Ninja's runtime tools, authentication or phone controls; add a browser driver, local timer, dependency or infrastructure service.
+Files: autoremediate-prompt.md, agents.md, CLAUDE.md, .gitignore and this plan. Ghost task configuration is stored through the existing Ghost connector.
+Working directory: C:\dev\live-ninja-autoremediate, clean main clone. Preserve all existing changes in C:\dev\live-ninja and C:\dev\live-ninja-plan-build.
+
+### Locked decisions (user-confirmed; do not revisit)
+- 2026-10-22 — "create an extremely comprehensive prompt to review live-ninja transcripts daily for inablity to perform actions, and to validate that any answer which indicates a lack of information or findings, or difficulties, is actioned in updating code to fix that gap using a team of persona to plan and execute, and action a resolution.  the issue to remediate and compoleted plan notes should be emailed to me using aws ses in html format.  The prompt shoudl be authorized to perform the production push and then test by using the text interface to replay the conversation that has the gap to validate.  loop up to 3 times to temediat the gap.  Automatically remediate pipleine issues.  the AI should have full attonmoy to resolve and create a result.txt to pass back to ghost.  Create autoremediate-prompt.md and wire it up in ghost to run daily at 11pm, and when in ghost, I say, "Remediate live-ninja issues in ghost" or the like."
+- Standing production deployment authorization applies. The 2026-10-19 prohibition on creating or starting EC2 instances remains in force.
+
+### Verified facts
+- GitHub default branch: JeremyProffittOrg/live-ninja main. Initial HEAD: 932ca072198698a706cac416ff8e44209f044acc. Existing Deploy run 39763911988 succeeded.
+- Ghost computers_list: OFFICEPC connected, agent 1.1.215. tasks_list has no existing live-ninja remediation task. tasks_create supports cron, IANA timezone, deploy, output_file and a stable event_id; tasks_run reuses a task without changing its schedule and rejects an overlapping run.
+- Ghost tasks_preview for "0 23 * * *" in America/New_York returns first fire 2026-10-22T23:00:00-04:00 (2026-10-23T03:00:00Z).
+- web/static/js/conversation.mjs sends typed text through sendUserText in a live session or POST /api/v1/fallback/turn when disconnected. internal/webapp/api_routes.go accepts text/persona; that fallback reconstructs each request independently. Separate POSTs do not prove multi-turn continuity.
+- internal/store/usage.go provides paginated QueryLogTurnsSince/QuerySessionLog. internal/webapp/history_routes.go exposes paginated conversation history. internal/store/users.go resolves CONFIG/OWNER. Phone records use the separate recorder paths in tools/phone-trial.
+- Local AWS STS confirmed account 759775734231; SES domain jeremy.ninja is verified in us-east-1. template.yaml and tools/phone-trial/send_report.py configure recipient/reply address proffitt.jeremy@gmail.com and sender jeremy@jeremy.ninja.
+- Current deployment infrastructure uses Fargate for Batch; no EC2 instance launch is required for this documentation change.
+
+### remediation-prompt — define the autonomous execution contract
+depends on: none
+- [x] remediation-document — wrote the 615-line prompt, matching agent pointers and private-output exclusions. Proof: git -c core.whitespace=cr-at-eol diff --check exited 0; UTF-8/fence/heading/pointer readback passed; git check-ignore confirmed both private output paths. Direct review accounts for coverage, persona ownership, negative-result proof, three-attempt ceilings, CI repair, real text replay, SES receipts and result.txt on all exits.
+
+### remediation-registration — store and verify the Ghost definition
+depends on: remediation-prompt
+- [~] remediation-ghost-task — created one event live-ninja-autoremediate on OFFICEPC for JeremyProffittOrg/live-ninja with cli=claude, deploy=true, output_file=result.txt, cron="0 23 * * *", timezone=America/New_York. Created disabled until the prompt reaches main. Prompt includes manual-trigger aliases and reads the versioned repository prompt. tasks_get version v1-45f666f33b3c6a31baf10590 matched all fields and the prompt exactly; draft tasks_preview returned 23:00 local. Enable and read back after publication.
+
+### remediation-publication — deliver the prompt on main
+depends on: remediation-prompt, remediation-registration
+- [ ] remediation-release — commit only this work, push main, watch the exact SHA's Deploy to terminal success; copy the requested prompt into C:\dev\live-ninja without modifying existing files. Proof: gh run watch <recorded-run-id> --repo JeremyProffittOrg/live-ninja --exit-status exits 0; local and published prompt hashes match.
+
+### Stop conditions (only these)
+Missing credentials/resources; unapproved destructive work or material scope expansion; required EC2 creation/start; three failed corrected delivery attempts. Continue independent work and retain exact failure evidence. No full transcript remediation or production conversation is claimed during setup.
+
+### Watchers and restart policy
+Track every command session and Actions run ID. Local checks: five-minute timeout; fix deterministic defects before retry. Deploy: poll status/conclusion including failure, cancellation, timeout and missing progress, at most 60 minutes per run; at most three corrected delivery attempts. Read-only transient provider calls: at most three attempts with bounded backoff. Ghost creation: read existing task before any repeat; never create duplicate schedules. No local scheduled process is installed.
+
+### Execution log
+- 2026-10-22 — read deploy.md, agent guidance, current main source and Ghost task contracts; verified GitHub/AWS access, sender status, OFFICEPC presence and schedule preview. Existing working copies contain unrelated edits; clean clone C:\dev\live-ninja-autoremediate is on main.
+- 2026-10-22 — document checks passed: git -c core.whitespace=cr-at-eol diff --check (exit 0); UTF-8/code-fence/unique-heading/pointer checks (exit 0); git check-ignore result.txt .autoremediate/private.json (both ignored). No runtime code changed, so no new test infrastructure was added. AWS log-retention audit queried all 17 active regions: 189 groups, all seven days, no mutation needed. Watcher session 59563 exited 0.
+
 ## phone-tool-parity — share server tools on owner calls and correct knowledge sources
 Status: delivered and verified 2026-10-22 at 8af7381cfd414bc1a4d56b45fe43341f30923adb. Broader plan work below remains separate.
 Outcome: owner phone calls receive every existing server-executable tool and its operating instructions; knowledge_search advertises its supported source values; the persona catalog includes Polite Southern Belle.
