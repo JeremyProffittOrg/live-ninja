@@ -18,6 +18,15 @@ delivery_spec.loader.exec_module(delivery)
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_cli_failure_reports_code_without_provider_payload(self):
+        import subprocess
+        failed = subprocess.CompletedProcess([], 255, "", "An error occurred (AccessDeniedException) when calling GetParameters: private-payload-must-not-appear")
+        with patch.object(delivery.subprocess, "run", return_value=failed):
+            with self.assertRaises(delivery.Failure) as caught:
+                delivery.command(["aws", "ssm", "get-parameters"])
+        self.assertIn("AccessDeniedException", str(caught.exception))
+        self.assertNotIn("private-payload", str(caught.exception))
+
     def test_trial_refuses_unreported_usage(self):
         with patch.object(delivery, "aws", return_value={"Items": [{"reported": {"BOOL": False}}]}):
             with self.assertRaises(delivery.Failure):

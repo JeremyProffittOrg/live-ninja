@@ -5,7 +5,12 @@ if [[ "${GITHUB_REPOSITORY:-}" != "JeremyProffittOrg/live-ninja" || "${GITHUB_RE
   echo 'Deployment is restricted to this repository main GitHub Actions.' >&2
   exit 1
 fi
-config=$(python -B scripts/alexa-skill.py stack-config)
+if ! config=$(python -B scripts/alexa-skill.py stack-config); then
+  # The helper emits only sanitized diagnostics; command substitution must
+  # not hide the cause of a failed bootstrap from the deployment log.
+  printf '%s\n' "$config" >&2
+  exit 1
+fi
 skill=$(python -c 'import json,sys; print(json.load(sys.stdin)["skillId"])' <<< "$config")
 enabled=$(python -c 'import json,sys; print(json.load(sys.stdin)["enabled"])' <<< "$config")
 sam deploy \

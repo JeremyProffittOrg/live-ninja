@@ -46,7 +46,12 @@ def command(args, stdin=None):
                             timeout=90, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if result.returncode:
         # Provider/CLI stderr can include request payloads or signed URLs.
-        raise Failure("Required command failed: " + " ".join(args[:2]) + "; exit " + str(result.returncode))
+        code = re.search(r"\(([A-Za-z][A-Za-z0-9]+)\) when calling", result.stderr)
+        detail = code.group(1) if code else next((label for text,label in (
+            ("Unable to load paramfile", "CLI_INPUT_FILE"), ("Invalid JSON", "CLI_INPUT_JSON"),
+            ("Error parsing parameter", "CLI_INPUT_PARSE"), ("Unknown options", "CLI_OPTION"),
+            ("Unable to locate credentials", "CREDENTIALS_MISSING"), ("Could not connect", "ENDPOINT_UNAVAILABLE")) if text in result.stderr), "CLI_FAILURE")
+        raise Failure("Required command failed: " + " ".join(args[:3]) + "; exit " + str(result.returncode) + "; " + detail)
     return json.loads(result.stdout) if result.stdout.strip() else {}
 
 
