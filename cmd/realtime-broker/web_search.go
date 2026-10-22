@@ -8,15 +8,28 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/alexa"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 )
 
 func (b *broker) handleWebSearch(ctx context.Context, l *slog.Logger, req Request) Response {
-	if !validSurfaces[req.Surface] && req.Surface != "phone" {
+	if !validSurfaces[req.Surface] && req.Surface != "phone" && req.Surface != store.SurfaceAlexa {
 		return badRequest("invalid search surface")
 	}
-	if req.Surface == "phone" && req.Role != store.RoleOwner {
+	if (req.Surface == "phone" || req.Surface == store.SurfaceAlexa) && req.Role != store.RoleOwner {
 		return Response{Code: 403, Error: "owner_required"}
+	}
+	if req.Surface == store.SurfaceAlexa {
+		if b.alexaWork == nil {
+			return Response{Code: 503, Error: "alexa_unavailable"}
+		}
+		work, err := b.alexaWork(ctx, alexa.Job{Owner: req.UserID, Turn: req.AlexaTurn})
+		if err != nil {
+			return Response{Code: 403, Error: "alexa_access_changed"}
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, work.Deadline)
+		defer cancel()
 	}
 	var payload struct {
 		Query string `json:"query"`
@@ -28,7 +41,15 @@ func (b *broker) handleWebSearch(ctx context.Context, l *slog.Logger, req Reques
 	if b.webSearch == nil || b.gate == nil {
 		return Response{Code: 503, Error: "search_unavailable", Message: "Public web search is not configured."}
 	}
-	if resp, rejected := b.gateFallback(ctx, l, req); rejected {
+	if req.Surface == store.SurfaceAlexa {
+		err := b.gate.CheckTextContinuation(ctx, req.UserID)
+		if resp, rejected := gateErrResponse(l, err, "alexa-search"); rejected {
+			return resp
+		}
+		if err != nil {
+			return internalError("Alexa search quota unavailable.")
+		}
+	} else if resp, rejected := b.gateFallback(ctx, l, req); rejected {
 		return resp
 	}
 	result, err := b.webSearch(ctx, payload.Query, payload.Days, time.Now())

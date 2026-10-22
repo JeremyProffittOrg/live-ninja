@@ -112,7 +112,7 @@ func ghostProposalDeleter(d *Deps) ghostProposalStore {
 // to. The registry releases the IDEMP# claim for confirmation_required, so the
 // confirmed retry uses a fresh key.
 func ghostIssueProposal(ctx context.Context, d *Deps, inv Invocation, operation, message string, proposed, binding map[string]any) *ToolError {
-	if inv.Surface == "alexa" && len(inv.ConfirmationContext) != 64 {
+	if inv.Surface == "alexa" && (len(inv.ConfirmationContext) != 64 || len(inv.ConfirmationTurn) != 64) {
 		return toolErrf(CodeForbidden, "Alexa conversation authority is missing; nothing was proposed")
 	}
 	if d.Store == nil || ghostProposalDeleter(d) == nil {
@@ -125,14 +125,18 @@ func ghostIssueProposal(ctx context.Context, d *Deps, inv Invocation, operation,
 	}
 	now := d.Now()
 	expires := now.Add(ghostProposalTTL)
-	err = d.Store.ConditionalPut(ctx, ghostProposalPK(inv.UserID, id), ghostProposalSK, map[string]any{
+	item := map[string]any{
 		"operation": operation,
 		"hash":      ghostInvocationProposalHash(inv, operation, binding),
 		"userId":    inv.UserID,
 		"tool":      inv.Tool,
 		"createdAt": now.UTC().Format(time.RFC3339),
 		"expiresAt": expires.Unix(),
-	}, expires.Unix())
+	}
+	if inv.Surface == "alexa" {
+		item["alexaTurn"] = inv.ConfirmationTurn
+	}
+	err = d.Store.ConditionalPut(ctx, ghostProposalPK(inv.UserID, id), ghostProposalSK, item, expires.Unix())
 	if err != nil {
 		d.Log.Error("tools: ghost proposal write failed", "operation", operation, "error", err.Error())
 		return toolErrf(CodeUpstreamError, "could not record the proposal; nothing was sent")
@@ -178,6 +182,12 @@ func ghostConsumeProposal(ctx context.Context, d *Deps, inv Invocation, operatio
 	}
 	if exp, ok := ghostItemInt64(item["expiresAt"]); !ok || !d.Now().Before(time.Unix(exp, 0)) {
 		return toolErrf(CodeNotFound, "that proposal expired (they last %d minutes); call %s without confirm to get a fresh one and read it back", int(ghostProposalTTL.Minutes()), operation)
+	}
+	if inv.Surface == "alexa" {
+		proposedTurn, _ := item["alexaTurn"].(string)
+		if !inv.ConfirmedByUser || len(inv.ConfirmationTurn) != 64 || proposedTurn == "" || proposedTurn == inv.ConfirmationTurn {
+			return toolErrf(CodeConfirmationRequired, "Read the exact proposal back and wait for a fresh spoken yes. Nothing was started or sent.")
+		}
 	}
 	hash := ghostInvocationProposalHash(inv, operation, binding)
 	if stored, _ := item["hash"].(string); stored != hash {

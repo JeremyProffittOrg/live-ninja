@@ -388,7 +388,7 @@ def contains_expected(actual, expected):
 
 
 def simulation_record(data, case):
-    record = {"simulationId": data.get("id"), "expected": case["expected"], "status": data.get("status"), "passed": False, "outcome": "simulation_failed"}
+    record = {"simulationId": data.get("id"), "expected": case["expected"], "critical": case.get("critical", case["expected"] in {"stop", "new", "resume", "status", "repeat", "more"}), "status": data.get("status"), "passed": False, "outcome": "simulation_failed"}
     invocations = (data.get("result") or {}).get("skillExecutionInfo", {}).get("invocations", [])
     if data.get("status") != "SUCCESSFUL" or not invocations:
         return record
@@ -514,7 +514,7 @@ def simulate(api, mode, evidence):
             continue
     for row in rows:
         row.update(timings.get(row.get("receipt"), {}))
-    report["passed"] = passed >= .95 and all(isinstance(row.get("skillMs"),(int,float)) and row["skillMs"] < 8000 for row in rows) and (mode != "latency" or len(normal) == 100 and p95 is not None and p95 < 6000 and report["ordinaryReadyRate"] >= .95 and all("queueWaitMs" in row and "modelMs" in row for row in normal))
+    report["passed"] = passed >= .95 and all(row["passed"] for row in rows if row["critical"]) and all(isinstance(row.get("skillMs"),(int,float)) and row["skillMs"] < 8000 for row in rows) and (mode != "latency" or len(normal) == 100 and p95 is not None and p95 < 6000 and report["ordinaryReadyRate"] >= .95 and all("queueWaitMs" in row and "modelMs" in row for row in normal))
     write_evidence(evidence, report)
     if not report["passed"]:
         raise Failure("Alexa routing or latency gate failed; use the saved provider IDs to diagnose it.")

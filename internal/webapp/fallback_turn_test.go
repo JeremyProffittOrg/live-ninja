@@ -173,6 +173,10 @@ func TestWebResearchAdapterUsesVerifiedContextAndOneAttempt(t *testing.T) {
 	if fake.lastOptions.Retryer == nil || fake.lastOptions.Retryer.MaxAttempts() != 1 {
 		t.Fatal("paid search invocation can retry")
 	}
+	_, terr = search(t.Context(), tools.Invocation{UserID: "owner", Role: store.RoleOwner, Surface: store.SurfaceAlexa, TxID: "alexa-receipt"}, "same public question", 0)
+	if terr != nil || fake.requests[1].AlexaTurn != "alexa-receipt" {
+		t.Fatal("Alexa search lost its admission receipt", terr)
+	}
 }
 
 func respToolCalls(t *testing.T, body map[string]any) []map[string]any {

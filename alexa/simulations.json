@@ -17,7 +17,7 @@
   {"utterance":"open live ninja","expected":"launch","newSession":true},
   {"utterance":"Explain why the moon has phases in one sentence","expected":"chat"},
   {"utterance":"Say that more simply","expected":"chat"},
-  {"utterance":"help","expected":"help"},
+  {"utterance":"yes","expected":"chat","critical":true},
   {"utterance":"stop","expected":"stop"},
   {"utterance":"open live ninja","expected":"launch","newSession":true},
   {"utterance":"Compare a triangle and a square","expected":"chat"},
@@ -47,6 +47,6 @@
   {"utterance":"open live ninja","expected":"launch","newSession":true},
   {"utterance":"Use the name Saoirse in a simple sentence","expected":"chat"},
   {"utterance":"Make that sentence a question","expected":"chat"},
-  {"utterance":"start over","expected":"new"},
+  {"utterance":"ask live ninja to resume conversation","expected":"resume","newSession":true},
   {"utterance":"stop","expected":"stop"}
 ]

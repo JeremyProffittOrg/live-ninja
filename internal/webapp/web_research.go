@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	"github.com/JeremyProffittOrg/live-ninja/internal/tools"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
@@ -15,7 +16,11 @@ func webResearchThroughBroker(deps *Deps) func(context.Context, tools.Invocation
 			return nil, &tools.ToolError{Code: tools.CodeNotConfigured, Message: "Public web search is not configured."}
 		}
 		payload, _ := json.Marshal(map[string]any{"query": query, "days": days})
-		response, err := invokeRealtimeBroker(ctx, deps, brokerRequest{Mode: "web-search", UserID: inv.UserID, Surface: inv.Surface, Role: inv.Role, TxID: inv.TxID, Payload: payload}, func(o *lambda.Options) { o.Retryer = aws.NopRetryer{} })
+		request := brokerRequest{Mode: "web-search", UserID: inv.UserID, Surface: inv.Surface, Role: inv.Role, TxID: inv.TxID, Payload: payload}
+		if inv.Surface == store.SurfaceAlexa {
+			request.AlexaTurn = inv.TxID
+		}
+		response, err := invokeRealtimeBroker(ctx, deps, request, func(o *lambda.Options) { o.Retryer = aws.NopRetryer{} })
 		if err != nil {
 			return nil, &tools.ToolError{Code: tools.CodeUpstreamError, Message: "Public web search is unavailable."}
 		}

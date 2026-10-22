@@ -96,8 +96,13 @@ func TestAlexaBrokerUsesStoredAuthorityPersonaAndReportsUsage(t *testing.T) {
 func TestWebSearchBrokerUsesVerifiedPhoneOwnerAndPreservesQuery(t *testing.T) {
 	b, _ := newPhoneTestBroker(t)
 	calls := 0
-	b.webSearch = func(_ context.Context, query string, days int, now time.Time) (*tools.WebResearchResult, error) {
+	b.webSearch = func(ctx context.Context, query string, days int, now time.Time) (*tools.WebResearchResult, error) {
 		calls++
+		if calls > 1 {
+			deadline, ok := ctx.Deadline()
+			require.True(t, ok)
+			require.LessOrEqual(t, time.Until(deadline), time.Second)
+		}
 		require.Equal(t, "Williamsburg bank robbery November 2025", query)
 		require.Zero(t, days)
 		require.WithinDuration(t, time.Now(), now, time.Second)
@@ -117,6 +122,22 @@ func TestWebSearchBrokerUsesVerifiedPhoneOwnerAndPreservesQuery(t *testing.T) {
 	res, _ = b.Handle(t.Context(), req)
 	require.Equal(t, 400, res.Code)
 	require.Equal(t, 1, calls, "refused searches never spend")
+	// Alexa search is part of an already admitted turn and must independently
+	// recheck that receipt and inherit its remaining deadline.
+	req.Surface, req.AlexaTurn = store.SurfaceAlexa, "alexa-receipt"
+	req.Payload = json.RawMessage(`{"query":"Williamsburg bank robbery November 2025","days":0}`)
+	b.alexaWork = func(ctx context.Context, job alexa.Job) (alexa.Work, error) {
+		require.Equal(t, "alexa-receipt", job.Turn)
+		require.Equal(t, "owner", job.Owner)
+		return alexa.Work{Deadline: time.Now().Add(time.Second)}, nil
+	}
+	res, _ = b.Handle(t.Context(), req)
+	require.Empty(t, res.Error)
+	require.Equal(t, 2, calls)
+	b.alexaWork = func(context.Context, alexa.Job) (alexa.Work, error) { return alexa.Work{}, alexa.ErrCancelled }
+	res, _ = b.Handle(t.Context(), req)
+	require.Equal(t, 403, res.Code)
+	require.Equal(t, 2, calls)
 }
 
 func TestPhoneDeliveryContext(t *testing.T) {

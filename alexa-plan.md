@@ -1,6 +1,6 @@
 # Alexa text chat and website device settings
 
-Status: implementation in progress, authorized 2026-10-22. Created 2026-10-22.
+Status: code and disabled AWS bootstrap delivered; private skill publishing and Echo acceptance are blocked on Amazon authorization. Authorized and created 2026-10-22.
 
 ## Outcome and scope
 
@@ -8,15 +8,16 @@ Build a private Alexa Skills Kit custom skill that sends recognized text to Live
 
 The user requested this file by name. `C:\dev\live-ninja\alexa-plan.md` is the feature plan. Preserve the existing `plan.md`, `backlog.md`, and unrelated work during planning. When implementation starts, add a pointer from the execution checkout's `plan.md`; keep the detailed Alexa status here rather than duplicating it.
 
-Non-goals: telephone integration, Alexa+ partner/MCP integration, raw microphone streaming, replacement of Alexa's voice, public Skill Store publication, mobile changes, new search providers, general autonomous job infrastructure, or changes to existing phone/browser/Android permissions and model choices. Do not implement from this planning request alone.
+Non-goals: telephone integration, Alexa+ partner/MCP integration, raw microphone streaming, replacement of Alexa's voice, public Skill Store publication, mobile changes, new search providers, general autonomous job infrastructure, or changes to existing phone/browser/Android permissions and model choices.
 
-Planning changes: this file only. Planning proof: inspect the referenced code and platform contracts, verify every milestone has a command and an objective pass condition, check dependencies and file scope, and run a whitespace/content check.
+Implementation files and command-based checks are listed under each workstream. The deployed backend is not proof that the private skill or a physical Echo works; those remain separate acceptance gates.
 
 ## Locked decisions (user-confirmed; do not revisit)
 
 - 2026-10-22 — "implement alexa-plan.md". This starts the implementation and supersedes the planning-only stop condition. The private development delivery, existing-identity configuration and initial bounded acceptance trial in this plan are in scope. Keep the initial model trial within $1, with no paid tool actions.
 - 2026-10-22 — "Yes, test when ready" in response to: "The plan ends with a five-minute test on a real Echo. Will you be available to link the private skill in the Alexa app and test an Echo after the build is ready? I'll continue implementation now."
 - 2026-10-22 — "No, I need setup steps" in response to the missing dedicated SMAPI publishing-credential question. Provide the local hidden-entry authorization helper; do not copy the machine's ASK CLI authentication state to GitHub.
+- 2026-10-22 — "amazon" in response to where authorization failed. The failure is on Amazon's page. The exact provider error text remains pending; the separate local start-page fix does not resolve or identify that Amazon error.
 
 - 2026-10-22 — "create an alexa-plan.md to impelment an alexa skill that uses live-ninja as text chat interface, and add an alexa device type so we can configure it on the website"
 - 2026-10-22 — "can't live ninja also do an interactrive chat, could we use this approach for alexa?" The later planning request selects the text-chat approach.
@@ -127,7 +128,7 @@ Definition of done, from the execution root: `go test ./internal/alexa -run Test
 depends on: none; access discovery can proceed alongside alexa-contract-tests
 
 - [!] alexa-access-record — vendor M3M80BVXTGPEZW (Jeramie LLC) and local ASK access verified; skill listing exhausted and no Live Ninja skill exists. Default private en-US create-once intent applies. GitHub has no ALEXA configuration and SSM has no Alexa/SMAPI publishing parameters. Jeremy must supply dedicated CI publishing credentials through local hidden entry: variable ALEXA_SMAPI_CLIENT_ID and secrets ALEXA_SMAPI_CLIENT_SECRET/ALEXA_SMAPI_REFRESH_TOKEN. Interactive ASK credentials stay machine-local. Model access, generated redirects and device acceptance follow deployment; Jeremy confirmed readiness for the Echo test. Independent code/tests continue.
-- [x] alexa-delivery-helper — standard-library SMAPI helper and Windows batch checker implemented. Package imports use the current package API. Create-once reconciliation, terminal failures, real endpoint validation, credential stdin handling, sanitized simulation evidence and rejection of missing physical proof pass twelve offline tests. Actual publishing/simulation remains blocked by the access record.
+- [x] alexa-delivery-helper — standard-library SMAPI helper and Windows batch checker implemented. Package imports use the current package API. Create-once reconciliation, terminal failures, real endpoint validation, credential stdin handling, sanitized simulation evidence and rejection of missing physical proof pass fifteen offline tests. Actual publishing/simulation remains blocked by the access record.
 
 User-supplied CI configuration is limited to variable `ALEXA_SMAPI_CLIENT_ID` and secrets `ALEXA_SMAPI_CLIENT_SECRET` / `ALEXA_SMAPI_REFRESH_TOKEN`. The verified vendor is M3M80BVXTGPEZW. GitHub creates the first-party account-link client once and stores its secret in standard SecureString `/live-ninja/prod/alexa/account-link-secret`; applications can read only its hash and redirects in String `/live-ninja/prod/alexa/oauth-client`. Skill ID and create/import reconciliation state use the same standard SSM prefix. No GitHub variable-write token or additional manually entered account-link secret is needed. AWS deployment remains OIDC.
 
@@ -211,8 +212,8 @@ depends on: alexa-access-check, alexa-settings-ui, alexa-dialog-handler
 
 depends on: alexa-access-check, alexa-settings-ui, alexa-dialog-handler
 
-- [ ] alexa-stack — add two arm64 Lambda functions, a turn queue and dead-letter queue, bounded IAM grants, explicit seven-day log groups, and build entries to the existing template/Makefile. Keep skill ingress separate from worker concurrency so slow workers cannot consume every response slot. No EC2, NAT gateway, new load balancer, Secrets Manager, provisioned concurrency, CloudWatch alarm, or dashboard.
-- [ ] alexa-ci-publish — extend `.github/workflows/deploy.yml` with idempotent development-skill metadata/model deployment through SMAPI. Commit the tested implementation on main and push here so the private development deployment exists before alexa-acceptance. Monitor the triggered workflows. Use GitHub OIDC for AWS. Do not install or deploy cloud artifacts locally.
+- [x] alexa-stack — two arm64 Lambdas, encrypted SQS/DLQ, scoped roles and seven-day log groups are deployed through main run 39809992183. Both functions are Active/Successful; admissions are false and no skill ID is set. Queue visibility is 210 seconds and redelivery is capped at three. Exact-ID ASK permission is correctly absent until the private skill exists. No EC2 or fixed-charge monitoring resource was added.
+- [!] alexa-ci-publish — GitHub-only bootstrap/package/account-link/permission steps are implemented and the AWS bootstrap is verified. Jeremy must complete the dedicated Amazon publishing authorization and configure the three missing GitHub names. The helper requests the documented scopes and callback. Obtain the exact Amazon error text to diagnose the rejected authorization; do not copy the working local ASK credentials or claim that the skill has been created.
 
 Bootstrap order: deploy the real Lambda code without an ASK invoke permission; create/update the private development skill with that Lambda's actual ARN; persist the returned skill ID in deployment configuration; obtain the exact Alexa redirect URLs and configure the registered OAuth client/account linking; apply the exact-ID ASK permission through the same GitHub workflow. Persist create-once identifiers in standard SSM/stack configuration when GitHub variable write permission is unavailable. Never create a wildcard invoke permission or a fake endpoint to break the dependency. Reconcile skill creation before any retry.
 
@@ -234,8 +235,8 @@ Physical evidence file: `C:\dev\live-ninja-test-evidence\alexa\acceptance\echo-o
 
 depends on: alexa-acceptance
 
-- [ ] alexa-main-release — commit only Alexa feature files on `main`, push, and monitor every triggered workflow to terminal success. Record exact commit, workflow IDs, skill/model version, endpoint ARN, and test evidence. Verify deployed website settings and the enabled development skill.
-- [ ] alexa-rollout-summary — document the supported commands, effective settings, costs measured in the trial, account-link renewal behavior, known limits, and the command to disable new Alexa admissions without deleting user data. Keep the skill private.
+- [~] alexa-main-release — feature commits and AWS bootstrap are on main with successful delivery and browser checks. Skill/model IDs and enabled-development verification remain blocked by the CI publishing credentials; no public publication is authorized.
+- [~] alexa-rollout-summary — commands, settings, privacy and reversible deployment switches are documented here and in gated Help copy. Access tokens last 15 minutes and the linked grant lasts 30 days; re-link after expiry or explicit revocation. No paid trial has run, so model entitlement, actual latency/cost and physical Echo behavior remain unverified.
 
 Definition of done: `scripts\alexa-check.bat delivery --evidence C:\dev\live-ninja-test-evidence\alexa\deployment.json` exits 0 after resolving each recorded workflow ID and running `gh run watch` with `--repo JeremyProffittOrg/live-ninja --exit-status`. The checker must match commit IDs and terminal conclusions, not trust an unrelated green run.
 
@@ -267,6 +268,12 @@ Restart policy:
 - retry-or-budget — a recorded shared retry ceiling or trial allowance is exhausted. Preserve results and mark the dependent milestone blocked; do not hide the failure or spend past the allowance.
 
 ## Execution log
+
+- 2026-10-22 — final tool-boundary verification: `go test ./internal/alexa ./internal/tools ./internal/webapp ./cmd/realtime-broker -count=1 -timeout=5m` passed all four packages; `python -B -m unittest discover -s scripts -p test_alexa_skill.py` passed 15 tests. `go vet ./internal/alexa ./internal/tools ./internal/webapp ./cmd/realtime-broker`, `python -B scripts/alexa-skill.py validate-local`, and `git -c core.whitespace=cr-at-eol -c core.safecrlf=false diff --check` each exited 0. A fresh names-only GitHub check still returned no Alexa variables or secrets. Final delivery uses the next main push; its workflow identifier and terminal result are retained in GitHub and the external evidence directory.
+
+- 2026-10-22 — final bootstrap attempt 2df2b216779124d84013b95545567f34a6705821 succeeded in GitHub run 39809992183; every applicable job, including web-quality, completed SUCCESS. CloudFormation returned UPDATE_COMPLETE. Read-only Lambda verification returned Active/Successful, arm64, matching commit, ALEXA_ENABLED=false and empty skill ID for both functions. Adapter timeout is 7 seconds; worker timeout is 35 seconds with its existing 30-second turn deadline. Both explicit log groups have retention 7; the queue reports SqsManagedSseEnabled=true, VisibilityTimeout=210 and maxReceiveCount=3. The three-attempt infrastructure retry loop reached a verified successful terminal result.
+- 2026-10-22 — final shared-tool checks found the existing web-search broker rejected the new Alexa surface. The Alexa caller now forwards its admitted receipt and the broker verifies it and inherits the deadline before a search; invalid/cancelled receipts cannot spend. Red/green route tests cover this. Alexa Ghost proposals also require a separate authenticated spoken confirmation turn, with conversation/settings binding; a model cannot confirm its own newly issued proposal in the same tool loop. Existing phone/web behavior remains unchanged. Focused Alexa/Ghost/search tests pass; a final focused main push follows.
+- 2026-10-22 — Amazon authorization blocker email accepted by SES: MessageId 010001a16479e0ad-eb9b347a-7e2e-439c-b284-600e684694e9-000000. Delegated sender verified the successful bootstrap run, used the HTML blocker template, and retained HTML/receipt under C:\dev\live-ninja-test-evidence\alexa\2026-10-22\mail-amazon-blocker. The email explicitly separates the Amazon page failure from the local helper fix. No paid provider/physical acceptance has run. The 50-case fixture now includes fresh “yes” capture and resume into a new Alexa session; critical controls must all route correctly even when overall routing exceeds 95%.
 
 - 2026-10-22 — corrected run 39808254940 reported `aws sts get-caller-identity; exit 252; CLI_INPUT_JSON`. AWS CLI rejected its pipe-backed `--cli-input-json` file before making the account check. Public request JSON now uses a normal structured argument; SSM secret values use only the scalar `--value file:///dev/stdin` input. New regression tests check both transports and prove secret values stay out of arguments. No check was bypassed. Initial attempt and first corrected attempt failed; the next push is the final corrected attempt in this milestone's three-attempt budget.
 - 2026-10-22 — checked the bootstrap's empty skill parameter with the installed SAM parser before the final retry: `AlexaSkillId=` was rejected; literal `AlexaSkillId=""` parsed as `{'AlexaSkillId': ''}`. The shared deploy script now supplies the accepted empty-string form. `python -B -m unittest discover -s scripts -p test_alexa_skill.py` passes 15 cases; `bash -n scripts/deploy-stack.sh` and SAM template lint pass.

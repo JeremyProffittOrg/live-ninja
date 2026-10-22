@@ -3396,7 +3396,7 @@ Outputs:
     Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
   WebFunctionRoleArn:
     Description: >-
-      Execution role of live-ninja-web, the only Lambda that runs tools. The
+      Execution role of live-ninja-web. The Alexa worker has its own scoped role. The
       knowledge-plane stack's LiveNinjaToolRoleArn parameter must equal this
       value for its kp-query-requests queue policy to admit knowledge_search /
       knowledge_recent (live-ninja-relay).

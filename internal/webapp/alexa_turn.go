@@ -45,6 +45,11 @@ func runAlexaTurn(ctx context.Context, deps *Deps, registry *tools.Registry, wor
 	}{work.Identity, work.SessionID, work.Settings.Version})
 	bindingHash := sha256.Sum256(binding)
 	confirmationContext := hex.EncodeToString(bindingHash[:])
+	confirmedByUser := false
+	switch strings.Trim(strings.ToLower(work.Messages[len(work.Messages)-1].Content), " .!?\t\r\n") {
+	case "yes", "yes please", "yes do it", "yes go ahead", "confirm", "confirm that", "go ahead", "do it", "proceed":
+		confirmedByUser = true
+	}
 	ctx = realtime.WithClientCapabilities(ctx, store.SurfaceAlexa, nil)
 	var manifest []struct {
 		Name string `json:"name"`
@@ -97,7 +102,7 @@ func runAlexaTurn(ctx context.Context, deps *Deps, registry *tools.Registry, wor
 			return failure(tools.CodeInvalidArgs, "The function arguments were not valid JSON.")
 		}
 		return registry.Invoke(ctx, tools.Invocation{Tool: call.Name, Args: args, IdempotencyKey: fmt.Sprintf("%s#alexa%d-%d#%s", work.Receipt, iter, index, call.ID), CallID: call.ID, TxID: work.Receipt,
-			UserID: work.Identity.Owner, DeviceID: work.Identity.Device, SessionID: work.SessionID, Surface: store.SurfaceAlexa, Role: store.RoleOwner, Scope: "alexa:chat", OmitTranscript: !work.Settings.KeepTranscript, TranscriptExpiresAt: time.Now().Add(time.Duration(work.Settings.RetentionDays) * 24 * time.Hour), ConfirmationContext: confirmationContext})
+			UserID: work.Identity.Owner, DeviceID: work.Identity.Device, SessionID: work.SessionID, Surface: store.SurfaceAlexa, Role: store.RoleOwner, Scope: "alexa:chat", OmitTranscript: !work.Settings.KeepTranscript, TranscriptExpiresAt: time.Now().Add(time.Duration(work.Settings.RetentionDays) * 24 * time.Hour), ConfirmationContext: confirmationContext, ConfirmationTurn: work.Receipt, ConfirmedByUser: confirmedByUser})
 	})
 	if err != nil {
 		return alexa.RunResult{}, err

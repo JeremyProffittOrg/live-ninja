@@ -21,10 +21,21 @@ func TestAlexaGhostProposalCannotSurviveConversationOrSettingsChange(t *testing.
 	r := newTestRegistry(t, deps)
 	inv := ghostOwnerInvocation("ghost_run_start", "alexa-propose", ghostRunArgs(nil))
 	inv.Surface, inv.Scope, inv.ConfirmationContext = "alexa", "alexa:chat", strings.Repeat("a", 64)
+	inv.ConfirmationTurn = strings.Repeat("c", 64)
 	proposal := r.Invoke(t.Context(), inv)
 	terr := requireToolError(t, proposal, CodeConfirmationRequired)
 	id := terr.Details["proposalId"].(string)
 	inv.Args = ghostConfirmArgs(ghostRunArgs(nil), id)
+	inv.IdempotencyKey = "same-utterance"
+	inv.ConfirmedByUser = true
+	requireToolError(t, r.Invoke(t.Context(), inv), CodeConfirmationRequired)
+	require.Empty(t, f.callsTo("POST", "/schedule"))
+	inv.ConfirmationTurn = strings.Repeat("d", 64)
+	inv.ConfirmedByUser = false
+	inv.IdempotencyKey = "different-question"
+	requireToolError(t, r.Invoke(t.Context(), inv), CodeConfirmationRequired)
+	require.Empty(t, f.callsTo("POST", "/schedule"))
+	inv.ConfirmedByUser = true
 	inv.IdempotencyKey = "new-session-or-settings"
 	inv.ConfirmationContext = strings.Repeat("b", 64)
 	requireToolError(t, r.Invoke(t.Context(), inv), CodeInvalidArgs)

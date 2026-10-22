@@ -153,6 +153,8 @@ type Invocation struct {
 	// ConfirmationContext binds Alexa proposals to the verified conversation,
 	// grant/device generation and settings version. It never comes from a model.
 	ConfirmationContext string `json:"-"`
+	ConfirmationTurn    string `json:"-"`
+	ConfirmedByUser     bool   `json:"-"`
 }
 
 // Result is the outcome of one tool invocation. It is safe to serialize
