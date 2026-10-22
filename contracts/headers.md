@@ -1,5 +1,12 @@
 # `X-LN-Client` / `X-LN-Server` Headers + `GET /v1/compat`
 
+Alexa's trusted surface is `alexa`, but native ASK invokes a Lambda and does not
+authenticate through an `X-LN-Client` or `X-LN-Device-ID` header. The adapter derives
+the device from the linked owner, configured skill and Echo identity. Browser
+headers cannot impersonate that surface. Alexa-specific model/deadline fields are
+internal broker invocation fields, not public client overrides. Existing client
+header syntax and negotiation remain unchanged.
+
 Capability-negotiation contract (NFR-08, Q-19, PRD §12.3 "Long-lived M5Stack devices outrun
 API changes"). This is what lets a 10-year-old M5Stack firmware build and a same-day web
 deploy both talk to `/v1` safely.

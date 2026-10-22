@@ -1,5 +1,14 @@
 # Plan
 
+## alexa-implementation — deliver the approved private Alexa skill
+Status: in progress, authorized 2026-10-22 by "implement alexa-plan.md".
+Detailed milestones, locked decisions, exact gates and execution log: [alexa-plan.md](alexa-plan.md).
+Working directory: C:\dev\live-ninja-alexa on main. Evidence: C:\dev\live-ninja-test-evidence\alexa\2026-10-22.
+Outcome: private en-US Alexa text chat with retained follow-up context and owned Echo profile/persona/privacy settings. Non-goals: public publication, phone behavior changes, new dependencies or EC2.
+Files: only the plan's Alexa module/commands, shared fallback and tool initialization, OAuth/device/settings code, matching tests/Help/contracts, SMAPI helper and existing delivery configuration.
+Proof: the named gates in alexa-plan.md, successful GitHub deployment/model build, simulation and latency evidence, then Jeremy's confirmed real Echo test. Missing external access blocks only its dependent gate.
+Restart/watch policy: five-minute local package tests, 60-minute workflow/model-build ceiling, at most three corrected attempts; record process/run IDs and terminal success/failure. No local recurring automation.
+
 ## general-web-search — find local news and certificate incidents beyond Hacker News
 Status: delivered and verified 2026-10-22 at b29a90562578fdd4812caa4834a519d8f403b490. Exact November bank-event identification remains unverified; search behavior is verified.
 Outcome: web_research searches the public web through the existing OpenAI broker, preserves dates named in the query, returns cited sources, and includes its bounded allocation in phone call caps.

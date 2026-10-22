@@ -24,6 +24,8 @@ func TestIsPublicRoutePathTable(t *testing.T) {
 		// Public exact.
 		{"/", true},
 		{"/healthz", true},
+		{"/privacy", true},
+		{"/privacy/private", false},
 		{"/v1/app/android/latest", true},
 		{"/v1/compat", true},
 		{"/api/v1/auth/lwa/exchange", true},

@@ -19,6 +19,7 @@ import (
 
 const Issuer = "https://live.jeremy.ninja"
 const Resource = Issuer + "/mcp"
+const AlexaResource = Issuer + "/alexa"
 
 var Scopes = []string{"phone:send", "phone:read", "jobs:read", "jobs:manage", "memory:read", "memory:write", "ghost:read", "ghost:manage"}
 var ErrInvalidGrant = errors.New("invalid_grant")
@@ -31,12 +32,17 @@ type Service struct {
 	Repo        Repository
 	OwnerActive func(context.Context, string, int64) bool
 	Now         func() time.Time
+	// AlexaClient is persistent deployment configuration, never a dynamic
+	// registration. Its resource cannot be selected by a public MCP client.
+	AlexaClient *Client
 }
 type Client struct {
 	ID           string
 	Name         string
 	RedirectURIs []string
 	Scope        string
+	Resource     string `json:",omitempty"`
+	SecretHash   string `json:",omitempty"`
 }
 type Authorization struct{ ClientID, RedirectURI, Resource, Scope, State, Challenge string }
 type Pending struct {
@@ -149,6 +155,17 @@ func (s *Service) Client(ctx context.Context, id string) (*Client, error) {
 	if len(id) != 43 {
 		return nil, ErrInvalidClient
 	}
+	if c := s.AlexaClient; c != nil && Equal(c.ID, id) {
+		if c.Resource != AlexaResource || c.Scope != "alexa:chat" || len(c.SecretHash) != 64 || len(c.RedirectURIs) == 0 || len(c.RedirectURIs) > 5 {
+			return nil, ErrInvalidClient
+		}
+		for _, redirect := range c.RedirectURIs {
+			if !ValidRedirect(redirect) {
+				return nil, ErrInvalidClient
+			}
+		}
+		return c, nil
+	}
 	var c Client
 	if _, e := s.read(ctx, "client:"+id, &c); e != nil {
 		return nil, ErrInvalidClient
@@ -169,23 +186,25 @@ func (s *Service) ValidateAuthorization(ctx context.Context, a Authorization) (*
 	if !found {
 		return nil, ErrInvalidRequest
 	}
-	if a.Resource != Resource {
+	if a.Resource != clientResource(c) && !(c.Resource == AlexaResource && a.Resource == "") {
 		return nil, ErrInvalidTarget
 	}
 	if len(a.State) > 2048 || !regexp.MustCompile("^[A-Za-z0-9_-]{43}$").MatchString(a.Challenge) {
 		return nil, ErrInvalidRequest
 	}
-	scope, e := NormalizeScope(a.Scope)
+	scope, e := clientScope(c, a.Scope)
 	if e != nil || !scopeSubset(scope, c.Scope) {
 		return nil, ErrInvalidScope
 	}
 	return c, nil
 }
 func (s *Service) Begin(ctx context.Context, a Authorization) (string, string, error) {
-	if _, e := s.ValidateAuthorization(ctx, a); e != nil {
+	c, e := s.ValidateAuthorization(ctx, a)
+	if e != nil {
 		return "", "", e
 	}
-	a.Scope, _ = NormalizeScope(a.Scope)
+	a.Resource = clientResource(c)
+	a.Scope, _ = clientScope(c, a.Scope)
 	id, e := Random()
 	if e != nil {
 		return "", "", e
@@ -256,7 +275,11 @@ func (s *Service) active(ctx context.Context, user string, issued int64) bool {
 	return s.OwnerActive != nil && s.OwnerActive(ctx, user, issued)
 }
 func (s *Service) Exchange(ctx context.Context, raw, client, redirect, verifier, resource string) (*Tokens, error) {
-	if resource != Resource {
+	c, clientErr := s.Client(ctx, client)
+	if clientErr != nil {
+		return nil, clientErr
+	}
+	if resource != clientResource(c) {
 		return nil, ErrInvalidTarget
 	}
 	if !regexp.MustCompile("^[A-Za-z0-9._~-]{43,128}$").MatchString(verifier) {
@@ -298,7 +321,11 @@ func (s *Service) issue(ctx context.Context, g Grant, gr *Record, expires int64,
 	return &Tokens{a, "Bearer", 900, r, g.Scope}, nil
 }
 func (s *Service) Refresh(ctx context.Context, raw, client, resource, scope string) (*Tokens, error) {
-	if resource != Resource {
+	c, clientErr := s.Client(ctx, client)
+	if clientErr != nil {
+		return nil, clientErr
+	}
+	if resource != clientResource(c) {
 		return nil, ErrInvalidTarget
 	}
 	var cred Credential
@@ -321,7 +348,7 @@ func (s *Service) Refresh(ctx context.Context, raw, client, resource, scope stri
 		return nil, e
 	}
 	if scope != "" {
-		scope, e = NormalizeScope(scope)
+		scope, e = clientScope(c, scope)
 		if e != nil || !scopeSubset(scope, cred.Scope) {
 			return nil, ErrInvalidScope
 		}
@@ -344,6 +371,12 @@ func (s *Service) Refresh(ctx context.Context, raw, client, resource, scope stri
 	return out, e
 }
 func (s *Service) Verify(ctx context.Context, raw string) (*Identity, error) {
+	return s.verifyResource(ctx, raw, Resource)
+}
+func (s *Service) VerifyAlexa(ctx context.Context, raw string) (*Identity, error) {
+	return s.verifyResource(ctx, raw, AlexaResource)
+}
+func (s *Service) verifyResource(ctx context.Context, raw, resource string) (*Identity, error) {
 	if !strings.HasPrefix(raw, "ln_mcp_a_") || len(raw) != 52 {
 		return nil, ErrInvalidGrant
 	}
@@ -352,13 +385,66 @@ func (s *Service) Verify(ctx context.Context, raw string) (*Identity, error) {
 		return nil, ErrInvalidGrant
 	}
 	var g Grant
-	if _, e := s.read(ctx, "grant:"+cred.GrantID, &g); e != nil || g.Revoked || g.Resource != Resource || cred.Resource != Resource || g.ClientID != cred.ClientID || !scopeSubset(cred.Scope, g.Scope) || !s.active(ctx, g.UserID, g.Issued) {
+	if _, e := s.read(ctx, "grant:"+cred.GrantID, &g); e != nil || g.Revoked || g.Resource != resource || cred.Resource != resource || g.ClientID != cred.ClientID || !scopeSubset(cred.Scope, g.Scope) || !s.active(ctx, g.UserID, g.Issued) {
 		return nil, ErrInvalidGrant
 	}
-	if _, e := s.Client(ctx, g.ClientID); e != nil {
+	if c, e := s.Client(ctx, g.ClientID); e != nil || clientResource(c) != resource {
 		return nil, ErrInvalidGrant
 	}
 	return &Identity{g.UserID, g.ID, g.ClientID, cred.Scope}, nil
+}
+
+func clientResource(c *Client) string {
+	if c != nil && c.Resource == AlexaResource {
+		return AlexaResource
+	}
+	return Resource
+}
+func clientScope(c *Client, scope string) (string, error) {
+	if clientResource(c) == AlexaResource {
+		if strings.TrimSpace(scope) != "alexa:chat" {
+			return "", ErrInvalidScope
+		}
+		return "alexa:chat", nil
+	}
+	return NormalizeScope(scope)
+}
+
+// AuthenticateClient returns the resource chosen by the registered server
+// configuration. It never upgrades a public client or accepts a caller's scope.
+func (s *Service) AuthenticateClient(ctx context.Context, id, secret, resource string) (string, error) {
+	c, e := s.Client(ctx, id)
+	if e != nil {
+		return "", e
+	}
+	want := clientResource(c)
+	if want == AlexaResource {
+		if secret == "" || !Equal(Hash(secret), c.SecretHash) {
+			return "", ErrInvalidClient
+		}
+		if resource == "" {
+			resource = want
+		}
+	} else if secret != "" {
+		return "", ErrInvalidClient
+	}
+	if resource != want {
+		return "", ErrInvalidTarget
+	}
+	return want, nil
+}
+
+// VerifyGrant rechecks queued work without passing an access token through SQS.
+func (s *Service) VerifyGrant(ctx context.Context, id, resource string) (*Identity, error) {
+	var g Grant
+	if _, e := s.read(ctx, "grant:"+id, &g); e != nil || g.Revoked || g.Resource != resource || !s.active(ctx, g.UserID, g.Issued) {
+		return nil, ErrInvalidGrant
+	}
+	c, e := s.Client(ctx, g.ClientID)
+	if e != nil || clientResource(c) != resource {
+		return nil, ErrInvalidGrant
+	}
+	return &Identity{g.UserID, g.ID, g.ClientID, g.Scope}, nil
 }
 func (s *Service) revokeGrant(ctx context.Context, r *Record, g Grant) error {
 	g.Revoked = true

@@ -1,5 +1,18 @@
 # `/v1` API Route Inventory (all milestones)
 
+## Alexa private development contract
+
+`GET /privacy` is public, serves the privacy notice, and uses `Cache-Control: no-cache`.
+Alexa delivery/acceptance is tracked in `alexa-plan.md`; a backend deployment alone does not enable a skill.
+
+The existing `/oauth/authorize`, `/oauth/token` and `/oauth/revoke` paths additionally support one explicitly configured confidential Alexa client. It uses PKCE S256, an exact Amazon redirect allowlist, 15-minute access credentials and a 30-day grant. Its sole scope is `alexa:chat`, with resource `https://live.jeremy.ninja/alexa`. This URI identifies a credential audience; it is not a public chat endpoint. Missing resource is resolved only for that registered client. Client secrets are accepted only for it. Dynamic/public MCP clients cannot acquire this scope, and Alexa credentials are rejected by `/mcp` and ordinary app routes.
+
+Native ASK Lambda requests must match the configured skill ID and en-US locale. Verified linked identity and the physical Echo ID determine an internal owned `alexa` device. A browser/header/model cannot register or select an Alexa identity. Revocation is enforced on ingress and every worker boundary. Only explicit owner website re-enable can revive the same entry.
+
+Each chat request has an owner/device/request-bound receipt. The single SQS worker path handles fast and slow replies, with a 30-second serialized downstream deadline and at most five tool/model rounds. The adapter responds within 6.5 seconds, with the result or an honest pending receipt; status/repeat/more do not create new paid turns. Queue delivery never repeats uncertain side effects. Stop/new conversation cancel pending work at its next boundary and clear recoverable context. Natural Alexa listening expiry allows explicit same-device resume for 15 minutes.
+
+Transient `ALEXA#` records stay in the owner's existing table partition, with immediate logical expiry and eventual TTL cleanup. Context is bounded to 12 messages/24 KiB, preserving tool/result pairs. Transcript privacy controls permanent history and automatic memory extraction; it does not eliminate the disclosed short-lived context. Account export/purge must include these prefixes. Saved Alexa settings are About you, Persona and Privacy; Alexa owns recognition and spoken voice. No phone direct-action permission is inherited.
+
 > **Deployed path prefix (2026-07-19):** every `/v1/...` row below is actually served under
 > **`/api/v1/...`** (`internal/webapp/api_routes.go` mounts the group at `/api/v1`); the
 > unversioned `/auth/*`, `/.well-known/*`, `/healthz` routes are exactly as written. The bare
