@@ -20,6 +20,17 @@ reference each other and must stay consistent.
 5. Work on `main`, push after committing, and watch the triggered run to confirm the
    deploy is green before declaring success.
 
+## Transcript remediation runs
+
+For an explicit request such as "Remediate live-ninja issues in ghost", or a
+Ghost daily transcript-remediation run, read and execute
+[autoremediate-prompt.md](autoremediate-prompt.md). It owns review coverage,
+persona delegation, the three-attempt repair ceiling, production text replay,
+HTML SES reports and the root result.txt handoff. Questions about the run do
+not start it. Use Ghost task `live-ninja-autoremediate` for a manual Ghost run;
+reuse its existing schedule and active run. Do not launch a second copy from
+inside a running task. The same pointer is in CLAUDE.md.
+
 ## Help section maintenance
 
 The app ships an in-product **Help** slide-out: the `?` tab in the upper-LEFT corner of
