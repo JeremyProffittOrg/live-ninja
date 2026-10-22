@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/phone-trial.yml'
       - 'cmd/phone-trial-bridge/**'
+      - 'internal/websearch/**'
       - 'containers/phone-trial-bridge/**'
       - 'tools/phone-trial/**'
       - 'infra/phone-trial-config.json'
