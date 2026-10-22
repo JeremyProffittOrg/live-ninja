@@ -211,6 +211,16 @@ class DeliveryTests(unittest.TestCase):
         with self.assertRaises(delivery.Failure):
             delivery.validate_acceptance({"passed": True}, {}, {})
 
+    def test_local_delivery_preserves_verified_workflow_ids(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            evidence = Path(folder)/"deployment.json"
+            evidence.write_text(json.dumps({"commit": "verified-commit", "workflowIds": [123]}), encoding="utf-8")
+            with patch.object(delivery.sys, "argv", ["alexa-skill.py", "delivery", "--evidence", str(evidence)]), patch.object(delivery, "SMAPI"), patch.object(delivery, "command", return_value={"status": "completed", "conclusion": "success", "headSha": "verified-commit"}), patch.object(delivery, "deployment", return_value={"commit": "verified-commit", "workflowIds": []}), patch("builtins.print"):
+                self.assertEqual(0, delivery.main())
+            self.assertEqual([123], json.loads(evidence.read_text(encoding="utf-8"))["workflowIds"])
+
 
 class CredentialEntryTests(unittest.TestCase):
     def setUp(self):

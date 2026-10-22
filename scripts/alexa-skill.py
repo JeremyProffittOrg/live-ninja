@@ -690,6 +690,7 @@ def main():
             result = deployment(api)
             if result["commit"] != recorded.get("commit"):
                 raise Failure("Skill package and workflow commit differ.")
+            result["workflowIds"] = recorded["workflowIds"]
         else:
             result = deployment(api)
     if args.evidence:
