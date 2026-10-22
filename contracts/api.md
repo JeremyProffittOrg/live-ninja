@@ -332,7 +332,12 @@ number routing, grant spending permission, or release the owner's call stop.
   in (0, 10.00]. A cap at or below zero refuses the call (`daily_allowance_used` or
   `monthly_cap_reached`). The bridge's finish reports `modelCostUSD` (decimal string, six
   places); settlement replaces the reservation with the telephone estimate for the
-  actual duration (never below the provider's measured price) plus that model cost. A
+  actual duration (never below the provider's measured price) plus that model cost.
+  `modelCostUSD` includes the conservatively priced Azure usage and a $0.02
+  allocation for each bounded paid web search. The bridge reserves that allocation
+  before forwarding a search, refuses it when the call cap cannot cover search and
+  the reply/goodbye, and does not charge duplicate tool IDs twice. A known
+  validation/quota refusal releases it; unknown completion retains it. A
   call the bridge never redeemed (provider cap failure, bootstrap failure, connect
   expiry, revocation, or a hangup during the announcement) has a known model cost of
   zero and settles at the telephone estimate; a redeemed call whose finish carries no
@@ -362,8 +367,12 @@ number routing, grant spending permission, or release the owner's call stop.
   tools retain the server-issued, single-use `proposalId` plus `confirm=true`.
   Profile and coding proposals retain their normal review behavior. The phone
   prompt uses the shared operational core with call-specific Job/rule directions.
-  `web_lookup` uses Wikipedia; `web_research` uses Hacker News plus Wikipedia and
-  allow-listed OpenAI/Anthropic page fetches. Neither is a general search engine.
+  `web_lookup` uses Wikipedia; `web_research` uses general public-web search via
+  broker mode `web-search`, with a cited summary and `sources` title/URL entries.
+  Phone requests require the bridge's `paid-web-search-v1` capability so an older
+  bridge cannot start unreserved paid searches during the independent rollouts.
+  Its optional `days` is omitted for historical queries; there is no default
+  30-day filter. Direct OpenAI/Anthropic page fetches retain their allow-list.
   `knowledge_search` searches saved owner material, and its `sources.items.enum`
   includes `document` plus the relay's supported source names; `news` is invalid.
 - Transcript persistence follows the owner's existing privacy settings. Authorized

@@ -56,6 +56,7 @@ import (
 	"github.com/JeremyProffittOrg/live-ninja/internal/observ"
 	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
+	"github.com/JeremyProffittOrg/live-ninja/internal/tools"
 	"github.com/JeremyProffittOrg/live-ninja/internal/voiceengine"
 )
 
@@ -136,6 +137,7 @@ type extractTopicsPayload struct {
 // success shapes or the error shape is populated; Code carries the HTTP
 // status the web function should surface (402/429/400/502).
 type Response struct {
+	Search *tools.WebResearchResult `json:"search,omitempty"`
 	// TxID echoes the transaction correlation id on every reply (success
 	// and error). The web function reads it to stamp the X-LN-Txn response
 	// header and to fill the canonical error envelope's txId so a
@@ -235,6 +237,7 @@ type realtimeMintAPI interface {
 }
 
 type broker struct {
+	webSearch  func(context.Context, string, int, time.Time) (*tools.WebResearchResult, error)
 	log        *slog.Logger
 	gate       *realtime.Gate
 	minter     realtimeMintAPI
@@ -332,6 +335,10 @@ func (b *broker) Handle(ctx context.Context, req Request) (resp Response, _ erro
 	}
 	if mode == "phone-session" {
 		resp = b.handlePhoneSession(ctx, l, req)
+		return
+	}
+	if mode == "web-search" {
+		resp = b.handleWebSearch(ctx, l, req)
 		return
 	}
 	if !validSurfaces[req.Surface] && !(req.Surface == "phone" && mode == "extract-topics") {
@@ -1124,7 +1131,9 @@ func main() {
 	gate := realtime.NewGate(ddb, appCfg.TableName)
 	wireSuspendAlerts(gate, logger, awsCfg, appCfg.EmailQueueURL, os.Getenv("OWNER_EMAIL"))
 
+	fallbackClient := realtime.NewFallbackClient(loader)
 	b := &broker{
+		webSearch:       fallbackClient.WebSearch,
 		log:             logger,
 		gate:            gate,
 		minter:          realtime.NewMinter(loader, model),
@@ -1135,7 +1144,7 @@ func main() {
 		entraToken:      newEntraTokenFromEnv(loader),
 		voiceLiveHost:   os.Getenv("AZURE_VOICELIVE_HOST"),
 		voiceLiveModel:  os.Getenv("AZURE_VOICELIVE_MODEL"),
-		fallback:        realtime.NewFallbackClient(loader),
+		fallback:        fallbackClient,
 		ddb:             ddb,
 		table:           appCfg.TableName,
 		settings:        ddb, // *dynamodb.Client satisfies SettingsGetter (GetItem)

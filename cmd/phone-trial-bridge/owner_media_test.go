@@ -138,6 +138,48 @@ func TestOwnerLoopInactivityEndsCallAndSpeechRestartsWait(t *testing.T) {
 	}
 }
 
+func TestOwnerLoopWebSearchAllocationPrecedesSpendAndDeduplicates(t *testing.T) {
+	for _, tc := range []struct {
+		name, cap string
+		wantCalls int
+		wantCost  float64
+	}{
+		{"admitted", "1.00", 1, 0.02},
+		{"cap exhausted", "0.01", 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := fixture()
+			b := ownerFixture(t)
+			setOwnerCap(t, &b, tc.cap)
+			b.SessionConfig["tools"] = []any{map[string]any{"type": "function", "name": "web_research"}}
+			calls := 0
+			s.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Path != "/api/v1/tools/invoke" {
+					t.Fatalf("unexpected request: %s", req.URL.Path)
+				}
+				if req.Header.Get("X-LN-Capabilities") != "paid-web-search-v1" {
+					t.Fatal("search reservation capability missing")
+				}
+				calls++
+				return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"tool":"web_research","ok":true,"output":{"summary":"Evidence","sources":[{"title":"Source","url":"https://news.example/report"}]}}`))}, nil
+			})}
+			tw, _ := wsPair(t)
+			az, _ := wsPair(t)
+			events := make(chan wireEvent, 3)
+			for range 2 {
+				events <- wireEvent{Source: "azure", Data: map[string]any{"type": "response.function_call_arguments.done", "name": "web_research", "call_id": "search-once", "arguments": `{"query":"local bank robbery November 2025"}`}}
+			}
+			events <- wireEvent{Source: "twilio", Data: map[string]any{"event": "stop"}}
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			s.ownerLoop(ctx, &b, tw, az, "MZtest", "capability", events)
+			if calls != tc.wantCalls || math.Abs(b.CostUSD-tc.wantCost) > 1e-9 {
+				t.Fatalf("calls=%d cost=%f; want %d/%f", calls, b.CostUSD, tc.wantCalls, tc.wantCost)
+			}
+		})
+	}
+}
+
 func readOwnerEvent(t *testing.T, c *websocket.Conn) map[string]any {
 	t.Helper()
 	c.SetReadDeadline(time.Now().Add(2 * time.Second))

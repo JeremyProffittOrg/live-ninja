@@ -9,6 +9,7 @@ import (
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/jobs"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
+	"github.com/JeremyProffittOrg/live-ninja/internal/websearch"
 )
 
 func phoneInvocation(tool string, args map[string]any, call string) Invocation {
@@ -16,6 +17,7 @@ func phoneInvocation(tool string, args map[string]any, call string) Invocation {
 	inv.Surface, inv.Scope, inv.Role = "phone", PhoneScope, store.RoleOwner
 	inv.SessionID, inv.CallID = "phone-session-1", call
 	inv.IdempotencyKey = inv.SessionID + ":" + call
+	inv.Capabilities = []string{websearch.BudgetCapability}
 	return inv
 }
 
@@ -58,7 +60,9 @@ func TestPhoneScopeIsOwnerOnlyAndLimitedToPhoneTools(t *testing.T) {
 
 func TestPhoneWebSearchExecutesThroughOwnerCallScope(t *testing.T) {
 	fx := newResearchFixture(t)
-	r := newTestRegistry(t, newTestDeps())
+	d := newTestDeps()
+	d.WebResearch = fx.search
+	r := newTestRegistry(t, d)
 	for _, name := range []string{"web_lookup", "web_research"} {
 		t.Run(name, func(t *testing.T) {
 			res := r.Invoke(t.Context(), phoneInvocation(name, map[string]any{"query": "recent security breach"}, name))
@@ -67,11 +71,24 @@ func TestPhoneWebSearchExecutesThroughOwnerCallScope(t *testing.T) {
 				require.NotEmpty(t, res.Output["summary"])
 				require.NotEmpty(t, res.Output["source"])
 			} else {
-				require.Equal(t, 2, res.Output["recentCount"])
-				require.Equal(t, "recent security breach", fx.lastHNURL.Query().Get("query"))
+				require.Len(t, res.Output["sources"], 2)
+				require.Equal(t, "recent security breach", fx.lastQuery)
 			}
 		})
 	}
+}
+
+func TestOldPhoneBridgeCannotStartAnUnreservedPaidSearch(t *testing.T) {
+	fx := newResearchFixture(t)
+	d := newTestDeps()
+	d.WebResearch = fx.search
+	r := newTestRegistry(t, d)
+	inv := phoneInvocation("web_research", map[string]any{"query": "news"}, "old-bridge")
+	inv.Capabilities = nil
+	result := r.Invoke(t.Context(), inv)
+	require.False(t, result.OK)
+	require.Equal(t, CodeForbidden, result.Error.Code)
+	require.Empty(t, fx.lastQuery, "the old bridge must not incur a search charge")
 }
 
 func TestPhoneJobCreateNeedsSpokenConfirmationThenExecutesOnce(t *testing.T) {

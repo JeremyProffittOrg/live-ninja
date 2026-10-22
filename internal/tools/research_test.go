@@ -3,7 +3,6 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,39 +14,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// researchFixture stands in for all three upstreams (HN Algolia +
-// Wikipedia opensearch/summary) behind one httptest server, and records
-// the HN query parameters for assertions.
+// researchFixture supplies general search results and the separate Wikipedia
+// lookup. General research must not fall back to unrelated encyclopedia text.
 type researchFixture struct {
 	server *httptest.Server
 
-	hnStatus   int
-	wikiStatus int
-	lastHNURL  *url.URL
+	wikiStatus  int
+	lastQuery   string
+	lastDays    int
+	searchError *ToolError
 
 	restore func()
 }
 
 func newResearchFixture(t *testing.T) *researchFixture {
 	t.Helper()
-	f := &researchFixture{hnStatus: http.StatusOK, wikiStatus: http.StatusOK}
+	f := &researchFixture{wikiStatus: http.StatusOK}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/hn", func(w http.ResponseWriter, r *http.Request) {
-		f.lastHNURL = r.URL
-		if f.hnStatus != http.StatusOK {
-			w.WriteHeader(f.hnStatus)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"hits": []map[string]any{
-				{"title": "Claude ships new realtime API", "url": "https://example.com/claude",
-					"created_at": "2026-07-10T12:00:00Z", "points": 321, "objectID": "101"},
-				{"title": "Show HN: keyless research", "url": "",
-					"created_at": "2026-07-01T08:30:00Z", "points": 42, "objectID": "102"},
-			},
-		})
-	})
 	mux.HandleFunc("/w/api.php", func(w http.ResponseWriter, r *http.Request) {
 		if f.wikiStatus != http.StatusOK {
 			w.WriteHeader(f.wikiStatus)
@@ -71,22 +55,30 @@ func newResearchFixture(t *testing.T) *researchFixture {
 	f.server = httptest.NewServer(mux)
 	t.Cleanup(f.server.Close)
 
-	prevHN, prevOpen, prevSummary := hnSearchByDateURL, wikiOpenSearchURL, wikiSummaryURL
-	hnSearchByDateURL = f.server.URL + "/hn"
+	prevOpen, prevSummary := wikiOpenSearchURL, wikiSummaryURL
 	wikiOpenSearchURL = f.server.URL + "/w/api.php"
 	wikiSummaryURL = f.server.URL + "/api/rest_v1/page/summary/"
 	f.restore = func() {
-		hnSearchByDateURL, wikiOpenSearchURL, wikiSummaryURL = prevHN, prevOpen, prevSummary
+		wikiOpenSearchURL, wikiSummaryURL = prevOpen, prevSummary
 	}
 	t.Cleanup(f.restore)
 	return f
 }
 
-func TestWebResearchRecentAndBackground(t *testing.T) {
+func (f *researchFixture) search(_ context.Context, _ Invocation, query string, days int) (*WebResearchResult, *ToolError) {
+	f.lastQuery, f.lastDays = query, days
+	if f.searchError != nil {
+		return nil, f.searchError
+	}
+	return &WebResearchResult{Summary: "A public news summary with cited evidence.", Sources: []WebResearchSource{{Title: "News report", URL: "https://news.example/report"}, {Title: "Public record", URL: "https://records.example/evidence"}}}, nil
+}
+
+func TestWebResearchReturnsGeneralSearchSources(t *testing.T) {
 	fx := newResearchFixture(t)
 	deps := newTestDeps()
 	fixedNow := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 	deps.Now = func() time.Time { return fixedNow }
+	deps.WebResearch = fx.search
 	r := newTestRegistry(t, deps)
 
 	res := r.Invoke(context.Background(), invocation("web_research", map[string]any{
@@ -94,29 +86,34 @@ func TestWebResearchRecentAndBackground(t *testing.T) {
 	}))
 	require.True(t, res.OK, "error: %+v", res.Error)
 
-	// Default recency window is 30 days and is passed to HN as a
-	// created_at_i floor.
-	assert.Equal(t, defaultResearchDays, res.Output["recencyDays"])
+	assert.Equal(t, 0, res.Output["recencyDays"], "no unrequested 30-day restriction")
 	assert.Equal(t, "2026-07-17", res.Output["asOf"])
-	require.NotNil(t, fx.lastHNURL)
-	wantCutoff := fixedNow.Add(-30 * 24 * time.Hour).Unix()
-	assert.Equal(t, fmt.Sprintf("created_at_i>=%d", wantCutoff), fx.lastHNURL.Query().Get("numericFilters"))
-	assert.Equal(t, "claude realtime", fx.lastHNURL.Query().Get("query"))
+	assert.Equal(t, "claude realtime", fx.lastQuery)
+	require.Len(t, res.Output["sources"], 2)
+	assert.NotContains(t, res.Output, "background")
+	assert.Contains(t, res.Output["note"], "publication dates")
+}
 
-	// Recent items carry cited dates; a missing story URL falls back to
-	// the HN item link.
-	recent := res.Output["recent"].([]map[string]any)
-	require.Len(t, recent, 2)
-	assert.Equal(t, "2026-07-10", recent[0]["date"])
-	assert.Equal(t, "https://example.com/claude", recent[0]["url"])
-	assert.Equal(t, "https://news.ycombinator.com/item?id=102", recent[1]["url"])
-
-	// Background leg comes from the Wikipedia lookup.
-	background := res.Output["background"].(map[string]any)
-	assert.Equal(t, "Artificial intelligence", background["title"])
-
-	note := res.Output["note"].(string)
-	assert.Contains(t, note, "Cite the listed date")
+func TestWebResearchUsesGeneralSearchAndPreservesHistoricalQueries(t *testing.T) {
+	newResearchFixture(t) // the old index returns unrelated background
+	d := newTestDeps()
+	for _, query := range []string{"Williamsburg bank robbery November 2025", "recent India certificate authority security breach"} {
+		t.Run(query, func(t *testing.T) {
+			called := false
+			d.WebResearch = func(_ context.Context, inv Invocation, got string, days int) (*WebResearchResult, *ToolError) {
+				called = true
+				require.Equal(t, "phone", inv.Surface)
+				require.Equal(t, query, got)
+				require.Zero(t, days, "an omitted recency window must preserve a historical query")
+				return &WebResearchResult{Summary: "A cited news result.", Sources: []WebResearchSource{{Title: "News evidence", URL: "https://news.example/evidence"}}}, nil
+			}
+			r := newTestRegistry(t, d)
+			res := r.Invoke(t.Context(), phoneInvocation("web_research", map[string]any{"query": query}, query))
+			require.True(t, res.OK, "%+v", res.Error)
+			require.True(t, called, "the phone must reach a general search provider")
+			require.Equal(t, "A cited news result.", res.Output["summary"])
+		})
+	}
 }
 
 func TestWebResearchCustomDays(t *testing.T) {
@@ -124,6 +121,7 @@ func TestWebResearchCustomDays(t *testing.T) {
 	deps := newTestDeps()
 	fixedNow := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 	deps.Now = func() time.Time { return fixedNow }
+	deps.WebResearch = fx.search
 	r := newTestRegistry(t, deps)
 
 	res := r.Invoke(context.Background(), invocation("web_research", map[string]any{
@@ -131,27 +129,20 @@ func TestWebResearchCustomDays(t *testing.T) {
 	}))
 	require.True(t, res.OK)
 	assert.Equal(t, 7, res.Output["recencyDays"])
-	wantCutoff := fixedNow.Add(-7 * 24 * time.Hour).Unix()
-	assert.Equal(t, fmt.Sprintf("created_at_i>=%d", wantCutoff), fx.lastHNURL.Query().Get("numericFilters"))
+	assert.Equal(t, 7, fx.lastDays)
 }
 
-func TestWebResearchSurvivesOneUpstreamDown(t *testing.T) {
+func TestWebResearchFailureDoesNotUseEncyclopediaBackground(t *testing.T) {
 	fx := newResearchFixture(t)
-	r := newTestRegistry(t, newTestDeps())
-
-	// HN down, Wikipedia up: still OK, background only.
-	fx.hnStatus = http.StatusInternalServerError
+	d := newTestDeps()
+	d.WebResearch = fx.search
+	r := newTestRegistry(t, d)
+	fx.searchError = toolErrf(CodeUpstreamError, "search unavailable")
 	res := r.Invoke(context.Background(), invocation("web_research", map[string]any{"query": "x"}))
-	require.True(t, res.OK)
-	_, hasRecent := res.Output["recent"]
-	assert.False(t, hasRecent)
-	assert.NotNil(t, res.Output["background"])
-
-	// Both down: upstream_error.
-	fx.wikiStatus = http.StatusInternalServerError
-	res = r.Invoke(context.Background(), invocation("web_research", map[string]any{"query": "x"}))
 	require.False(t, res.OK)
 	assert.Equal(t, CodeUpstreamError, res.Error.Code)
+	assert.Nil(t, res.Output)
+	require.True(t, r.Invoke(t.Context(), invocation("web_lookup", map[string]any{"query": "x"})).OK, "the encyclopedia is available, but is not a news fallback")
 }
 
 func TestWebResearchDirectFetchAllowListEnforced(t *testing.T) {

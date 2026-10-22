@@ -35,7 +35,7 @@ func TestPhoneManifestIsTheOwnerCallToolSet(t *testing.T) {
 	}
 	prompt := PhoneInstructions(ResolvePersona(""))
 	for _, want := range []string{"confirm=true", "read the exact change back", "same server tools as the other voice paths",
-		"web_lookup", "web_research", "not the live web", "never claim a broader web search",
+		"web_lookup", "web_research", "not the live web", "Web research searches the public web", "omit a recency limit for historical events",
 		"file_read", "deliverable_create", "code_update_start", "call_message", "device_control",
 		"ghost_nodes", "ghost_session_command",
 		"read the proposal back", "confirm=true and that proposalId", "not enabled on the fleet yet"} {

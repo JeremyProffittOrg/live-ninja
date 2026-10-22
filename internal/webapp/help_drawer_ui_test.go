@@ -141,7 +141,9 @@ func TestHelpDrawerCoversTheAppsCapabilities(t *testing.T) {
 		"the home knowledge store did not answer",
 		// Loaded documents (AgentCore knowledge namespace, scripts/knowledge-load).
 		"Ask about documents you loaded",
-		"Hacker News",
+		"Public web search returns source links",
+		"historical searches are not limited to the last 30 days",
+		"reserve two cents each",
 		"same server tools",
 		"Polite Southern Belle",
 	} {

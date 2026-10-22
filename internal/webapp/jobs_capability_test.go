@@ -150,6 +150,34 @@ func TestPhoneToolsPermitJobActionsAfterSpokenConfirmationAndRefuseEscalation(t 
 	require.Equal(t, 1, counted.writes)
 }
 
+func TestPhoneWebSearchRequiresBudgetCapableBridgeHeader(t *testing.T) {
+	dyn := testutil.NewFakeDynamo()
+	st := store.NewWithClient(dyn, "test-table")
+	calls := 0
+	registry, err := tools.NewRegistry(&tools.Deps{Store: st, Log: testLogger(), Reauthorize: func(context.Context, string) error { return nil },
+		WebResearch: func(context.Context, tools.Invocation, string, int) (*tools.WebResearchResult, *tools.ToolError) {
+			calls++
+			return &tools.WebResearchResult{Summary: "Cited news", Sources: []tools.WebResearchSource{{Title: "Source", URL: "https://news.example/report"}}}, nil
+		}})
+	require.NoError(t, err)
+	app := fiber.New()
+	app.Use(func(c *fiber.Ctx) error {
+		c.Locals(localUserID, "owner")
+		c.Locals(localRole, store.RoleOwner)
+		c.Locals(localScope, realtime.PhoneScope)
+		c.Locals(localSurface, "phone")
+		return c.Next()
+	})
+	app.Post("/invoke", handleToolsInvoke(&Deps{Store: st, Log: testLogger()}, registry))
+	request := map[string]any{"tool": "web_research", "args": map[string]any{"query": "bank robbery November 2025"}}
+	status, _ := capabilityJSON(t, app, "/invoke", "", request)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Zero(t, calls)
+	status, body := capabilityJSON(t, app, "/invoke", "paid-web-search-v1", request)
+	require.Equal(t, http.StatusOK, status, body)
+	require.Equal(t, 1, calls)
+}
+
 func TestJobsCapabilityRequiresExactTokenAndTrustedSurface(t *testing.T) {
 	for _, tc := range []struct{ name, surface, scope, caps string }{
 		{"wrong token", "web", "", "jobs-review-v10"},

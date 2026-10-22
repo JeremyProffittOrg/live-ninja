@@ -23,8 +23,11 @@ a bearer credential receives an authentication challenge; it is not an app page.
   research, files, deliverables, device control and owner phone messages. Existing
   owner, confirmation, review and budget checks still apply. Camera, volume,
   local media playback and conversation controls require a connected app.
-  Web lookup uses Wikipedia; research uses Hacker News plus Wikipedia and can
-  fetch allow-listed OpenAI/Anthropic pages. The personal knowledge tools search
+  Web lookup uses Wikipedia; research searches the public web with source links
+  and preserves requested historical dates without an automatic 30-day cutoff.
+  A phone search reserves $0.02 within the existing call cap; an uncertain result
+  keeps that conservative allocation. Direct OpenAI/Anthropic page fetches remain
+  available. The personal knowledge tools search
   saved material, not the live web. Omitting `live` keeps the existing spoken playback behavior.
 - phone_message_status: inspect a returned requestId, provider/playback state, the
   exact intended script, and an available private recording link.

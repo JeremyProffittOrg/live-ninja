@@ -48,15 +48,17 @@ type FallbackClient struct {
 	loader *config.Loader
 	// chatURL is the chat-completions endpoint (chatCompletionsURL in
 	// production; tests point it at an httptest mock of OpenAI).
-	chatURL string
+	chatURL   string
+	searchURL string
 }
 
 // NewFallbackClient builds a FallbackClient.
 func NewFallbackClient(loader *config.Loader) *FallbackClient {
 	return &FallbackClient{
-		httpc:   &http.Client{Timeout: 30 * time.Second},
-		loader:  loader,
-		chatURL: chatCompletionsURL,
+		httpc:     &http.Client{Timeout: 30 * time.Second},
+		loader:    loader,
+		chatURL:   chatCompletionsURL,
+		searchURL: "https://api.openai.com/v1/responses",
 	}
 }
 

@@ -29,12 +29,16 @@ import (
 // decoded brokerRequest and answers from a script of response payloads
 // (the last entry repeats once the script runs out).
 type fakeBrokerLambda struct {
-	responses []map[string]any
-	requests  []brokerRequest
-	payloads  []map[string]any // decoded req.Payload per call
+	responses   []map[string]any
+	requests    []brokerRequest
+	payloads    []map[string]any // decoded req.Payload per call
+	lastOptions lambda.Options
 }
 
-func (f *fakeBrokerLambda) Invoke(_ context.Context, in *lambda.InvokeInput, _ ...func(*lambda.Options)) (*lambda.InvokeOutput, error) {
+func (f *fakeBrokerLambda) Invoke(_ context.Context, in *lambda.InvokeInput, options ...func(*lambda.Options)) (*lambda.InvokeOutput, error) {
+	for _, option := range options {
+		option(&f.lastOptions)
+	}
 	var req brokerRequest
 	if err := json.Unmarshal(in.Payload, &req); err != nil {
 		return nil, err
@@ -93,6 +97,27 @@ func newFallbackTurnApp(t *testing.T, fake *fakeBrokerLambda, reauth tools.Reaut
 }
 
 func allowAll(context.Context, string) error { return nil }
+
+func TestWebResearchAdapterUsesVerifiedContextAndOneAttempt(t *testing.T) {
+	fake := &fakeBrokerLambda{responses: []map[string]any{{"search": map[string]any{"summary": "Cited evidence", "sources": []map[string]string{{"title": "News", "url": "https://news.example/report"}}}}}}
+	search := webResearchThroughBroker(&Deps{Lambda: fake, BrokerFn: "realtime-broker"})
+	result, terr := search(t.Context(), tools.Invocation{UserID: "owner", Role: store.RoleOwner, Surface: "phone", TxID: "request-ref"}, "bank robbery November 2025", 0)
+	if terr != nil {
+		t.Fatal(terr)
+	}
+	if result == nil || len(result.Sources) != 1 {
+		t.Fatal("missing citation")
+	}
+	if len(fake.requests) != 1 || fake.requests[0].Mode != "web-search" || fake.requests[0].UserID != "owner" || fake.requests[0].Surface != "phone" || fake.requests[0].Role != store.RoleOwner || fake.requests[0].TxID != "request-ref" {
+		t.Fatal("search lost verified context")
+	}
+	if fake.payloads[0]["query"] != "bank robbery November 2025" || fake.payloads[0]["days"] != float64(0) {
+		t.Fatal("query or dates changed")
+	}
+	if fake.lastOptions.Retryer == nil || fake.lastOptions.Retryer.MaxAttempts() != 1 {
+		t.Fatal("paid search invocation can retry")
+	}
+}
 
 func respToolCalls(t *testing.T, body map[string]any) []map[string]any {
 	t.Helper()

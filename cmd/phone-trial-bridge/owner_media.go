@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/websearch"
 	"github.com/gorilla/websocket"
 )
 
@@ -121,6 +122,7 @@ func (s *server) ownerTool(ctx context.Context, token, name string, body any) ([
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-LN-Capabilities", websearch.BudgetCapability)
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return nil, errors.New("owner service unavailable")
@@ -285,7 +287,7 @@ func (s *server) ownerMedia(w http.ResponseWriter, r *http.Request) {
 }
 
 // ownerFinish reports the call's end to the recorder. modelCostUSD is the
-// Azure model cost priced from every response.done usage object, six decimal
+// Azure model cost plus conservative paid-search allocations, six decimal
 // places (recorder contract); the recorder settles the call as telephone
 // estimate + this value. A finish the recorder does not accept leaves the
 // reservation standing (never below the measured cost), so the failure is
@@ -576,9 +578,33 @@ func (s *server) ownerLoopWithTiming(ctx context.Context, b *ownerBootstrap, tw,
 					}
 					return "owner_hangup"
 				}
+				toolAllocation := 0.0
+				if name == "web_research" && strings.TrimSpace(stringAt(args, "url")) == "" {
+					if b.CostUSD+websearch.MaxCostUSD+replyReserve+goodbyeReserve > capUSD {
+						if !startGoodbye("cost_limit") {
+							return "cost_limit"
+						}
+						continue
+					}
+					// One non-retried search is bounded below this allocation.
+					// Keep the allocation on unknown completion, including a lost reply.
+					toolAllocation = websearch.MaxCostUSD
+					b.CostUSD += toolAllocation
+				}
 				result, err := s.ownerTool(ctx, b.BridgeToken, name, map[string]any{"tool": name, "args": args, "idempotencyKey": b.SessionID + ":" + id, "callId": id})
 				if err != nil {
 					return "tool_failed"
+				}
+				if toolAllocation > 0 {
+					var refusal struct {
+						OK    bool `json:"ok"`
+						Error struct {
+							Code string `json:"code"`
+						} `json:"error"`
+					}
+					if json.Unmarshal(result, &refusal) == nil && !refusal.OK && (refusal.Error.Code == "invalid_args" || refusal.Error.Code == "forbidden") {
+						b.CostUSD -= toolAllocation
+					}
 				}
 				if sendWS(az, map[string]any{"type": "conversation.item.create", "item": map[string]any{"type": "function_call_output", "call_id": id, "output": string(result)}}) != nil || !request() {
 					return "tool_reply_failed"

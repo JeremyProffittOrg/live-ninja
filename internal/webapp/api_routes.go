@@ -316,6 +316,7 @@ type brokerRequest struct {
 
 // brokerResponse mirrors cmd/realtime-broker's Response.
 type brokerResponse struct {
+	Search *tools.WebResearchResult `json:"search,omitempty"`
 	// TxID echoes the transaction correlation id the broker resolved
 	// (reused from Request.TxID, or minted fresh when that was empty).
 	TxID string `json:"txId,omitempty"`
@@ -390,7 +391,7 @@ type brokerChatMessage struct {
 // invokeRealtimeBroker invokes the realtime-broker Lambda (BrokerFn) via
 // direct Lambda:Invoke — the web function never holds the OpenAI key
 // itself (that isolation is the whole point of the broker split).
-func invokeRealtimeBroker(ctx context.Context, deps *Deps, req brokerRequest) (*brokerResponse, error) {
+func invokeRealtimeBroker(ctx context.Context, deps *Deps, req brokerRequest, options ...func(*lambda.Options)) (*brokerResponse, error) {
 	if deps.Lambda == nil || deps.BrokerFn == "" {
 		return nil, errors.New("realtime broker is not configured (BROKER_FUNCTION_NAME / Lambda client)")
 	}
@@ -403,7 +404,7 @@ func invokeRealtimeBroker(ctx context.Context, deps *Deps, req brokerRequest) (*
 	out, err := deps.Lambda.Invoke(ctx, &lambda.InvokeInput{
 		FunctionName: aws.String(deps.BrokerFn),
 		Payload:      payload,
-	})
+	}, options...)
 	if err != nil {
 		return nil, fmt.Errorf("invoke broker: %w", err)
 	}
@@ -626,6 +627,7 @@ func buildAPIToolsRegistry(deps *Deps) *tools.Registry {
 		deps.Log.Error("Owner phone configuration invalid")
 	}
 	toolDeps := &tools.Deps{
+		WebResearch:           webResearchThroughBroker(deps),
 		Phone:                 phone,
 		Store:                 deps.Store,
 		DDB:                   dynamodb.NewFromConfig(awsCfg),
@@ -829,7 +831,8 @@ func handleToolsInvoke(deps *Deps, registry *tools.Registry) fiber.Handler {
 			Role: Role(c),
 			// Verified token scope: a phone-scoped owner call executes
 			// PhoneDirect tools after spoken confirmation.
-			Scope: Scope(c),
+			Scope:        Scope(c),
+			Capabilities: parseClientCapabilities(c.Get("X-LN-Capabilities")),
 		})
 		return c.Status(res.StatusCode()).JSON(res)
 	}

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -128,7 +129,74 @@ func newMockOpenAIClient(t *testing.T, handler http.HandlerFunc) *FallbackClient
 	t.Setenv("OPENAI_API_KEY", "test-key") // env override — the SSM client is never touched
 	c := NewFallbackClient(config.NewLoaderWithClient(nil))
 	c.chatURL = srv.URL
+	c.searchURL = srv.URL
 	return c
+}
+
+const groundedSearchFixture = `{"status":"completed","output":[{"type":"web_search_call","status":"completed"},{"type":"message","content":[{"type":"output_text","text":"A dated public news report.","annotations":[{"type":"url_citation","title":"Public evidence","url":"https://news.example/evidence"}]}]}]}`
+
+func TestWebSearchUsesLiveSearchAndPreservesRequestedDates(t *testing.T) {
+	for _, query := range []string{"Williamsburg bank robbery November 2025", "recent India CA certificate security breach"} {
+		t.Run(query, func(t *testing.T) {
+			c := newMockOpenAIClient(t, func(w http.ResponseWriter, req *http.Request) {
+				var body map[string]any
+				require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+				require.Equal(t, "Bearer test-key", req.Header.Get("Authorization"))
+				require.Equal(t, "gpt-4.1-mini", body["model"])
+				require.Equal(t, query, body["input"])
+				require.Equal(t, "required", body["tool_choice"])
+				require.Equal(t, float64(1), body["max_tool_calls"])
+				require.Equal(t, float64(600), body["max_output_tokens"])
+				require.Equal(t, false, body["store"])
+				require.Equal(t, "web_search", body["tools"].([]any)[0].(map[string]any)["type"])
+				require.Contains(t, body["instructions"], "2026-10-22")
+				require.NotContains(t, body["instructions"], "recency window starts")
+				_, _ = w.Write([]byte(groundedSearchFixture))
+			})
+			res, err := c.WebSearch(t.Context(), query, 0, time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC))
+			require.NoError(t, err)
+			require.Equal(t, "A dated public news report.", res.Summary)
+			require.Len(t, res.Sources, 1)
+			require.Equal(t, "https://news.example/evidence", res.Sources[0].URL)
+		})
+	}
+}
+
+func TestWebSearchPreservesExplicitRecency(t *testing.T) {
+	c := newMockOpenAIClient(t, func(w http.ResponseWriter, req *http.Request) {
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		require.Contains(t, body["instructions"], "recency window starts on 2026-10-15")
+		_, _ = w.Write([]byte(groundedSearchFixture))
+	})
+	_, err := c.WebSearch(t.Context(), "recent certificate incident", 7, time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+}
+
+func TestWebSearchRequiresGroundingAndNeverRetriesPaidRequests(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"provider failure", 502, `{"error":"sensitive-provider-fixture"}`},
+		{"no actual search", 200, `{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"An uncited claim"}]}]}`},
+		{"incomplete", 200, `{"status":"incomplete","output":[]}`},
+		{"no citations", 200, `{"status":"completed","output":[{"type":"web_search_call","status":"completed"},{"type":"message","content":[{"type":"output_text","text":"A guess"}]}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			c := newMockOpenAIClient(t, func(w http.ResponseWriter, _ *http.Request) {
+				calls++
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			})
+			_, err := c.WebSearch(t.Context(), "news", 0, time.Now())
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), "sensitive-provider-fixture")
+			require.Equal(t, 1, calls)
+		})
+	}
 }
 
 // TestTurnWithToolsReturnsToolCallsUntouched is the fallback-turn tool

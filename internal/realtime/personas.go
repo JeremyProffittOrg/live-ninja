@@ -219,8 +219,8 @@ const coreInstructions = "Always speak and respond in English (US). Only switch 
 	lifecycleToolInstructions +
 	androidDeviceToolInstructions +
 	androidMediaToolInstructions +
-	"web_research for recent news and developments — cite " +
-	"the source date for anything time-sensitive — " +
+	"web_research for public-web searches, local news, current facts and historical events — preserve " +
+	"the requested place and dates and cite the source date for anything time-sensitive — " +
 	knowledgeToolInstructions +
 	codeUpdateToolInstructions +
 	ghostToolInstructions +

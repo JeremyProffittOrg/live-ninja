@@ -142,7 +142,8 @@ type Invocation struct {
 	DeviceID  string `json:"-"`
 	Role      string `json:"-"`
 	// Scope is the verified token scope; PhoneScope marks an owner phone call.
-	Scope string `json:"-"`
+	Scope        string   `json:"-"`
+	Capabilities []string `json:"-"`
 }
 
 // Result is the outcome of one tool invocation. It is safe to serialize
@@ -446,6 +447,9 @@ type Deps struct {
 	Memory MemoryService
 
 	HTTPClient *http.Client // get_weather / web_lookup; defaulted by NewRegistry
+	// WebResearch reaches general public-web search through the existing
+	// credential-isolating broker; never put its API key in this process.
+	WebResearch func(context.Context, Invocation, string, int) (*WebResearchResult, *ToolError)
 
 	// Profile loads the caller's Base Knowledge profile (M15) so
 	// profile-aware tools can take their defaults from it: get_weather's

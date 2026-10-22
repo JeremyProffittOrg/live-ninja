@@ -17,6 +17,7 @@ import (
 	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	"github.com/JeremyProffittOrg/live-ninja/internal/testutil"
+	"github.com/JeremyProffittOrg/live-ninja/internal/tools"
 	"github.com/JeremyProffittOrg/live-ninja/internal/voiceengine"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
@@ -48,6 +49,32 @@ func newPhoneTestBroker(t *testing.T) (*broker, *testutil.FakeDynamo) {
 	b.settings = ddb
 	b.table = "phone-test"
 	return b, ddb
+}
+
+func TestWebSearchBrokerUsesVerifiedPhoneOwnerAndPreservesQuery(t *testing.T) {
+	b, _ := newPhoneTestBroker(t)
+	calls := 0
+	b.webSearch = func(_ context.Context, query string, days int, now time.Time) (*tools.WebResearchResult, error) {
+		calls++
+		require.Equal(t, "Williamsburg bank robbery November 2025", query)
+		require.Zero(t, days)
+		require.WithinDuration(t, time.Now(), now, time.Second)
+		return &tools.WebResearchResult{Summary: "Cited evidence", Sources: []tools.WebResearchSource{{Title: "News", URL: "https://news.example/report"}}}, nil
+	}
+	req := Request{Mode: "web-search", UserID: "owner", Surface: "phone", Role: store.RoleOwner, Payload: json.RawMessage(`{"query":"Williamsburg bank robbery November 2025","days":0}`)}
+	res, err := b.Handle(t.Context(), req)
+	require.NoError(t, err)
+	require.Empty(t, res.Error)
+	require.NotNil(t, res.Search)
+	require.Equal(t, 1, calls)
+	req.Role = store.RoleMember
+	res, _ = b.Handle(t.Context(), req)
+	require.Equal(t, "owner_required", res.Error)
+	req.Role = store.RoleOwner
+	req.Payload = json.RawMessage(`{"query":"news","days":366}`)
+	res, _ = b.Handle(t.Context(), req)
+	require.Equal(t, 400, res.Code)
+	require.Equal(t, 1, calls, "refused searches never spend")
 }
 
 func TestPhoneDeliveryContext(t *testing.T) {
