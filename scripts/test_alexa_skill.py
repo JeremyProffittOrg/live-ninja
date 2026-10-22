@@ -175,6 +175,27 @@ class DeliveryTests(unittest.TestCase):
         with self.assertRaises(delivery.Failure):
             delivery.redirect_uris("unverified")
 
+    def test_account_link_verification_reads_the_response_envelope(self):
+        import json
+        credentials = {"clientId": "c"*43, "clientSecret": "synthetic-secret"}
+        for mismatch in (False, True):
+            with self.subTest(mismatch=mismatch):
+                class API:
+                    def call(self, path, method="GET", body=None):
+                        if method == "PUT":
+                            self.settings = {k:v for k,v in body["accountLinkingRequest"].items() if k != "clientSecret"}
+                            return {}, {}
+                        if mismatch:
+                            self.settings["type"] = "IMPLICIT"
+                        return {"accountLinkingResponse": self.settings}, {}
+                with patch.object(delivery, "parameter", return_value=json.dumps(credentials)), patch.object(delivery, "put_parameter") as write:
+                    if mismatch:
+                        with self.assertRaises(delivery.Failure):
+                            delivery.configure_link(API(), "amzn1.ask.skill.draft")
+                    else:
+                        delivery.configure_link(API(), "amzn1.ask.skill.draft")
+                    self.assertEqual(["oauth-client"], [call.args[0] for call in write.call_args_list])
+
     def test_simulation_does_not_save_tokens_or_pass_account_link_prompt(self):
         body = {"id": "simulation", "status": "SUCCESSFUL", "result": {"skillExecutionInfo": {"invocations": [{
             "invocationRequest": {"body": {"context": {"System": {"user": {"accessToken": "never-save-this"}}}, "request": {"type": "IntentRequest", "requestId": "request-id", "intent": {"name": "ChatIntent", "slots": {"query": {"value": "two plus two"}}}}}},

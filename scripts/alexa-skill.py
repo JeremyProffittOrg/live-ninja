@@ -295,6 +295,7 @@ def configure_link(api, skill):
             "defaultTokenExpirationInSeconds": 900, "pkceConfiguration": {"status": "ENABLED", "codeChallengeMethod": "S256"}}
     api.call(skill_path(skill, "accountLinkingClient"), "PUT", {"accountLinkingRequest": link})
     actual, _ = api.call(skill_path(skill, "accountLinkingClient"))
+    actual = actual.get("accountLinkingResponse", {})
     for name in ("type", "skipOnEnablement", "authorizationUrl", "accessTokenUrl", "clientId", "accessTokenScheme", "scopes", "pkceConfiguration"):
         if actual.get(name) != link[name]:
             raise Failure("Account-link verification failed for " + name)
