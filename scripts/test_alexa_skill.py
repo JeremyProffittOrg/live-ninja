@@ -5,6 +5,7 @@ import unittest
 import http.server
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from unittest.mock import patch
 
@@ -107,6 +108,16 @@ class CredentialEntryTests(unittest.TestCase):
         printer=patch("builtins.print")
         printer.start()
         self.addCleanup(printer.stop)
+
+    def test_client_id_paste_removes_outer_whitespace(self):
+        for name, pasted, expected in (
+            ("ALEXA_SMAPI_CLIENT_ID", "\tsynthetic-client \t", "synthetic-client"),
+            ("ALEXA_SMAPI_CLIENT_ID", " \t", ""),
+            ("ALEXA_SMAPI_CLIENT_SECRET", " synthetic-secret ", " synthetic-secret "),
+        ):
+            with self.subTest(name=name, empty=not expected), patch.object(setup.getpass, "getpass", return_value=pasted):
+                value = setup.read_value(name)
+                self.assertEqual(urllib.parse.urlencode({"value": expected}), urllib.parse.urlencode({"value": value}))
 
     def test_root_entry_redirects_instead_of_claiming_authorization_failed(self):
         real_server=http.server.HTTPServer

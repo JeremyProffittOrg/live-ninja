@@ -40,6 +40,8 @@ def configured():
 
 def read_value(name):
     value = getpass.getpass(name + " (hidden; Enter skips): ")
+    if name == "ALEXA_SMAPI_CLIENT_ID":
+        value = value.strip(" \t")
     print(str(len(value)) + " characters. Length confirms nonempty entry, not provider validity.")
     if any(c in value for c in "\r\n\x00"):
         raise RuntimeError("Single-line values only; nothing written for " + name)
