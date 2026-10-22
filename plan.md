@@ -1,7 +1,7 @@
 # Plan
 
 ## transcript-autoremediation — install the daily Ghost review and repair run
-Status: in progress, 2026-10-22. Independent of older work below.
+Status: installed and verified, 2026-10-22. Independent of older work below. The first full daily review has not run.
 Outcome: a comprehensive repository prompt runs through Ghost daily at 23:00 America/New_York and on an explicit remediation request. It reviews transcript gaps, uses persona agents, fixes verified defects, deploys through main, replays production text conversations, sends HTML SES reports and returns result.txt. Each issue has at most three remediation attempts.
 Non-goals: run the first full transcript review during setup; change Live Ninja's runtime tools, authentication or phone controls; add a browser driver, local timer, dependency or infrastructure service.
 Files: autoremediate-prompt.md, agents.md, CLAUDE.md, .gitignore and this plan. Ghost task configuration is stored through the existing Ghost connector.
@@ -26,11 +26,11 @@ depends on: none
 
 ### remediation-registration — store and verify the Ghost definition
 depends on: remediation-prompt
-- [~] remediation-ghost-task — created one event live-ninja-autoremediate on OFFICEPC for JeremyProffittOrg/live-ninja with cli=claude, deploy=true, output_file=result.txt, cron="0 23 * * *", timezone=America/New_York. Created disabled until the prompt reaches main. Prompt includes manual-trigger aliases and reads the versioned repository prompt. tasks_get version v1-45f666f33b3c6a31baf10590 matched all fields and the prompt exactly; draft tasks_preview returned 23:00 local. Enable and read back after publication.
+- [x] remediation-ghost-task — enabled event live-ninja-autoremediate on OFFICEPC for JeremyProffittOrg/live-ninja with cli=claude, deploy=true, output_file=result.txt, cron="0 23 * * *", timezone=America/New_York. Prompt includes manual-trigger aliases and reads the versioned repository prompt. Enabled after publication and the successful application deployment. tasks_get version v1-ab7bcebcfac23551ab319993 matched all fields and the prompt exactly; stored tasks_preview returned first fire 2026-10-22T23:00:00-04:00 (2026-10-23T03:00:00Z).
 
 ### remediation-publication — deliver the prompt on main
 depends on: remediation-prompt, remediation-registration
-- [ ] remediation-release — commit only this work, push main, watch the exact SHA's Deploy to terminal success; copy the requested prompt into C:\dev\live-ninja without modifying existing files. Proof: gh run watch <recorded-run-id> --repo JeremyProffittOrg/live-ninja --exit-status exits 0; local and published prompt hashes match.
+- [x] remediation-release — published c6309f350684175175fcc3e99365d9cfd577b3be and copied the requested prompt into C:\dev\live-ninja without modifying existing files. Proof: gh run watch 39769533267 --repo JeremyProffittOrg/live-ninja --exit-status exited 0; tests, deploy and web-quality all succeeded. Local/GitHub prompt blob hashes matched. Production /healthz returned HTTP 200 with status ok. This notes commit follows the same delivery path; its final receipt and the SES setup-report MessageId are recorded in the uncommitted setup result.txt to avoid an endless notes-commit loop.
 
 ### Stop conditions (only these)
 Missing credentials/resources; unapproved destructive work or material scope expansion; required EC2 creation/start; three failed corrected delivery attempts. Continue independent work and retain exact failure evidence. No full transcript remediation or production conversation is claimed during setup.
@@ -41,6 +41,8 @@ Track every command session and Actions run ID. Local checks: five-minute timeou
 ### Execution log
 - 2026-10-22 — read deploy.md, agent guidance, current main source and Ghost task contracts; verified GitHub/AWS access, sender status, OFFICEPC presence and schedule preview. Existing working copies contain unrelated edits; clean clone C:\dev\live-ninja-autoremediate is on main.
 - 2026-10-22 — document checks passed: git -c core.whitespace=cr-at-eol diff --check (exit 0); UTF-8/code-fence/unique-heading/pointer checks (exit 0); git check-ignore result.txt .autoremediate/private.json (both ignored). No runtime code changed, so no new test infrastructure was added. AWS log-retention audit queried all 17 active regions: 189 groups, all seven days, no mutation needed. Watcher session 59563 exited 0.
+- 2026-10-22 — published c6309f350684175175fcc3e99365d9cfd577b3be. GitHub contents API and git hash-object both returned prompt blob c402a305e1e43ef655fcf9d705653f614e68960e. Requested C:\dev\live-ninja\autoremediate-prompt.md copy matched SHA256. Claude CLI auth status reported loggedIn=true. Deploy run 39769533267 passed Go vet, tests, race checks and the deploy job; web-quality remained under watcher session 25247. Enabled/read back Ghost event version v1-ab7bcebcfac23551ab319993 and verified the stored schedule. No full review or production conversation replay was started during setup.
+- 2026-10-22 — Deploy 39769533267 reached completed/success; gh run watch exited 0 and watcher session 25247 closed. All required and advisory web-quality checks passed. Direct health check returned HTTP 200 and {"service":"live-ninja","status":"ok","time":"2026-10-22T11:32:51Z"}. Delegated operator_reporter prepared and validated the HTML report; dispatch waits for this final notes commit's workflow. Runtime transcript collection and authenticated text replay remain unverified until an actual remediation run; no issue is claimed fixed during setup.
 
 ## phone-tool-parity — share server tools on owner calls and correct knowledge sources
 Status: delivered and verified 2026-10-22 at 8af7381cfd414bc1a4d56b45fe43341f30923adb. Broader plan work below remains separate.
