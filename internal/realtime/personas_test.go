@@ -75,7 +75,7 @@ func TestBuiltinPersonaSeedSet(t *testing.T) {
 	}
 	// The originals are named explicitly as well, so deleting one shows up as
 	// a failure here rather than silently shrinking the loop above.
-	for _, id := range []string{"valley-girl", "logic-officer", "deputy-chief",
+	for _, id := range []string{"southern-belle", "valley-girl", "logic-officer", "deputy-chief",
 		"noir-detective", "bard", "zen-monk", "drill-sergeant", "play-by-play",
 		"butler", "surfer", "worried-grandma", "sommelier", "heh-heh-duo",
 		"pirate-captain", "cool-intensity",

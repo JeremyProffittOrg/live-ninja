@@ -20,41 +20,31 @@ func manifestNames(manifest []map[string]any) map[string]bool {
 	return out
 }
 
-// Owner decision 2026-10-19: an authenticated owner call runs account actions
-// directly after spoken confirmation. Device controls and new outgoing calls
-// stay unavailable on the phone.
+// Owner decision 2026-10-22: owner calls share all server tools and their
+// operational guidance. Device-local controls still need a connected app.
 func TestPhoneManifestIsTheOwnerCallToolSet(t *testing.T) {
 	names := manifestNames(PhoneToolManifest())
-	require.Equal(t, map[string]bool{
-		"memory_search": true, "entity_get": true, "knowledge_search": true, "knowledge_recent": true,
-		"recall_note": true, "rule_list": true, "rule_load": true, "job_list": true, "job_status": true,
-		"get_weather": true, "phone_message_status": true,
-		"memory_write": true, "forget": true, "remember_note": true, "set_timer": true, "set_reminder": true,
-		"set_current_location": true, "send_email": true,
-		"job_create": true, "job_start": true, "job_pause": true, "job_resume": true, "job_cancel": true,
-		"job_retry": true, "job_command": true, "rule_save": true, "rule_delete": true,
-		"ghost_nodes": true, "ghost_sessions": true, "ghost_session_summary": true, "ghost_run_status": true,
-		"ghost_run_start": true, "ghost_session_command": true,
-	}, names)
+	require.Equal(t, manifestNames(toolManifestForServerExecution()), names)
 	for name := range names {
 		require.True(t, PhoneToolAllowed(name), name)
 	}
-	for _, tool := range []string{"call_message", "phone_message_send", "device_control", "set_volume", "take_photo", "record_video",
-		"play_media", "stop_listening", "start_new_conversation", "code_update_start", "profile_suggest", " memory_search", "MEMORY_SEARCH", "future_read"} {
+	for _, tool := range []string{"phone_message_send", "set_volume", "take_photo", "record_video",
+		"play_media", "stop_listening", "start_new_conversation", " memory_search", "MEMORY_SEARCH", "future_read"} {
 		require.False(t, PhoneToolAllowed(tool), tool)
 		require.False(t, names[tool], tool)
 	}
 	prompt := PhoneInstructions(ResolvePersona(""))
-	for _, want := range []string{"confirm=true", "read the exact change back", "cannot place calls or send texts, control devices, use the camera, or change volume",
-		// ghost-phone-access (owner decision 2026-10-19, "read and control"): the
-		// phone prompt is PhoneInstructions plus base knowledge, never
-		// coreInstructions, so it must teach the fleet tools itself.
-		"coding sessions", "start a coding run", "nudge, answer, pause or resume",
+	for _, want := range []string{"confirm=true", "read the exact change back", "same server tools as the other voice paths",
+		"web_lookup", "web_research", "not the live web", "never claim a broader web search",
+		"file_read", "deliverable_create", "code_update_start", "call_message", "device_control",
+		"ghost_nodes", "ghost_session_command",
 		"read the proposal back", "confirm=true and that proposalId", "not enabled on the fleet yet"} {
 		require.Contains(t, prompt, want)
 	}
 	require.NotContains(t, prompt, "kill", "KILL is not offered on any surface")
-	for _, name := range []string{"set_volume", "take_photo", "start_new_conversation", "call_message"} {
+	require.NotContains(t, prompt, "A spoken yes or model-supplied confirm cannot approve it")
+	require.NotContains(t, prompt, "Model-supplied confirm=true cannot approve the proposal")
+	for _, name := range []string{"set_volume", "take_photo", "record_video", "play_media", "stop_listening", "start_new_conversation"} {
 		require.NotContains(t, prompt, name)
 	}
 	require.False(t, ClientSupportsJobsReview("phone", []string{JobsReviewCapability}))

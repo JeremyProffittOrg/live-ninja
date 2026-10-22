@@ -141,6 +141,9 @@ func TestHelpDrawerCoversTheAppsCapabilities(t *testing.T) {
 		"the home knowledge store did not answer",
 		// Loaded documents (AgentCore knowledge namespace, scripts/knowledge-load).
 		"Ask about documents you loaded",
+		"Hacker News",
+		"same server tools",
+		"Polite Southern Belle",
 	} {
 		assert.Containsf(t, help, want, "help panel must cover the knowledge store: %q", want)
 	}

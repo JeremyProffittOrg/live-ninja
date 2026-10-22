@@ -113,16 +113,26 @@ func TestPhoneToolsPermitJobActionsAfterSpokenConfirmationAndRefuseEscalation(t 
 		require.Equal(t, http.StatusOK, status, body)
 	}
 	reads := counted.reads
-	for _, name := range []string{"call_message", "phone_message_send", "device_control", "set_volume", "take_photo", "play_media", "code_update_start", "unknown", " memory_search"} {
+	for _, name := range []string{"phone_message_send", "set_volume", "take_photo", "play_media", "unknown", " memory_search"} {
 		status, body := capabilityJSON(t, app, "/invoke", realtime.JobsReviewCapability, map[string]any{"tool": name, "args": map[string]any{"confirm": true}})
 		require.Equal(t, http.StatusForbidden, status, body)
 		require.Equal(t, "phone_tool_forbidden", body["error"].(map[string]any)["code"])
 	}
 	require.Equal(t, reads, counted.reads)
 	require.Zero(t, counted.writes)
+	// Server tools reach argument validation through the same phone endpoint.
+	// Missing required arguments prevent provider calls in this boundary test.
+	for _, name := range []string{"web_lookup", "web_research", "call_message", "device_control", "code_update_start"} {
+		status, body := capabilityJSON(t, app, "/invoke", "", map[string]any{"tool": name})
+		require.Equal(t, http.StatusBadRequest, status, body)
+		require.Equal(t, "invalid_args", body["error"].(map[string]any)["code"], name)
+	}
+	status, body := capabilityJSON(t, app, "/invoke", "", map[string]any{"tool": "file_read"})
+	require.Equal(t, http.StatusServiceUnavailable, status, body)
+	require.Equal(t, "not_configured", body["error"].(map[string]any)["code"], "the file tool reaches its existing configuration check")
 
 	// Without the owner's spoken confirmation nothing changes.
-	status, body := capabilityJSON(t, app, "/invoke", "", map[string]any{"tool": "job_cancel", "callId": "ask", "idempotencyKey": "phone-session:ask", "args": map[string]any{"jobId": id}})
+	status, body = capabilityJSON(t, app, "/invoke", "", map[string]any{"tool": "job_cancel", "callId": "ask", "idempotencyKey": "phone-session:ask", "args": map[string]any{"jobId": id}})
 	require.Equal(t, http.StatusBadRequest, status, body)
 	require.Equal(t, "confirmation_required", body["error"].(map[string]any)["code"])
 	require.Zero(t, counted.writes)

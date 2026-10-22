@@ -352,21 +352,20 @@ number routing, grant spending permission, or release the owner's call stop.
 - The Azure `/owner-media` WebSocket requires a valid provider signature and a one-use,
   call-bound recorder bootstrap. No owner bearer token appears in TwiML or a URL.
 - A phone token permits only `POST /api/v1/tools/invoke` and
-  `POST /api/v1/transcript` for that live session. The allowed tools are the
-  phone set in `internal/tools/phone_direct.go`: the read tools `memory_search`,
-  `entity_get`, `knowledge_search`, `knowledge_recent`, `recall_note`, `rule_list`,
-  `rule_load`, `job_list`, `job_status`, `get_weather`, `phone_message_status`,
-  `ghost_nodes`, `ghost_sessions`, `ghost_session_summary` and `ghost_run_status`;
-  the account actions `memory_write`, `forget`, `remember_note`, `set_timer`,
-  `set_reminder`, `set_current_location` and `send_email`; the job and rule
-  changes `job_create`, `job_start`, `job_pause`, `job_resume`, `job_cancel`,
-  `job_retry`, `job_command`, `rule_save` and `rule_delete`, which execute after
-  the owner's spoken yes (`confirm=true`, owner decision 2026-10-19); and the ghost
-  manage tools `ghost_run_start` and `ghost_session_command`, which execute only
-  with `confirm=true` plus the server-issued `proposalId` of the proposal read back
-  on the call (ghost-phone-access, owner decision 2026-10-19 "read and control").
-  Saved instructions cannot expand this list. Outgoing calls, device controls,
-  `code_update_start` and the review-only tools remain unavailable on this path.
+  `POST /api/v1/transcript` for that live session. Owner decision 2026-10-22 gives
+  calls the complete `CatalogManifestForServerExecution()` tool set, including
+  web lookup/research, files/deliverables, device_control, call_message and coding
+  proposals. Device-local camera, volume, playback and session controls require
+  a client and remain excluded. The registry rechecks the owner, tool arguments,
+  authorization and normal per-tool confirmation/idempotency constraints.
+  Job and rule changes retain spoken confirmation (`confirm=true`); ghost manage
+  tools retain the server-issued, single-use `proposalId` plus `confirm=true`.
+  Profile and coding proposals retain their normal review behavior. The phone
+  prompt uses the shared operational core with call-specific Job/rule directions.
+  `web_lookup` uses Wikipedia; `web_research` uses Hacker News plus Wikipedia and
+  allow-listed OpenAI/Anthropic page fetches. Neither is a general search engine.
+  `knowledge_search` searches saved owner material, and its `sources.items.enum`
+  includes `document` plus the relay's supported source names; `news` is invalid.
 - Transcript persistence follows the owner's existing privacy settings. Authorized
   recordings use the existing private S3 ingestion and owner recording APIs. Existing
   web and Android sessions keep their original permissions and behavior.

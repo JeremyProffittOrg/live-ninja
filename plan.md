@@ -1,5 +1,44 @@
 # Plan
 
+## phone-tool-parity — share server tools on owner calls and correct knowledge sources
+Outcome: owner phone calls receive every existing server-executable tool and its operating instructions; knowledge_search advertises its supported source values; the persona catalog includes Polite Southern Belle.
+Non-goals: device-local controls without a connected client, new search providers or dependencies, resumed MCP expansion, automatic test calls, infrastructure changes.
+Files: existing internal/tools phone, registry and knowledge code/tests; internal/realtime phone and persona code/tests; existing broker and webapp phone tests; Help, docs/mcp.md, contracts/api.md and this plan.
+Working directory: C:\dev\live-ninja-southern-belle, an isolated main checkout at b32935c. Preserve unrelated work in C:\dev\live-ninja and C:\dev\live-ninja-plan-build.
+
+### Locked decisions (user-confirmed; do not revisit)
+- 2026-10-22 — "add a new persona, Polite southern Bell, Pleasent customer service rep."
+- 2026-10-22 — "Live-ninja via voice is not using web search"; affected surface: "Phone call".
+- 2026-10-22 — "check my email, looiks like live ninja ahs a problem we need to solve"
+- 2026-10-22 — "phone calls should have all tools like every other path does"
+- Standing deployment authorization dated 2026-08-16 applies. Existing per-tool authorization, confirmation, call budgets and deadlines remain enforced. No new call is authorized by this repair.
+
+### Verified facts
+- 2026-10-22 — Gmail message 1a1630cb1d67b31a, RCA 02a127566d12: phone knowledge_search rejected sources=["news","page"]; the sources item schema has no enum. The next call used digest/page. This is evidence of an invalid source, not evidence of successful web research.
+- internal/tools/phone_direct.go explicitly excludes both web tools and other server tools; internal/tools/registry.go already supplies CatalogManifestForServerExecution.
+- internal/tools/weblookup.go uses Wikipedia; research.go uses Hacker News Algolia plus Wikipedia and bounded OpenAI/Anthropic page fetching. These are the existing search sources; no general search engine is configured.
+- GitHub default branch is main and local GitHub access has push permission. Existing deployment uses Lambda/Fargate; no EC2 instance creation/start is needed.
+
+### phone-parity-regression — reproduce and repair the missing call tools
+- [x] owner-call-tools — remove the separate phone allowlist, reuse the server tool set and operational instructions, preserve owner and confirmation checks. Gate: go test ./internal/tools ./internal/realtime ./internal/webapp ./cmd/realtime-broker -count=1 -timeout=5m exits 0.
+- [x] knowledge-source-schema — render supported knowledge_search sources as a string-item enum from the existing ParamSpec and preserve documented source handling. Gate: the full internal/tools package in the command above exits 0, including Knowledge and RenderManifest cases.
+
+### southern-belle-persona — add the requested courteous customer-service voice
+depends on: none
+- [x] southern-belle-catalog — add Polite Southern Belle with a Southern US accent and pleasant, patient, practical customer-service style; document selection in Help. Gate: full realtime and webapp packages in the command above exit 0, including Persona, Accent and TestHelpDrawer cases.
+
+### phone-parity-delivery — publish the tested repair through main
+depends on: phone-parity-regression, southern-belle-persona
+- [~] phone-parity-release — focused commit/push on main; gh run watch <recorded-run-id> --repo JeremyProffittOrg/live-ninja --exit-status exits 0. Verify deployed health and updated Help. Real owner-call audio stays unverified without an owner call.
+Restart policy: local tests have a five-minute per-package deadline; monitor tool session IDs to exit success/failure. Fix deterministic failures before retry. GitHub delivery has a 60-minute ceiling and at most three corrected pushes; record run/session IDs and terminal results here. No local scheduled automation.
+Stop conditions (only these): missing credentials/resources; unapproved destructive work or material scope expansion; EC2 creation/start required; three failed corrected delivery attempts. Keep independent work moving.
+
+### phone-tool-parity execution log
+- 2026-10-22 — read deploy.md, repository instructions, relevant source/tests and the RCA email. No calls, mail sends, device control or production changes performed during discovery. No CONTEXT.md or relevant ADR exists in this checkout. Diagnosis uses deterministic registry and manifest regressions; speculative production instrumentation is unnecessary for the explicit allowlist/schema omissions.
+- 2026-10-22 — regression command: go test ./internal/tools -run 'TestPhoneWebSearchExecutesThroughOwnerCallScope|TestKnowledgeToolsAreInTheCatalog' -count=1 -timeout=5m. Exit 1: web_lookup and web_research both returned "forbidden: ... is not available on this phone call"; knowledge sources items were {"type":"string"} without enum. Initial compile session 67514 finished; the minimized repeat completed in 4.23 seconds. The existing source handler already rejects unsupported sources and normalizes supported ones; the repair adds the missing advertised item constraint without changing that behavior.
+- 2026-10-22 — go test ./internal/tools ./internal/realtime ./internal/webapp ./cmd/realtime-broker -count=1 -timeout=5m exited 0: tools 6.071s, realtime 2.128s, webapp 2.673s, broker 2.349s. This includes the previously red regressions, all phone confirmation/owner guards, custom phone persona overrides, knowledge documents and Help. go vet ./internal/tools ./internal/realtime ./internal/webapp ./cmd/realtime-broker exited 0. git -c core.whitespace=cr-at-eol diff --check exited 0 (the existing HTML uses CRLF).
+- 2026-10-22 — phone-tool-parity independently delivers all currently released server tools. The seven uncommitted mcp-tool-expansion definitions and their MCP permission work remain paused and were not copied from C:\dev\live-ninja-plan-build.
+
 ## mcp-tool-expansion — expose the rest of the owner's account to remote MCP clients and the phone surface
 Locked decision (2026-10-19, Jeremy, verbatim): "update it all, add when you think we need", given after the tool-exposure review of this plan. The agent selects the set; nothing below needs a further owner decision.
 Outcome: remote MCP clients (Claude, ChatGPT) can read knowledge, rules, history, usage, devices, phone recordings and the phone budget, and can set timers/reminders, record location, email the owner and manage files. The owner phone call gains web_lookup, phone_budget and conversation_recent.

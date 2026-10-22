@@ -255,7 +255,7 @@ type ParamSpec struct {
 	Type        string // "string" | "integer" | "number" | "boolean" | "string_array"
 	Description string
 	Required    bool
-	Enum        []string // valid values for string params; empty = unconstrained
+	Enum        []string // string values or string-array items; array handlers validate normalized values
 	MinLen      int      // strings: minimum length (0 = no minimum beyond non-empty required)
 	MaxLen      int      // strings: maximum length (0 = no cap)
 	Min         *float64 // numbers: inclusive minimum
@@ -797,7 +797,11 @@ func (p ParamSpec) jsonSchema() map[string]any {
 		s["type"] = p.Type
 	}
 	if len(p.Enum) > 0 {
-		s["enum"] = p.Enum
+		if p.Type == "string_array" {
+			s["items"].(map[string]any)["enum"] = p.Enum
+		} else {
+			s["enum"] = p.Enum
+		}
 	}
 	if p.Type == "string" {
 		if p.MinLen > 0 {
