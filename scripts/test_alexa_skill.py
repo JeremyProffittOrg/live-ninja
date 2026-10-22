@@ -18,6 +18,21 @@ delivery_spec.loader.exec_module(delivery)
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_public_aws_request_does_not_consume_a_stdin_json_file(self):
+        with patch.object(delivery, "command", return_value={}) as run, patch.object(delivery.os,"name","posix"):
+            delivery.aws("sts", "get-caller-identity")
+        self.assertEqual("{}",run.call_args.args[0][-1])
+        self.assertEqual(1,len(run.call_args.args))
+
+    def test_ssm_secret_uses_scalar_stdin_without_a_json_input_file(self):
+        with patch.object(delivery, "command", return_value={}) as run, patch.object(delivery.os,"name","posix"):
+            delivery.aws("ssm", "put-parameter", Name="/test/credential", Value="synthetic-sensitive-value", Type="SecureString", Tier="Standard", Overwrite=True)
+        args, value = run.call_args.args
+        self.assertNotIn("synthetic-sensitive-value", " ".join(args))
+        self.assertNotIn("--cli-input-json",args)
+        self.assertEqual("file:///dev/stdin",args[args.index("--value")+1])
+        self.assertEqual("synthetic-sensitive-value",value)
+
     def test_cli_failure_reports_code_without_provider_payload(self):
         import subprocess
         failed = subprocess.CompletedProcess([], 255, "", "An error occurred (AccessDeniedException) when calling GetParameters: private-payload-must-not-appear")

@@ -13,6 +13,11 @@ if ! config=$(python -B scripts/alexa-skill.py stack-config); then
 fi
 skill=$(python -c 'import json,sys; print(json.load(sys.stdin)["skillId"])' <<< "$config")
 enabled=$(python -c 'import json,sys; print(json.load(sys.stdin)["enabled"])' <<< "$config")
+skill_override="AlexaSkillId=$skill"
+if [[ -z "$skill" ]]; then
+  # SAM needs literal quotes to represent an empty String override.
+  skill_override='AlexaSkillId=""'
+fi
 sam deploy \
   --template-file template.yaml \
   --no-confirm-changeset \
@@ -29,7 +34,7 @@ sam deploy \
     NovaBridgeEnable=false \
     AgentCoreMemoryMode=all \
     "GhostCommandFunctionArn=$GHOST_FUNCTION" \
-    "AlexaSkillId=$skill" \
+    "$skill_override" \
     "AlexaEnabled=$enabled" \
     "AlexaTrialMode=${ALEXA_TRIAL_MODE:-true}" \
     "AlexaDeployCommit=$GITHUB_SHA"

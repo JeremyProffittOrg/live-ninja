@@ -56,14 +56,16 @@ def command(args, stdin=None):
 
 
 def aws(service, operation, **params):
-    # Values never become command-line arguments or temporary files. Writes
-    # require Linux CI, where the CLI can read JSON from its standard input.
-    args = ["aws", service, operation, "--region", "us-east-1", "--output", "json", "--no-cli-pager", "--cli-input-json"]
+    # Public request metadata uses a structured JSON argument. A secret Value
+    # uses the CLI's scalar file parameter, read once from stdin. cli-input-json
+    # can read its file more than once, so a pipe is not a valid JSON input file.
+    args = ["aws", service, operation, "--region", "us-east-1", "--output", "json", "--no-cli-pager"]
     if os.name == "nt":
         if operation not in {"get-caller-identity", "get-parameters", "describe-stacks", "get-policy", "get-function-configuration", "get-item", "query", "filter-log-events"} or params.get("WithDecryption"):
             raise Failure("Only non-secret read operations are allowed through the local checker.")
-        return command(args+[json.dumps(params)])
-    return command(args+["file:///dev/stdin"], json.dumps(params))
+    if service == "ssm" and operation == "put-parameter":
+        return command(args+["--name", params["Name"], "--type", params["Type"], "--tier", params["Tier"], "--overwrite", "--value", "file:///dev/stdin"], params["Value"])
+    return command(args+["--cli-input-json", json.dumps(params)])
 
 
 def ci_only():
