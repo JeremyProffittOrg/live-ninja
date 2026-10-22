@@ -150,6 +150,8 @@ func TestWebSearchUsesLiveSearchAndPreservesRequestedDates(t *testing.T) {
 				require.Equal(t, false, body["store"])
 				require.Equal(t, "web_search", body["tools"].([]any)[0].(map[string]any)["type"])
 				require.Contains(t, body["instructions"], "2026-10-22")
+				require.Contains(t, body["instructions"], "Never infer that an event did not happen")
+				require.Contains(t, body["instructions"], "Do not add unrelated incidents")
 				require.NotContains(t, body["instructions"], "recency window starts")
 				_, _ = w.Write([]byte(groundedSearchFixture))
 			})
