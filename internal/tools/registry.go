@@ -144,6 +144,9 @@ type Invocation struct {
 	// Scope is the verified token scope; PhoneScope marks an owner phone call.
 	Scope        string   `json:"-"`
 	Capabilities []string `json:"-"`
+	// OmitTranscript is derived from trusted surface privacy settings. It cannot
+	// be set in tool arguments. Explicit user-requested storage still operates.
+	OmitTranscript bool `json:"-"`
 }
 
 // Result is the outcome of one tool invocation. It is safe to serialize
@@ -1126,7 +1129,7 @@ func (r *Registry) finish(ctx context.Context, l *slog.Logger, inv Invocation, r
 		res.Error.TxID = res.TxID
 	}
 
-	if inv.UserID != "" {
+	if inv.UserID != "" && !inv.OmitTranscript {
 		r.writeAudit(ctx, l, inv, res, outcome)
 	}
 
@@ -1160,10 +1163,14 @@ func (r *Registry) finish(ctx context.Context, l *slog.Logger, inv Invocation, r
 			slog.String("outcome", outcome),
 			slog.Int64("latencyMs", latencyMs))
 	case res.Error != nil:
+		message := res.Error.Message
+		if inv.OmitTranscript {
+			message = "private tool request failed"
+		}
 		l.Warn("tools: invoke done",
 			slog.String("outcome", outcome),
 			slog.String("code", res.Error.Code),
-			slog.String("message", res.Error.Message),
+			slog.String("message", message),
 			slog.Int64("latencyMs", latencyMs))
 	default:
 		// Neither OK nor carrying an error: the only way to reach this is a
@@ -1180,7 +1187,9 @@ func (r *Registry) finish(ctx context.Context, l *slog.Logger, inv Invocation, r
 	// after the audit row, the EMF metric and the "invoke done" line are all
 	// already emitted, so nothing this does can delay, reorder or lose the
 	// observability record that existed before M17.
-	r.enqueueRCA(ctx, l, inv, res, outcome)
+	if !inv.OmitTranscript {
+		r.enqueueRCA(ctx, l, inv, res, outcome)
+	}
 }
 
 // enqueueRCA hands one failed invocation to the RCA pipeline (M17). It is the

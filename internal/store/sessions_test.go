@@ -16,6 +16,53 @@ func newTestStore() (*Store, *testutil.FakeDynamo) {
 	return NewWithClient(fake, "live-ninja-test"), fake
 }
 
+func TestAlexaUsageCountsOnceWithoutTranscriptAndFencesDeletedOwner(t *testing.T) {
+	st, _ := newTestStore()
+	ctx := t.Context()
+	require.NoError(t, st.CreateUser(ctx, &User{UserID: "owner", AmazonUserID: "amazon-owner", Role: RoleOwner, Status: UserStatusActive}))
+	require.NoError(t, st.BindOwner(ctx, "amazon-owner", "owner"))
+	now := time.Now().UTC()
+	u := AlexaUsage{Model: "gpt-6-luna", Reported: true, Input: 100, Output: 20, Cached: 40, CostUSD: .0000164}
+	require.NoError(t, st.RecordAlexaUsage(ctx, "owner", "receipt", 0, now, u))
+	require.NoError(t, st.RecordAlexaUsage(ctx, "owner", "receipt", 0, now, u))
+	day, err := st.GetUsage(ctx, "owner", DayPeriod(now))
+	require.NoError(t, err)
+	require.EqualValues(t, 120, day.DayTokens)
+	month, err := st.GetUsage(ctx, "owner", MonthPeriod(now))
+	require.NoError(t, err)
+	require.EqualValues(t, 120, month.MonthTokens)
+	rows, err := st.QuerySessionLog(ctx, "owner", "receipt")
+	require.NoError(t, err)
+	require.Empty(t, rows)
+	require.Error(t, st.RecordAlexaUsage(ctx, "deleted-owner", "receipt", 0, now, u))
+}
+
+func TestAlexaHistoryRespectsRetentionAndPrivacyVersion(t *testing.T) {
+	st, _ := newTestStore()
+	ctx := t.Context()
+	require.NoError(t, st.CreateUser(ctx, &User{UserID: "owner", AmazonUserID: "amazon-owner", Role: RoleOwner, Status: UserStatusActive}))
+	require.NoError(t, st.BindOwner(ctx, "amazon-owner", "owner"))
+	device, err := st.EnsureAlexaDevice(ctx, "owner", "skill", "echo")
+	require.NoError(t, err)
+	x := AlexaExchange{Session: "session", Device: device.DeviceID, Generation: device.AlexaGeneration, Input: "Which city?", Output: "Richmond.", StartedAt: time.Now(), At: time.Now(), Sequence: 1, RetentionDays: 7, SettingsVersion: 1}
+	require.NoError(t, st.SaveAlexaExchange(ctx, "owner", x))
+	rows, err := st.QuerySessionLog(ctx, "owner", "session")
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	conv, err := st.GetConversation(ctx, "owner", x.StartedAt.UTC().Format(time.RFC3339)+"#session")
+	require.NoError(t, err)
+	require.Equal(t, 2, conv.TurnCount)
+	doc, err := st.GetSettings(ctx, "owner")
+	require.NoError(t, err)
+	_, err = st.PutSettings(ctx, "owner", doc, 1)
+	require.NoError(t, err)
+	x.Sequence = 3
+	require.Error(t, st.SaveAlexaExchange(ctx, "owner", x), "stale privacy settings must fail")
+	rows, err = st.QuerySessionLog(ctx, "owner", "session")
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+}
+
 func mkSession(id, userID, familyID, refreshHash string) *Session {
 	return &Session{
 		SessionID:   id,

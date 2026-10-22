@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/alexa"
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
@@ -49,6 +50,47 @@ func newPhoneTestBroker(t *testing.T) (*broker, *testutil.FakeDynamo) {
 	b.settings = ddb
 	b.table = "phone-test"
 	return b, ddb
+}
+
+func TestAlexaBrokerUsesStoredAuthorityPersonaAndReportsUsage(t *testing.T) {
+	b, _ := newPhoneTestBroker(t)
+	doc, err := b.phoneStore.GetSettings(t.Context(), "owner")
+	require.NoError(t, err)
+	require.NoError(t, store.ApplySettingsSection(doc, store.SettingsSectionPersona, map[string]any{"persona": map[string]any{"presetId": "custom", "systemInstructions": "Be a patient astronomy teacher."}}, nil, true, false, time.Now()))
+	_, err = b.phoneStore.PutSettings(t.Context(), "owner", doc, 1)
+	require.NoError(t, err)
+	allowed := true
+	b.alexaWork = func(ctx context.Context, job alexa.Job) (alexa.Work, error) {
+		if !allowed || job.Owner != "owner" || job.Turn != "receipt" {
+			return alexa.Work{}, alexa.ErrUnauthorized
+		}
+		return alexa.Work{Identity: alexa.Identity{Owner: "owner", Device: "echo"}, Deadline: time.Now().Add(5 * time.Second), Check: func(context.Context) error { return nil }}, nil
+	}
+	calls := 0
+	b.alexaCall = func(ctx context.Context, p realtime.Persona, messages []realtime.ChatMessage, directives, model string) (*realtime.TurnResult, error) {
+		calls++
+		require.Contains(t, p.Style, "astronomy teacher")
+		require.Len(t, messages, 1)
+		require.Equal(t, realtime.AlexaTextModel, model)
+		deadline, ok := ctx.Deadline()
+		require.True(t, ok)
+		require.Less(t, time.Until(deadline), 6*time.Second)
+		return &realtime.TurnResult{Text: "Ready.", Usage: &realtime.TextUsage{Model: model, InputTokens: 10, OutputTokens: 2}}, nil
+	}
+	req := Request{Mode: "alexa-turn", UserID: "owner", Surface: "alexa", AlexaTurn: "receipt", Payload: json.RawMessage(`{"messages":[{"role":"user","content":"Hello"}]}`)}
+	response, err := b.Handle(t.Context(), req)
+	require.NoError(t, err)
+	require.Empty(t, response.Error)
+	require.Equal(t, "Ready.", response.Text)
+	require.NotNil(t, response.Usage)
+	allowed = false
+	response, err = b.Handle(t.Context(), req)
+	require.NoError(t, err)
+	require.Equal(t, 403, response.Code)
+	require.Equal(t, 1, calls)
+	req.Surface = "web"
+	response, _ = b.Handle(t.Context(), req)
+	require.Equal(t, 400, response.Code)
 }
 
 func TestWebSearchBrokerUsesVerifiedPhoneOwnerAndPreservesQuery(t *testing.T) {

@@ -255,7 +255,7 @@ func resolveSettingsTargets(body settingsSectionPatch, currentDeviceID string,
 			return nil, false, "target.deviceIds must be empty for mode all"
 		}
 		for _, device := range owned {
-			if device.Surface == store.SurfacePhone && !deviceSupportsSection(device, section) {
+			if (device.Surface == store.SurfacePhone || device.Surface == store.SurfaceAlexa) && !deviceSupportsSection(device, section) {
 				continue
 			}
 			if !deviceSupportsSection(device, section) {
@@ -288,7 +288,7 @@ func settingsSectionEnvelope(doc map[string]any, devices []store.Device,
 		if device.Status != store.DeviceStatusActive {
 			continue
 		}
-		if device.Surface == store.SurfacePhone && !deviceSupportsSection(device, section) {
+		if (device.Surface == store.SurfacePhone || device.Surface == store.SurfaceAlexa) && !deviceSupportsSection(device, section) {
 			continue
 		}
 		// Legacy device rows predate metadata/capability declarations. Emit

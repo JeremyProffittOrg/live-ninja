@@ -210,6 +210,7 @@ function make(tag, className, text) {
 }
 
 function hostSummary(device) {
+	if (device?.surface === 'alexa') return 'Alexa · Changes apply to the next turn; Alexa controls the spoken voice';
   if (device?.surface === 'phone') return 'Profile and voice apply to your next phone call';
   const metadata = device?.metadata || {};
   if (metadata.browser && metadata.platform) return `${metadata.browser} on ${metadata.platform}`;
@@ -460,7 +461,7 @@ export function initDeviceSettingsControls({
       const active = !device.status || device.status === 'active';
       const capable = !capabilities || capabilities.length === 0 || capabilities.includes(section);
       const supported = active && capable;
-      if (active && !capable && device.surface !== 'phone') unsupportedCount += 1;
+      if (active && !capable && !['phone', 'alexa'].includes(device.surface)) unsupportedCount += 1;
       const row = make('div', 'set-device-row');
       const label = make('label', 'set-device-row__select');
       const check = document.createElement('input');
@@ -480,12 +481,12 @@ export function initDeviceSettingsControls({
           !active
             ? 'Signed out on this device'
             : !capable
-            ? (device.surface === 'phone' ? 'Not used for phone calls' : 'Not supported on this device')
+            ? (device.surface === 'phone' ? 'Not used for phone calls' : device.surface === 'alexa' ? 'Not used by Alexa' : 'Not supported on this device')
             : device.inherited
               ? 'Uses account default'
               : 'Customized for this device',
         ),
-        make('span', 'set-device-row__summary', summarizeSection(section, device.settings)),
+        make('span', 'set-device-row__summary', summarizeSection(section, device.settings) + (device.surface === 'alexa' && section === 'persona' ? ' · Alexa controls the spoken voice' : '')),
       );
       label.append(check, body);
       const deviceName = displayDeviceName(device, nameCounts);
@@ -760,6 +761,20 @@ export function initDeviceSettingsControls({
           `Save name for ${device.name || hostSummary(device)}`,
         );
         form.append(text, input, save);
+		if (device.surface === 'alexa') {
+		  const disabled = device.status === 'revoked';
+		  if (disabled) { input.disabled = true; save.disabled = true; }
+		  const toggle = make('button', 'ln-btn ln-btn--ghost', disabled ? 'Enable Alexa' : 'Disable Alexa');
+		  toggle.type = 'button';
+		  toggle.addEventListener('click', async () => {
+		    toggle.disabled = true;
+		    try {
+		      await apiJSON(`/api/v1/devices/${encodeURIComponent(device.deviceId)}${disabled ? '/enable' : ''}`, { method: disabled ? 'POST' : 'DELETE', json: {} });
+		      await loadAccountDevices();
+		    } catch { status.textContent = "Couldn't change Alexa access. Reload the device list before trying again."; toggle.disabled = false; }
+		  });
+		  form.append(toggle);
+		}
         form.addEventListener('submit', async (event) => {
           event.preventDefault();
           const name = input.value.trim();

@@ -86,27 +86,9 @@ func (b *broker) handlePhoneSession(ctx context.Context, l *slog.Logger, req Req
 	if err != nil {
 		return Response{Code: 503, Error: "phone_settings_unavailable"}
 	}
-	personaID := ""
-	if p, ok := settings["persona"].(map[string]any); ok {
-		personaID, _ = p["presetId"].(string)
-	}
-	if strings.ContainsAny(personaID, ":#") {
+	persona, personaID, err := b.storedPersona(ctx, req.UserID, settings)
+	if err != nil {
 		return badRequest("Invalid stored persona.")
-	}
-	if personaID != "" && personaID != "custom" && !realtime.IsBuiltinPersona(personaID) {
-		if p, e := b.phoneStore.GetUserPersona(ctx, req.UserID, personaID); e == nil && p != nil {
-			personaID = realtime.UserPersonaRef(req.UserID, personaID)
-		} else if p, e := b.phoneStore.GetCatalogPersona(ctx, personaID); e == nil && p != nil && p.Shared {
-			personaID = realtime.SharedPersonaRef(personaID)
-		}
-	}
-	persona := realtime.ResolvePersona(personaID)
-	if personaID == "custom" {
-		if p, ok := settings["persona"].(map[string]any); ok {
-			if style, ok := p["systemInstructions"].(string); ok {
-				persona.Style = style
-			}
-		}
 	}
 	voice := realtime.ResolveSessionVoiceForDevice(ctx, b.settings, b.table, req.UserID, deviceID, personaID, "")
 	rules, err := b.phoneRules(ctx, req.UserID)

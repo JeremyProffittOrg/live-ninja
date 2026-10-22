@@ -58,10 +58,26 @@ func (s *Store) EnsureAlexaDevice(ctx context.Context, owner, skill, device stri
 		if existing.Status != DeviceStatusActive {
 			return nil, ErrDeviceRevoked
 		}
+		if existing.AlexaGeneration == "" {
+			return nil, ErrDeviceBindingConflict
+		}
+		now := time.Now().UTC()
+		_, err = s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+			TableName: aws.String(s.table), Key: keyOf(devicePK(id), skMeta),
+			UpdateExpression:          aws.String("SET lastSeenAt = :now, gsi2sk = :seen"),
+			ConditionExpression:       aws.String("userId = :owner AND #status = :active AND alexaGeneration = :generation"),
+			ExpressionAttributeNames:  map[string]string{"#status": "status"},
+			ExpressionAttributeValues: map[string]types.AttributeValue{":owner": &types.AttributeValueMemberS{Value: owner}, ":active": &types.AttributeValueMemberS{Value: DeviceStatusActive}, ":generation": &types.AttributeValueMemberS{Value: existing.AlexaGeneration}, ":now": &types.AttributeValueMemberN{Value: strconv.FormatInt(now.Unix(), 10)}, ":seen": &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)}},
+		})
+		if err != nil {
+			return nil, err
+		}
+		existing.LastSeenAt = now.Unix()
 		return existing, nil
 	}
 	now := time.Now().UTC()
 	d := Device{DeviceID: id, UserID: owner, Name: "Alexa", Surface: SurfaceAlexa, Status: DeviceStatusActive, Capabilities: []string{SettingsSectionAboutYou, SettingsSectionPersona, SettingsSectionPrivacy}, Metadata: map[string]string{"managedBy": "server"}, CreatedAt: now.Unix(), UpdatedAt: now.Unix(), LastSeenAt: now.Unix()}
+	d.AlexaGeneration = uuid.NewString()
 	av, err := attributevalue.MarshalMap(deviceItem{PK: devicePK(id), SK: skMeta, Gsi2PK: gsi2pkDevSeen, Gsi2SK: now.Format(time.RFC3339), Device: d})
 	if err != nil {
 		return nil, err
@@ -109,8 +125,36 @@ func (s *Store) ReenableAlexaDevice(ctx context.Context, owner, id string) error
 		return err
 	}
 	_, err := s.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: []types.TransactWriteItem{
-		{Update: &types.Update{TableName: aws.String(s.table), Key: keyOf(devicePK(id), skMeta), UpdateExpression: aws.String("SET #status = :active, updatedAt = :now"), ConditionExpression: aws.String("userId = :owner AND surface = :surface AND #status = :revoked"), ExpressionAttributeNames: map[string]string{"#status": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":owner": &types.AttributeValueMemberS{Value: owner}, ":surface": &types.AttributeValueMemberS{Value: SurfaceAlexa}, ":active": &types.AttributeValueMemberS{Value: DeviceStatusActive}, ":revoked": &types.AttributeValueMemberS{Value: DeviceStatusRevoked}, ":now": &types.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Unix(), 10)}}}},
+		{Update: &types.Update{
+			TableName: aws.String(s.table), Key: keyOf(devicePK(id), skMeta),
+			UpdateExpression:         aws.String("SET #status = :active, updatedAt = :now, alexaGeneration = :generation"),
+			ConditionExpression:      aws.String("userId = :owner AND surface = :surface AND #status = :revoked"),
+			ExpressionAttributeNames: map[string]string{"#status": "status"},
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":owner":      &types.AttributeValueMemberS{Value: owner},
+				":surface":    &types.AttributeValueMemberS{Value: SurfaceAlexa},
+				":active":     &types.AttributeValueMemberS{Value: DeviceStatusActive},
+				":revoked":    &types.AttributeValueMemberS{Value: DeviceStatusRevoked},
+				":now":        &types.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Unix(), 10)},
+				":generation": &types.AttributeValueMemberS{Value: uuid.NewString()},
+			},
+		}},
 		s.alexaOwnerCondition(owner), s.alexaProfileCondition(owner),
 	}})
+	var conflict *types.TransactionCanceledException
+	if errors.As(err, &conflict) && len(conflict.CancellationReasons) == 3 && aws.ToString(conflict.CancellationReasons[0].Code) == "ConditionalCheckFailed" {
+		for _, reason := range conflict.CancellationReasons[1:] {
+			if c := aws.ToString(reason.Code); c != "" && c != "None" {
+				return err
+			}
+		}
+		current, e := s.GetDevice(ctx, id)
+		if e != nil {
+			return e
+		}
+		if current != nil && current.UserID == owner && current.Surface == SurfaceAlexa && current.Status == DeviceStatusActive && current.AlexaGeneration != "" {
+			return nil
+		}
+	}
 	return err
 }

@@ -20,6 +20,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/gofiber/fiber/v2"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/alexa"
+	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	"github.com/JeremyProffittOrg/live-ninja/internal/testutil"
 	"github.com/JeremyProffittOrg/live-ninja/internal/tools"
@@ -97,6 +99,45 @@ func newFallbackTurnApp(t *testing.T, fake *fakeBrokerLambda, reauth tools.Reaut
 }
 
 func allowAll(context.Context, string) error { return nil }
+
+func TestAlexaRunnerUsesSharedLoopAndPrivateToolContext(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db := testutil.NewFakeDynamo()
+	st := store.NewWithClient(db, "test")
+	fake := &fakeBrokerLambda{responses: []map[string]any{
+		{"toolCalls": []map[string]any{{"id": "c1", "name": "remember_note", "arguments": `{"text":"I prefer tea"}`}}},
+		{"text": "I saved your note."},
+	}}
+	deps := &Deps{Store: st, Log: log, Lambda: fake, BrokerFn: "broker"}
+	registry, err := tools.NewRegistry(&tools.Deps{Store: st, DDB: db, TableName: "test", Log: log, Reauthorize: allowAll, Now: time.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := alexa.Work{Identity: alexa.Identity{Owner: "u1", Device: "echo"}, Receipt: "receipt", SessionID: "session", Messages: []realtime.ChatMessage{{Role: "user", Content: "Remember my tea preference"}}, Check: func(context.Context) error { return nil }}
+	r, err := runAlexaTurn(t.Context(), deps, registry, w)
+	if err != nil || r.Text != "I saved your note." || len(r.Messages) != 4 {
+		t.Fatalf("result=%+v err=%v", r, err)
+	}
+	if len(fake.requests) != 2 || fake.requests[1].AlexaRound != 1 || fake.requests[0].AlexaTurn != "receipt" || fake.requests[0].DeviceID != "" || fake.requests[0].Surface != "alexa" {
+		t.Fatalf("bad authority: %+v", fake.requests)
+	}
+	if fake.lastOptions.RetryMaxAttempts != 1 {
+		t.Fatal("ambiguous model invocation may retry")
+	}
+	rows, err := st.QuerySessionLog(t.Context(), "u1", "session")
+	if err != nil || len(rows) != 0 {
+		t.Fatal("privacy-off wrote transcript", err)
+	}
+	notes, err := st.QueryNotes(t.Context(), "u1", "tea")
+	if err != nil || len(notes) != 1 {
+		t.Fatal("explicit note was not saved", err)
+	}
+	w.Check = func(context.Context) error { return alexa.ErrCancelled }
+	_, err = runAlexaTurn(t.Context(), deps, registry, w)
+	if err == nil || len(fake.requests) != 2 {
+		t.Fatal("cancelled turn called model")
+	}
+}
 
 func TestWebResearchAdapterUsesVerifiedContextAndOneAttempt(t *testing.T) {
 	fake := &fakeBrokerLambda{responses: []map[string]any{{"search": map[string]any{"summary": "Cited evidence", "sources": []map[string]string{{"title": "News", "url": "https://news.example/report"}}}}}}
@@ -328,5 +369,24 @@ func TestFallbackTurnRequiresText(t *testing.T) {
 	}
 	if len(fake.requests) != 0 {
 		t.Errorf("broker invoked %d times on invalid input", len(fake.requests))
+	}
+}
+
+func TestSharedTextTurnPreservesFollowupAndChecksCancellationBeforeTools(t *testing.T) {
+	history := []brokerChatMessage{{Role: "user", Content: "Remember the city is Richmond."}, {Role: "assistant", Content: "Richmond."}, {Role: "user", Content: "What is its weather?"}}
+	ctx, cancel := context.WithCancel(t.Context())
+	calls := 0
+	r, err := runTextTurn(ctx, history, func(_ context.Context, m []brokerChatMessage) (*brokerResponse, error) {
+		if len(m) != 3 || m[0].Content != "Remember the city is Richmond." {
+			t.Fatal("lost conversation")
+		}
+		cancel()
+		return &brokerResponse{ToolCalls: []brokerChatToolCall{{ID: "weather", Name: "weather", Arguments: `{}`}}}, nil
+	}, func(context.Context, brokerChatToolCall, int, int) *tools.Result {
+		calls++
+		return &tools.Result{OK: true}
+	})
+	if !errors.Is(err, context.Canceled) || calls != 0 || r == nil {
+		t.Fatalf("cancellation: calls=%d err=%v", calls, err)
 	}
 }

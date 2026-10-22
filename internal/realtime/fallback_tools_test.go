@@ -133,6 +133,40 @@ func newMockOpenAIClient(t *testing.T, handler http.HandlerFunc) *FallbackClient
 	return c
 }
 
+func TestAlexaTurnUsesBoundedStandardModelAndReportsUsage(t *testing.T) {
+	calls := 0
+	c := newMockOpenAIClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, "gpt-6-luna", body["model"])
+		assert.Equal(t, "none", body["reasoning_effort"])
+		assert.Equal(t, "default", body["service_tier"])
+		assert.Equal(t, float64(512), body["max_completion_tokens"])
+		assert.Equal(t, false, body["store"])
+		assert.Equal(t, false, body["parallel_tool_calls"])
+		assert.Contains(t, body["messages"].([]any)[0].(map[string]any)["content"], "patient astronomy teacher")
+		_, _ = w.Write([]byte(`{"model":"gpt-6-luna","choices":[{"message":{"content":"Richmond is the city we discussed."}}],"usage":{"prompt_tokens":120,"completion_tokens":10,"prompt_tokens_details":{"cached_tokens":40}}}`))
+	})
+	persona := ResolvePersona("custom")
+	persona.Style = "Answer as a patient astronomy teacher."
+	res, err := c.AlexaTurn(t.Context(), persona, []ChatMessage{{Role: "user", Content: "Which city?"}}, "", "gpt-6-luna")
+	require.NoError(t, err)
+	require.Equal(t, 1, calls)
+	require.NotNil(t, res.Usage)
+	assert.Equal(t, int64(120), res.Usage.InputTokens)
+	assert.Equal(t, int64(40), res.Usage.CachedTokens)
+	assert.Equal(t, "gpt-6-luna", res.Usage.Model)
+}
+
+func TestAlexaTurnDoesNotRetryUncertainProviderWork(t *testing.T) {
+	calls := 0
+	c := newMockOpenAIClient(t, func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(503) })
+	_, err := c.AlexaTurn(t.Context(), ResolvePersona("friendly"), []ChatMessage{{Role: "user", Content: "Hello"}}, "", "gpt-6-luna")
+	require.Error(t, err)
+	assert.Equal(t, 1, calls)
+}
+
 const groundedSearchFixture = `{"status":"completed","output":[{"type":"web_search_call","status":"completed"},{"type":"message","content":[{"type":"output_text","text":"A dated public news report.","annotations":[{"type":"url_citation","title":"Public evidence","url":"https://news.example/evidence"}]}]}]}`
 
 func TestWebSearchUsesLiveSearchAndPreservesRequestedDates(t *testing.T) {

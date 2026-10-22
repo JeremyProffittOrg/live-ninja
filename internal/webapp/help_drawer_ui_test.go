@@ -17,6 +17,13 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestHelpDrawerAlexaMatchesReleasedControls(t *testing.T) {
+	html := readAsset(t, "templates/pages/conversation.html")
+	for _, text := range []string{"{{if .AlexaEnabled}}", "Alexa, open live ninja", "resume conversation", "Disable Alexa", "Enable Alexa", "15 minutes", "Amazon manages its own Alexa voice history"} {
+		assert.Contains(t, html, text)
+	}
+}
+
 // TestHelpDrawerMarkupContract: the ids conversation.mjs resolves, and the
 // ARIA wiring that makes the tab announce itself as a dialog opener.
 func TestHelpDrawerMarkupContract(t *testing.T) {

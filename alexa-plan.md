@@ -16,6 +16,7 @@ Planning changes: this file only. Planning proof: inspect the referenced code an
 
 - 2026-10-22 — "implement alexa-plan.md". This starts the implementation and supersedes the planning-only stop condition. The private development delivery, existing-identity configuration and initial bounded acceptance trial in this plan are in scope. Keep the initial model trial within $1, with no paid tool actions.
 - 2026-10-22 — "Yes, test when ready" in response to: "The plan ends with a five-minute test on a real Echo. Will you be available to link the private skill in the Alexa app and test an Echo after the build is ready? I'll continue implementation now."
+- 2026-10-22 — "No, I need setup steps" in response to the missing dedicated SMAPI publishing-credential question. Provide the local hidden-entry authorization helper; do not copy the machine's ASK CLI authentication state to GitHub.
 
 - 2026-10-22 — "create an alexa-plan.md to impelment an alexa skill that uses live-ninja as text chat interface, and add an alexa device type so we can configure it on the website"
 - 2026-10-22 — "can't live ninja also do an interactrive chat, could we use this approach for alexa?" The later planning request selects the text-chat approach.
@@ -114,7 +115,7 @@ depends on: none
 depends on: none
 
 - [x] alexa-contract-record — additive Alexa contract and internal/native header boundary documented. Existing settings schema is unchanged; its overrides already hold the selected sections.
-- [~] alexa-fixture-set — request contract tests pass for launch/chat/follow-up/status/stop and rejected skill/device/locale/timestamp/intent. Stateful duplicate/expiry/cancellation tests accompany the worker implementation.
+- [x] alexa-fixture-set — request, durable replay, follow-up, expiry, cancellation, settings-change, privacy and pending-result tests pass. Provider/device acceptance remains a separate release gate.
 
 Expected files: new `internal/alexa/` package and fixtures; existing contracts and their relevant tests.
 
@@ -143,8 +144,8 @@ depends on: alexa-contract-tests
 
 depends on: alexa-contract-tests
 
-- [ ] alexa-device-store — implement trusted Alexa registration and explicit owner re-enable behavior, preserving ownership, revocation, name changes, quota, and concurrent-write guards.
-- [ ] alexa-settings-resolution — resolve profile/persona/privacy using the verified Alexa device ID. Reject attempts to select another device through client headers or model arguments.
+- [x] alexa-device-store — trusted registration, explicit re-enable with a new generation, preserved names and owner/active-state transaction guards pass store tests. Existing code has no device-count quota to preserve.
+- [x] alexa-settings-resolution — profile/persona/privacy resolve from the verified Echo; browser headers cannot impersonate one. Store and route tests pass.
 
 Expected files: `internal/store/types.go`, `devices.go`, existing store device tests, `internal/webapp/device_routes.go`, `settings_scope_routes.go`, and existing device/settings route tests.
 
@@ -154,8 +155,8 @@ Definition of done: `go test ./internal/store ./internal/webapp -run 'Alexa|Devi
 
 depends on: alexa-device-persistence
 
-- [ ] alexa-website-controls — show Alexa device names and type, per-device configuration, connection/re-link guidance, and clear voice limitations in existing UI controls.
-- [ ] alexa-help-copy — update the Help drawer in the same feature commit with invocation, website configuration, pending-result retrieval, silence recovery, approval behavior, and privacy boundaries. Do not announce the integration as working before its release gate passes.
+- [~] alexa-website-controls — existing device UI now names, configures and disables/enables Echoes; unsupported-section browser cases are added. GitHub browser checks remain pending.
+- [x] alexa-help-copy — invocation, controls, recovery and privacy copy is gated by ALEXA_ENABLED; the Help drift tests pass. Disabled deployments do not advertise the skill.
 
 Expected files: `web/static/js/device-settings.mjs`, related existing settings/device UI files only where required, `web/templates/pages/conversation.html`, `internal/webapp/help_drawer_ui_test.go`, and `tests/web/specs/device-settings.spec.mjs`.
 
@@ -169,8 +170,8 @@ depends on: alexa-contract-tests
 
 depends on: alexa-contract-tests
 
-- [ ] alexa-oauth-client — extend existing OAuth primitives for the confidential registered Alexa client, PKCE, client-bound resource/scope, refresh, revocation, and owner consent. Preserve existing MCP clients and their tests.
-- [ ] alexa-worker-authority — validate the linked active owner/device before admission and again before every tool call. Queue only internal receipt references, never access tokens or model credentials.
+- [x] alexa-oauth-client — static confidential client, PKCE, isolated resource/scope, refresh/revoke and owner consent pass existing and added OAuth tests. Production configuration awaits publishing credentials.
+- [x] alexa-worker-authority — adapter, worker and broker independently validate linked owner/device and current receipt/settings; queue bodies contain owner/receipt references only.
 
 Expected files: `internal/mcpauth/service.go` and tests, `internal/webapp/mcp_auth.go` and tests, supporting existing auth/store code only where necessary, and new Alexa validation code. No blanket public-client or cross-resource relaxation.
 
@@ -180,9 +181,9 @@ Definition of done: `go test ./internal/mcpauth ./internal/webapp ./internal/ale
 
 depends on: alexa-linked-account, alexa-device-persistence
 
-- [ ] alexa-shared-turn-runner — extract/reuse the existing fallback tool loop and necessary dependency setup for the existing HTTP caller and Alexa worker. Keep the broker credential boundary and server-owned prompt composition. Add the Alexa model option and explicit downstream deadlines without changing other surfaces.
-- [ ] alexa-turn-store — persist session/turn receipts in the existing table with conditional writes and bounded key queries. Include request replay, pending/complete/failed/cancelled/expired outcomes, per-owner concurrency, expiry, and cleanup. Add the records to existing account lifecycle handling.
-- [ ] alexa-worker-path — implement `cmd/alexa-chat-worker` on the single queue path. Use existing registry reauthorization, argument validation, audit, and idempotency. A failure after an uncertain side effect must not replay the whole turn automatically.
+- [x] alexa-shared-turn-runner — HTTP and Alexa use one five-round runner and server dependency builder. Alexa-only Luna settings, resolved persona and bounded no-retry broker calls pass tests; phone tests remain green.
+- [x] alexa-turn-store — conditional session/receipt/owner-lock records and account deletion fences pass tests. Account export/purge already query the full owner partition. Usage is a separate content-free ledger; opted-in History uses existing LOG/CONV formats with configured expiry.
+- [x] alexa-worker-path — SQS worker, shared registry, per-call checks and stable idempotency keys pass tests. Running receipt redelivery cannot repeat uncertain paid work. Privacy-off skips audit/RCA/automatic memory, while explicit saved notes remain supported.
 
 Expected files: new `cmd/alexa-chat-worker/`, `internal/alexa/`, and scoped store chat files; existing `internal/webapp/api_routes.go`/fallback tests, `internal/realtime/fallback*.go`/tests, `cmd/realtime-broker/`, account lifecycle code, and shared dependency setup used by both callers.
 
@@ -196,7 +197,7 @@ depends on: alexa-contract-tests
 
 depends on: alexa-turn-execution
 
-- [ ] alexa-handler — add `cmd/alexa-skill` with exact skill verification, linked identity, lifecycle controls, and bounded result waiting. Shorten long responses safely; preserve the full eligible result for `more`.
+- [x] alexa-handler — exact skill/envelope checks, dialog controls, bounded receipt polling and PlainText chunks pass tests. Amazon dialog/model build is still unverified.
 - [ ] alexa-interaction-model — add `alexa/skill.json` and `alexa/interaction-models/en-US.json`. Keep valid carrier phrases and test slot elicitation for conversational follow-ups. Account linking is required before private data or model/tool calls.
 
 Definition of done: `go test ./internal/alexa ./cmd/alexa-skill -count=1 -timeout=5m` exits 0, and `python scripts/alexa-skill.py validate-local` exits 0. Mock delays at the deadline produce an honest pending/error response before 6.5 seconds; stop/repeat/status do not create unintended paid turns. A built skill model must demonstrate that follow-ups map to the expected intent/slot.
@@ -261,6 +262,10 @@ Restart policy:
 - retry-or-budget — a recorded shared retry ceiling or trial allowance is exhausted. Preserve results and mark the dependent milestone blocked; do not hide the failure or spend past the allowance.
 
 ## Execution log
+
+- 2026-10-22 — foundation commit 689a8daa8b5c7d4821388f8ff7c8e5ce258ca13f deployed through GitHub run 39782522746, conclusion SUCCESS. Unauthenticated GET https://live.jeremy.ninja/privacy returned HTTP 200 with expected policy text.
+- 2026-10-22 — durable-worker checkpoint: `go vet ./...` exited 0. `go test ./... -count=1 -timeout=5m` passed every package except RCA fixture comparisons affected by this Windows checkout's CRLF conversion; restoring the unchanged fixture/system-map bytes to repository LF and rerunning `go test ./internal/rca -count=1 -timeout=5m` passed. No RCA source or fixture change is included. Focused Alexa/Help tests pass in store, webapp and worker; four offline Python credential-helper tests pass. Browser checks will run in GitHub CI. No model/provider acceptance request has been made.
+- 2026-10-22 — user reported authorization failure. The running local helper's root URL reproduced HTTP 400 with “Authorization failed”; /start returned HTTP 302. The helper now redirects root to /start and reports only sanitized provider error codes. Its regression test failed before the fix and passed afterward. The old ten-minute authorization process ended; no ALEXA GitHub names appeared. Jeremy was given the corrected batch restart command. The exact Amazon error, if any, remains unverified; this local fix is not proof of completed authorization.
 
 - 2026-10-22 — foundation red/green checks: TestContract first failed on missing Event, then passed. TestAlexaConfidentialClientIsIsolatedFromMCP first failed on missing implementation, then full mcpauth passed. HTTP TestAlexaOAuthTokenRequiresSecretAndCannotAccessMCP failed with invalid_client before the scoped confidential-client route, then Alexa/MCP/OAuth tests passed. TestAlexaDevicesAreOwnedDistinctAndExplicitlyReenabled failed before the store methods, then Alexa and PhoneSettings cases passed. Privacy render/authorizer cases first failed on absent page/route, then passed. Final `go test ./internal/alexa ./internal/mcpauth ./internal/store ./internal/webapp ./cmd/authorizer -count=1 -timeout=5m` exited 0 for all five packages. Help updated with the real privacy page link; Alexa availability is not advertised yet.
 - 2026-10-22 — dedicated CI credential blocker mailed by operator_reporter; SES MessageId 010001a163ad7d60-465dd92b-dffa-4fb9-a684-201cfee38335-000000. No local Alexa deployment or credential copying was performed. ASK vendor/skill discovery was read-only. User asked whether dedicated CI credentials already exist; no values are requested through chat.

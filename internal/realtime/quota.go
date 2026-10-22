@@ -560,6 +560,16 @@ func (g *Gate) CheckFallback(ctx context.Context, userID string) error {
 	return err
 }
 
+// CheckTextContinuation rechecks the monthly and suspension limits without
+// consuming another admission token for a tool/model round in the same turn.
+func (g *Gate) CheckTextContinuation(ctx context.Context, userID string) error {
+	if err := g.checkSuspended(ctx, userID); err != nil {
+		return err
+	}
+	_, err := g.checkMonthly(ctx, userID, g.now().UTC())
+	return err
+}
+
 // checkSuspended reads USER#<uid>/PROFILE fresh (no cache — mints are
 // already rate-limited to 1/5s per user) and rejects status=suspended. A
 // missing profile or any other status passes: "disabled" users never get

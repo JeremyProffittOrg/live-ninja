@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"html/template"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -32,6 +33,14 @@ func NewMCPAuth(deps *Deps) (*MCPAuth, error) {
 	}
 	a := &MCPAuth{deps: deps, service: &mcpauth.Service{Repo: repo}}
 	a.service.OwnerActive = repo.OwnerActive
+	if os.Getenv("ALEXA_SKILL_ID") != "" {
+		client, err := mcpauth.LoadAlexaClient(context.Background(), deps.Secrets)
+		if err != nil {
+			deps.Log.Error("Alexa account linking unavailable; existing MCP clients remain enabled")
+		} else {
+			a.service.AlexaClient = client
+		}
+	}
 	return a, nil
 }
 func (a *MCPAuth) ownerActive(ctx context.Context, uid string, issued int64) bool {
@@ -101,9 +110,15 @@ func (a *MCPAuth) resourceMetadata(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"resource": mcpauth.Resource, "authorization_servers": []string{mcpauth.Issuer}, "scopes_supported": mcpauth.Scopes, "bearer_methods_supported": []string{"header"}})
 }
 func (a *MCPAuth) serverMetadata(c *fiber.Ctx) error {
+	methods := []string{"none"}
+	scopes := append([]string(nil), mcpauth.Scopes...)
+	if a.service.AlexaClient != nil {
+		methods = append(methods, "client_secret_post", "client_secret_basic")
+		scopes = append(scopes, "alexa:chat")
+	}
 	return c.JSON(fiber.Map{
 		"issuer": mcpauth.Issuer, "authorization_endpoint": mcpauth.Issuer + "/oauth/authorize", "token_endpoint": mcpauth.Issuer + "/oauth/token", "registration_endpoint": mcpauth.Issuer + "/oauth/register", "revocation_endpoint": mcpauth.Issuer + "/oauth/revoke",
-		"response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "token_endpoint_auth_methods_supported": []string{"none"}, "revocation_endpoint_auth_methods_supported": []string{"none"}, "code_challenge_methods_supported": []string{"S256"}, "scopes_supported": mcpauth.Scopes, "authorization_response_iss_parameter_supported": true})
+		"response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "token_endpoint_auth_methods_supported": methods, "revocation_endpoint_auth_methods_supported": methods, "code_challenge_methods_supported": []string{"S256"}, "scopes_supported": scopes, "authorization_response_iss_parameter_supported": true})
 }
 func oauthError(c *fiber.Ctx, e error) error {
 	code := "server_error"

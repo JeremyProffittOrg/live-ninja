@@ -68,6 +68,23 @@ func TestInvokeUnknownTool(t *testing.T) {
 	assert.Equal(t, 404, res.StatusCode())
 }
 
+func TestAlexaPrivateTurnDoesNotCreateTranscriptButExplicitNoteStillSaves(t *testing.T) {
+	d := newTestDeps()
+	r := newTestRegistry(t, d)
+	inv := invocation("remember_note", map[string]any{"text": "an explicitly saved private note"})
+	inv.IdempotencyKey = "alexa-private-note"
+	inv.Surface = "alexa"
+	inv.OmitTranscript = true
+	res := r.Invoke(t.Context(), inv)
+	require.True(t, res.OK, "%+v", res.Error)
+	turns, err := d.Store.QuerySessionLog(t.Context(), inv.UserID, inv.SessionID)
+	require.NoError(t, err)
+	require.Empty(t, turns)
+	notes, err := d.Store.QueryNotes(t.Context(), inv.UserID, "")
+	require.NoError(t, err)
+	require.Len(t, notes, 1)
+}
+
 func TestInvokeRequiresUserContext(t *testing.T) {
 	r := newTestRegistry(t, newTestDeps())
 	inv := invocation("get_weather", map[string]any{"location": "Austin"})

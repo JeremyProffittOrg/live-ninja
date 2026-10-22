@@ -50,6 +50,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/agentmemory"
+	"github.com/JeremyProffittOrg/live-ninja/internal/alexa"
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/clientver"
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
@@ -104,6 +105,8 @@ type Request struct {
 	PhoneDeadline int64    `json:"phoneDeadline,omitempty"`
 	PhoneSummary  string   `json:"phoneSummary,omitempty"`
 	PhonePayload  string   `json:"phonePayload,omitempty"`
+	AlexaTurn     string   `json:"alexaTurn,omitempty"`
+	AlexaRound    int      `json:"alexaRound,omitempty"`
 }
 
 type turnPayload struct {
@@ -197,6 +200,8 @@ type Response struct {
 	// re-invokes with the results.
 	Text        string                  `json:"text,omitempty"`
 	ToolCalls   []realtime.ChatToolCall `json:"toolCalls,omitempty"`
+	Usage       *realtime.TextUsage     `json:"usage,omitempty"`
+	ModelMs     int64                   `json:"modelMs,omitempty"`
 	AudioBase64 string                  `json:"audioBase64,omitempty"`
 	ContentType string                  `json:"contentType,omitempty"`
 
@@ -237,6 +242,8 @@ type realtimeMintAPI interface {
 }
 
 type broker struct {
+	alexaWork  func(context.Context, alexa.Job) (alexa.Work, error)
+	alexaCall  func(context.Context, realtime.Persona, []realtime.ChatMessage, string, string) (*realtime.TurnResult, error)
 	webSearch  func(context.Context, string, int, time.Time) (*tools.WebResearchResult, error)
 	log        *slog.Logger
 	gate       *realtime.Gate
@@ -337,11 +344,15 @@ func (b *broker) Handle(ctx context.Context, req Request) (resp Response, _ erro
 		resp = b.handlePhoneSession(ctx, l, req)
 		return
 	}
+	if mode == "alexa-turn" {
+		resp = b.handleAlexaTurn(ctx, l, req)
+		return
+	}
 	if mode == "web-search" {
 		resp = b.handleWebSearch(ctx, l, req)
 		return
 	}
-	if !validSurfaces[req.Surface] && !(req.Surface == "phone" && mode == "extract-topics") {
+	if !validSurfaces[req.Surface] && !((req.Surface == "phone" || req.Surface == "alexa") && mode == "extract-topics") {
 		resp = badRequest("surface must be one of: web, android, device")
 		return
 	}
@@ -1145,12 +1156,20 @@ func main() {
 		voiceLiveHost:   os.Getenv("AZURE_VOICELIVE_HOST"),
 		voiceLiveModel:  os.Getenv("AZURE_VOICELIVE_MODEL"),
 		fallback:        fallbackClient,
+		alexaCall:       fallbackClient.AlexaTurn,
 		ddb:             ddb,
 		table:           appCfg.TableName,
 		settings:        ddb, // *dynamodb.Client satisfies SettingsGetter (GetItem)
 		phoneStore:      store.NewWithClient(ddb, appCfg.TableName),
 		memory:          agentmemory.NewFromAWSConfig(awsCfg, agentmemory.ConfigFromEnv(), logger),
 		bridgeBaseURL:   os.Getenv("NOVA_BRIDGE_URL"),
+	}
+	if os.Getenv("ALEXA_ENABLED") == "true" {
+		if runtime, err := alexa.NewRuntime(ctx); err == nil {
+			b.alexaWork = runtime.Service.CheckWork
+		} else {
+			logger.Error("Alexa broker configuration unavailable")
+		}
 	}
 	wireNovaBridge(b, logger, ctx, appCfg.JWTKmsKeyID)
 	lambda.Start(b.Handle)

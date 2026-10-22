@@ -22,6 +22,7 @@ import (
 	"html/template"
 	"io"
 	"io/fs"
+	"os"
 	"path"
 	"reflect"
 	"strings"
@@ -261,7 +262,7 @@ func handleConversationPage(deps *Deps) fiber.Handler {
 			return c.Redirect("/", fiber.StatusFound)
 		}
 		c.Set(fiber.HeaderCacheControl, "no-cache")
-		return c.Render("pages/conversation", nil)
+		return c.Render("pages/conversation", fiber.Map{"AlexaEnabled": os.Getenv("ALEXA_ENABLED") == "true"})
 	}
 }
 

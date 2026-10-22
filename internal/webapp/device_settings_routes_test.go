@@ -54,6 +54,7 @@ func newDeviceSettingsApp(t *testing.T, sessionDeviceID string) (*fiber.App, *De
 	app.Put("/api/v1/devices/current", handleRegisterCurrentDevice(deps))
 	app.Get("/api/v1/devices", handleListDevices(deps))
 	app.Patch("/api/v1/devices/:id", handleRenameDevice(deps))
+	app.Post("/api/v1/devices/:id/enable", handleEnableAlexaDevice(deps))
 	app.Get("/api/v1/settings", handleGetSettings(deps))
 	app.Get("/api/v1/settings/sections/:section", handleGetSettingsSection(deps))
 	app.Patch("/api/v1/settings/sections/:section", handlePatchSettingsSection(deps))
@@ -88,6 +89,37 @@ func deviceSettingsRequest(t *testing.T, app *fiber.App, method, path, deviceID,
 		require.NoError(t, json.Unmarshal(raw, &out), string(raw))
 	}
 	return resp, out
+}
+
+func TestAlexaSettingsKeepEchoesIsolatedAndCannotImpersonateAClient(t *testing.T) {
+	app, _, st := newDeviceSettingsApp(t, "")
+	interceptShadowPublish(t)
+	require.NoError(t, st.BindOwner(t.Context(), "amazon-owner", "user-1"))
+	require.NoError(t, st.CreateUser(t.Context(), &store.User{UserID: "user-1", AmazonUserID: "amazon-owner", Role: store.RoleOwner, Status: store.UserStatusActive}))
+	one, err := st.EnsureAlexaDevice(t.Context(), "user-1", "skill", "kitchen")
+	require.NoError(t, err)
+	two, err := st.EnsureAlexaDevice(t.Context(), "user-1", "skill", "office")
+	require.NoError(t, err)
+	seedClientDevice(t, st, "user-1", testDeviceOne, "Browser")
+	resp, _ := deviceSettingsRequest(t, app, http.MethodGet, "/api/v1/settings/sections/persona", one.DeviceID, "", nil)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	body := map[string]any{"version": 1, "operation": "set", "target": map[string]any{"mode": "selected", "deviceIds": []string{one.DeviceID}}, "settings": map[string]any{"persona": map[string]any{"presetId": "custom", "systemInstructions": "Reply warmly and briefly."}}}
+	resp, _ = deviceSettingsRequest(t, app, http.MethodPatch, "/api/v1/settings/sections/persona", "", "", body)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	doc, err := st.GetSettings(t.Context(), "user-1")
+	require.NoError(t, err)
+	assert.NotEqual(t, store.EffectiveSettings(doc, one.DeviceID)["persona"], store.EffectiveSettings(doc, two.DeviceID)["persona"])
+	resp, out := deviceSettingsRequest(t, app, http.MethodGet, "/api/v1/settings/sections/wakeWord", "", "", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Len(t, out["devices"].([]any), 1)
+	body = map[string]any{"version": 2, "operation": "set", "target": map[string]any{"mode": "all", "deviceIds": []string{}}, "settings": map[string]any{"wakeWord": "computer"}}
+	resp, _ = deviceSettingsRequest(t, app, http.MethodPatch, "/api/v1/settings/sections/wakeWord", "", "", body)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.NoError(t, st.RevokeDevice(t.Context(), one.DeviceID))
+	resp, _ = deviceSettingsRequest(t, app, http.MethodPost, "/api/v1/devices/"+one.DeviceID+"/enable", "", "", map[string]any{})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	resp, _ = deviceSettingsRequest(t, app, http.MethodPost, "/api/v1/devices/"+testDeviceOne+"/enable", "", "", map[string]any{})
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
 func TestPhoneSettingsTargetUsesExistingScopedSettings(t *testing.T) {

@@ -83,6 +83,7 @@ func TestAlexaDevicesAreOwnedDistinctAndExplicitlyReenabled(t *testing.T) {
 	_, err = st.EnsureAlexaDevice(ctx, "foreign", "skill", "kitchen")
 	require.ErrorIs(t, err, ErrDeviceOwnership)
 	require.NoError(t, st.RevokeDevice(ctx, one.DeviceID))
+	previousGeneration := one.AlexaGeneration
 	_, err = st.EnsureAlexaDevice(ctx, "owner-1", "skill", "kitchen")
 	require.ErrorIs(t, err, ErrDeviceRevoked)
 	require.Error(t, st.ReenableAlexaDevice(ctx, "foreign", one.DeviceID))
@@ -90,6 +91,7 @@ func TestAlexaDevicesAreOwnedDistinctAndExplicitlyReenabled(t *testing.T) {
 	one, err = st.EnsureAlexaDevice(ctx, "owner-1", "skill", "kitchen")
 	require.NoError(t, err)
 	assert.Equal(t, "Kitchen Echo", one.Name)
+	assert.NotEqual(t, previousGeneration, one.AlexaGeneration, "re-enable must invalidate older pending work")
 	doc := DefaultSettings()
 	require.NoError(t, ApplySettingsSection(doc, SettingsSectionPersona, map[string]any{"persona": "friendly"}, []string{one.DeviceID}, false, false, time.Now()))
 	assert.Equal(t, "friendly", EffectiveSettings(doc, one.DeviceID)["persona"])
