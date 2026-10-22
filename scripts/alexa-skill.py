@@ -228,13 +228,21 @@ def listed_skills(api):
     raise Failure("Skill listing exceeded its page ceiling.")
 
 
-def reconcile_skill(api, state, endpoint):
+def matches_draft(manifest):
+    expected, _ = local_files()
+    identity = {key: expected["manifest"][key] for key in ("publishingInformation", "privacyAndCompliance")}
+    custom = manifest.get("apis", {}).get("custom", {})
+    return contains_expected(manifest, identity) and set(manifest.get("apis", {})) == {"custom"} and not manifest.get("permissions") and not custom.get("endpoint") and not custom.get("regions")
+
+
+def reconcile_skill(api, state, endpoint, allow_unbound=False):
     candidates = []
     listing = listed_skills(api)
     for skill, rows in listing.items():
         if any(row.get("nameByLocale", {}).get("en-US") == "Live Ninja" for row in rows):
             data, _ = api.call(skill_path(skill, "manifest"))
-            if data.get("manifest", {}).get("apis", {}).get("custom", {}).get("endpoint", {}).get("uri") == endpoint:
+            manifest = data.get("manifest", {})
+            if manifest.get("apis", {}).get("custom", {}).get("endpoint", {}).get("uri") == endpoint or allow_unbound and matches_draft(manifest):
                 if any(row.get("stage") != "development" or row.get("publicationStatus") != "DEVELOPMENT" for row in rows):
                     raise Failure("Live Ninja has a public/certification stage; private-development delivery will not adopt it.")
                 candidates.append(skill)
@@ -292,21 +300,34 @@ def configure_link(api, skill):
             raise Failure("Account-link verification failed for " + name)
 
 
-def publish(api):
+def prepare(api):
     ci_only()
     stacks = aws("cloudformation", "describe-stacks", StackName="live-ninja")["Stacks"]
     outputs = {x["OutputKey"]: x["OutputValue"] for x in stacks[0].get("Outputs", [])}
     endpoint = outputs.get("AlexaSkillFunctionArn", "")
-    manifest, model = local_files(endpoint)
+    local_files(endpoint)
     if not endpoint:
         raise Failure("Deploy the real Alexa Lambda before creating the skill.")
     state = json.loads(parameter("delivery-state") or "{}")
-    if state.get("importUncertain"):
-        raise Failure("The last skill package submission has an uncertain result. Reconcile its import ID in Amazon before another submission.")
-    skill = reconcile_skill(api, state, endpoint)
+    # A failed asynchronous creation can return an ID without creating a skill.
+    # Reconcile that terminal result before another create; never replace a
+    # published package or an unknown/in-progress creation.
+    previous = state.get("skillId")
+    if previous and state.get("createAttempted") and not state.get("commit") and previous not in listed_skills(api):
+        failed, _ = api.call(skill_path(previous, "manifest"))
+        if failed.get("manifest", {}).get("lastUpdateRequest", {}).get("status") != "FAILED":
+            raise Failure("Recorded skill creation is not a verified terminal failure; no replacement was created.")
+        state["failedCreation"] = previous
+        for key in ("skillId", "createAttempted", "importUncertain", "importPending", "pendingCommit"):
+            state.pop(key, None)
+        put_parameter("delivery-state", json.dumps(state))
+    skill = reconcile_skill(api, state, endpoint, allow_unbound=True)
     if not skill:
         state["createAttempted"] = True
         put_parameter("delivery-state", json.dumps(state))
+        # Register a real draft without an endpoint. CI then binds the assigned
+        # ID in Lambda before importing the package with its real endpoint.
+        manifest, _ = local_files()
         created, _ = api.call("/v1/skills", "POST", {"vendorId": VENDOR, **manifest})
         skill = created.get("skillId")
         skill_path(skill, "manifest")
@@ -314,6 +335,37 @@ def publish(api):
     put_parameter("delivery-state", json.dumps(state))
     # Persist immediately; a failed package build must never create a new skill.
     put_parameter("skill-id", skill)
+    deadline = time.monotonic()+120
+    while time.monotonic() < deadline:
+        data, _ = api.call(skill_path(skill, "manifest"))
+        manifest = data.get("manifest", {})
+        if matches_draft(manifest) or manifest.get("apis", {}).get("custom", {}).get("endpoint", {}).get("uri") == endpoint:
+            return {"skillId": skill, "endpoint": endpoint, "stage": "development", "prepared": True}
+        if manifest.get("lastUpdateRequest", {}).get("status") == "FAILED":
+            raise Failure("Alexa draft creation failed; the assigned ID is retained for reconciliation.")
+        time.sleep(2)
+    raise Failure("Alexa draft creation did not finish within two minutes; the assigned ID was retained.")
+
+
+def verify_permission(skill):
+    policy = json.loads(aws("lambda", "get-policy", FunctionName="live-ninja-alexa-skill")["Policy"])
+    matching = [s for s in policy["Statement"] if s.get("Principal", {}).get("Service") == "alexa-appkit.amazon.com"]
+    if len(matching) != 1 or matching[0].get("Condition", {}).get("StringEquals", {}).get("lambda:EventSourceToken") != skill:
+        raise Failure("Alexa invoke permission is not restricted to the exact skill ID.")
+
+
+def publish(api):
+    ci_only()
+    stack = aws("cloudformation", "describe-stacks", StackName="live-ninja")["Stacks"][0]
+    endpoint = next((x["OutputValue"] for x in stack.get("Outputs", []) if x["OutputKey"] == "AlexaSkillFunctionArn"), "")
+    manifest, model = local_files(endpoint)
+    state = json.loads(parameter("delivery-state") or "{}")
+    if state.get("importUncertain"):
+        raise Failure("The last skill package submission has an uncertain result. Reconcile its import ID in Amazon before another submission.")
+    skill = reconcile_skill(api, state, endpoint, allow_unbound=True)
+    if not skill:
+        raise Failure("Prepare the private skill and bind its exact Lambda permission before publishing.")
+    verify_permission(skill)
     if state.get("importPending"):
         try:
             poll_import(api, state["importPending"])
@@ -334,7 +386,14 @@ def publish(api):
     state["pendingCommit"] = os.environ.get("GITHUB_SHA")
     state["importUncertain"] = True
     put_parameter("delivery-state", json.dumps(state))
-    _, headers = api.call("/v1/skills/"+skill+"/imports", "POST", {"location": upload["uploadUrl"]})
+    try:
+        _, headers = api.call("/v1/skills/"+skill+"/imports", "POST", {"location": upload["uploadUrl"]})
+    except HTTPFailure as error:
+        if 400 <= error.status < 500 and error.status not in (408, 429):
+            state["importUncertain"] = False
+            state["lastImportRejection"] = error.status
+            put_parameter("delivery-state", json.dumps(state))
+        raise
     location = next((v for k, v in headers.items() if k.lower() == "location"), "")
     state["importPending"] = location
     state["importUncertain"] = False
@@ -364,10 +423,7 @@ def deployment(api):
     _, expected = local_files(endpoint)
     if not contains_expected(actual.get("interactionModel"), expected["interactionModel"]):
         raise Failure("Deployed interaction model differs from this commit.")
-    policy = json.loads(aws("lambda", "get-policy", FunctionName="live-ninja-alexa-skill")["Policy"])
-    matching = [s for s in policy["Statement"] if s.get("Principal", {}).get("Service") == "alexa-appkit.amazon.com"]
-    if len(matching) != 1 or matching[0].get("Condition", {}).get("StringEquals", {}).get("lambda:EventSourceToken") != skill:
-        raise Failure("Alexa invoke permission is not restricted to the exact skill ID.")
+    verify_permission(skill)
     config = aws("lambda", "get-function-configuration", FunctionName="live-ninja-alexa-skill")
     worker = aws("lambda", "get-function-configuration", FunctionName="live-ninja-alexa-chat-worker")
     for function in (config, worker):
@@ -569,7 +625,7 @@ def write_evidence(path, value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["validate-local", "preflight", "publish", "verify-deployment", "stack-config", "simulate", "latency", "acceptance", "delivery"])
+    parser.add_argument("action", choices=["validate-local", "preflight", "prepare", "publish", "verify-deployment", "stack-config", "simulate", "latency", "acceptance", "delivery"])
     parser.add_argument("--evidence")
     args = parser.parse_args()
     local_files()
@@ -599,6 +655,8 @@ def main():
                 result = {"vendorId": VENDOR, "localASKAccess": "verified", "ciCredentialNames": "present", "ciCredentialValidity": "verified only by the GitHub publish step"}
             else:
                 result = {"vendorId": VENDOR, "publishingAccess": "verified"}
+        elif args.action == "prepare":
+            result = prepare(api)
         elif args.action == "publish":
             result = publish(api)
         elif args.action in {"simulate", "latency"}:

@@ -73,12 +73,100 @@ class DeliveryTests(unittest.TestCase):
         with self.assertRaises(delivery.Failure):
             delivery.reconcile_skill(EmptyAPI(), {"createAttempted": True}, "endpoint")
 
+    def test_prepare_recovers_only_a_terminal_failed_creation(self):
+        import json
+        old, new = "amzn1.ask.skill.failed", "amzn1.ask.skill.draft"
+        endpoint = "arn:aws:lambda:us-east-1:759775734231:function:live-ninja-alexa-skill"
+        for status in ("FAILED", "IN_PROGRESS"):
+            with self.subTest(status=status):
+                values = {"delivery-state": json.dumps({"skillId": old, "createAttempted": True, "importUncertain": True, "buildAttempts": 1})}
+                created = []
+                class API:
+                    def call(self, path, method="GET", body=None):
+                        if path.startswith("/v1/skills?"):
+                            return {"skills": [], "isTruncated": False}, {}
+                        if path == delivery.skill_path(old, "manifest"):
+                            return {"manifest": {"lastUpdateRequest": {"status": status}}}, {}
+                        if path == "/v1/skills" and method == "POST":
+                            created.append(body)
+                            return {"skillId": new}, {}
+                        if path == delivery.skill_path(new, "manifest"):
+                            return delivery.local_files()[0], {}
+                        raise AssertionError("Unexpected bootstrap operation: " + path)
+                with patch.object(delivery, "ci_only"), patch.object(delivery, "parameter", side_effect=values.get), patch.object(delivery, "put_parameter", side_effect=values.__setitem__), patch.object(delivery, "aws", return_value={"Stacks": [{"Outputs": [{"OutputKey": "AlexaSkillFunctionArn", "OutputValue": endpoint}]}]}):
+                    if status != "FAILED":
+                        with self.assertRaises(delivery.Failure):
+                            delivery.prepare(API())
+                        self.assertFalse(created)
+                        continue
+                    result = delivery.prepare(API())
+                self.assertEqual(new, result["skillId"])
+                self.assertNotIn("endpoint", created[0]["manifest"]["apis"]["custom"])
+                saved = json.loads(values["delivery-state"])
+                self.assertEqual(old, saved["failedCreation"])
+                self.assertFalse(saved.get("importUncertain", False))
+                self.assertEqual(new, values["skill-id"])
+
+    def test_recorded_draft_must_match_the_application_manifest(self):
+        import copy
+        skill = "amzn1.ask.skill.draft"
+        manifest = delivery.local_files()[0]
+        class API:
+            def call(self, path):
+                if path.startswith("/v1/skills?"):
+                    return {"skills": [{"skillId": skill, "stage": "development", "publicationStatus": "DEVELOPMENT", "nameByLocale": {"en-US": "Live Ninja"}}]}, {}
+                return manifest, {}
+        self.assertEqual(skill, delivery.reconcile_skill(API(), {"skillId": skill}, "endpoint", allow_unbound=True))
+        manifest = copy.deepcopy(manifest)
+        manifest["manifest"]["privacyAndCompliance"]["locales"]["en-US"]["privacyPolicyUrl"] = "https://other.invalid/privacy"
+        with self.assertRaises(delivery.Failure):
+            delivery.reconcile_skill(API(), {"skillId": skill}, "endpoint", allow_unbound=True)
+
+    def test_publish_requires_exact_permission_before_package_submission(self):
+        import json
+        from unittest.mock import Mock
+        skill = "amzn1.ask.skill.draft"
+        api = Mock()
+        api.call.side_effect = AssertionError("Package submitted before permission verification")
+        endpoint = "arn:aws:lambda:us-east-1:759775734231:function:live-ninja-alexa-skill"
+        def aws(service, operation, **params):
+            if operation == "describe-stacks":
+                return {"Stacks": [{"Outputs": [{"OutputKey": "AlexaSkillFunctionArn", "OutputValue": endpoint}]}]}
+            return {"Policy": json.dumps({"Statement": [{"Principal": {"Service": "alexa-appkit.amazon.com"}, "Condition": {"StringEquals": {"lambda:EventSourceToken": "different-skill"}}}]})}
+        with patch.object(delivery, "ci_only"), patch.object(delivery, "parameter", return_value=json.dumps({"skillId": skill})), patch.object(delivery, "reconcile_skill", return_value=skill), patch.object(delivery, "aws", side_effect=aws), patch.object(delivery, "put_parameter"):
+            with self.assertRaises(delivery.Failure):
+                delivery.publish(api)
+        api.call.assert_not_called()
+
     def test_import_failure_is_terminal(self):
         class FailedAPI:
             def call(self, path): return {"status": "FAILED"}, {}
         with self.assertRaises(delivery.Failure), patch.object(delivery.time, "sleep") as sleep:
             delivery.poll_import(FailedAPI(), "/v1/skills/imports/test-id")
         sleep.assert_not_called()
+
+    def test_import_client_rejection_is_distinct_from_unknown_failure(self):
+        import json
+        skill = "amzn1.ask.skill.draft"
+        endpoint = "arn:aws:lambda:us-east-1:759775734231:function:live-ninja-alexa-skill"
+        for status in (404, 503):
+            with self.subTest(status=status):
+                values = {"delivery-state": json.dumps({"skillId": skill})}
+                class API:
+                    def call(self, path, method="GET", body=None):
+                        if path == "/v1/skills/uploads":
+                            return {"uploadUrl": "https://package.s3.amazonaws.com/synthetic.zip"}, {}
+                        raise delivery.HTTPFailure(status)
+                def aws(service, operation, **params):
+                    if operation == "describe-stacks":
+                        return {"Stacks": [{"Outputs": [{"OutputKey": "AlexaSkillFunctionArn", "OutputValue": endpoint}]}]}
+                    return {"Policy": json.dumps({"Statement": [{"Principal": {"Service": "alexa-appkit.amazon.com"}, "Condition": {"StringEquals": {"lambda:EventSourceToken": skill}}}]})}
+                with patch.object(delivery, "ci_only"), patch.object(delivery, "parameter", side_effect=values.get), patch.object(delivery, "put_parameter", side_effect=values.__setitem__), patch.object(delivery, "reconcile_skill", return_value=skill), patch.object(delivery, "aws", side_effect=aws), patch.object(delivery, "request"):
+                    with self.assertRaises(delivery.HTTPFailure):
+                        delivery.publish(API())
+                saved = json.loads(values["delivery-state"])
+                self.assertEqual(status == 503, saved["importUncertain"])
+                self.assertEqual(1, saved["buildAttempts"])
 
     def test_redirects_bind_the_verified_vendor(self):
         redirects = delivery.redirect_uris(delivery.VENDOR)

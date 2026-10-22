@@ -481,7 +481,7 @@ jobs:
           sam validate --lint --template-file template.yaml
           bash scripts/deploy-stack.sh
 
-      - name: Publish private Alexa development package
+      - name: Prepare private Alexa development skill
         id: alexa
         env:
           ALEXA_SMAPI_CLIENT_ID: ${{ vars.ALEXA_SMAPI_CLIENT_ID }}
@@ -491,14 +491,14 @@ jobs:
           set -eu
           if [ -z "$ALEXA_SMAPI_CLIENT_ID$ALEXA_SMAPI_CLIENT_SECRET$ALEXA_SMAPI_REFRESH_TOKEN" ]; then
             echo 'Alexa package publishing is blocked: dedicated CI credentials are missing. Runtime follows the recorded stack configuration; an empty bootstrap is disabled.' >> "$GITHUB_STEP_SUMMARY"
-            echo 'published=false' >> "$GITHUB_OUTPUT"
+            echo 'prepared=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          python -B scripts/alexa-skill.py publish --evidence artifacts/alexa-package.json
-          echo 'published=true' >> "$GITHUB_OUTPUT"
+          python -B scripts/alexa-skill.py prepare --evidence artifacts/alexa-draft.json
+          echo 'prepared=true' >> "$GITHUB_OUTPUT"
 
-      - name: Apply exact Alexa skill permission and verify delivery
-        if: steps.alexa.outputs.published == 'true'
+      - name: Bind, publish and verify private Alexa skill
+        if: steps.alexa.outputs.prepared == 'true'
         env:
           DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
           CERTIFICATE_ARN: ${{ vars.CERTIFICATE_ARN }}
@@ -515,6 +515,8 @@ jobs:
           ALEXA_SMAPI_REFRESH_TOKEN: ${{ secrets.ALEXA_SMAPI_REFRESH_TOKEN }}
         run: |
           set -eu
+          bash scripts/deploy-stack.sh
+          python -B scripts/alexa-skill.py publish --evidence artifacts/alexa-package.json
           bash scripts/deploy-stack.sh
           python -B scripts/alexa-skill.py verify-deployment --evidence artifacts/alexa-deployment.json
 
