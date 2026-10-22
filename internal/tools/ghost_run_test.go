@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,26 @@ import (
 )
 
 const ghostRunRepos = `{"repos":[{"repo":"JeremyProffittOrg/live-ninja"},{"repo":"JeremyProffittOrg/ghost-cli"}]}`
+
+func TestAlexaGhostProposalCannotSurviveConversationOrSettingsChange(t *testing.T) {
+	f := ghostRunFake(t)
+	deps, _ := ghostDeps(f)
+	r := newTestRegistry(t, deps)
+	inv := ghostOwnerInvocation("ghost_run_start", "alexa-propose", ghostRunArgs(nil))
+	inv.Surface, inv.Scope, inv.ConfirmationContext = "alexa", "alexa:chat", strings.Repeat("a", 64)
+	proposal := r.Invoke(t.Context(), inv)
+	terr := requireToolError(t, proposal, CodeConfirmationRequired)
+	id := terr.Details["proposalId"].(string)
+	inv.Args = ghostConfirmArgs(ghostRunArgs(nil), id)
+	inv.IdempotencyKey = "new-session-or-settings"
+	inv.ConfirmationContext = strings.Repeat("b", 64)
+	requireToolError(t, r.Invoke(t.Context(), inv), CodeInvalidArgs)
+	require.Empty(t, f.callsTo("POST", "/schedule"))
+	inv.ConfirmationContext = strings.Repeat("a", 64)
+	inv.IdempotencyKey = "same-context"
+	require.True(t, r.Invoke(t.Context(), inv).OK)
+	require.Len(t, f.callsTo("POST", "/schedule"), 1)
+}
 
 func ghostRunFake(t *testing.T) *ghostFake {
 	t.Helper()

@@ -160,6 +160,26 @@ func TestContractSingleOwnerConcurrencyAndExpiredWorkerCleanup(t *testing.T) {
 	}
 }
 
+func TestContractWorkerCrashCannotReplayUncertainActions(t *testing.T) {
+	s, id, now, _, _ := serviceFixture(t)
+	view, err := s.Submit(t.Context(), id, "crash-request", "session", "Do the requested work")
+	require.NoError(t, err)
+	job := Job{Owner: id.Owner, Turn: view.Receipt}
+	calls := 0
+	s.Run = func(context.Context, Work) (RunResult, error) {
+		calls++
+		panic("worker process terminated after a possible side effect")
+	}
+	require.Panics(t, func() { _ = s.Execute(t.Context(), job) })
+	require.NoError(t, s.Execute(t.Context(), job))
+	require.Equal(t, 1, calls)
+	*now = now.Add(40 * time.Second)
+	status, err := s.Status(t.Context(), id)
+	require.NoError(t, err)
+	require.Equal(t, "failed", status.State)
+	require.Contains(t, status.Text, "will not repeat")
+}
+
 func TestContractAccountDeletionFencePreventsStateRecreation(t *testing.T) {
 	s, id, _, _, _ := serviceFixture(t)
 	db := s.Repo.(*Dynamo).DB.(*testutil.FakeDynamo)

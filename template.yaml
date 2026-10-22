@@ -7,6 +7,24 @@ Description: >
   pipeline, IoT baseline, CloudFront + Route 53 edge, alarms and budgets.
 
 Parameters:
+  AlexaSkillId:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^amzn1\.ask\.skill\.[a-zA-Z0-9-]+$'
+  AlexaEnabled:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Admit linked private Alexa conversations; false is the reversible kill switch.
+  AlexaTrialMode:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Block tool actions during the bounded initial conversation acceptance trial.
+  AlexaDeployCommit:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[0-9a-f]{40}$'
   JobsSchedulingEnabled:
     Type: String
     Default: 'false'
@@ -277,6 +295,7 @@ Globals:
         LOG_LEVEL: debug
 
 Conditions:
+  AlexaSkillConfigured: !Not [!Equals [!Ref AlexaSkillId, '']]
   JobsSchedulerEnabled: !Equals [!Ref JobsSchedulingEnabled, 'true']
   # Empty IotAuthorizerSigningPublicKey keeps SigningDisabled true on the
   # existing authorizer live-ninja-iot. Do not set that parameter: AWS IoT
@@ -363,6 +382,9 @@ Resources:
           PORT: "8080"
           RUST_LOG: info
           JOBS_SCHEDULING_ENABLED: !Ref JobsSchedulingEnabled
+          ALEXA_SKILL_ID: !Ref AlexaSkillId
+          ALEXA_ENABLED: !Ref AlexaEnabled
+          ALEXA_TRIAL_MODE: !Ref AlexaTrialMode
           DOMAIN_NAME: !Ref DomainName
           EMAIL_QUEUE_URL: !Ref EmailQueue
           JWT_KMS_KEY_ID: !GetAtt JwtKey.Arn
@@ -455,6 +477,7 @@ Resources:
           - ssm:GetParameters
           Resource:
           - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/lwa/*"
+          - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/alexa/oauth-client"
           - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/iot/authorizer_signing_private_key"
         - Sid: SsmSecureStringDecrypt
           Effect: Allow
@@ -812,6 +835,9 @@ Resources:
       Environment:
         Variables:
           OPENAI_REALTIME_MODEL: !Ref OpenAIRealtimeModel
+          ALEXA_SKILL_ID: !Ref AlexaSkillId
+          ALEXA_ENABLED: !Ref AlexaEnabled
+          ALEXA_QUEUE_URL: !Ref AlexaTurnQueue
           # M13: Gemini Live model for gemini-flash-live-pinned devices.
           GEMINI_LIVE_MODEL: !Ref GeminiLiveModel
           # agentcore-memory: one RetrieveMemoryRecords per mint (400 ms budget)
@@ -883,6 +909,10 @@ Resources:
           - ssm:GetParameter
           Resource:
           - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/openai/api_key"
+        - Sid: AlexaClientConfiguration
+          Effect: Allow
+          Action: ssm:GetParameter
+          Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/alexa/oauth-client"
         - Sid: GeminiKeyParam
           Effect: Allow
           Action:
@@ -904,6 +934,167 @@ Resources:
             StringEquals:
               kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
 
+  AlexaSkillLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /live-ninja/lambda/alexa-skill
+      RetentionInDays: 7
+  AlexaWorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /live-ninja/lambda/alexa-chat-worker
+      RetentionInDays: 7
+  AlexaTurnDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: live-ninja-alexa-turn-dlq
+      MessageRetentionPeriod: 604800
+      SqsManagedSseEnabled: true
+  AlexaTurnQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: live-ninja-alexa-turn
+      VisibilityTimeout: 210
+      MessageRetentionPeriod: 3600
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt AlexaTurnDeadLetterQueue.Arn
+        maxReceiveCount: 3
+  AlexaSkillFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: live-ninja-alexa-skill
+      Description: Private ASK adapter; no model or tool credentials.
+      CodeUri: .build/alexa-skill/
+      Timeout: 7
+      MemorySize: 512
+      LoggingConfig:
+        LogGroup: !Ref AlexaSkillLogGroup
+      Environment:
+        Variables:
+          ALEXA_SKILL_ID: !Ref AlexaSkillId
+          ALEXA_ENABLED: !Ref AlexaEnabled
+          ALEXA_DEPLOYED_COMMIT: !Ref AlexaDeployCommit
+          ALEXA_QUEUE_URL: !Ref AlexaTurnQueue
+      Policies:
+      - Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:ConditionCheckItem]
+          Resource: !GetAtt Table.Arn
+        - Effect: Allow
+          Action: ssm:GetParameter
+          Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/alexa/oauth-client'
+        - Effect: Allow
+          Action: sqs:SendMessage
+          Resource: !GetAtt AlexaTurnQueue.Arn
+  AlexaSkillInvokePermission:
+    Type: AWS::Lambda::Permission
+    Condition: AlexaSkillConfigured
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref AlexaSkillFunction
+      Principal: alexa-appkit.amazon.com
+      EventSourceToken: !Ref AlexaSkillId
+  AlexaChatWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: live-ninja-alexa-chat-worker
+      CodeUri: .build/alexa-chat-worker/
+      Description: Durable Alexa text turns through the shared broker and tool registry.
+      Timeout: 35
+      MemorySize: 512
+      LoggingConfig:
+        LogGroup: !Ref AlexaWorkerLogGroup
+      Environment:
+        Variables:
+          ALEXA_SKILL_ID: !Ref AlexaSkillId
+          ALEXA_ENABLED: !Ref AlexaEnabled
+          ALEXA_QUEUE_URL: !Ref AlexaTurnQueue
+          ALEXA_TRIAL_MODE: !Ref AlexaTrialMode
+          ALEXA_DEPLOYED_COMMIT: !Ref AlexaDeployCommit
+          BROKER_FUNCTION_NAME: !Ref RealtimeBrokerFunction
+          EMAIL_QUEUE_URL: !Ref EmailQueue
+          OWNER_EMAIL: proffitt.jeremy@gmail.com
+          RCA_QUEUE_URL: !Ref RcaQueue
+          CODE_UPDATE_QUEUE_URL: !Ref CodeUpdateQueue
+          GHOST_COMMAND_FUNCTION_ARN: !Ref GhostCommandFunctionArn
+          PHONE_MESSAGES_FUNCTION_ARN: !Sub 'arn:${AWS::Partition}:lambda:us-east-1:${AWS::AccountId}:function:live-ninja-phone-trial-recorder'
+          KNOWLEDGE_QUERY_QUEUE_URL: !Sub 'https://sqs.${AWS::Region}.amazonaws.com/${AWS::AccountId}/${KnowledgeQueryRequestQueueName}'
+          KNOWLEDGE_RESULTS_TABLE: !Ref KnowledgeQueryResultsTableName
+          SCHEDULER_GROUP: !Ref SchedulerGroup
+          SCHEDULER_ROLE_ARN: !GetAtt SchedulerRole.Arn
+          DELIVERABLES_BUCKET: !Ref DeliverablesBucket
+          ZIPPER_FUNCTION_NAME: !Ref DeliverablesZipperFunction
+          AGENTCORE_MEMORY_ID: !GetAtt AgentCoreMemory.MemoryId
+          AGENTCORE_MEMORY_MODE: !Ref AgentCoreMemoryMode
+          JOBS_SCHEDULING_ENABLED: !Ref JobsSchedulingEnabled
+      Events:
+        Turn:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt AlexaTurnQueue.Arn
+            BatchSize: 1
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            ScalingConfig:
+              MaximumConcurrency: 2
+      Policies:
+      - Version: '2012-10-17'
+        Statement:
+        - Sid: AlexaTable
+          Effect: Allow
+          Action: [dynamodb:GetItem, dynamodb:BatchGetItem, dynamodb:Query, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:BatchWriteItem, dynamodb:ConditionCheckItem]
+          Resource: [!GetAtt Table.Arn, !Sub '${Table.Arn}/index/*']
+        - Sid: AlexaClientConfig
+          Effect: Allow
+          Action: ssm:GetParameter
+          Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/live-ninja/prod/alexa/oauth-client'
+        - Sid: AlexaToolQueues
+          Effect: Allow
+          Action: sqs:SendMessage
+          Resource: [!GetAtt EmailQueue.Arn, !GetAtt RcaQueue.Arn, !GetAtt CodeUpdateQueue.Arn, !Sub 'arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:${KnowledgeQueryRequestQueueName}']
+        - Sid: AlexaKnowledgeResult
+          Effect: Allow
+          Action: dynamodb:GetItem
+          Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${KnowledgeQueryResultsTableName}'
+        - Sid: AlexaToolFunctions
+          Effect: Allow
+          Action: lambda:InvokeFunction
+          Resource: [!GetAtt RealtimeBrokerFunction.Arn, !GetAtt DeliverablesZipperFunction.Arn, !Ref GhostCommandFunctionArn, !Sub 'arn:${AWS::Partition}:lambda:us-east-1:${AWS::AccountId}:function:live-ninja-phone-trial-recorder']
+        - Sid: AlexaDeviceNotify
+          Effect: Allow
+          Action: iot:Publish
+          Resource: !Sub 'arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:topic/liveninja/*'
+        - Sid: AlexaIotDiscovery
+          Effect: Allow
+          Action: iot:DescribeEndpoint
+          Resource: '*'
+        - Sid: AlexaTimer
+          Effect: Allow
+          Action: scheduler:CreateSchedule
+          Resource: !Sub 'arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/live-ninja/*'
+        - Sid: AlexaTimerRole
+          Effect: Allow
+          Action: iam:PassRole
+          Resource: !GetAtt SchedulerRole.Arn
+          Condition:
+            StringEquals:
+              iam:PassedToService: scheduler.amazonaws.com
+        - Sid: AlexaFiles
+          Effect: Allow
+          Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+          Resource: !Sub '${DeliverablesBucket.Arn}/deliverables/*'
+        - Sid: AlexaFileList
+          Effect: Allow
+          Action: s3:ListBucket
+          Resource: !GetAtt DeliverablesBucket.Arn
+          Condition:
+            StringLike:
+              s3:prefix: 'deliverables/*'
+        - Sid: AlexaMemory
+          Effect: Allow
+          Action: [bedrock-agentcore:CreateEvent, bedrock-agentcore:RetrieveMemoryRecords, bedrock-agentcore:ListMemoryRecords, bedrock-agentcore:GetMemoryRecord, bedrock-agentcore:DeleteMemoryRecord, bedrock-agentcore:BatchDeleteMemoryRecords]
+          Resource: !GetAtt AgentCoreMemory.MemoryArn
   IotIngestFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -3191,6 +3382,12 @@ Resources:
           Address: proffitt.jeremy@gmail.com
 
 Outputs:
+  AlexaSkillFunctionArn:
+    Value: !GetAtt AlexaSkillFunction.Arn
+  AlexaWorkerFunctionArn:
+    Value: !GetAtt AlexaChatWorkerFunction.Arn
+  AlexaQueueUrl:
+    Value: !Ref AlexaTurnQueue
   AgentCoreMemoryId:
     Description: agentcore-memory - the memory id (plan.md memory-resource definition of done)
     Value: !GetAtt AgentCoreMemory.MemoryId

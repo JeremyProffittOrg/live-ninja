@@ -41,6 +41,11 @@ func (c *FallbackClient) AlexaTurn(ctx context.Context, persona Persona, message
 	if err != nil {
 		return nil, err
 	}
+	// Bytes are a conservative upper bound on text tokens. This ceiling also
+	// makes the five-round acceptance allowance enforceable before a paid turn.
+	if len(body) > 128<<10 {
+		return nil, fmt.Errorf("Alexa request exceeds its bounded prompt budget")
+	}
 	raw, err := c.doJSONRetries(ctx, c.chatURL, "application/json", body, nil)
 	if err != nil {
 		return nil, err

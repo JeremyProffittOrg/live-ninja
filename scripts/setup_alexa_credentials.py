@@ -158,7 +158,10 @@ def main():
             raise RuntimeError("Some publishing values already exist. Use normal entry for missing values; this mode will not replace configured credentials.")
         print("Create a dedicated LWA security profile for Live Ninja publishing. In its Web Settings, add this exact Allowed Return URL: " + CALLBACK)
         client_id, client_secret = read_value(FIELDS[0][1]), read_value(FIELDS[1][1])
-        token = authorize(client_id, client_secret) if client_id and client_secret else ""
+        if not client_id or not client_secret:
+            print("SKIP: authorization was not started; all GitHub values remain unchanged.")
+            return 2
+        token = authorize(client_id, client_secret)
         for (kind, name), value in zip(FIELDS, (client_id, client_secret, token)):
             write_value(kind, name, value)
     else:

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,6 +166,9 @@ func TestAlexaTurnDoesNotRetryUncertainProviderWork(t *testing.T) {
 	_, err := c.AlexaTurn(t.Context(), ResolvePersona("friendly"), []ChatMessage{{Role: "user", Content: "Hello"}}, "", "gpt-6-luna")
 	require.Error(t, err)
 	assert.Equal(t, 1, calls)
+	_, err = c.AlexaTurn(t.Context(), ResolvePersona("friendly"), []ChatMessage{{Role: "user", Content: strings.Repeat("a", 128<<10)}}, "", "gpt-6-luna")
+	require.Error(t, err)
+	assert.Equal(t, 1, calls, "oversized acceptance prompt must not create another charge")
 }
 
 const groundedSearchFixture = `{"status":"completed","output":[{"type":"web_search_call","status":"completed"},{"type":"message","content":[{"type":"output_text","text":"A dated public news report.","annotations":[{"type":"url_citation","title":"Public evidence","url":"https://news.example/evidence"}]}]}]}`

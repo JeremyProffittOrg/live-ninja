@@ -72,6 +72,15 @@ func ghostProposalHash(operation string, binding map[string]any) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func ghostInvocationProposalHash(inv Invocation, operation string, binding map[string]any) string {
+	hash := ghostProposalHash(operation, binding)
+	if inv.Surface != "alexa" {
+		return hash
+	}
+	sum := sha256.Sum256([]byte("live-ninja/alexa-proposal\x00" + hash + "\x00" + inv.ConfirmationContext))
+	return hex.EncodeToString(sum[:])
+}
+
 func ghostNewProposalID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -103,6 +112,9 @@ func ghostProposalDeleter(d *Deps) ghostProposalStore {
 // to. The registry releases the IDEMP# claim for confirmation_required, so the
 // confirmed retry uses a fresh key.
 func ghostIssueProposal(ctx context.Context, d *Deps, inv Invocation, operation, message string, proposed, binding map[string]any) *ToolError {
+	if inv.Surface == "alexa" && len(inv.ConfirmationContext) != 64 {
+		return toolErrf(CodeForbidden, "Alexa conversation authority is missing; nothing was proposed")
+	}
 	if d.Store == nil || ghostProposalDeleter(d) == nil {
 		return toolErrf(CodeNotConfigured, "the confirmation store is not configured, so %s cannot be proposed", operation)
 	}
@@ -115,7 +127,7 @@ func ghostIssueProposal(ctx context.Context, d *Deps, inv Invocation, operation,
 	expires := now.Add(ghostProposalTTL)
 	err = d.Store.ConditionalPut(ctx, ghostProposalPK(inv.UserID, id), ghostProposalSK, map[string]any{
 		"operation": operation,
-		"hash":      ghostProposalHash(operation, binding),
+		"hash":      ghostInvocationProposalHash(inv, operation, binding),
 		"userId":    inv.UserID,
 		"tool":      inv.Tool,
 		"createdAt": now.UTC().Format(time.RFC3339),
@@ -167,7 +179,7 @@ func ghostConsumeProposal(ctx context.Context, d *Deps, inv Invocation, operatio
 	if exp, ok := ghostItemInt64(item["expiresAt"]); !ok || !d.Now().Before(time.Unix(exp, 0)) {
 		return toolErrf(CodeNotFound, "that proposal expired (they last %d minutes); call %s without confirm to get a fresh one and read it back", int(ghostProposalTTL.Minutes()), operation)
 	}
-	hash := ghostProposalHash(operation, binding)
+	hash := ghostInvocationProposalHash(inv, operation, binding)
 	if stored, _ := item["hash"].(string); stored != hash {
 		return toolErrf(CodeInvalidArgs, "the confirmed arguments differ from the proposal that was read back; nothing was sent. Call %s without confirm so the owner hears the exact change, then confirm that proposalId", operation)
 	}

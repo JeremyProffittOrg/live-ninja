@@ -85,6 +85,19 @@ func TestAlexaPrivateTurnDoesNotCreateTranscriptButExplicitNoteStillSaves(t *tes
 	require.Len(t, notes, 1)
 }
 
+func TestAlexaToolAuditUsesDeviceRetention(t *testing.T) {
+	d := newTestDeps()
+	r := newTestRegistry(t, d)
+	inv := invocation("recall_note", map[string]any{"query": "tea"})
+	inv.Surface = "alexa"
+	inv.TranscriptExpiresAt = time.Now().Add(7 * 24 * time.Hour)
+	_ = r.Invoke(t.Context(), inv)
+	items, err := d.Store.QueryUserPartition(t.Context(), inv.UserID)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.EqualValues(t, inv.TranscriptExpiresAt.Unix(), items[0]["ttl"])
+}
+
 func TestInvokeRequiresUserContext(t *testing.T) {
 	r := newTestRegistry(t, newTestDeps())
 	inv := invocation("get_weather", map[string]any{"location": "Austin"})

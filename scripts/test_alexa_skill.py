@@ -12,6 +12,71 @@ spec = importlib.util.spec_from_file_location("alexa_setup", Path(__file__).with
 setup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(setup)
 
+delivery_spec = importlib.util.spec_from_file_location("alexa_delivery", Path(__file__).with_name("alexa-skill.py"))
+delivery = importlib.util.module_from_spec(delivery_spec)
+delivery_spec.loader.exec_module(delivery)
+
+
+class DeliveryTests(unittest.TestCase):
+    def test_trial_refuses_unreported_usage(self):
+        with patch.object(delivery, "aws", return_value={"Items": [{"reported": {"BOOL": False}}]}):
+            with self.assertRaises(delivery.Failure):
+                delivery.trial_usage("owner", "table")
+
+    def test_simulation_fixture_contains_fifty_bounded_cases(self):
+        import json
+        cases=json.loads((delivery.ROOT/"alexa/simulations.json").read_text())
+        self.assertEqual(50,len(cases))
+        self.assertTrue(all(len(c["utterance"]) < 150 for c in cases))
+        self.assertIn("No I meant West Virginia",[c["utterance"] for c in cases])
+
+    def test_package_uses_real_endpoint_and_dialog(self):
+        import io
+        import json
+        import zipfile
+        manifest, model = delivery.local_files("arn:aws:lambda:us-east-1:759775734231:function:live-ninja-alexa-skill")
+        with zipfile.ZipFile(io.BytesIO(delivery.package(manifest, model))) as archive:
+            self.assertEqual({"skill.json", "interactionModels/custom/en-US.json"}, set(archive.namelist()))
+            data = json.loads(archive.read("interactionModels/custom/en-US.json"))
+            self.assertTrue(data["interactionModel"]["dialog"]["intents"][0]["slots"][0]["elicitationRequired"])
+        with self.assertRaises(delivery.Failure):
+            delivery.local_files("arn:aws:lambda:us-east-1:111111111111:function:live-ninja-alexa-skill")
+
+    def test_uncertain_create_cannot_create_another_skill(self):
+        class EmptyAPI:
+            def call(self, path): return {"skills": [], "isTruncated": False}, {}
+        with self.assertRaises(delivery.Failure):
+            delivery.reconcile_skill(EmptyAPI(), {"createAttempted": True}, "endpoint")
+
+    def test_import_failure_is_terminal(self):
+        class FailedAPI:
+            def call(self, path): return {"status": "FAILED"}, {}
+        with self.assertRaises(delivery.Failure), patch.object(delivery.time, "sleep") as sleep:
+            delivery.poll_import(FailedAPI(), "/v1/skills/imports/test-id")
+        sleep.assert_not_called()
+
+    def test_redirects_bind_the_verified_vendor(self):
+        redirects = delivery.redirect_uris(delivery.VENDOR)
+        self.assertEqual(3, len(redirects))
+        self.assertTrue(all(r.endswith("/api/skill/link/M3M80BVXTGPEZW") for r in redirects))
+        with self.assertRaises(delivery.Failure):
+            delivery.redirect_uris("unverified")
+
+    def test_simulation_does_not_save_tokens_or_pass_account_link_prompt(self):
+        body = {"id": "simulation", "status": "SUCCESSFUL", "result": {"skillExecutionInfo": {"invocations": [{
+            "invocationRequest": {"body": {"context": {"System": {"user": {"accessToken": "never-save-this"}}}, "request": {"type": "IntentRequest", "requestId": "request-id", "intent": {"name": "ChatIntent", "slots": {"query": {"value": "two plus two"}}}}}},
+            "invocationResponse": {"body": {"response": {"card": {"type": "LinkAccount"}, "outputSpeech": {"text": "Link your account"}}}},
+            "metrics": {"skillExecutionTimeInMilliseconds": 250}}]}}}
+        import json
+        record = delivery.simulation_record(body, {"expected": "chat"})
+        self.assertNotIn("never-save-this", json.dumps(record))
+        self.assertFalse(record["passed"])
+        self.assertEqual("account_link_required", record["outcome"])
+
+    def test_acceptance_requires_physical_evidence(self):
+        with self.assertRaises(delivery.Failure):
+            delivery.validate_acceptance({"passed": True}, {}, {})
+
 
 class CredentialEntryTests(unittest.TestCase):
     def setUp(self):

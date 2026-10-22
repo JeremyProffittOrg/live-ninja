@@ -2,10 +2,13 @@ package webapp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -34,6 +37,14 @@ func runAlexaTurn(ctx context.Context, deps *Deps, registry *tools.Registry, wor
 	if err := work.Check(ctx); err != nil {
 		return alexa.RunResult{}, err
 	}
+	deps.Log.Info("Alexa turn started", slog.String("receipt", work.Receipt), slog.Int64("queueWaitMs", time.Since(work.Deadline.Add(-alexa.WorkerBudget)).Milliseconds()))
+	binding, _ := json.Marshal(struct {
+		Identity alexa.Identity
+		Session  string
+		Version  int64
+	}{work.Identity, work.SessionID, work.Settings.Version})
+	bindingHash := sha256.Sum256(binding)
+	confirmationContext := hex.EncodeToString(bindingHash[:])
 	ctx = realtime.WithClientCapabilities(ctx, store.SurfaceAlexa, nil)
 	var manifest []struct {
 		Name string `json:"name"`
@@ -75,6 +86,9 @@ func runAlexaTurn(ctx context.Context, deps *Deps, registry *tools.Registry, wor
 		if work.Check(ctx) != nil {
 			return failure(tools.CodeForbidden, "Alexa access or settings changed. No new action was started.")
 		}
+		if os.Getenv("ALEXA_TRIAL_MODE") == "true" {
+			return failure(tools.CodeForbidden, "The setup trial supports conversation only. Complete the Echo test before requesting tool actions.")
+		}
 		if !allowed[call.Name] {
 			return failure(tools.CodeForbidden, "Use the Live Ninja website for this action. It is not available through Alexa.")
 		}
@@ -83,7 +97,7 @@ func runAlexaTurn(ctx context.Context, deps *Deps, registry *tools.Registry, wor
 			return failure(tools.CodeInvalidArgs, "The function arguments were not valid JSON.")
 		}
 		return registry.Invoke(ctx, tools.Invocation{Tool: call.Name, Args: args, IdempotencyKey: fmt.Sprintf("%s#alexa%d-%d#%s", work.Receipt, iter, index, call.ID), CallID: call.ID, TxID: work.Receipt,
-			UserID: work.Identity.Owner, DeviceID: work.Identity.Device, SessionID: work.SessionID, Surface: store.SurfaceAlexa, Role: store.RoleOwner, Scope: "alexa:chat", OmitTranscript: !work.Settings.KeepTranscript})
+			UserID: work.Identity.Owner, DeviceID: work.Identity.Device, SessionID: work.SessionID, Surface: store.SurfaceAlexa, Role: store.RoleOwner, Scope: "alexa:chat", OmitTranscript: !work.Settings.KeepTranscript, TranscriptExpiresAt: time.Now().Add(time.Duration(work.Settings.RetentionDays) * 24 * time.Hour), ConfirmationContext: confirmationContext})
 	})
 	if err != nil {
 		return alexa.RunResult{}, err

@@ -147,6 +147,12 @@ type Invocation struct {
 	// OmitTranscript is derived from trusted surface privacy settings. It cannot
 	// be set in tool arguments. Explicit user-requested storage still operates.
 	OmitTranscript bool `json:"-"`
+	// TranscriptExpiresAt is the trusted surface's shorter transcript policy.
+	// Zero preserves the existing default for other callers.
+	TranscriptExpiresAt time.Time `json:"-"`
+	// ConfirmationContext binds Alexa proposals to the verified conversation,
+	// grant/device generation and settings version. It never comes from a model.
+	ConfirmationContext string `json:"-"`
 }
 
 // Result is the outcome of one tool invocation. It is safe to serialize
@@ -1341,6 +1347,13 @@ func (r *Registry) writeAudit(ctx context.Context, l *slog.Logger, inv Invocatio
 	}
 
 	now := r.deps.Now().UTC()
+	expires := now.Add(auditTTL)
+	if !inv.TranscriptExpiresAt.IsZero() && inv.TranscriptExpiresAt.Before(expires) {
+		expires = inv.TranscriptExpiresAt
+	}
+	if !expires.After(now) {
+		return
+	}
 	seq := int(now.UnixMilli() % 1_000_000)
 	for attempt := 0; attempt < 3; attempt++ {
 		sk := fmt.Sprintf("LOG#%s#%06d", sessionID, (seq+attempt)%1_000_000)
@@ -1354,7 +1367,7 @@ func (r *Registry) writeAudit(ctx context.Context, l *slog.Logger, inv Invocatio
 		if outputSnippet != "" {
 			item["output"] = outputSnippet
 		}
-		err := r.deps.Store.ConditionalPut(ctx, "USER#"+inv.UserID, sk, item, now.Add(auditTTL).Unix())
+		err := r.deps.Store.ConditionalPut(ctx, "USER#"+inv.UserID, sk, item, expires.Unix())
 		if err == nil {
 			return
 		}

@@ -19,7 +19,7 @@ import (
 
 func TestHelpDrawerAlexaMatchesReleasedControls(t *testing.T) {
 	html := readAsset(t, "templates/pages/conversation.html")
-	for _, text := range []string{"{{if .AlexaEnabled}}", "Alexa, open live ninja", "resume conversation", "Disable Alexa", "Enable Alexa", "15 minutes", "Amazon manages its own Alexa voice history"} {
+	for _, text := range []string{"{{if .AlexaEnabled}}", "{{if .AlexaTrialMode}}", "tool actions are paused", "Alexa, open live ninja", "resume conversation", "Disable Alexa", "Enable Alexa", "15 minutes", "Amazon manages its own Alexa voice history"} {
 		assert.Contains(t, html, text)
 	}
 }

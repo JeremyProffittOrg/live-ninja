@@ -262,7 +262,7 @@ func handleConversationPage(deps *Deps) fiber.Handler {
 			return c.Redirect("/", fiber.StatusFound)
 		}
 		c.Set(fiber.HeaderCacheControl, "no-cache")
-		return c.Render("pages/conversation", fiber.Map{"AlexaEnabled": os.Getenv("ALEXA_ENABLED") == "true"})
+		return c.Render("pages/conversation", fiber.Map{"AlexaEnabled": os.Getenv("ALEXA_ENABLED") == "true", "AlexaTrialMode": os.Getenv("ALEXA_TRIAL_MODE") == "true"})
 	}
 }
 

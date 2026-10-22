@@ -132,6 +132,21 @@ func TestAlexaRunnerUsesSharedLoopAndPrivateToolContext(t *testing.T) {
 	if err != nil || len(notes) != 1 {
 		t.Fatal("explicit note was not saved", err)
 	}
+	t.Setenv("ALEXA_TRIAL_MODE", "true")
+	w.Receipt = "trial-receipt"
+	fake.requests, fake.payloads = nil, nil
+	fake.responses = []map[string]any{
+		{"toolCalls": []map[string]any{{"id": "trial-call", "name": "remember_note", "arguments": `{"text":"tea trial note must not be saved"}`}}},
+		{"text": "Tool actions are disabled during the setup trial."},
+	}
+	_, err = runAlexaTurn(t.Context(), deps, registry, w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes, err = st.QueryNotes(t.Context(), "u1", "tea")
+	if err != nil || len(notes) != 1 {
+		t.Fatal("acceptance trial executed a tool action", err)
+	}
 	w.Check = func(context.Context) error { return alexa.ErrCancelled }
 	_, err = runAlexaTurn(t.Context(), deps, registry, w)
 	if err == nil || len(fake.requests) != 2 {

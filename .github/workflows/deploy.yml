@@ -47,6 +47,10 @@ jobs:
 
       - name: go test
         run: go test ./...
+      - name: Alexa delivery contracts
+        run: |
+          python -B -m unittest discover -s scripts -p test_alexa_skill.py
+          python -B scripts/alexa-skill.py validate-local
       - name: MCP auth and shared-tool race checks
         run: go test -race ./internal/mcpauth ./internal/webapp -count=1
 
@@ -461,23 +465,67 @@ jobs:
       # code objects must be same-region (us-east-1), so SAM manages its own
       # in-region artifact bucket.
       - name: SAM deploy
+        id: stack
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTIFICATE_ARN: ${{ vars.CERTIFICATE_ARN }}
+          HOSTED_ZONE_ID: ${{ vars.HOSTED_ZONE_ID }}
+          OPENAI_REALTIME_MODEL: ${{ vars.OPENAI_REALTIME_MODEL || 'gpt-realtime' }}
+          OPENAI_MONTHLY_BUDGET_USD: ${{ vars.OPENAI_MONTHLY_BUDGET_USD || '100' }}
+          NOVA_DESIRED: ${{ steps.nova.outputs.desired }}
+          NOVA_IMAGE_READY: ${{ steps.nova.outputs.imageReady }}
+          GHOST_FUNCTION: ${{ vars.GHOST_COMMAND_FUNCTION_ARN || 'arn:aws:lambda:us-east-1:759775734231:function:ghost-cli-command' }}
+          ALEXA_ENABLED: ${{ vars.ALEXA_ENABLED || 'true' }}
+          ALEXA_TRIAL_MODE: ${{ vars.ALEXA_TRIAL_MODE || 'true' }}
         run: |
-          sam deploy \
-            --template-file template.yaml \
-            --no-confirm-changeset \
-            --no-fail-on-empty-changeset \
-            --resolve-s3 \
-            --parameter-overrides \
-              DomainName=${{ vars.DOMAIN_NAME }} \
-              CertificateArn=${{ vars.CERTIFICATE_ARN }} \
-              HostedZoneId=${{ vars.HOSTED_ZONE_ID }} \
-              OpenAIRealtimeModel=${{ vars.OPENAI_REALTIME_MODEL || 'gpt-realtime' }} \
-              OpenAIMonthlyBudgetUsd=${{ vars.OPENAI_MONTHLY_BUDGET_USD || '100' }} \
-              NovaBridgeDesiredCount=${{ steps.nova.outputs.desired }} \
-              NovaBridgeImageReady=${{ steps.nova.outputs.imageReady }} \
-              NovaBridgeEnable=false \
-              AgentCoreMemoryMode=all \
-              GhostCommandFunctionArn=${{ vars.GHOST_COMMAND_FUNCTION_ARN || 'arn:aws:lambda:us-east-1:759775734231:function:ghost-cli-command' }}
+          sam validate --lint --template-file template.yaml
+          bash scripts/deploy-stack.sh
+
+      - name: Publish private Alexa development package
+        id: alexa
+        env:
+          ALEXA_SMAPI_CLIENT_ID: ${{ vars.ALEXA_SMAPI_CLIENT_ID }}
+          ALEXA_SMAPI_CLIENT_SECRET: ${{ secrets.ALEXA_SMAPI_CLIENT_SECRET }}
+          ALEXA_SMAPI_REFRESH_TOKEN: ${{ secrets.ALEXA_SMAPI_REFRESH_TOKEN }}
+        run: |
+          set -eu
+          if [ -z "$ALEXA_SMAPI_CLIENT_ID$ALEXA_SMAPI_CLIENT_SECRET$ALEXA_SMAPI_REFRESH_TOKEN" ]; then
+            echo 'Alexa package publishing is blocked: dedicated CI credentials are missing. Runtime follows the recorded stack configuration; an empty bootstrap is disabled.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'published=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python -B scripts/alexa-skill.py publish --evidence artifacts/alexa-package.json
+          echo 'published=true' >> "$GITHUB_OUTPUT"
+
+      - name: Apply exact Alexa skill permission and verify delivery
+        if: steps.alexa.outputs.published == 'true'
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTIFICATE_ARN: ${{ vars.CERTIFICATE_ARN }}
+          HOSTED_ZONE_ID: ${{ vars.HOSTED_ZONE_ID }}
+          OPENAI_REALTIME_MODEL: ${{ vars.OPENAI_REALTIME_MODEL || 'gpt-realtime' }}
+          OPENAI_MONTHLY_BUDGET_USD: ${{ vars.OPENAI_MONTHLY_BUDGET_USD || '100' }}
+          NOVA_DESIRED: ${{ steps.nova.outputs.desired }}
+          NOVA_IMAGE_READY: ${{ steps.nova.outputs.imageReady }}
+          GHOST_FUNCTION: ${{ vars.GHOST_COMMAND_FUNCTION_ARN || 'arn:aws:lambda:us-east-1:759775734231:function:ghost-cli-command' }}
+          ALEXA_ENABLED: ${{ vars.ALEXA_ENABLED || 'true' }}
+          ALEXA_TRIAL_MODE: ${{ vars.ALEXA_TRIAL_MODE || 'true' }}
+          ALEXA_SMAPI_CLIENT_ID: ${{ vars.ALEXA_SMAPI_CLIENT_ID }}
+          ALEXA_SMAPI_CLIENT_SECRET: ${{ secrets.ALEXA_SMAPI_CLIENT_SECRET }}
+          ALEXA_SMAPI_REFRESH_TOKEN: ${{ secrets.ALEXA_SMAPI_REFRESH_TOKEN }}
+        run: |
+          set -eu
+          bash scripts/deploy-stack.sh
+          python -B scripts/alexa-skill.py verify-deployment --evidence artifacts/alexa-deployment.json
+
+      - name: Retain sanitized Alexa delivery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alexa-delivery
+          path: artifacts/alexa-*.json
+          if-no-files-found: ignore
+          retention-days: 7
 
       # Oversized static binaries (ORT WASM ~11 MB, wake-word ONNX models) can't
       # be served through the Fiber Lambda (>6 MB response cap → 500). Publish

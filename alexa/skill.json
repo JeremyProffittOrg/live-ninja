@@ -1,0 +1,21 @@
+{
+  "manifest": {
+    "manifestVersion": "1.0",
+    "publishingInformation": {
+      "locales": {
+        "en-US": {
+          "name": "Live Ninja",
+          "summary": "Private conversations with your Live Ninja assistant.",
+          "description": "Ask Live Ninja a question and continue with follow-up questions. Your linked owner account supplies your settings and tools. Alexa supplies the spoken voice.",
+          "examplePhrases": ["Alexa, open live ninja", "Alexa, ask live ninja to chat about the moon", "Alexa, ask live ninja to resume conversation"]
+        }
+      },
+      "isAvailableWorldwide": false,
+      "distributionCountries": ["US"],
+      "testingInstructions": "Private development only. Link the developer's Live Ninja owner account. No public certification or store submission is authorized."
+    },
+    "apis": {"custom": {"interfaces": []}},
+    "permissions": [],
+    "privacyAndCompliance": {"locales": {"en-US": {"privacyPolicyUrl": "https://live.jeremy.ninja/privacy"}}}
+  }
+}
