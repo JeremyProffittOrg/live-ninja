@@ -333,7 +333,7 @@ number routing, grant spending permission, or release the owner's call stop.
   `monthly_cap_reached`). The bridge's finish reports `modelCostUSD` (decimal string, six
   places); settlement replaces the reservation with the telephone estimate for the
   actual duration (never below the provider's measured price) plus that model cost.
-  `modelCostUSD` includes the conservatively priced Azure usage and a $0.02
+  `modelCostUSD` includes the conservatively priced Azure usage and a $0.03
   allocation for each bounded paid web search. The bridge reserves that allocation
   before forwarding a search, refuses it when the call cap cannot cover search and
   the reply/goodbye, and does not charge duplicate tool IDs twice. A known
@@ -369,7 +369,7 @@ number routing, grant spending permission, or release the owner's call stop.
   prompt uses the shared operational core with call-specific Job/rule directions.
   `web_lookup` uses Wikipedia; `web_research` uses general public-web search via
   broker mode `web-search`, with a cited summary and `sources` title/URL entries.
-  Phone requests require the bridge's `paid-web-search-v1` capability so an older
+  Phone requests require the bridge's `paid-web-search-v2` capability so an older
   bridge cannot start unreserved paid searches during the independent rollouts.
   Its optional `days` is omitted for historical queries; there is no default
   30-day filter. Direct OpenAI/Anthropic page fetches retain their allow-list.

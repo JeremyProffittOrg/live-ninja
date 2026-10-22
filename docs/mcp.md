@@ -25,7 +25,7 @@ a bearer credential receives an authentication challenge; it is not an app page.
   local media playback and conversation controls require a connected app.
   Web lookup uses Wikipedia; research searches the public web with source links
   and preserves requested historical dates without an automatic 30-day cutoff.
-  A phone search reserves $0.02 within the existing call cap; an uncertain result
+  A phone search reserves $0.03 within the existing call cap; an uncertain result
   keeps that conservative allocation. Direct OpenAI/Anthropic page fetches remain
   available. The personal knowledge tools search
   saved material, not the live web. Omitting `live` keeps the existing spoken playback behavior.

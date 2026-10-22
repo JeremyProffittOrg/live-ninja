@@ -33,9 +33,12 @@ func (c *FallbackClient) WebSearch(ctx context.Context, query string, days int, 
 		instructions += " The requested recency window starts on " + now.UTC().AddDate(0, 0, -days).Format("2006-01-02") + ". An older date explicitly requested in the question takes precedence over this recency hint."
 	}
 	body, err := json.Marshal(map[string]any{
-		"model": "gpt-4.1-mini", "instructions": instructions, "input": query,
-		"tools":       []map[string]any{{"type": "web_search", "search_context_size": "low"}},
-		"tool_choice": "required", "max_tool_calls": 1, "max_output_tokens": 600,
+		"model": "gpt-6-luna", "instructions": instructions, "input": query,
+		"reasoning":            map[string]any{"effort": "low"},
+		"service_tier":         "default",
+		"prompt_cache_options": map[string]any{"ttl": "30m"},
+		"tools":                []map[string]any{{"type": "web_search", "search_context_size": "low"}},
+		"tool_choice":          "required", "max_tool_calls": 1, "max_output_tokens": 2048,
 		"store": false,
 	})
 	if err != nil {

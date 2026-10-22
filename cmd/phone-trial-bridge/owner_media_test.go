@@ -144,7 +144,7 @@ func TestOwnerLoopWebSearchAllocationPrecedesSpendAndDeduplicates(t *testing.T) 
 		wantCalls int
 		wantCost  float64
 	}{
-		{"admitted", "1.00", 1, 0.02},
+		{"admitted", "1.00", 1, 0.03},
 		{"cap exhausted", "0.01", 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -157,7 +157,7 @@ func TestOwnerLoopWebSearchAllocationPrecedesSpendAndDeduplicates(t *testing.T) 
 				if req.URL.Path != "/api/v1/tools/invoke" {
 					t.Fatalf("unexpected request: %s", req.URL.Path)
 				}
-				if req.Header.Get("X-LN-Capabilities") != "paid-web-search-v1" {
+				if req.Header.Get("X-LN-Capabilities") != "paid-web-search-v2" {
 					t.Fatal("search reservation capability missing")
 				}
 				calls++

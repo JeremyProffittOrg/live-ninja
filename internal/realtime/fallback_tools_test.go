@@ -142,11 +142,17 @@ func TestWebSearchUsesLiveSearchAndPreservesRequestedDates(t *testing.T) {
 				var body map[string]any
 				require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
 				require.Equal(t, "Bearer test-key", req.Header.Get("Authorization"))
-				require.Equal(t, "gpt-4.1-mini", body["model"])
+				// Non-reasoning search passes the tool's summary through, even
+				// when it includes unrelated news. A reasoning model must select
+				// evidence under our relevance and uncertainty instructions.
+				require.Equal(t, "gpt-6-luna", body["model"])
+				require.Equal(t, "low", body["reasoning"].(map[string]any)["effort"])
+				require.Equal(t, "default", body["service_tier"])
+				require.Equal(t, "30m", body["prompt_cache_options"].(map[string]any)["ttl"])
 				require.Equal(t, query, body["input"])
 				require.Equal(t, "required", body["tool_choice"])
 				require.Equal(t, float64(1), body["max_tool_calls"])
-				require.Equal(t, float64(600), body["max_output_tokens"])
+				require.Equal(t, float64(2048), body["max_output_tokens"])
 				require.Equal(t, false, body["store"])
 				require.Equal(t, "web_search", body["tools"].([]any)[0].(map[string]any)["type"])
 				require.Contains(t, body["instructions"], "2026-10-22")

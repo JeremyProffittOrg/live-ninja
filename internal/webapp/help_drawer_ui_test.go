@@ -143,7 +143,7 @@ func TestHelpDrawerCoversTheAppsCapabilities(t *testing.T) {
 		"Ask about documents you loaded",
 		"Public web search returns source links",
 		"historical searches are not limited to the last 30 days",
-		"reserve two cents each",
+		"reserve three cents each",
 		"same server tools",
 		"Polite Southern Belle",
 	} {

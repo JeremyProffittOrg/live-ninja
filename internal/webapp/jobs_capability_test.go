@@ -170,10 +170,12 @@ func TestPhoneWebSearchRequiresBudgetCapableBridgeHeader(t *testing.T) {
 	})
 	app.Post("/invoke", handleToolsInvoke(&Deps{Store: st, Log: testLogger()}, registry))
 	request := map[string]any{"tool": "web_research", "args": map[string]any{"query": "bank robbery November 2025"}}
-	status, _ := capabilityJSON(t, app, "/invoke", "", request)
-	require.Equal(t, http.StatusForbidden, status)
-	require.Zero(t, calls)
-	status, body := capabilityJSON(t, app, "/invoke", "paid-web-search-v1", request)
+	for _, capability := range []string{"", "paid-web-search-v1"} {
+		status, _ := capabilityJSON(t, app, "/invoke", capability, request)
+		require.Equal(t, http.StatusForbidden, status)
+		require.Zero(t, calls, "an older bridge must not spend above its reservation")
+	}
+	status, body := capabilityJSON(t, app, "/invoke", "paid-web-search-v2", request)
 	require.Equal(t, http.StatusOK, status, body)
 	require.Equal(t, 1, calls)
 }
