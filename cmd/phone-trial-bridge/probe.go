@@ -88,7 +88,7 @@ func probeSession(ws *websocket.Conn, cancelled bool) error {
 	// Match the real call budget: the reasoning model can consume a 32-token
 	// probe allowance before it reaches audio generation.
 	sess["max_output_tokens"] = 512
-	sess["instructions"] = "You are Live Ninja. Answer in English in at most 30 words, using only the supplied lookup results. Do not ask a follow-up question or offer more research. " + conversation.RequestContinuityInstructions
+	sess["instructions"] = "You are Live Ninja. Answer in English in at most 20 words, using only the supplied lookup results. Do not ask a follow-up question or offer more research. " + conversation.RequestContinuityInstructions
 	sess["tools"] = []any{}
 	sess["tool_choice"] = "none"
 	if sendWS(ws, cfg) != nil {
