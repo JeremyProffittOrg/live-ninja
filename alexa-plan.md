@@ -1,6 +1,6 @@
 # Alexa text chat and website device settings
 
-Status: private skill publishing, account linking and enabled-runtime verification are complete. Jeremy confirmed linking on 2026-10-23 and used Alexa. Shared settings and account-tool parity are being completed under plan.md's alexa-account-parity; formal timed Echo acceptance is not yet recorded. Authorized and created 2026-10-22.
+Status: private publishing, account linking, shared settings and normal account-tool mode are deployed. Both Alexa functions report 478197841edb5edc1cc68506c4393358fb71463a, active/successful; ALEXA_ENABLED=true and the worker's ALEXA_TRIAL_MODE=false were read back on 2026-10-23. Final workflow 40056173776 completed SUCCESS, including browser quality. Jeremy confirmed linking and used Alexa earlier. Formal timed Echo acceptance and the current tools/settings Echo retest are not yet recorded. Authorized and created 2026-10-22.
 
 ## Outcome and scope
 
@@ -143,7 +143,7 @@ If the policy page is absent, the planned destination is `GET /privacy`, impleme
 
 Definition of done: `python -B -m unittest discover -s scripts -p test_alexa_skill.py` exits 0; `scripts\alexa-check.bat preflight --evidence C:\dev\live-ninja-test-evidence\alexa\preflight.json` exits 0 only when required access is verified. A missing credential returns a named failure, never an interactive unattended prompt.
 
-## alexa-settings — add owned Echo settings to the website
+## alexa-settings — add shared Alexa settings and owned Echo controls
 
 depends on: alexa-contract-tests
 
@@ -152,17 +152,17 @@ depends on: alexa-contract-tests
 depends on: alexa-contract-tests
 
 - [x] alexa-device-store — trusted registration, explicit re-enable with a new generation, preserved names and owner/active-state transaction guards pass store tests. Existing code has no device-count quota to preserve.
-- [x] alexa-settings-resolution — profile/persona/privacy resolve from the verified Echo; browser headers cannot impersonate one. Store and route tests pass.
+- [x] alexa-settings-resolution — profile/persona/privacy resolve from the owner's shared Alexa target after native Echo authentication. Tool profile lookups use the same target. Browser headers cannot impersonate either target or Echo. Store, route, runtime, broker and tool regressions pass.
 
 Expected files: `internal/store/types.go`, `devices.go`, existing store device tests, `internal/webapp/device_routes.go`, `settings_scope_routes.go`, and existing device/settings route tests.
 
-Definition of done: `go test ./internal/store ./internal/webapp -run 'Alexa|Device|Settings|Privacy' -count=1 -timeout=5m` exits 0. Acceptance includes two Echo entries with different personas, a foreign owner denial, revoke/re-enable, a rename race, reset to inherited settings, and unaffected phone/browser settings.
+Definition of done: `go test ./internal/store ./internal/webapp -run 'Alexa|Device|Settings|Privacy' -count=1 -timeout=5m` exits 0. Acceptance includes one shared settings choice for two independently managed Echo identities, a foreign owner denial, revoke/re-enable, reserved group protection, inherited settings, and unaffected phone/browser settings.
 
 ### alexa-settings-ui — expose only settings Alexa uses
 
 depends on: alexa-device-persistence
 
-- [x] alexa-website-controls — existing device UI names, configures and disables/enables Echoes; unsupported-section browser cases passed GitHub web-quality run 39797222669, including its narrow/mobile test projects.
+- [x] alexa-website-controls — Settings offers one Alexa group for About you, Persona and Privacy. Device management still names and disables/enables individual Echoes. The updated browser cases passed workflow 40055289270 and subsequent 40055763181; unsupported sections retain apply-all behavior.
 - [x] alexa-help-copy — invocation, controls, recovery and privacy copy is gated by ALEXA_ENABLED; the Help drift tests pass. Disabled deployments do not advertise the skill.
 
 Expected files: `web/static/js/device-settings.mjs`, related existing settings/device UI files only where required, `web/templates/pages/conversation.html`, `internal/webapp/help_drawer_ui_test.go`, and `tests/web/specs/device-settings.spec.mjs`.
@@ -177,7 +177,7 @@ depends on: alexa-contract-tests
 
 depends on: alexa-contract-tests
 
-- [x] alexa-oauth-client — static confidential client, PKCE, isolated resource/scope, refresh/revoke and owner consent pass existing and added OAuth tests. Production configuration awaits publishing credentials.
+- [x] alexa-oauth-client — static confidential client, PKCE, isolated resource/scope, refresh/revoke and owner consent pass existing and added OAuth tests. Production publishing credentials and account linking are configured; Jeremy confirmed successful linking on 2026-10-23. Do not repeat credential setup or ask for re-linking without new evidence.
 - [x] alexa-worker-authority — adapter, worker and broker independently validate linked owner/device and current receipt/settings; queue bodies contain owner/receipt references only.
 
 Expected files: `internal/mcpauth/service.go` and tests, `internal/webapp/mcp_auth.go` and tests, supporting existing auth/store code only where necessary, and new Alexa validation code. No blanket public-client or cross-resource relaxation.
@@ -217,7 +217,7 @@ depends on: alexa-access-check, alexa-settings-ui, alexa-dialog-handler
 
 depends on: alexa-access-check, alexa-settings-ui, alexa-dialog-handler
 
-- [x] alexa-stack — two arm64 Lambdas, encrypted SQS/DLQ, scoped roles and seven-day log groups are deployed. Initial bootstrap run 39809992183 verified queue visibility 210 seconds, redelivery cap three, and log retention seven days. Run 39867833118 subsequently bound the exact private skill ID and enabled admissions; Lambda and package commit checks passed. Conversation-only trial mode remains enabled. No EC2 or fixed-charge monitoring resource was added.
+- [x] alexa-stack — two arm64 Lambdas, encrypted SQS/DLQ, scoped roles and seven-day log groups are deployed. Initial bootstrap run 39809992183 verified queue visibility 210 seconds, redelivery cap three, and log retention seven days. Run 39867833118 subsequently bound the exact private skill ID and enabled admissions. Normal tool mode is now enabled under the 2026-10-23 owner request: worker ALEXA_TRIAL_MODE=false was read back at 4781978. No EC2 or fixed-charge monitoring resource was added.
 - [x] alexa-ci-publish — run 39867833118 at b3569fcb9ea7b4242ff51e52efe5618ba67eb939 completed successfully, including the browser-quality job. Private skill amzn1.ask.skill.e05d84c2-933f-46b2-a371-9ea3925742b1, exact Lambda permission, account linking and enabled runtime are verified. Successful import ID: amzn1.ask-package.import.0b90282a-2702-4ab5-8555-ef950f2d3a26. The three-attempt publishing loop reached successful terminal completion. CI artifacts are retained under C:\dev\live-ninja-test-evidence\alexa\2026-10-22\ci-39867833118. Only a verified terminal failed creation absent from the vendor list can be replaced; unknown/in-progress creations remain blocked.
 
 Bootstrap order: deploy the real Lambda code without an ASK invoke permission; create and verify the private development draft without an endpoint; persist the returned skill ID in deployment configuration; apply the exact-ID ASK permission through CloudFormation; import the package with the real Lambda ARN and interaction model; configure account linking; apply the completed runtime configuration and verify it through the same GitHub workflow. Amazon's CREATE_SKILL resource schema permits an omitted custom endpoint. Persist create-once identifiers in standard SSM/stack configuration when GitHub variable write permission is unavailable. Never create a wildcard invoke permission or a fake endpoint to break the dependency. Reconcile skill creation before any retry.
@@ -228,9 +228,9 @@ Definition of done in Linux CI: `make build`, `sam validate --lint`, `go vet ./.
 
 depends on: alexa-infrastructure
 
-- [!] alexa-simulator-gate — Jeremy must enable Live Ninja under Alexa app Skills & Games > Your Skills > Dev and link the Live Ninja owner account using the same Amazon developer login. The local developer enablement query returned HTTP 404; no paid model trial has run. Once linked, run the SMAPI suite: at least 50 realistic utterances and sequences, including pronouns, correction, proper names, unrelated questions, repeat/more/status, and interrupted sessions. Target at least 95% correct routing and all critical controls correct.
+- [!] alexa-simulator-gate — account linking is confirmed and the ASK enablement query now returns HTTP 204. Two bounded launch simulations returned FAILED with zero skill invocation results and Amazon's message `An unexpected error occurred.` (b03ca190-25d3-4250-b522-deee8738592a and e9753cf0-d326-4f66-9573-e53413a0d647). Amazon must restore simulator execution before the formal 50-case routing suite can be measured. Do not ask Jeremy to repeat working credential setup or account linking. The current Echo tools/settings check can proceed independently.
 - [ ] alexa-latency-gate — run 100 bounded warm/cold or delayed test turns. Record total response time, model time, queue wait, final/pending/failure outcome, and token cost. All skill responses must arrive before Amazon's deadline; target normal-answer p95 under six seconds. Pending replies must not disguise a system that never answers ordinary chat promptly.
-- [ ] alexa-echo-gate — the operator links the actual Echo and holds a five-minute multi-turn conversation. Change its persona/profile on the website and verify the next turn; test a second Echo if available to prove settings isolation. Verify five-/ten-/thirty-second pauses, stop, re-launch/resume, privacy-off, revoked access, and retrieval of one deliberately slow result. Simulator evidence cannot stand in for these observations.
+- [!] alexa-echo-gate — Jeremy supplies a real Echo observation; linking is already complete. The current retest asks for Jobs through Alexa and checks one shared Alexa settings group. Formal acceptance still needs a five-minute multi-turn observation, shared persona/profile changes on the next turn, five-/ten-/thirty-second pauses, stop, re-launch/resume, privacy-off, independent Echo revocation, and a deliberately slow result. A second Echo, if available, should share settings while keeping separate access control. Simulator or Azure phone-model evidence cannot stand in for physical Echo observations.
 
 Definition of done from C:\dev\live-ninja-alexa: `scripts\alexa-check.bat simulate --evidence C:\dev\live-ninja-test-evidence\alexa\acceptance\simulations.json`, `scripts\alexa-check.bat latency --evidence C:\dev\live-ninja-test-evidence\alexa\acceptance\latency.json`, and `scripts\alexa-check.bat acceptance --evidence C:\dev\live-ninja-test-evidence\alexa\acceptance` exit 0. The acceptance command checks actual provider response IDs/timings, deployed commit, and the operator's Echo observations against real stored receipts. Missing physical results fail; a handwritten `passed=true` is insufficient. All model calls stay inside the recorded trial allowance.
 
@@ -240,8 +240,8 @@ Physical evidence file: `C:\dev\live-ninja-test-evidence\alexa\acceptance\echo-o
 
 depends on: alexa-acceptance
 
-- [~] alexa-main-release — code and private runtime delivery at c2d353e69e5f305ee7ec200208f9e200c0821eea are verified by successful workflow 39871545523, including browser checks. The local delivery gate passed against the retained CI artifact and preserved that workflow ID. Real Echo registration, website settings behavior on that Echo, and conversation acceptance await app linking; no public publication is authorized.
-- [~] alexa-rollout-summary — commands, settings, privacy and reversible deployment switches are documented here and in gated Help copy. Access tokens last 15 minutes and the linked grant lasts 30 days; re-link after expiry or explicit revocation. No paid trial has run, so model entitlement, actual latency/cost and physical Echo behavior remain unverified.
+- [x] alexa-main-release — 478197841edb5edc1cc68506c4393358fb71463a is deployed and both Alexa functions report active/successful, with normal tools enabled. Workflow 40056173776 completed SUCCESS including browser quality. Previous main runs 40055289270 and 40055763181 also succeeded. Linking and one real Echo registration are confirmed; the separately tracked post-change physical retest remains pending. No public publication is authorized.
+- [x] alexa-rollout-summary — commands, shared settings, privacy, ordinary approvals and reversible switches are documented here and in Help. Access tokens last 15 minutes and the linked grant lasts 30 days. The formal 50/100-case routing/latency suite and timed physical acceptance remain unmeasured. Normal tool mode is intentionally enabled by the later owner request; do not silently disable it to run the old setup-only bulk helper.
 
 Definition of done: `scripts\alexa-check.bat delivery --evidence C:\dev\live-ninja-test-evidence\alexa\deployment.json` exits 0 after resolving each recorded workflow ID and running `gh run watch` with `--repo JeremyProffittOrg/live-ninja --exit-status`. The checker must match commit IDs and terminal conclusions, not trust an unrelated green run.
 
