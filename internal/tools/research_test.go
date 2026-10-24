@@ -237,3 +237,16 @@ func TestWebResearchDirectFetchBlocksRedirectOffAllowList(t *testing.T) {
 	}))
 	require.False(t, res.OK, "redirect to a non-allow-listed host must be blocked, got %+v", res.Output)
 }
+
+// The model once sent a google.com search URL; the allow-list rightly refused
+// it, so the url parameter must say that only two named domains are fetched.
+func TestWebResearchURLDescriptionForbidsSearchPages(t *testing.T) {
+	for _, p := range webResearchDefinition().Params {
+		if p.Name == "url" {
+			require.Contains(t, p.Description, "Never pass a search-engine or news-site URL")
+			require.Contains(t, p.Description, "anthropic.com or openai.com")
+			return
+		}
+	}
+	t.Fatal("web_research has no url parameter")
+}

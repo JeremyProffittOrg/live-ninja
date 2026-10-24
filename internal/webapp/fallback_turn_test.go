@@ -8,12 +8,14 @@ package webapp
 // maxFallbackToolIterations before degrading to a plain answer.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -101,7 +103,8 @@ func newFallbackTurnApp(t *testing.T, fake *fakeBrokerLambda, reauth tools.Reaut
 func allowAll(context.Context, string) error { return nil }
 
 func TestAlexaRunnerUsesSharedLoopAndPrivateToolContext(t *testing.T) {
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var logs bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logs, nil))
 	db := testutil.NewFakeDynamo()
 	st := store.NewWithClient(db, "test")
 	fake := &fakeBrokerLambda{responses: []map[string]any{
@@ -132,6 +135,18 @@ func TestAlexaRunnerUsesSharedLoopAndPrivateToolContext(t *testing.T) {
 	if err != nil || len(notes) != 1 {
 		t.Fatal("explicit note was not saved", err)
 	}
+	toolLines := func() string {
+		var out []string
+		for _, line := range strings.Split(logs.String(), "\n") {
+			if strings.Contains(line, "Alexa tool") {
+				out = append(out, line)
+			}
+		}
+		return strings.Join(out, "\n")
+	}
+	if got := toolLines(); !strings.Contains(got, "Alexa tool completed") || !strings.Contains(got, "tool=remember_note") || !strings.Contains(got, "ok=true") || strings.Contains(got, "tea") {
+		t.Fatalf("tool outcome log missing or leaked arguments: %q", got)
+	}
 	t.Setenv("ALEXA_TRIAL_MODE", "true")
 	w.Receipt = "trial-receipt"
 	fake.requests, fake.payloads = nil, nil
@@ -146,6 +161,9 @@ func TestAlexaRunnerUsesSharedLoopAndPrivateToolContext(t *testing.T) {
 	notes, err = st.QueryNotes(t.Context(), "u1", "tea")
 	if err != nil || len(notes) != 1 {
 		t.Fatal("acceptance trial executed a tool action", err)
+	}
+	if got := toolLines(); !strings.Contains(got, "Alexa tool failed") || !strings.Contains(got, "errorCode=forbidden") || strings.Contains(got, "must not be saved") {
+		t.Fatalf("rejected tool call was not logged by code only: %q", got)
 	}
 	w.Check = func(context.Context) error { return alexa.ErrCancelled }
 	_, err = runAlexaTurn(t.Context(), deps, registry, w)

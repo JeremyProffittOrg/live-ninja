@@ -253,7 +253,7 @@ func ghostRunStatusDefinition() *Definition {
 		Name:      "ghost_run_status",
 		OwnerOnly: true,
 		Description: "Check a run started with ghost_run_start. Pass the eventId and runId it returned, " +
-			"or its requestId, or nothing for the owner's most recent run. Reports the run status " +
+			"or its requestId, or nothing for the owner's most recent run; the ids are optional, so never ask the owner for them. Reports the run status " +
 			"ghost records (for example queued, running, done, failed) and its summary when the " +
 			"session left one. Do not call a run finished unless the status says so.",
 		Params: []ParamSpec{

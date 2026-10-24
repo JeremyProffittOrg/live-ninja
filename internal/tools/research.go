@@ -57,7 +57,7 @@ func webResearchDefinition() *Definition {
 			{Name: "days", Type: "integer", Min: floatPtr(1), Max: floatPtr(365),
 				Description: "Optional recency window, 1–365 days. Omit for a historical date or when no time window was requested."},
 			{Name: "url", Type: "string", MaxLen: 500,
-				Description: "Optional: an exact https page URL to fetch directly instead of searching. Only allow-listed authoritative domains (anthropic.com, openai.com) are fetched."},
+				Description: "Leave empty for a normal search. Set only when the owner named one specific anthropic.com or openai.com page to fetch directly; the query is then ignored. Never pass a search-engine or news-site URL: only those two domains are fetched."},
 		},
 		Handler: handleWebResearch,
 	}
