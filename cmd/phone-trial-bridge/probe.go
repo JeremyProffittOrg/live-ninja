@@ -88,7 +88,7 @@ func probeSession(ws *websocket.Conn, cancelled bool) error {
 	// Match the real call budget: the reasoning model can consume a 32-token
 	// probe allowance before it reaches audio generation.
 	sess["max_output_tokens"] = 512
-	sess["instructions"] = "You are Live Ninja. Speak briefly in English. Use the supplied lookup results. " + conversation.RequestContinuityInstructions
+	sess["instructions"] = "You are Live Ninja. Answer in English in at most 30 words, using only the supplied lookup results. Do not ask a follow-up question or offer more research. " + conversation.RequestContinuityInstructions
 	sess["tools"] = []any{}
 	sess["tool_choice"] = "none"
 	if sendWS(ws, cfg) != nil {
@@ -141,7 +141,7 @@ func probeSession(ws *websocket.Conn, cancelled bool) error {
 				fmt.Printf("Azure request replay passed (cancelled=%t): %s\n", cancelled, transcript)
 				return nil
 			}
-			return fmt.Errorf("Azure probe did not complete audible speech (status=%s reason=%s)", safeCode(stringAt(response, "status")), safeCode(stringAt(objectAt(response, "status_details"), "reason")))
+			return fmt.Errorf("Azure probe did not complete audible speech (status=%s reason=%s samples=%d syntheticTranscript=%q)", safeCode(stringAt(response, "status")), safeCode(stringAt(objectAt(response, "status_details"), "reason")), samples, transcript)
 		case "error":
 			err := objectAt(m, "error")
 			return fmt.Errorf("Azure probe API error code=%s type=%s param=%s", safeCode(stringAt(err, "code")), safeCode(stringAt(err, "type")), safeCode(stringAt(err, "param")))
