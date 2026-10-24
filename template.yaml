@@ -385,7 +385,6 @@ Resources:
           ALEXA_SKILL_ID: !Ref AlexaSkillId
           ALEXA_ENABLED: !Ref AlexaEnabled
           ALEXA_TRIAL_MODE: !Ref AlexaTrialMode
-          AUTH_KMS_KEY_ID: !GetAtt AuthKey.Arn
           DOMAIN_NAME: !Ref DomainName
           EMAIL_QUEUE_URL: !Ref EmailQueue
           JWT_KMS_KEY_ID: !GetAtt JwtKey.Arn
@@ -1013,6 +1012,7 @@ Resources:
           ALEXA_ENABLED: !Ref AlexaEnabled
           ALEXA_QUEUE_URL: !Ref AlexaTurnQueue
           ALEXA_TRIAL_MODE: !Ref AlexaTrialMode
+          AUTH_KMS_KEY_ID: !GetAtt AuthKey.Arn
           ALEXA_DEPLOYED_COMMIT: !Ref AlexaDeployCommit
           BROKER_FUNCTION_NAME: !Ref RealtimeBrokerFunction
           EMAIL_QUEUE_URL: !Ref EmailQueue
