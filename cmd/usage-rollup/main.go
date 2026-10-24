@@ -119,42 +119,47 @@ func handler(ctx context.Context, _ events.CloudWatchEvent) error {
 }
 
 // queryActiveUsersToday returns the distinct userIds with a
-// pk=CONFIG sk=ACTIVEUSER#<uid>#<today> marker. A single Query against
+// pk=CONFIG sk=ACTIVEUSER#<uid>#<today> marker. A paginated Query against
 // the CONFIG partition (never a Scan): begins_with narrows to the
 // ACTIVEUSER# key range (excluding the OWNER/ALLOW# items that also live
-// in CONFIG), and a FilterExpression narrows further to markers whose sk
-// ends in today's date.
+// in CONFIG). DynamoDB forbids filtering primary keys in FilterExpression,
+// so the date suffix is checked locally on every returned page.
 func queryActiveUsersToday(ctx context.Context, client ddbAPI, table, today string) ([]string, error) {
 	dateSuffix := "#" + today
 
-	out, err := client.Query(ctx, &dynamodb.QueryInput{
+	input := &dynamodb.QueryInput{
 		TableName:              aws.String(table),
 		KeyConditionExpression: aws.String("pk = :pk AND begins_with(sk, :prefix)"),
-		FilterExpression:       aws.String("contains(sk, :suffix)"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":pk":     &types.AttributeValueMemberS{Value: configPK},
 			":prefix": &types.AttributeValueMemberS{Value: activeUserPrefix},
-			":suffix": &types.AttributeValueMemberS{Value: dateSuffix},
 		},
 		ProjectionExpression: aws.String("sk"),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("usage-rollup: query active users: %w", err)
 	}
 
-	seen := make(map[string]bool, len(out.Items))
-	uids := make([]string, 0, len(out.Items))
-	for _, raw := range out.Items {
-		skAttr, ok := raw["sk"].(*types.AttributeValueMemberS)
-		if !ok {
-			continue
+	seen := make(map[string]bool)
+	uids := []string{}
+	for {
+		out, err := client.Query(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("usage-rollup: query active users: %w", err)
 		}
-		uid := strings.TrimSuffix(strings.TrimPrefix(skAttr.Value, activeUserPrefix), dateSuffix)
-		if uid == "" || seen[uid] {
-			continue
+		for _, raw := range out.Items {
+			skAttr, ok := raw["sk"].(*types.AttributeValueMemberS)
+			if !ok || !strings.HasPrefix(skAttr.Value, activeUserPrefix) || !strings.HasSuffix(skAttr.Value, dateSuffix) {
+				continue
+			}
+			uid := strings.TrimSuffix(strings.TrimPrefix(skAttr.Value, activeUserPrefix), dateSuffix)
+			if uid == "" || seen[uid] {
+				continue
+			}
+			seen[uid] = true
+			uids = append(uids, uid)
 		}
-		seen[uid] = true
-		uids = append(uids, uid)
+		if len(out.LastEvaluatedKey) == 0 {
+			break
+		}
+		input.ExclusiveStartKey = out.LastEvaluatedKey
 	}
 	return uids, nil
 }

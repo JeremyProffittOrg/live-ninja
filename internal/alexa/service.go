@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -70,6 +71,7 @@ type turn struct {
 type ownerLock struct{ Turn string }
 
 type Service struct {
+	Log       *slog.Logger
 	Repo      Repository
 	Now       func() time.Time
 	Authorize func(context.Context, Identity) error
@@ -107,7 +109,17 @@ func (s *Service) authorized(ctx context.Context, id Identity) error {
 	return s.Authorize(ctx, id)
 }
 
-func (s *Service) Submit(ctx context.Context, id Identity, request, askSession, text string) (View, error) {
+func (s *Service) Submit(ctx context.Context, id Identity, request, askSession, text string) (view View, resultErr error) {
+	started := time.Now()
+	logger := s.Log
+	if logger != nil {
+		logger = logger.With("requestRef", DiagnosticRef(request))
+	}
+	phase := "authorization"
+	LogDiagnostic(ctx, logger, "submission_started", nil, slog.Int("inputBytes", len(text)))
+	defer func() {
+		LogDiagnostic(ctx, logger, "submission_completed", resultErr, slog.String("operationStage", phase), slog.String("receipt", view.Receipt), slog.String("outcome", view.State), slog.Int64("elapsedMs", time.Since(started).Milliseconds()))
+	}()
 	if err := s.authorized(ctx, id); err != nil {
 		return View{}, err
 	}
@@ -116,6 +128,7 @@ func (s *Service) Submit(ctx context.Context, id Identity, request, askSession, 
 		return View{}, ErrEnvelope
 	}
 	receipt := digest(id.Device + "\x00" + request)
+	phase = "duplicate_check"
 	var prior turn
 	priorRow, err := s.read(ctx, id.Owner, turnKey(receipt), &prior)
 	if err != nil {
@@ -124,10 +137,13 @@ func (s *Service) Submit(ctx context.Context, id Identity, request, askSession, 
 	if priorRow != nil {
 		return s.viewTurn(ctx, id, prior, priorRow)
 	}
+	phase = "settings"
 	settings, err := s.Settings(ctx, id)
 	if err != nil {
 		return View{}, err
 	}
+	LogDiagnostic(ctx, logger, "settings_loaded", nil, slog.Int64("settingsVersion", settings.Version), slog.Bool("keepTranscript", settings.KeepTranscript))
+	phase = "session"
 	var state session
 	stateRow, err := s.read(ctx, id.Owner, sessionKey(id), &state)
 	if err != nil {
@@ -144,6 +160,7 @@ func (s *Service) Submit(ctx context.Context, id Identity, request, askSession, 
 		}
 	}
 	var lock ownerLock
+	phase = "owner_lock"
 	lockRow, err := s.read(ctx, id.Owner, "LOCK", &lock)
 	if err != nil {
 		return View{}, err
@@ -176,6 +193,7 @@ func (s *Service) Submit(ctx context.Context, id Identity, request, askSession, 
 	state.SpeechStart = 0
 	state.SpeechEnd = 0
 	changes = append(changes, changed(id.Owner, turnKey(receipt), current, now.Add(RecoveryWindow).Unix(), nil), changed(id.Owner, sessionKey(id), state, now.Add(RecoveryWindow).Unix(), stateRow), changed(id.Owner, "LOCK", ownerLock{Turn: receipt}, now.Add(WorkerBudget+5*time.Second).Unix(), lockRow))
+	phase = "receipt_commit"
 	err = s.Repo.Commit(ctx, changes)
 	if err != nil {
 		if errors.Is(err, ErrConflict) {
@@ -186,11 +204,15 @@ func (s *Service) Submit(ctx context.Context, id Identity, request, askSession, 
 		}
 		return View{}, err
 	}
+	phase = "queue_publish"
+	publishStarted := time.Now()
+	LogDiagnostic(ctx, logger, "queue_publish_started", nil, slog.String("receipt", receipt))
 	if s.Publish == nil {
 		err = errors.New("Alexa queue is not configured")
 	} else {
 		err = s.Publish(ctx, Job{Owner: id.Owner, Turn: receipt})
 	}
+	LogDiagnostic(ctx, logger, "queue_publish_completed", err, slog.String("receipt", receipt), slog.Int64("elapsedMs", time.Since(publishStarted).Milliseconds()))
 	if err != nil {
 		var latest turn
 		row, readErr := s.read(ctx, id.Owner, turnKey(receipt), &latest)
@@ -333,38 +355,43 @@ func (s *Service) viewTurn(ctx context.Context, id Identity, current turn, row *
 }
 
 func (s *Service) check(ctx context.Context, t turn) error {
-	if err := ctx.Err(); err != nil {
+	failed := func(stage string, err error) error {
+		LogDiagnostic(ctx, s.Log, "authority_failed", err, slog.String("operationStage", stage), slog.String("receipt", t.ID))
 		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return failed("context", err)
 	}
 	if s.now().UnixMilli() >= t.Deadline {
-		return context.DeadlineExceeded
+		return failed("deadline", context.DeadlineExceeded)
 	}
 	if err := s.authorized(ctx, t.Identity); err != nil {
-		return err
+		return failed("account_device", err)
 	}
 	settings, err := s.Settings(ctx, t.Identity)
 	if err != nil {
-		return err
+		return failed("settings_read", err)
 	}
 	if settings.Version != t.Settings.Version {
-		return ErrCancelled
+		return failed("settings_version", ErrCancelled)
 	}
 	var latest turn
 	row, err := s.read(ctx, t.Identity.Owner, turnKey(t.ID), &latest)
 	if err != nil {
-		return err
+		return failed("receipt_read", err)
 	}
 	if row == nil || latest.State != "running" {
-		return ErrCancelled
+		return failed("receipt_state", ErrCancelled)
 	}
 	var state session
 	stateRow, err := s.read(ctx, t.Identity.Owner, sessionKey(t.Identity), &state)
 	if err != nil {
-		return err
+		return failed("session_read", err)
 	}
 	if !s.validSession(stateRow, state, t.Identity) || state.ID != t.SessionID || state.LastTurn != t.ID {
-		return ErrCancelled
+		return failed("session_state", ErrCancelled)
 	}
+	LogDiagnostic(ctx, s.Log, "authority_verified", nil, slog.String("receipt", t.ID), slog.Int64("settingsVersion", settings.Version))
 	return nil
 }
 
@@ -392,7 +419,12 @@ func (s *Service) CheckWork(ctx context.Context, job Job) (Work, error) {
 
 // Execute claims a receipt once. A redelivery of running work is never replayed:
 // its model or tool side effect may have completed before the worker disappeared.
-func (s *Service) Execute(ctx context.Context, job Job) error {
+func (s *Service) Execute(ctx context.Context, job Job) (resultErr error) {
+	started := time.Now()
+	LogDiagnostic(ctx, s.Log, "execution_received", nil, slog.String("receiptRef", DiagnosticRef(job.Turn)))
+	defer func() {
+		LogDiagnostic(ctx, s.Log, "execution_returned", resultErr, slog.String("receiptRef", DiagnosticRef(job.Turn)), slog.Int64("elapsedMs", time.Since(started).Milliseconds()))
+	}()
 	if job.Owner == "" || len(job.Owner) > 256 || len(job.Turn) != 64 {
 		return ErrEnvelope
 	}
@@ -402,12 +434,14 @@ func (s *Service) Execute(ctx context.Context, job Job) error {
 		return err
 	}
 	if row == nil || row.Expires <= s.now().Unix() {
+		LogDiagnostic(ctx, s.Log, "execution_skipped", nil, slog.String("receipt", job.Turn), slog.String("reason", "expired_or_missing"))
 		return nil
 	}
 	if current.ID != job.Turn || current.Identity.Owner != job.Owner {
 		return ErrUnauthorized
 	}
 	if current.State != "pending" {
+		LogDiagnostic(ctx, s.Log, "execution_skipped", nil, slog.String("receipt", job.Turn), slog.String("reason", "already_claimed"))
 		return nil
 	}
 	if current.Deadline <= s.now().UnixMilli() {
@@ -422,6 +456,7 @@ func (s *Service) Execute(ctx context.Context, job Job) error {
 		return err
 	}
 	row = change.After
+	LogDiagnostic(ctx, s.Log, "execution_claimed", nil, slog.String("receipt", current.ID), slog.Int64("deadlineRemainingMs", current.Deadline-s.now().UnixMilli()))
 	workCtx, cancel := context.WithDeadline(ctx, time.UnixMilli(current.Deadline))
 	defer cancel()
 	if err = s.check(workCtx, current); err != nil {
@@ -437,10 +472,12 @@ func (s *Service) Execute(ctx context.Context, job Job) error {
 		messages = append(messages, x.Messages...)
 	}
 	messages = append(messages, realtime.ChatMessage{Role: "user", Content: current.Input})
+	LogDiagnostic(ctx, s.Log, "history_loaded", nil, slog.String("receipt", current.ID), slog.Int("messageCount", len(messages)))
 	if s.Run == nil {
 		return s.finish(ctx, current, row, RunResult{}, "failed", "execution_failed")
 	}
 	result, runErr := s.Run(workCtx, Work{Identity: current.Identity, Receipt: current.ID, SessionID: current.SessionID, Deadline: time.UnixMilli(current.Deadline), StartedAt: time.UnixMilli(state.StartedAt), Sequence: state.Turns*2 + 1, Messages: messages, Settings: current.Settings, Check: func(c context.Context) error { return s.check(c, current) }})
+	LogDiagnostic(ctx, s.Log, "execution_result", runErr, slog.String("receipt", current.ID), slog.Int("outputBytes", len(result.Text)), slog.Bool("limited", result.Limited))
 	// Persist only the new exchange, not the already stored context supplied
 	// to the runner. Failed/incomplete tool groups are never fed to a later turn.
 	if len(result.Messages) >= len(messages) {
@@ -460,13 +497,20 @@ func (s *Service) Execute(ctx context.Context, job Job) error {
 	return s.finish(ctx, current, row, result, "complete", "")
 }
 
-func (s *Service) finish(ctx context.Context, current turn, row *Entry, result RunResult, status, reason string) error {
+func (s *Service) finish(ctx context.Context, current turn, row *Entry, result RunResult, status, reason string) (resultErr error) {
+	started := time.Now()
+	applied := false
+	outcome := status
+	defer func() {
+		LogDiagnostic(ctx, s.Log, "turn_persisted", resultErr, slog.String("receipt", current.ID), slog.String("outcome", outcome), slog.String("reason", reason), slog.Bool("applied", applied), slog.Int64("elapsedMs", time.Since(started).Milliseconds()))
+	}()
 	var state session
 	stateRow, err := s.read(ctx, current.Identity.Owner, sessionKey(current.Identity), &state)
 	if err != nil {
 		return err
 	}
 	if stateRow == nil || state.ID != current.SessionID || state.LastTurn != current.ID {
+		outcome = "superseded"
 		return nil
 	}
 	current.Input = ""
@@ -490,8 +534,10 @@ func (s *Service) finish(ctx context.Context, current turn, row *Entry, result R
 	}
 	err = s.Repo.Commit(ctx, changes)
 	if errors.Is(err, ErrConflict) {
+		outcome = "superseded"
 		return nil
 	}
+	applied = err == nil
 	return err
 }
 

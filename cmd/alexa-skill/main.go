@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"os"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/alexa"
@@ -11,7 +12,7 @@ import (
 
 func main() {
 	if os.Getenv("ALEXA_ENABLED") != "true" {
-		h := &alexa.Handler{SkillID: os.Getenv("ALEXA_SKILL_ID")}
+		h := &alexa.Handler{SkillID: os.Getenv("ALEXA_SKILL_ID"), Log: slog.New(slog.NewJSONHandler(os.Stdout, nil))}
 		lambda.Start(h.Handle)
 		return
 	}

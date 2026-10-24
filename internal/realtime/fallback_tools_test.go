@@ -3,6 +3,7 @@ package realtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -132,6 +133,21 @@ func newMockOpenAIClient(t *testing.T, handler http.HandlerFunc) *FallbackClient
 	c.chatURL = srv.URL
 	c.searchURL = srv.URL
 	return c
+}
+
+func TestAlexaProviderStatusIsAvailableWithoutReadingErrorBody(t *testing.T) {
+	calls := 0
+	c := newMockOpenAIClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"PRIVATE-PROVIDER-CONTENT"}}`))
+	})
+	_, err := c.AlexaTurn(t.Context(), ResolvePersona("default"), []ChatMessage{{Role: "user", Content: "Hello"}}, "", AlexaTextModel)
+	require.Error(t, err)
+	var status interface{ HTTPStatusCode() int }
+	require.True(t, errors.As(err, &status))
+	require.Equal(t, 429, status.HTTPStatusCode())
+	require.Equal(t, 1, calls, "diagnostics must not add retries to Alexa")
 }
 
 func TestAlexaTurnUsesBoundedStandardModelAndReportsUsage(t *testing.T) {

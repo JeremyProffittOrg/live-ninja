@@ -199,6 +199,19 @@ func (c *FallbackClient) doJSON(ctx context.Context, url, contentType string, bo
 	return c.doJSONRetries(ctx, url, contentType, body, fallbackRetryDelays)
 }
 
+// Preserve the existing caller-facing error while making its HTTP status
+// available to diagnostics without parsing or logging the response body.
+type providerHTTPError struct {
+	status  int
+	message string
+}
+
+func (e *providerHTTPError) Error() string       { return e.message }
+func (e *providerHTTPError) HTTPStatusCode() int { return e.status }
+func providerHTTPFailure(status int, body []byte) error {
+	return &providerHTTPError{status: status, message: fmt.Sprintf("realtime: openai returned %d: %s", status, truncate(string(body), 300))}
+}
+
 func (c *FallbackClient) doJSONRetries(ctx context.Context, url, contentType string, body []byte, delays []time.Duration) ([]byte, error) {
 	apiKey, err := c.loader.Get(ctx, config.ParamOpenAIAPIKey, config.EnvOverrideOpenAIAPIKey)
 	if err != nil {
@@ -226,12 +239,10 @@ func (c *FallbackClient) doJSONRetries(ctx context.Context, url, contentType str
 			case resp.StatusCode >= 200 && resp.StatusCode < 300:
 				return respBody, nil
 			case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
-				lastErr = fmt.Errorf("realtime: openai returned %d: %s",
-					resp.StatusCode, truncate(string(respBody), 300))
+				lastErr = providerHTTPFailure(resp.StatusCode, respBody)
 			default:
 				// 4xx other than 429 will not improve on retry.
-				return nil, fmt.Errorf("realtime: openai returned %d: %s",
-					resp.StatusCode, truncate(string(respBody), 300))
+				return nil, providerHTTPFailure(resp.StatusCode, respBody)
 			}
 		}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/config"
@@ -45,7 +46,8 @@ func NewRuntime(ctx context.Context) (*Runtime, error) {
 	if skill == "" || queue == "" {
 		return nil, errors.New("Alexa skill/queue configuration is missing")
 	}
-	service := &Service{Repo: NewDynamo(db, app.TableName)}
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	service := &Service{Repo: NewDynamo(db, app.TableName), Log: logger}
 	service.Authorize = func(ctx context.Context, id Identity) error {
 		grant, e := auth.VerifyGrant(ctx, id.Grant, mcpauth.AlexaResource)
 		if e != nil || grant.UserID != id.Owner {
@@ -72,7 +74,7 @@ func NewRuntime(ctx context.Context) (*Runtime, error) {
 		_, e = queueClient.SendMessage(ctx, &sqs.SendMessageInput{QueueUrl: aws.String(queue), MessageBody: aws.String(string(body))})
 		return e
 	}
-	handler := &Handler{SkillID: skill, Service: service}
+	handler := &Handler{SkillID: skill, Service: service, Log: logger}
 	handler.Resolve = func(ctx context.Context, token, providerDevice string) (Identity, error) {
 		linked, e := auth.VerifyAlexa(ctx, token)
 		if e != nil {

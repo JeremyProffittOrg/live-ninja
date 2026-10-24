@@ -50,6 +50,8 @@ jobs:
       - name: Alexa delivery contracts
         run: |
           python -B -m unittest discover -s scripts -p test_alexa_skill.py
+          python -B -m unittest discover -s scripts -p test_review_cloudwatch.py
+          python -B -m unittest discover -s scripts -p test_remediation_lock.py
           python -B scripts/alexa-skill.py validate-local
       - name: MCP auth and shared-tool race checks
         run: go test -race ./internal/mcpauth ./internal/webapp -count=1

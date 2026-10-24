@@ -33,20 +33,34 @@ func (b *broker) storedPersona(ctx context.Context, owner string, settings map[s
 	return persona, id, nil
 }
 
-func (b *broker) handleAlexaTurn(ctx context.Context, l *slog.Logger, req Request) Response {
+func (b *broker) handleAlexaTurn(ctx context.Context, l *slog.Logger, req Request) (response Response) {
+	startedRequest := time.Now()
+	l = l.With("receiptRef", alexa.DiagnosticRef(req.AlexaTurn), "round", req.AlexaRound)
+	phase := "validation"
+	alexa.LogDiagnostic(ctx, l, "broker_received", nil, slog.Int("payloadBytes", len(req.Payload)))
+	defer func() {
+		level := slog.LevelInfo
+		if response.Code >= 400 {
+			level = slog.LevelWarn
+		}
+		l.LogAttrs(ctx, level, "Alexa broker completed", slog.String("stage", phase), slog.String("errorCode", response.Error), slog.Int("status", response.Code), slog.Int("outputBytes", len(response.Text)), slog.Int("toolCallCount", len(response.ToolCalls)), slog.Int64("elapsedMs", time.Since(startedRequest).Milliseconds()))
+	}()
 	if req.Surface != store.SurfaceAlexa || req.Persona != "" || req.DeviceID != "" || req.VoiceOverride != "" || len(req.Capabilities) != 0 || req.AlexaTurn == "" || req.AlexaRound < 0 || req.AlexaRound >= 5 {
 		return badRequest("An internal Alexa turn receipt is required.")
 	}
 	if b.alexaWork == nil || b.alexaCall == nil || b.phoneStore == nil || b.gate == nil {
 		return Response{Code: 503, Error: "alexa_unavailable"}
 	}
+	phase = "authority"
 	work, err := b.alexaWork(ctx, alexa.Job{Owner: req.UserID, Turn: req.AlexaTurn})
+	alexa.LogDiagnostic(ctx, l, "broker_authority", err)
 	if err != nil {
 		return Response{Code: 403, Error: "alexa_access_changed"}
 	}
 	ctx, cancel := context.WithDeadline(ctx, work.Deadline.Add(-2*time.Second))
 	defer cancel()
 	var payload turnPayload
+	phase = "messages"
 	if json.Unmarshal(req.Payload, &payload) != nil || realtime.ValidateChatMessages(payload.Messages) != nil {
 		return badRequest("Invalid Alexa messages.")
 	}
@@ -59,6 +73,8 @@ func (b *broker) handleAlexaTurn(ctx context.Context, l *slog.Logger, req Reques
 	} else {
 		err = b.gate.CheckTextContinuation(ctx, req.UserID)
 	}
+	phase = "quota"
+	alexa.LogDiagnostic(ctx, l, "broker_quota", err, slog.Int("messageCount", len(messages)))
 	if resp, rejected := gateErrResponse(l, err, "alexa"); rejected {
 		return resp
 	}
@@ -66,15 +82,21 @@ func (b *broker) handleAlexaTurn(ctx context.Context, l *slog.Logger, req Reques
 		return internalError("Alexa quota unavailable.")
 	}
 	settingsID := store.AlexaSettingsDeviceID(req.UserID)
+	phase = "settings"
 	settings, err := b.phoneStore.GetEffectiveSettings(ctx, req.UserID, settingsID)
+	alexa.LogDiagnostic(ctx, l, "broker_settings", err)
 	if err != nil {
 		return internalError("Alexa settings unavailable.")
 	}
+	phase = "persona"
 	persona, _, err := b.storedPersona(ctx, req.UserID, settings)
+	alexa.LogDiagnostic(ctx, l, "broker_persona", err, slog.Int("styleBytes", len(persona.Style)))
 	if err != nil {
 		return badRequest("Invalid stored persona.")
 	}
+	phase = "guides"
 	guides, err := realtime.LoadEnabledGuides(ctx, b.ddb, b.table, req.UserID)
+	alexa.LogDiagnostic(ctx, l, "broker_guides", err, slog.Int("guideCount", len(guides)))
 	if err != nil {
 		return internalError("Alexa guides unavailable.")
 	}
@@ -87,9 +109,12 @@ func (b *broker) handleAlexaTurn(ctx context.Context, l *slog.Logger, req Reques
 		return Response{Code: 403, Error: "alexa_access_changed"}
 	}
 	ctx = realtime.WithClientCapabilities(ctx, "alexa", nil)
+	phase = "model"
 	started := time.Now()
+	alexa.LogDiagnostic(ctx, l, "model_started", nil, slog.String("model", realtime.AlexaTextModel), slog.Int("directiveBytes", len(directives)), slog.Int("messageCount", len(messages)))
 	result, callErr := b.alexaCall(ctx, persona, messages, directives, realtime.AlexaTextModel)
 	modelMs := time.Since(started).Milliseconds()
+	alexa.LogDiagnostic(ctx, l, "model_returned", callErr, slog.Int64("elapsedMs", modelMs), slog.Bool("hasResult", result != nil))
 	usage := store.AlexaUsage{Model: realtime.AlexaTextModel}
 	if result != nil && result.Usage != nil {
 		u := result.Usage
@@ -103,6 +128,7 @@ func (b *broker) handleAlexaTurn(ctx context.Context, l *slog.Logger, req Reques
 	meterCtx, done := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	meterErr := b.phoneStore.RecordAlexaUsage(meterCtx, req.UserID, req.AlexaTurn, req.AlexaRound, started, usage)
 	done()
+	alexa.LogDiagnostic(ctx, l, "usage_recorded", meterErr, slog.Bool("usageReported", usage.Reported), slog.Int64("inputTokens", usage.Input), slog.Int64("outputTokens", usage.Output), slog.Float64("costUSD", usage.CostUSD))
 	if meterErr != nil {
 		l.Error("Alexa usage write failed")
 		return Response{Code: 503, Error: "alexa_usage_unavailable", ModelMs: modelMs}

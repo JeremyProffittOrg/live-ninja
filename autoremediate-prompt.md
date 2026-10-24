@@ -25,8 +25,9 @@ independent work moving when one issue has an external blocker.
 - A Ghost assistant handling a manual request should find this task, read its
   current definition, and run the existing task now. Keep its daily schedule.
   Reuse an active run instead of starting another. From an already launched
-  Live Ninja repository session, execute this file directly. Once inside this
-  runner, do not dispatch another copy of this task.
+  run of this registered task, execute this file directly. Other repository
+  sessions start the registered task so overlap and output capture are tracked.
+  Once inside this runner, do not dispatch another copy of this task.
 - Resolve `REPO_ROOT` with `git rev-parse --show-toplevel`. Ghost clones fresh
   per run; never assume the interactive checkout is the current directory.
 - Choose a unique `RUN_ID` from the Ghost run ID when provided, otherwise UTC
@@ -140,13 +141,17 @@ assess any decision that a negative answer was correct and needs no code fix.
 2. Verify origin, default branch, current SHA and clean/dirty state. Work on
    main in the Ghost clone. Preserve unrelated edits; use an isolated checkout
    if necessary. Read earlier autoremediation notes before collecting evidence.
-3. Check for an active run of this task using Ghost when available. The
-   scheduler rejects simultaneous runs of the same task, but a direct CLI
-   invocation must also check. Use an exclusive local process-owned lock for
-   direct/scheduled overlap on OFFICEPC. Record the holder RUN_ID and PID.
-   A live holder produces `SKIPPED_ACTIVE_RUN`, not a second repair team. An
-   orphan lock is cleared only after confirming the holder process/run ended.
-   Release this run's lock in finalization; never kill somebody else's run.
+3. Acquire the shared daily/CloudWatch repair lock with
+   `python -B scripts/remediation_lock.py acquire --event-id live-ninja-autoremediate`.
+   It verifies the actual active Ghost run through the configured AWS identity
+   and records its run ID; use that returned ID as RUN_ID. The OS-protected
+   ownership transaction excludes the separate three-hour tasks as well.
+   A live holder produces `SKIPPED_ACTIVE_RUN`, not a second repair team.
+   Missing or unknown run evidence blocks mutations; never force-clear it.
+   Only authoritative terminal Ghost evidence permits orphan recovery.
+   In finalization, release only the owned lock with
+   `python -B scripts/remediation_lock.py release --event-id live-ninja-autoremediate --run-id <RUN_ID>`.
+   Manual requests use the existing Ghost task, so they have a registered run.
 4. Verify GitHub access without interactive prompts, the expected AWS account,
    repository push permission, current pipeline health, sender verification,
    transcript read access and production text-session access. Inspect status

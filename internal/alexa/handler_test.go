@@ -1,8 +1,11 @@
 package alexa
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -62,6 +65,57 @@ func TestContractHandlerRejectsWrongSkillAndOffersAccountLink(t *testing.T) {
 	_, err = h.Handle(t.Context(), e)
 	require.ErrorIs(t, err, ErrEnvelope)
 	require.Zero(t, *published)
+}
+
+func TestAlexaDiagnosticsTraceRequestsWithoutPrivateContent(t *testing.T) {
+	for _, mode := range []string{"launch", "invalid", "identity-failure"} {
+		t.Run(mode, func(t *testing.T) {
+			var logs bytes.Buffer
+			s, id, now, _, _ := serviceFixture(t)
+			h := Handler{Log: slog.New(slog.NewJSONHandler(&logs, nil)), SkillID: "skill", Service: s, Now: func() time.Time { return *now },
+				Resolve: func(context.Context, string, string) (Identity, error) {
+					if mode == "identity-failure" {
+						return Identity{}, errors.New("Bearer PRIVATE-PROVIDER-CREDENTIAL")
+					}
+					return id, nil
+				}}
+			e := handlerEvent(*now, "ChatIntent", "PRIVATE-USER-UTTERANCE")
+			e.Request.Type = "LaunchRequest"
+			e.Context.System.Device.ID = "PRIVATE-PROVIDER-DEVICE"
+			e.Session.ID = "PRIVATE-ASK-SESSION"
+			if mode == "invalid" {
+				e.Request.Type = "PRIVATE-UNKNOWN-REQUEST"
+			}
+			_, err := h.Handle(t.Context(), e)
+			if mode == "invalid" {
+				require.ErrorIs(t, err, ErrEnvelope)
+			} else {
+				require.NoError(t, err)
+			}
+			out := logs.String()
+			for _, stage := range []string{"request_received", "response_completed"} {
+				require.Contains(t, out, stage)
+			}
+			switch mode {
+			case "launch":
+				require.Contains(t, out, "identity_resolved")
+				require.Contains(t, out, "operation_started")
+			case "invalid":
+				require.Contains(t, out, "invalid_envelope")
+			case "identity-failure":
+				require.Contains(t, out, "identity_failed")
+				require.Contains(t, out, "dependency_failed")
+			}
+			for _, private := range []string{"PRIVATE-", "synthetic-linked-token", `"accessToken"`, `"outputSpeech"`} {
+				require.NotContains(t, out, private)
+			}
+			for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+				var record map[string]any
+				require.NoError(t, json.Unmarshal([]byte(line), &record))
+				require.Len(t, record["requestRef"].(string), 64)
+			}
+		})
+	}
 }
 
 func TestContractSpeechIsPlainBoundedAndDoesNotRepeatModelWork(t *testing.T) {

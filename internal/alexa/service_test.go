@@ -1,8 +1,10 @@
 package alexa
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -45,6 +47,8 @@ func serviceFixture(t *testing.T) (*Service, Identity, *time.Time, *int, *int) {
 
 func TestContractDurableTurnReplayAndFollowup(t *testing.T) {
 	s, id, now, published, ran := serviceFixture(t)
+	var diagnostics bytes.Buffer
+	s.Log = slog.New(slog.NewJSONHandler(&diagnostics, nil))
 	ctx := t.Context()
 	first, err := s.Submit(ctx, id, "request-1", "ask-session", "Which city is Virginia's capital?")
 	require.NoError(t, err)
@@ -56,6 +60,11 @@ func TestContractDurableTurnReplayAndFollowup(t *testing.T) {
 	require.NoError(t, s.Execute(ctx, Job{Owner: id.Owner, Turn: first.Receipt}))
 	require.NoError(t, s.Execute(ctx, Job{Owner: id.Owner, Turn: first.Receipt}))
 	require.Equal(t, 1, *ran)
+	for _, stage := range []string{"submission_started", "settings_loaded", "queue_publish_completed", "execution_claimed", "authority_verified", "history_loaded", "execution_result", "turn_persisted"} {
+		require.Contains(t, diagnostics.String(), stage)
+	}
+	require.NotContains(t, diagnostics.String(), "Which city is Virginia's capital?")
+	require.NotContains(t, diagnostics.String(), "Richmond")
 	view, err := s.Status(ctx, id)
 	require.NoError(t, err)
 	require.Equal(t, "complete", view.State)
@@ -73,6 +82,33 @@ func TestContractDurableTurnReplayAndFollowup(t *testing.T) {
 	_, err = s.Status(ctx, id)
 	require.ErrorIs(t, err, ErrExpired)
 }
+
+func TestAlexaDiagnosticCodesDoNotLeakProviderMessages(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	for _, test := range []struct {
+		err  error
+		code string
+	}{
+		{errors.New("Bearer PRIVATE-CREDENTIAL https://private.example/callback?token=secret"), "dependency_failed"},
+		{context.DeadlineExceeded, "deadline_exceeded"},
+		{ErrUnauthorized, "unauthorized"},
+		{ErrCancelled, "cancelled"},
+		{diagnosticHTTPFailure{}, "dependency_failed"},
+	} {
+		require.Equal(t, test.code, DiagnosticCode(test.err))
+		LogDiagnostic(t.Context(), logger, "test_failure", test.err)
+	}
+	require.NotContains(t, logs.String(), "PRIVATE-CREDENTIAL")
+	require.NotContains(t, logs.String(), "private.example")
+	require.NotContains(t, logs.String(), "token=")
+	require.Contains(t, logs.String(), `"httpStatus":503`)
+}
+
+type diagnosticHTTPFailure struct{}
+
+func (diagnosticHTTPFailure) Error() string       { return "PRIVATE-CREDENTIAL in provider body" }
+func (diagnosticHTTPFailure) HTTPStatusCode() int { return 503 }
 
 func TestAlexaRuntimeUsesSharedPersonaAndPrivacy(t *testing.T) {
 	st := store.NewWithClient(testutil.NewFakeDynamo(), "test")

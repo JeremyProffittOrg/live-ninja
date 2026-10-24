@@ -1,5 +1,45 @@
 # Plan
 
+## cloudwatch-remediation — diagnose requests and review production errors every three hours
+Status: implementation in progress, 2026-10-24. Checkout: C:\dev\live-ninja-alexa, main.
+Outcome: detailed structured diagnostics across Alexa ingress, authorization, queue, model and tool execution; bounded CloudWatch review every three hours for seven days, with errors recorded here, tested repairs delivered through GitHub, and a truthful result.txt handoff.
+Non-goals: raw request/response, credential, transcript or provider-device logging; weakening access or privacy checks; CloudWatch alarms/dashboards; new dependencies; EC2 creation/start; changing the existing daily transcript schedule.
+Files: internal/alexa handler/runtime/service and diagnostic helpers, existing worker/broker/runner code and tests, safe HTTP-status metadata in the existing fallback client; standard-library CloudWatch collection and shared repair-lock scripts/tests; cloudwatch-remediate-prompt.md and the daily prompt's shared lock instruction; Help, CI tests and this plan. The first real review also identified a usage-rollup query defect, fixed in its existing command/test files. Existing Ghost tools supply the bounded schedule.
+Proof: focused Go tests prove stage/outcome coverage and absence of synthetic secrets; collector tests prove pagination, incomplete coverage and redaction; native Alexa launch/read-only tool replay produces correlated production diagnostics; both affected deployment workflows pass; schedule preview/read-back shows exactly 56 one-shot fires, three hours apart, with no recurring task left running after the window.
+
+### Locked decisions (user-confirmed; do not revisit)
+- 2026-10-24 — "implement highly verbose cloudwatch logs, then wait every 3 hours, adn check logs, update plan.md with any errors and remediate, launching new versions"
+- 2026-10-24 — "Seven days" in response to the monitoring duration question.
+- Existing deployment authorization covers fixes, main pushes and normal costs. Logs retain seven days. Native task scheduling activation still requires the exact command, trigger, frequency and duration to be presented under the repository's local scheduled automation rule.
+
+### Verified facts
+- Alexa ingress currently has no application request-stage logs. The worker logs queue outcome and the runner logs model/tool outcomes, but detailed validation, authorization and timing information is missing.
+- Ghost task live-ninja-autoremediate on OFFICEPC uses Claude, executes autoremediate-prompt.md, allows deployment, captures result.txt and runs at 23:00 America/New_York. Its recent runs exited with incomplete result.txt reports; a process exit is not acceptance.
+- Ghost's task service supports five-field cron or one-shot run_at, but no recurrence end date. Pausing uses a human passkey. Fifty-six native one-shot tasks provide the requested seven-day cadence without a permanent cron or a new stop mechanism. The original daily task will be preserved.
+
+### diagnostic-events — expose each request stage without private payloads
+- [x] alexa-stage-logs — structured events now cover request envelope facts, validation, authorization, operations, polling summary, queue claim/execution, model rounds, tools, persistence and final response timing. Error code/type and numeric provider HTTP status are logged without raw messages or payloads. Focused Go suites and vet passed; the ingress regression first failed because request_received was absent.
+
+### log-review-runner — collect and remediate a bounded log window
+- [x] cloudwatch-collector — paginates in-scope groups/events, exports only allowlisted metadata and marks denied/truncated reads incomplete. Seven collector tests passed; full script discovery passed 37 tests. Real baseline review enumerated 18 groups, 1,074 events and 18 candidates with complete coverage and no retention drift in those groups. Evidence: C:\dev\live-ninja-test-evidence\cloudwatch\2026-10-24\baseline-review.json.
+- [x] cloudwatch-run-contract — cloudwatch-remediate-prompt.md defines bounded review, issue/attempt ledgers, release/replay proof, interrupted-run recovery and truthful result.txt. A shared lock binds both daily and three-hour repairs to an actual active Ghost run; only authoritative terminal evidence permits orphan recovery. Four lock tests passed. Ghost metadata reads were verified with the existing AWS identity; no Ghost credential setup is needed.
+
+### CloudWatch issue ledger
+- [~] usage-rollup-primary-key-filter — attempt 1/3, ACTIONABLE_DEFECT. The hourly rollup fails with `ValidationException: Filter Expression can only contain non-primary key attributes: Primary key attribute: sk`. All 18 baseline candidates are from this function. The query incorrectly used contains(sk, :suffix) as a FilterExpression. Fix removes that illegal filter, checks the date suffix locally and follows all Query pages. The regression reproduced the exact rejection before the fix; `go test ./cmd/usage-rollup -count=1 -timeout=2m` passed after it, and vet passed. Delivery and one bounded invocation of the existing hourly maintenance function remain to verify the derived monthly totals can be recomputed. No configured usage limits or day counters are changed.
+
+### diagnostic-delivery — deploy and enable the requested review window
+depends on: diagnostic-events, log-review-runner.
+- [~] diagnostic-release — local logging, collector, lock and usage-rollup regressions pass. Commit focused changes, push main, watch all required workflows to terminal success, and verify live diagnostic fields using native Alexa plus the repaired maintenance function.
+- [ ] bounded-ghost-schedule — prepare and preview 56 one-shot Ghost definitions executing cloudwatch-remediate-prompt.md on OFFICEPC, beginning three hours after activation. Present the exact activation proposal after code and prompt are reviewable; create only after required schedule approval and verify all stored instants/definitions.
+
+### Stop conditions (only these)
+Missing credentials/resources; unavailable exact schedule approval; unapproved destructive or material scope change; EC2 creation/start; exhausted three-attempt repair budgets. Continue independent implementation and verification when scheduling is pending. Scheduled runs have a two-hour-forty-five-minute ceiling with finalization time reserved, preserve progress at each milestone, and recover incomplete earlier work before new repairs.
+
+### Execution log
+- 2026-10-24 — read deployment and existing Alexa logging paths, the remediation prompt, Ghost task metadata and scheduler implementation. Existing unrelated worktree changes remain preserved. Read writing-for-agents for the new unattended run contract. No schedule has been changed or created.
+- 2026-10-24 — `go test ./internal/alexa ./internal/realtime ./internal/webapp ./cmd/alexa-skill ./cmd/alexa-chat-worker ./cmd/realtime-broker -count=1 -timeout=5m` passed; the adapter entrypoint has no separate tests and built successfully. Matching go vet passed. `python -B -m unittest discover -s scripts -p test_*.py` passed 37 tests. `git -c core.whitespace=cr-at-eol -c core.safecrlf=false diff --check` passed. The first three-hour collection (2026-10-24T11:20:32Z–14:20:32Z) completed and exposed the rollup defect. AWS documents empty pages with continuation tokens and inclusive endTime at https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_FilterLogEvents.html ; the collector follows tokens and converts the exclusive cursor end correctly.
+- 2026-10-24 — final script discovery passed 38 tests, including runtime error records without a level. Bounded source verification found all 18 usage-rollup candidate entries contain the same primary-key FilterExpression rejection (rollup-baseline.json). The exact regression failed before repair and passed afterward; `go test ./cmd/usage-rollup -count=1 -timeout=2m` and its vet exited 0. Issue/plan HTML mail was accepted by SES as 010001a16e66d214-de9c10b5-59ea-40ee-84b3-dec362b586cf-000000 (parent-receipt.json under the cloudwatch evidence mail-plan directory). The delegated first attempt failed client-side before transmission; the parent corrected the MIME argument and sent once successfully.
+
 ## alexa-device-launch — diagnose the device-specific refusal
 Status: native skill launch and account-tool execution verified; the reported device refusal is not yet reproduced, 2026-10-24.
 Outcome: open the private Live Ninja skill on the operator's reported Alexa device without the "not supported on this device" response.

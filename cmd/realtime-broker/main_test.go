@@ -54,6 +54,8 @@ func newPhoneTestBroker(t *testing.T) (*broker, *testutil.FakeDynamo) {
 
 func TestAlexaBrokerUsesStoredAuthorityPersonaAndReportsUsage(t *testing.T) {
 	b, _ := newPhoneTestBroker(t)
+	var diagnostics bytes.Buffer
+	b.log = slog.New(slog.NewJSONHandler(&diagnostics, nil))
 	doc, err := b.phoneStore.GetSettings(t.Context(), "owner")
 	require.NoError(t, err)
 	id := store.AlexaSettingsDeviceID("owner")
@@ -91,6 +93,11 @@ func TestAlexaBrokerUsesStoredAuthorityPersonaAndReportsUsage(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 403, response.Code)
 	require.Equal(t, 1, calls)
+	for _, stage := range []string{"broker_received", "broker_authority", "broker_settings", "broker_persona", "broker_guides", "model_started", "model_returned", "usage_recorded", "Alexa broker completed"} {
+		require.Contains(t, diagnostics.String(), stage)
+	}
+	require.NotContains(t, diagnostics.String(), "astronomy teacher")
+	require.NotContains(t, diagnostics.String(), "Shared Alexa Owner")
 	req.Surface = "web"
 	response, _ = b.Handle(t.Context(), req)
 	require.Equal(t, 400, response.Code)
