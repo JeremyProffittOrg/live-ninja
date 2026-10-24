@@ -22,6 +22,7 @@ import (
 	"html/template"
 	"io"
 	"io/fs"
+	"os"
 	"path"
 	"reflect"
 	"strings"
@@ -97,6 +98,7 @@ var pageMetas = map[string]pageMeta{
 	"pages/jobs":         {Title: "Jobs - Live Ninja", Path: "/jobs"},
 	"pages/history":      {Title: "History — Live Ninja", Path: "/history"},
 	"pages/error":        {Title: "Live Ninja"},
+	"pages/privacy":      {Title: "Privacy — Live Ninja", Path: "/privacy"},
 }
 
 // Renderer implements fiber.Views over the embedded templates: one
@@ -219,6 +221,10 @@ type errorPageView struct {
 // context.
 func RegisterPageRoutes(app *fiber.App, deps *Deps) {
 	app.Get("/", handleLandingPage(deps))
+	app.Get("/privacy", func(c *fiber.Ctx) error {
+		c.Set(fiber.HeaderCacheControl, "no-cache")
+		return c.Render("pages/privacy", nil)
+	})
 	app.Get("/conversation", handleConversationPage(deps))
 	app.Get("/downloads", handleDownloadsPage(deps))
 	app.Get("/memory", handleClientDataPage(deps, "pages/memory"))
@@ -256,7 +262,7 @@ func handleConversationPage(deps *Deps) fiber.Handler {
 			return c.Redirect("/", fiber.StatusFound)
 		}
 		c.Set(fiber.HeaderCacheControl, "no-cache")
-		return c.Render("pages/conversation", nil)
+		return c.Render("pages/conversation", fiber.Map{"AlexaEnabled": os.Getenv("ALEXA_ENABLED") == "true", "AlexaTrialMode": os.Getenv("ALEXA_TRIAL_MODE") == "true"})
 	}
 }
 

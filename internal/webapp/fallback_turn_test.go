@@ -8,18 +8,22 @@ package webapp
 // maxFallbackToolIterations before degrading to a plain answer.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/gofiber/fiber/v2"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/alexa"
+	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
 	"github.com/JeremyProffittOrg/live-ninja/internal/testutil"
 	"github.com/JeremyProffittOrg/live-ninja/internal/tools"
@@ -29,12 +33,16 @@ import (
 // decoded brokerRequest and answers from a script of response payloads
 // (the last entry repeats once the script runs out).
 type fakeBrokerLambda struct {
-	responses []map[string]any
-	requests  []brokerRequest
-	payloads  []map[string]any // decoded req.Payload per call
+	responses   []map[string]any
+	requests    []brokerRequest
+	payloads    []map[string]any // decoded req.Payload per call
+	lastOptions lambda.Options
 }
 
-func (f *fakeBrokerLambda) Invoke(_ context.Context, in *lambda.InvokeInput, _ ...func(*lambda.Options)) (*lambda.InvokeOutput, error) {
+func (f *fakeBrokerLambda) Invoke(_ context.Context, in *lambda.InvokeInput, options ...func(*lambda.Options)) (*lambda.InvokeOutput, error) {
+	for _, option := range options {
+		option(&f.lastOptions)
+	}
 	var req brokerRequest
 	if err := json.Unmarshal(in.Payload, &req); err != nil {
 		return nil, err
@@ -93,6 +101,101 @@ func newFallbackTurnApp(t *testing.T, fake *fakeBrokerLambda, reauth tools.Reaut
 }
 
 func allowAll(context.Context, string) error { return nil }
+
+func TestAlexaRunnerUsesSharedLoopAndPrivateToolContext(t *testing.T) {
+	var logs bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logs, nil))
+	db := testutil.NewFakeDynamo()
+	st := store.NewWithClient(db, "test")
+	fake := &fakeBrokerLambda{responses: []map[string]any{
+		{"toolCalls": []map[string]any{{"id": "c1", "name": "remember_note", "arguments": `{"text":"I prefer tea"}`}}},
+		{"text": "I saved your note."},
+	}}
+	deps := &Deps{Store: st, Log: log, Lambda: fake, BrokerFn: "broker"}
+	registry, err := tools.NewRegistry(&tools.Deps{Store: st, DDB: db, TableName: "test", Log: log, Reauthorize: allowAll, Now: time.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := alexa.Work{Identity: alexa.Identity{Owner: "u1", Device: "echo"}, Receipt: "receipt", SessionID: "session", Messages: []realtime.ChatMessage{{Role: "user", Content: "Remember my tea preference"}}, Check: func(context.Context) error { return nil }}
+	r, err := runAlexaTurn(t.Context(), deps, registry, w)
+	if err != nil || r.Text != "I saved your note." || len(r.Messages) != 4 {
+		t.Fatalf("result=%+v err=%v", r, err)
+	}
+	if len(fake.requests) != 2 || fake.requests[1].AlexaRound != 1 || fake.requests[0].AlexaTurn != "receipt" || fake.requests[0].DeviceID != "" || fake.requests[0].Surface != "alexa" {
+		t.Fatalf("bad authority: %+v", fake.requests)
+	}
+	if fake.lastOptions.RetryMaxAttempts != 1 {
+		t.Fatal("ambiguous model invocation may retry")
+	}
+	rows, err := st.QuerySessionLog(t.Context(), "u1", "session")
+	if err != nil || len(rows) != 0 {
+		t.Fatal("privacy-off wrote transcript", err)
+	}
+	notes, err := st.QueryNotes(t.Context(), "u1", "tea")
+	if err != nil || len(notes) != 1 {
+		t.Fatal("explicit note was not saved", err)
+	}
+	toolLines := func() string {
+		var out []string
+		for _, line := range strings.Split(logs.String(), "\n") {
+			if strings.Contains(line, "Alexa tool") {
+				out = append(out, line)
+			}
+		}
+		return strings.Join(out, "\n")
+	}
+	if got := toolLines(); !strings.Contains(got, "Alexa tool completed") || !strings.Contains(got, "tool=remember_note") || !strings.Contains(got, "ok=true") || strings.Contains(got, "tea") {
+		t.Fatalf("tool outcome log missing or leaked arguments: %q", got)
+	}
+	t.Setenv("ALEXA_TRIAL_MODE", "true")
+	w.Receipt = "trial-receipt"
+	fake.requests, fake.payloads = nil, nil
+	fake.responses = []map[string]any{
+		{"toolCalls": []map[string]any{{"id": "trial-call", "name": "remember_note", "arguments": `{"text":"tea trial note must not be saved"}`}}},
+		{"text": "Tool actions are disabled during the setup trial."},
+	}
+	_, err = runAlexaTurn(t.Context(), deps, registry, w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes, err = st.QueryNotes(t.Context(), "u1", "tea")
+	if err != nil || len(notes) != 1 {
+		t.Fatal("acceptance trial executed a tool action", err)
+	}
+	if got := toolLines(); !strings.Contains(got, "Alexa tool failed") || !strings.Contains(got, "errorCode=forbidden") || strings.Contains(got, "must not be saved") {
+		t.Fatalf("rejected tool call was not logged by code only: %q", got)
+	}
+	w.Check = func(context.Context) error { return alexa.ErrCancelled }
+	_, err = runAlexaTurn(t.Context(), deps, registry, w)
+	if err == nil || len(fake.requests) != 2 {
+		t.Fatal("cancelled turn called model")
+	}
+}
+
+func TestWebResearchAdapterUsesVerifiedContextAndOneAttempt(t *testing.T) {
+	fake := &fakeBrokerLambda{responses: []map[string]any{{"search": map[string]any{"summary": "Cited evidence", "sources": []map[string]string{{"title": "News", "url": "https://news.example/report"}}}}}}
+	search := webResearchThroughBroker(&Deps{Lambda: fake, BrokerFn: "realtime-broker"})
+	result, terr := search(t.Context(), tools.Invocation{UserID: "owner", Role: store.RoleOwner, Surface: "phone", TxID: "request-ref"}, "bank robbery November 2025", 0)
+	if terr != nil {
+		t.Fatal(terr)
+	}
+	if result == nil || len(result.Sources) != 1 {
+		t.Fatal("missing citation")
+	}
+	if len(fake.requests) != 1 || fake.requests[0].Mode != "web-search" || fake.requests[0].UserID != "owner" || fake.requests[0].Surface != "phone" || fake.requests[0].Role != store.RoleOwner || fake.requests[0].TxID != "request-ref" {
+		t.Fatal("search lost verified context")
+	}
+	if fake.payloads[0]["query"] != "bank robbery November 2025" || fake.payloads[0]["days"] != float64(0) {
+		t.Fatal("query or dates changed")
+	}
+	if fake.lastOptions.Retryer == nil || fake.lastOptions.Retryer.MaxAttempts() != 1 {
+		t.Fatal("paid search invocation can retry")
+	}
+	_, terr = search(t.Context(), tools.Invocation{UserID: "owner", Role: store.RoleOwner, Surface: store.SurfaceAlexa, TxID: "alexa-receipt"}, "same public question", 0)
+	if terr != nil || fake.requests[1].AlexaTurn != "alexa-receipt" {
+		t.Fatal("Alexa search lost its admission receipt", terr)
+	}
+}
 
 func respToolCalls(t *testing.T, body map[string]any) []map[string]any {
 	t.Helper()
@@ -303,5 +406,24 @@ func TestFallbackTurnRequiresText(t *testing.T) {
 	}
 	if len(fake.requests) != 0 {
 		t.Errorf("broker invoked %d times on invalid input", len(fake.requests))
+	}
+}
+
+func TestSharedTextTurnPreservesFollowupAndChecksCancellationBeforeTools(t *testing.T) {
+	history := []brokerChatMessage{{Role: "user", Content: "Remember the city is Richmond."}, {Role: "assistant", Content: "Richmond."}, {Role: "user", Content: "What is its weather?"}}
+	ctx, cancel := context.WithCancel(t.Context())
+	calls := 0
+	r, err := runTextTurn(ctx, history, func(_ context.Context, m []brokerChatMessage) (*brokerResponse, error) {
+		if len(m) != 3 || m[0].Content != "Remember the city is Richmond." {
+			t.Fatal("lost conversation")
+		}
+		cancel()
+		return &brokerResponse{ToolCalls: []brokerChatToolCall{{ID: "weather", Name: "weather", Arguments: `{}`}}}, nil
+	}, func(context.Context, brokerChatToolCall, int, int) *tools.Result {
+		calls++
+		return &tools.Result{OK: true}
+	})
+	if !errors.Is(err, context.Canceled) || calls != 0 || r == nil {
+		t.Fatalf("cancellation: calls=%d err=%v", calls, err)
 	}
 }

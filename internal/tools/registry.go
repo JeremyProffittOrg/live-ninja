@@ -142,7 +142,19 @@ type Invocation struct {
 	DeviceID  string `json:"-"`
 	Role      string `json:"-"`
 	// Scope is the verified token scope; PhoneScope marks an owner phone call.
-	Scope string `json:"-"`
+	Scope        string   `json:"-"`
+	Capabilities []string `json:"-"`
+	// OmitTranscript is derived from trusted surface privacy settings. It cannot
+	// be set in tool arguments. Explicit user-requested storage still operates.
+	OmitTranscript bool `json:"-"`
+	// TranscriptExpiresAt is the trusted surface's shorter transcript policy.
+	// Zero preserves the existing default for other callers.
+	TranscriptExpiresAt time.Time `json:"-"`
+	// ConfirmationContext binds Alexa proposals to the verified conversation,
+	// grant/device generation and settings version. It never comes from a model.
+	ConfirmationContext string `json:"-"`
+	ConfirmationTurn    string `json:"-"`
+	ConfirmedByUser     bool   `json:"-"`
 }
 
 // Result is the outcome of one tool invocation. It is safe to serialize
@@ -255,7 +267,7 @@ type ParamSpec struct {
 	Type        string // "string" | "integer" | "number" | "boolean" | "string_array"
 	Description string
 	Required    bool
-	Enum        []string // valid values for string params; empty = unconstrained
+	Enum        []string // string values or string-array items; array handlers validate normalized values
 	MinLen      int      // strings: minimum length (0 = no minimum beyond non-empty required)
 	MaxLen      int      // strings: maximum length (0 = no cap)
 	Min         *float64 // numbers: inclusive minimum
@@ -447,6 +459,9 @@ type Deps struct {
 	Memory MemoryService
 
 	HTTPClient *http.Client // get_weather / web_lookup; defaulted by NewRegistry
+	// WebResearch reaches general public-web search through the existing
+	// credential-isolating broker; never put its API key in this process.
+	WebResearch func(context.Context, Invocation, string, int) (*WebResearchResult, *ToolError)
 
 	// Profile loads the caller's Base Knowledge profile (M15) so
 	// profile-aware tools can take their defaults from it: get_weather's
@@ -511,6 +526,9 @@ func (d *Deps) profileFor(ctx context.Context, userID string) store.Profile {
 func (d *Deps) profileForInvocation(ctx context.Context, inv Invocation) store.Profile {
 	if d == nil || inv.UserID == "" {
 		return store.Profile{}
+	}
+	if inv.Surface == store.SurfaceAlexa && d.DeviceProfile != nil {
+		return d.DeviceProfile(ctx, inv.UserID, store.AlexaSettingsDeviceID(inv.UserID))
 	}
 	if inv.DeviceID != "" && d.DeviceProfile != nil {
 		return d.DeviceProfile(ctx, inv.UserID, inv.DeviceID)
@@ -799,7 +817,11 @@ func (p ParamSpec) jsonSchema() map[string]any {
 		s["type"] = p.Type
 	}
 	if len(p.Enum) > 0 {
-		s["enum"] = p.Enum
+		if p.Type == "string_array" {
+			s["items"].(map[string]any)["enum"] = p.Enum
+		} else {
+			s["enum"] = p.Enum
+		}
 	}
 	if p.Type == "string" {
 		if p.MinLen > 0 {
@@ -1120,7 +1142,7 @@ func (r *Registry) finish(ctx context.Context, l *slog.Logger, inv Invocation, r
 		res.Error.TxID = res.TxID
 	}
 
-	if inv.UserID != "" {
+	if inv.UserID != "" && !inv.OmitTranscript {
 		r.writeAudit(ctx, l, inv, res, outcome)
 	}
 
@@ -1154,10 +1176,14 @@ func (r *Registry) finish(ctx context.Context, l *slog.Logger, inv Invocation, r
 			slog.String("outcome", outcome),
 			slog.Int64("latencyMs", latencyMs))
 	case res.Error != nil:
+		message := res.Error.Message
+		if inv.OmitTranscript {
+			message = "private tool request failed"
+		}
 		l.Warn("tools: invoke done",
 			slog.String("outcome", outcome),
 			slog.String("code", res.Error.Code),
-			slog.String("message", res.Error.Message),
+			slog.String("message", message),
 			slog.Int64("latencyMs", latencyMs))
 	default:
 		// Neither OK nor carrying an error: the only way to reach this is a
@@ -1174,7 +1200,9 @@ func (r *Registry) finish(ctx context.Context, l *slog.Logger, inv Invocation, r
 	// after the audit row, the EMF metric and the "invoke done" line are all
 	// already emitted, so nothing this does can delay, reorder or lose the
 	// observability record that existed before M17.
-	r.enqueueRCA(ctx, l, inv, res, outcome)
+	if !inv.OmitTranscript {
+		r.enqueueRCA(ctx, l, inv, res, outcome)
+	}
 }
 
 // enqueueRCA hands one failed invocation to the RCA pipeline (M17). It is the
@@ -1326,6 +1354,13 @@ func (r *Registry) writeAudit(ctx context.Context, l *slog.Logger, inv Invocatio
 	}
 
 	now := r.deps.Now().UTC()
+	expires := now.Add(auditTTL)
+	if !inv.TranscriptExpiresAt.IsZero() && inv.TranscriptExpiresAt.Before(expires) {
+		expires = inv.TranscriptExpiresAt
+	}
+	if !expires.After(now) {
+		return
+	}
 	seq := int(now.UnixMilli() % 1_000_000)
 	for attempt := 0; attempt < 3; attempt++ {
 		sk := fmt.Sprintf("LOG#%s#%06d", sessionID, (seq+attempt)%1_000_000)
@@ -1339,7 +1374,7 @@ func (r *Registry) writeAudit(ctx context.Context, l *slog.Logger, inv Invocatio
 		if outputSnippet != "" {
 			item["output"] = outputSnippet
 		}
-		err := r.deps.Store.ConditionalPut(ctx, "USER#"+inv.UserID, sk, item, now.Add(auditTTL).Unix())
+		err := r.deps.Store.ConditionalPut(ctx, "USER#"+inv.UserID, sk, item, expires.Unix())
 		if err == nil {
 			return
 		}

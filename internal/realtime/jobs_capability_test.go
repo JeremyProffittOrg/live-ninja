@@ -97,3 +97,35 @@ func TestJobsCapabilityDefaultsClosedAndNeverMutatesSharedCatalog(t *testing.T) 
 	assertJobsCatalog(t, nova.Tools, false)
 	require.NotContains(t, nova.SystemPrompt, "job_list")
 }
+
+func TestAlexaServerToolsMatchPhoneAccountCatalog(t *testing.T) {
+	t.Setenv(config.EnvOverrideOpenAIAPIKey, "fake-unit-test-key")
+	ctx := WithClientCapabilities(context.Background(), "alexa", nil)
+	want := map[string]bool{}
+	for _, tool := range PhoneToolManifest() {
+		want[tool["name"].(string)] = true
+	}
+	var execution []map[string]any
+	require.NoError(t, json.Unmarshal(ToolManifestJSONForClient(ctx, "alexa", true), &execution))
+	got := map[string]bool{}
+	for _, tool := range execution {
+		got[tool["name"].(string)] = true
+	}
+	require.Equal(t, want, got, "the Alexa worker must accept the same account tool names as Phone calls")
+
+	var request map[string]any
+	client := newMockOpenAIClient(t, func(w http.ResponseWriter, req *http.Request) {
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&request))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	})
+	_, err := client.AlexaTurn(ctx, ResolvePersona(""), []ChatMessage{{Role: "user", Content: "List my saved jobs"}}, "", AlexaTextModel)
+	require.NoError(t, err)
+	got = map[string]bool{}
+	for _, raw := range request["tools"].([]any) {
+		tool := raw.(map[string]any)["function"].(map[string]any)
+		got[tool["name"].(string)] = true
+	}
+	require.Equal(t, want, got, "the model and execution catalogs must agree")
+	prompt := request["messages"].([]any)[0].(map[string]any)["content"].(string)
+	require.Contains(t, prompt, jobsToolInstructions, "normal approval requirements still apply")
+}

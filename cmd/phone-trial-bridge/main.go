@@ -101,7 +101,7 @@ func main() {
 		log.Fatal(e)
 	}
 	if *probe {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 		defer cancel()
 		if e := probeAzure(ctx, c); e != nil {
 			log.Fatal(e)

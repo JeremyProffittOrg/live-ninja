@@ -48,15 +48,17 @@ type FallbackClient struct {
 	loader *config.Loader
 	// chatURL is the chat-completions endpoint (chatCompletionsURL in
 	// production; tests point it at an httptest mock of OpenAI).
-	chatURL string
+	chatURL   string
+	searchURL string
 }
 
 // NewFallbackClient builds a FallbackClient.
 func NewFallbackClient(loader *config.Loader) *FallbackClient {
 	return &FallbackClient{
-		httpc:   &http.Client{Timeout: 30 * time.Second},
-		loader:  loader,
-		chatURL: chatCompletionsURL,
+		httpc:     &http.Client{Timeout: 30 * time.Second},
+		loader:    loader,
+		chatURL:   chatCompletionsURL,
+		searchURL: "https://api.openai.com/v1/responses",
 	}
 }
 
@@ -194,6 +196,10 @@ func (c *FallbackClient) Speak(ctx context.Context, text, voice, accent string) 
 // failures (network errors, 429, 5xx) per fallbackRetryDelays. Returns
 // the raw response body of the first successful (2xx) attempt.
 func (c *FallbackClient) doJSON(ctx context.Context, url, contentType string, body []byte) ([]byte, error) {
+	return c.doJSONRetries(ctx, url, contentType, body, fallbackRetryDelays)
+}
+
+func (c *FallbackClient) doJSONRetries(ctx context.Context, url, contentType string, body []byte, delays []time.Duration) ([]byte, error) {
 	apiKey, err := c.loader.Get(ctx, config.ParamOpenAIAPIKey, config.EnvOverrideOpenAIAPIKey)
 	if err != nil {
 		return nil, fmt.Errorf("realtime: resolve openai key: %w", err)
@@ -229,13 +235,13 @@ func (c *FallbackClient) doJSON(ctx context.Context, url, contentType string, bo
 			}
 		}
 
-		if attempt >= len(fallbackRetryDelays) {
+		if attempt >= len(delays) {
 			return nil, lastErr
 		}
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(fallbackRetryDelays[attempt]):
+		case <-time.After(delays[attempt]):
 		}
 	}
 }

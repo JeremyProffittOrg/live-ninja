@@ -186,25 +186,26 @@ func settingsDevices(c *fiber.Ctx, deps *Deps) ([]store.Device, error) {
 	if err != nil {
 		return nil, err
 	}
+	alexa, err := deps.Store.EnsureAlexaSettingsDevice(c.Context(), UserID(c))
+	if err != nil {
+		return nil, err
+	}
 	devices, err := deps.Store.ListDevices(c.Context(), UserID(c))
 	if err != nil {
 		return nil, err
 	}
 	activeTargets := devices[:0]
 	for _, device := range devices {
-		if device.Surface != store.SurfacePhone || phone != nil {
+		if device.Surface != store.SurfacePhone && device.Surface != store.SurfaceAlexa {
 			activeTargets = append(activeTargets, device)
 		}
 	}
 	devices = activeTargets
 	if phone != nil {
-		for index, device := range devices {
-			if device.DeviceID == phone.DeviceID {
-				devices[index] = *phone
-				return devices, nil
-			}
-		}
-		devices = append(devices, *phone) // The directory index can lag a fresh creation.
+		devices = append(devices, *phone)
+	}
+	if alexa != nil {
+		devices = append(devices, *alexa)
 	}
 	return devices, nil
 }
@@ -255,7 +256,7 @@ func resolveSettingsTargets(body settingsSectionPatch, currentDeviceID string,
 			return nil, false, "target.deviceIds must be empty for mode all"
 		}
 		for _, device := range owned {
-			if device.Surface == store.SurfacePhone && !deviceSupportsSection(device, section) {
+			if (device.Surface == store.SurfacePhone || device.Surface == store.SurfaceAlexa) && !deviceSupportsSection(device, section) {
 				continue
 			}
 			if !deviceSupportsSection(device, section) {
@@ -288,7 +289,7 @@ func settingsSectionEnvelope(doc map[string]any, devices []store.Device,
 		if device.Status != store.DeviceStatusActive {
 			continue
 		}
-		if device.Surface == store.SurfacePhone && !deviceSupportsSection(device, section) {
+		if (device.Surface == store.SurfacePhone || device.Surface == store.SurfaceAlexa) && !deviceSupportsSection(device, section) {
 			continue
 		}
 		// Legacy device rows predate metadata/capability declarations. Emit

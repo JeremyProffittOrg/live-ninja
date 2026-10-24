@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/conversation"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -25,6 +27,18 @@ import (
 var deliberatelyUnmentionedTools = map[string]string{
 	// (none — D4 named all 20 tools in coreInstructions; M16 added the 21st,
 	// profile_suggest, to the same clause list)
+}
+
+func TestConversationRequestsSurviveSurfacePromptRendering(t *testing.T) {
+	p := ResolvePersona("default")
+	for name, instructions := range map[string]string{
+		"web":    p.Instructions,
+		"phone":  PhoneInstructions(p),
+		"server": InstructionsForServerExecution(p),
+		"custom": ComposeCustomInstructions("Speak warmly."),
+	} {
+		assert.Contains(t, instructions, conversation.RequestContinuityInstructions, name)
+	}
 }
 
 // TestEveryManifestToolIsDiscoverableFromPersonaPrompt is D5.
@@ -105,5 +119,18 @@ func requireNonEmptyManifest(t *testing.T) {
 	t.Helper()
 	if len(toolManifest) == 0 {
 		t.Fatal("toolManifest is empty — cannot assert persona coverage over zero tools")
+	}
+}
+
+// A "was it deployed" question must be looked up, not answered by asking the
+// owner for a run id (phone call, 2026-10-23 "Windows application was deployed").
+func TestGhostInstructionsSearchBeforeAskingForRunIDs(t *testing.T) {
+	for name, instructions := range map[string]string{
+		"core":  coreInstructions,
+		"phone": PhoneInstructions(ResolvePersona("default")),
+	} {
+		assert.Contains(t, instructions, "Never ask the owner for a run id, event id or request id", name)
+		assert.Contains(t, instructions, "ghost_run_status with no arguments", name)
+		assert.Contains(t, instructions, "ghost_session_summary for the time window", name)
 	}
 }

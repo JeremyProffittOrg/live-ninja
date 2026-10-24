@@ -53,6 +53,14 @@ type ChatMessage struct {
 type TurnResult struct {
 	Text      string         `json:"text,omitempty"`
 	ToolCalls []ChatToolCall `json:"toolCalls,omitempty"`
+	Usage     *TextUsage     `json:"usage,omitempty"`
+}
+
+type TextUsage struct {
+	Model        string `json:"model"`
+	InputTokens  int64  `json:"inputTokens"`
+	OutputTokens int64  `json:"outputTokens"`
+	CachedTokens int64  `json:"cachedTokens"`
 }
 
 // chatCompletionTools is the realtime tool manifest (mint.go — the single
@@ -162,8 +170,10 @@ func buildToolTurnRequestForSurface(personaID, _ string, messages []ChatMessage,
 }
 
 func buildToolTurnRequestForClient(ctx context.Context, personaID, _ string, messages []ChatMessage, extraSystem string) ([]byte, error) {
-	persona := ResolvePersona(personaID)
+	return buildToolTurnRequestForPersona(ctx, ResolvePersona(personaID), messages, extraSystem)
+}
 
+func buildToolTurnRequestForPersona(ctx context.Context, persona Persona, messages []ChatMessage, extraSystem string) ([]byte, error) {
 	wire := make([]map[string]any, 0, len(messages)+1)
 	wire = append(wire, map[string]any{"role": "system", "content": ClientInstructions(ctx, InstructionsForServerExecution(persona)) + extraSystem})
 	for _, m := range messages {
@@ -211,6 +221,14 @@ func buildToolTurnRequestForClient(ctx context.Context, personaID, _ string, mes
 // passing any tool_calls through untouched (id/name/raw arguments).
 func parseToolTurnResponse(respBody []byte) (*TurnResult, error) {
 	var out struct {
+		Model string `json:"model"`
+		Usage *struct {
+			Input   int64 `json:"prompt_tokens"`
+			Output  int64 `json:"completion_tokens"`
+			Details struct {
+				Cached int64 `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
+		} `json:"usage"`
 		Choices []struct {
 			Message struct {
 				Content   string `json:"content"`
@@ -234,6 +252,12 @@ func parseToolTurnResponse(respBody []byte) (*TurnResult, error) {
 
 	msg := out.Choices[0].Message
 	res := &TurnResult{Text: msg.Content}
+	if u := out.Usage; u != nil {
+		if u.Input < 0 || u.Output < 0 || u.Details.Cached < 0 || u.Details.Cached > u.Input {
+			return nil, fmt.Errorf("realtime: invalid token usage")
+		}
+		res.Usage = &TextUsage{Model: out.Model, InputTokens: u.Input, OutputTokens: u.Output, CachedTokens: u.Details.Cached}
+	}
 	for _, tc := range msg.ToolCalls {
 		if tc.Type != "" && tc.Type != "function" {
 			continue // only function calls exist today; skip anything else defensively

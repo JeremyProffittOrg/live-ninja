@@ -18,12 +18,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/websearch"
 	"github.com/gorilla/websocket"
 )
 
 const ownerApp = "https://live.jeremy.ninja"
 const ownerIdleTimeout = 2 * time.Minute
 const ownerEndCallTool = "end_call"
+const ownerToolTimeout = 35 * time.Second
 
 type ownerBootstrap struct {
 	Mode, SessionID, BridgeToken, BridgeTokenExpiresAt string
@@ -121,7 +123,14 @@ func (s *server) ownerTool(ctx context.Context, token, name string, body any) ([
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.client.Do(req)
+	req.Header.Set("X-LN-Capabilities", websearch.BudgetCapability)
+	// Tool execution can use API Gateway's 30-second integration window.
+	// Keep the existing transport and redirect policy, with transfer headroom;
+	// the request context still enforces the call deadline/cancellation.
+	// Recorder checks and transcript writes retain the fast control timeout.
+	client := *s.client
+	client.Timeout = ownerToolTimeout
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, errors.New("owner service unavailable")
 	}
@@ -285,7 +294,7 @@ func (s *server) ownerMedia(w http.ResponseWriter, r *http.Request) {
 }
 
 // ownerFinish reports the call's end to the recorder. modelCostUSD is the
-// Azure model cost priced from every response.done usage object, six decimal
+// Azure model cost plus conservative paid-search allocations, six decimal
 // places (recorder contract); the recorder settles the call as telephone
 // estimate + this value. A finish the recorder does not accept leaves the
 // reservation standing (never below the measured cost), so the failure is
@@ -366,6 +375,16 @@ func (s *server) ownerLoopWithTiming(ctx context.Context, b *ownerBootstrap, tw,
 	interrupted := false
 	activeResponse := ""
 	staleResponses := map[string]bool{}
+	cancelEvents := map[string]bool{}
+	// A barge-in can cut off the reply that carries a tool result, or arrive
+	// before a tool call does. Either way the model never learns that the owner
+	// missed the answer, so it moves on to the next fragment of speech.
+	// owed names the tool whose result still has to be spoken, owedResponse is
+	// the reply that was meant to speak it, and reminders are system notes sent
+	// before the next reply.
+	owed, owedResponse := "", ""
+	var reminders []string
+	droppedCalls := map[string]bool{}
 	allowed := map[string]bool{}
 	if list, ok := b.SessionConfig["tools"].([]any); ok {
 		for _, v := range list {
@@ -411,6 +430,13 @@ func (s *server) ownerLoopWithTiming(ctx context.Context, b *ownerBootstrap, tw,
 			return true
 		}
 		pending = true
+		for _, note := range reminders {
+			if sendWS(az, map[string]any{"type": "conversation.item.create", "item": map[string]any{"type": "message", "role": "system",
+				"content": []any{map[string]any{"type": "input_text", "text": note}}}}) != nil {
+				return false
+			}
+		}
+		reminders = nil
 		return sendWS(az, map[string]any{"type": "response.create", "response": map[string]any{"max_output_tokens": ownerReplyMaxTokens}}) == nil
 	}
 	var item string
@@ -470,6 +496,10 @@ func (s *server) ownerLoopWithTiming(ctx context.Context, b *ownerBootstrap, tw,
 				if interrupted && activeResponse != "" {
 					staleResponses[activeResponse] = true
 				}
+				if owed != "" && owedResponse == "" && !interrupted {
+					// The first reply after a tool output is the one meant to speak it.
+					owedResponse = activeResponse
+				}
 			case "session.updated":
 				if !configured {
 					configured = true
@@ -497,7 +527,9 @@ func (s *server) ownerLoopWithTiming(ctx context.Context, b *ownerBootstrap, tw,
 					if activeResponse != "" {
 						staleResponses[activeResponse] = true
 					}
-					if sendWS(az, map[string]any{"type": "response.cancel"}) != nil {
+					cancelID := "owner_cancel_" + strconv.Itoa(len(cancelEvents)+1)
+					cancelEvents[cancelID] = true
+					if sendWS(az, map[string]any{"type": "response.cancel", "event_id": cancelID}) != nil {
 						return "azure_write_failed"
 					}
 				}
@@ -556,6 +588,13 @@ func (s *server) ownerLoopWithTiming(ctx context.Context, b *ownerBootstrap, tw,
 				}
 			case "response.function_call_arguments.done":
 				if interrupted || staleResponses[stringAt(m, "response_id")] {
+					name, id := stringAt(m, "name"), stringAt(m, "call_id")
+					if allowed[name] && name != ownerEndCallTool && id != "" && !droppedCalls[id] {
+						// Identifier-only log: neither arguments nor speech text.
+						droppedCalls[id] = true
+						log.Printf("owner tool call dropped after barge-in: call=%s tool=%s", b.CallSID, name)
+						reminders = append(reminders, "Your "+name+" call was cut off when the owner spoke, so it did not run. Call it again now if the owner still wants it, then answer. Do not say you have checked until its result arrives.")
+					}
 					continue
 				}
 				name, id := stringAt(m, "name"), stringAt(m, "call_id")
@@ -576,10 +615,35 @@ func (s *server) ownerLoopWithTiming(ctx context.Context, b *ownerBootstrap, tw,
 					}
 					return "owner_hangup"
 				}
+				toolAllocation := 0.0
+				if name == "web_research" && strings.TrimSpace(stringAt(args, "url")) == "" {
+					if b.CostUSD+websearch.MaxCostUSD+replyReserve+goodbyeReserve > capUSD {
+						if !startGoodbye("cost_limit") {
+							return "cost_limit"
+						}
+						continue
+					}
+					// One non-retried search is bounded below this allocation.
+					// Keep the allocation on unknown completion, including a lost reply.
+					toolAllocation = websearch.MaxCostUSD
+					b.CostUSD += toolAllocation
+				}
 				result, err := s.ownerTool(ctx, b.BridgeToken, name, map[string]any{"tool": name, "args": args, "idempotencyKey": b.SessionID + ":" + id, "callId": id})
 				if err != nil {
 					return "tool_failed"
 				}
+				if toolAllocation > 0 {
+					var refusal struct {
+						OK    bool `json:"ok"`
+						Error struct {
+							Code string `json:"code"`
+						} `json:"error"`
+					}
+					if json.Unmarshal(result, &refusal) == nil && !refusal.OK && (refusal.Error.Code == "invalid_args" || refusal.Error.Code == "forbidden") {
+						b.CostUSD -= toolAllocation
+					}
+				}
+				owed, owedResponse = name, ""
 				if sendWS(az, map[string]any{"type": "conversation.item.create", "item": map[string]any{"type": "function_call_output", "call_id": id, "output": string(result)}}) != nil || !request() {
 					return "tool_reply_failed"
 				}
@@ -612,6 +676,16 @@ func (s *server) ownerLoopWithTiming(ctx context.Context, b *ownerBootstrap, tw,
 				}
 				if b.AudioTokens > input+output {
 					return "invalid_usage"
+				}
+				if owed != "" && (id == owedResponse || owedResponse == "") {
+					// An unassigned reply is the one that carried the tool call, or a
+					// follow-up cancelled before its creation event arrived.
+					if interrupted || staleResponses[id] || stringAt(res, "status") == "cancelled" {
+						reminders = append(reminders, "The owner spoke over the end of your last "+owed+" reply, so they may not have heard its result. Give that result now in one or two short sentences, unless they have since cancelled or replaced that request.")
+						owedResponse = ""
+					} else if owedResponse != "" {
+						owed, owedResponse = "", ""
+					}
 				}
 				pending = false
 				interrupted = false
@@ -647,6 +721,19 @@ func (s *server) ownerLoopWithTiming(ctx context.Context, b *ownerBootstrap, tw,
 					}
 				}
 			case "error":
+				failure := objectAt(m, "error")
+				code := stringAt(failure, "code")
+				if ok, _ := regexp.MatchString("^[A-Za-z0-9_]{1,80}$", code); !ok {
+					code = "unclassified"
+				}
+				// A response may finish before our cancellation reaches the model.
+				// The Realtime contract keeps that session open. Correlate only
+				// our own cancel requests; unrelated and server errors still stop.
+				cancelRace := stringAt(failure, "type") == "invalid_request_error" && cancelEvents[stringAt(failure, "event_id")]
+				log.Printf("owner realtime error: call=%s code=%s cancel_race=%t", b.CallSID, code, cancelRace)
+				if cancelRace {
+					continue
+				}
 				return "azure_error"
 			}
 		}

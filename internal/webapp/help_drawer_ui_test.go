@@ -17,6 +17,13 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestHelpDrawerAlexaMatchesReleasedControls(t *testing.T) {
+	html := readAsset(t, "templates/pages/conversation.html")
+	for _, text := range []string{"{{if .AlexaEnabled}}", "{{if .AlexaTrialMode}}", "tool actions are paused", "Alexa, open live ninja", "resume conversation", "Disable Alexa", "Enable Alexa", "15 minutes", "Amazon manages its own Alexa voice history", "shared Alexa group", "Linked Alexa uses your account tools", "Keep track of requests in this conversation", "starts empty in a new conversation"} {
+		assert.Contains(t, html, text)
+	}
+}
+
 // TestHelpDrawerMarkupContract: the ids conversation.mjs resolves, and the
 // ARIA wiring that makes the tab announce itself as a dialog opener.
 func TestHelpDrawerMarkupContract(t *testing.T) {
@@ -142,6 +149,11 @@ func TestHelpDrawerCoversTheAppsCapabilities(t *testing.T) {
 		"the home knowledge store did not answer",
 		// Loaded documents (AgentCore knowledge namespace, scripts/knowledge-load).
 		"Ask about documents you loaded",
+		"Public web search returns source links",
+		"historical searches are not limited to the last 30 days",
+		"reserve three cents each",
+		"same server tools",
+		"Polite Southern Belle",
 	} {
 		assert.Containsf(t, help, want, "help panel must cover the knowledge store: %q", want)
 	}

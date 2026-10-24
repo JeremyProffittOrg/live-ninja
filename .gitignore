@@ -34,3 +34,7 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 .playwright-mcp/
+
+# Private transcript evidence and Ghost's captured report
+/.autoremediate/
+/result.txt

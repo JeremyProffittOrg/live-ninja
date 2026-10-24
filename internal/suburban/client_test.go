@@ -161,6 +161,10 @@ func TestSuburbanOAuthConnectionAndAvailableTools(t *testing.T) {
 	if _, e = s.Invoke(ctx, "owner", "vehicle_status", nil, "read-request"); e == nil {
 		t.Fatal("unknown refresh accepted")
 	}
+	if _, e = s.Invoke(ctx, "owner", "vehicle_status", nil, "read-request"); !errors.Is(e, ErrBusy) {
+		t.Fatal("refresh lease not retained")
+	}
+	now = now.Add(31 * time.Second)
 	if _, e = s.Invoke(ctx, "owner", "vehicle_status", nil, "read-request"); !errors.Is(e, ErrConnect) {
 		t.Fatal("unknown refresh was repeated")
 	}

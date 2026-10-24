@@ -18,8 +18,17 @@ a bearer credential receives an authentication challenge; it is not an app page.
   with the owner's saved profile, memory, rules and guides. Payload text is data,
   not permission to perform actions. On that call the owner can ask for account
   actions (memory, notes, timers, reminders, email, Jobs and rules); job and rule
-  changes apply after the owner confirms them aloud. The call cannot place calls,
-  send texts or control devices. Omitting `live` keeps the existing spoken playback behavior.
+  changes apply after the owner confirms them aloud. Owner calls share every
+  server-executable tool with the other voice paths, including web lookup and
+  research, files, deliverables, device control and owner phone messages. Existing
+  owner, confirmation, review and budget checks still apply. Camera, volume,
+  local media playback and conversation controls require a connected app.
+  Web lookup uses Wikipedia; research searches the public web with source links
+  and preserves requested historical dates without an automatic 30-day cutoff.
+  A phone search reserves $0.03 within the existing call cap; an uncertain result
+  keeps that conservative allocation. Direct OpenAI/Anthropic page fetches remain
+  available. The personal knowledge tools search
+  saved material, not the live web. Omitting `live` keeps the existing spoken playback behavior.
 - phone_message_status: inspect a returned requestId, provider/playback state, the
   exact intended script, and an available private recording link.
 - memory_search, entity_get, recall_note, memory_write, plan_upsert, forget,

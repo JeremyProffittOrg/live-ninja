@@ -203,26 +203,34 @@ func TestGetWeatherWithNoLocationUsesProfileHome(t *testing.T) {
 }
 
 func TestGetWeatherUsesDeviceEffectiveProfile(t *testing.T) {
-	fake := &fakeGeoServer{}
-	withFakeUpstreams(t, fake)
+	for _, surface := range []string{store.SurfaceWeb, store.SurfaceAlexa} {
+		t.Run(surface, func(t *testing.T) {
+			fake := &fakeGeoServer{}
+			withFakeUpstreams(t, fake)
 
-	deviceHome := store.Location{
-		Label: "Berlin, Germany", Lat: 52.52, Lon: 13.405,
-		Timezone: "Europe/Berlin",
-	}
-	deps := weatherDeps(store.Profile{HomeLocation: &charlotteNC, Units: store.UnitsImperial})
-	deps.DeviceProfile = func(_ context.Context, userID, deviceID string) store.Profile {
-		assert.Equal(t, "user-1", userID)
-		assert.Equal(t, "device-1", deviceID)
-		return store.Profile{HomeLocation: &deviceHome, Units: store.UnitsMetric}
-	}
-	out, terr := handleGetWeather(context.Background(), deps,
-		Invocation{UserID: "user-1", DeviceID: "device-1"}, map[string]any{})
+			deviceHome := store.Location{
+				Label: "Berlin, Germany", Lat: 52.52, Lon: 13.405,
+				Timezone: "Europe/Berlin",
+			}
+			deps := weatherDeps(store.Profile{HomeLocation: &charlotteNC, Units: store.UnitsImperial})
+			deps.DeviceProfile = func(_ context.Context, userID, deviceID string) store.Profile {
+				assert.Equal(t, "user-1", userID)
+				if surface == store.SurfaceAlexa {
+					assert.Equal(t, store.AlexaSettingsDeviceID(userID), deviceID)
+				} else {
+					assert.Equal(t, "device-1", deviceID)
+				}
+				return store.Profile{HomeLocation: &deviceHome, Units: store.UnitsMetric}
+			}
+			out, terr := handleGetWeather(context.Background(), deps,
+				Invocation{UserID: "user-1", DeviceID: "device-1", Surface: surface}, map[string]any{})
 
-	require.Nil(t, terr)
-	location := out["location"].(map[string]any)
-	assert.Equal(t, deviceHome.Label, location["name"])
-	assert.Equal(t, "metric", out["units"])
+			require.Nil(t, terr)
+			location := out["location"].(map[string]any)
+			assert.Equal(t, deviceHome.Label, location["name"])
+			assert.Equal(t, "metric", out["units"])
+		})
+	}
 }
 
 func TestGetWeatherUnitsDefaultToProfile(t *testing.T) {

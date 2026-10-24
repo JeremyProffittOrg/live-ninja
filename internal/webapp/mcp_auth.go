@@ -3,12 +3,14 @@ package webapp
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"github.com/JeremyProffittOrg/live-ninja/internal/auth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/mcpauth"
 	"github.com/gofiber/fiber/v2"
 	"html/template"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -31,6 +33,14 @@ func NewMCPAuth(deps *Deps) (*MCPAuth, error) {
 	}
 	a := &MCPAuth{deps: deps, service: &mcpauth.Service{Repo: repo}}
 	a.service.OwnerActive = repo.OwnerActive
+	if os.Getenv("ALEXA_SKILL_ID") != "" {
+		client, err := mcpauth.LoadAlexaClient(context.Background(), deps.Secrets)
+		if err != nil {
+			deps.Log.Error("Alexa account linking unavailable; existing MCP clients remain enabled")
+		} else {
+			a.service.AlexaClient = client
+		}
+	}
 	return a, nil
 }
 func (a *MCPAuth) ownerActive(ctx context.Context, uid string, issued int64) bool {
@@ -100,9 +110,15 @@ func (a *MCPAuth) resourceMetadata(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"resource": mcpauth.Resource, "authorization_servers": []string{mcpauth.Issuer}, "scopes_supported": mcpauth.Scopes, "bearer_methods_supported": []string{"header"}})
 }
 func (a *MCPAuth) serverMetadata(c *fiber.Ctx) error {
+	methods := []string{"none"}
+	scopes := append([]string(nil), mcpauth.Scopes...)
+	if a.service.AlexaClient != nil {
+		methods = append(methods, "client_secret_post", "client_secret_basic")
+		scopes = append(scopes, "alexa:chat")
+	}
 	return c.JSON(fiber.Map{
 		"issuer": mcpauth.Issuer, "authorization_endpoint": mcpauth.Issuer + "/oauth/authorize", "token_endpoint": mcpauth.Issuer + "/oauth/token", "registration_endpoint": mcpauth.Issuer + "/oauth/register", "revocation_endpoint": mcpauth.Issuer + "/oauth/revoke",
-		"response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "token_endpoint_auth_methods_supported": []string{"none"}, "revocation_endpoint_auth_methods_supported": []string{"none"}, "code_challenge_methods_supported": []string{"S256"}, "scopes_supported": mcpauth.Scopes, "authorization_response_iss_parameter_supported": true})
+		"response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "token_endpoint_auth_methods_supported": methods, "revocation_endpoint_auth_methods_supported": methods, "code_challenge_methods_supported": []string{"S256"}, "scopes_supported": scopes, "authorization_response_iss_parameter_supported": true})
 }
 func oauthError(c *fiber.Ctx, e error) error {
 	code := "server_error"
@@ -294,7 +310,7 @@ func tokenForm(c *fiber.Ctx) (url.Values, error) {
 func (a *MCPAuth) token(c *fiber.Ctx) error {
 	c.Set("Cache-Control", "no-store")
 	c.Set("Pragma", "no-cache")
-	f, e := tokenForm(c)
+	f, e := a.clientTokenForm(c)
 	if e != nil {
 		return oauthError(c, e)
 	}
@@ -314,7 +330,7 @@ func (a *MCPAuth) token(c *fiber.Ctx) error {
 }
 func (a *MCPAuth) revoke(c *fiber.Ctx) error {
 	c.Set("Cache-Control", "no-store")
-	f, e := tokenForm(c)
+	f, e := a.clientTokenForm(c)
 	if e != nil {
 		return oauthError(c, e)
 	}
@@ -327,9 +343,47 @@ func (a *MCPAuth) revoke(c *fiber.Ctx) error {
 func mcpScopeDescriptions(scope string) []string {
 	labels := map[string]string{"phone:send": "Send messages and start calls.", "phone:read": "Read phone history and recordings.", "jobs:read": "Read jobs and their results.", "jobs:manage": "Create and manage jobs.", "memory:read": "Read your saved memory.", "memory:write": "Add, change, or remove saved memory.", "ghost:read": "Read your ghost computers, coding sessions, session summaries and run status.", "ghost:manage": "Start coding runs on your computers and send commands to coding sessions, after your confirmation."}
 	labels["vehicle:control"] = "Read Suburban vehicle status and operate enabled vehicle controls through your connected Suburban account."
+	labels["alexa:chat"] = "Use Live Ninja chat and supported tools on your linked Echo devices. Website approval still applies. Re-link after 30 days."
 	out := []string{}
 	for _, v := range strings.Fields(scope) {
 		out = append(out, labels[v])
 	}
 	return out
+}
+
+// Only the explicitly configured Alexa client accepts a secret or an omitted
+// resource. Public MCP clients retain their original token-form checks.
+func (a *MCPAuth) clientTokenForm(c *fiber.Ctx) (url.Values, error) {
+	if len(c.Body()) > 8192 || !strings.HasPrefix(c.Get("Content-Type"), "application/x-www-form-urlencoded") {
+		return nil, mcpauth.ErrInvalidRequest
+	}
+	f, e := singleValues(string(c.Body()))
+	if e != nil {
+		return nil, e
+	}
+	id, secret := f.Get("client_id"), f.Get("client_secret")
+	if header := c.Get("Authorization"); header != "" {
+		if !strings.HasPrefix(header, "Basic ") || len(header) > 4096 || secret != "" {
+			return nil, mcpauth.ErrInvalidClient
+		}
+		decoded, e := base64.StdEncoding.DecodeString(strings.TrimPrefix(header, "Basic "))
+		if e != nil {
+			return nil, mcpauth.ErrInvalidClient
+		}
+		basicID, basicSecret, ok := strings.Cut(string(decoded), ":")
+		if !ok || (id != "" && id != basicID) {
+			return nil, mcpauth.ErrInvalidClient
+		}
+		id, secret = basicID, basicSecret
+	}
+	if a.service.AlexaClient == nil || id != a.service.AlexaClient.ID {
+		return tokenForm(c)
+	}
+	resource, e := a.service.AuthenticateClient(c.Context(), id, secret, f.Get("resource"))
+	if e != nil {
+		return nil, e
+	}
+	f.Set("client_id", id)
+	f.Set("resource", resource)
+	return f, nil
 }

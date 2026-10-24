@@ -150,6 +150,7 @@ type connection struct {
 	Client, Access, Refresh string
 	AccessExpires           int64
 	Refreshing              bool
+	RefreshStarted          int64
 }
 type tokenResponse struct {
 	Access  string `json:"access_token"`
@@ -249,12 +250,16 @@ func (s *Service) access(ctx context.Context, owner string) (string, error) {
 		return "", e
 	}
 	if c.Refreshing {
+		if s.now().Unix() < c.RefreshStarted+30 {
+			return "", ErrBusy
+		}
 		return "", ErrConnect
 	}
 	if c.AccessExpires > s.now().Add(time.Minute).Unix() {
 		return c.Access, nil
 	}
 	c.Refreshing = true
+	c.RefreshStarted = s.now().Unix()
 	claim, e := s.change(ctx, owner, r.Key, c, r.Expires, r)
 	if e != nil {
 		return "", e

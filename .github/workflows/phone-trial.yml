@@ -6,6 +6,8 @@ on:
     paths:
       - '.github/workflows/phone-trial.yml'
       - 'cmd/phone-trial-bridge/**'
+      - 'internal/websearch/**'
+      - 'internal/conversation/**'
       - 'containers/phone-trial-bridge/**'
       - 'tools/phone-trial/**'
       - 'infra/phone-trial-config.json'
@@ -110,7 +112,7 @@ jobs:
                      MAX_CALL_SECONDS='180', RECORDING_CALLBACK_URL=env['RECORDER_URL']+'/recording',
                      EVENT_CALLBACK_URL=env['RECORDER_URL']+'/events',
                      TARGETS_JSON=json.dumps([{'id':t['id'],'name':t['name'],'phone':t['phone']} for t in targets]))
-          subprocess.run(['go','run','./cmd/phone-trial-bridge','-probe'], env=env, check=True, timeout=45)
+          subprocess.run(['go','run','./cmd/phone-trial-bridge','-probe'], env=env, check=True, timeout=65)
 
       - name: Verify owner bridge remains warm
         if: always() && steps.azure.outcome == 'success'

@@ -80,6 +80,7 @@ func RegisterAPIRoutes(app *fiber.App, deps *Deps) {
 	api.Get("/devices", handleListDevices(deps))
 	api.Put("/devices/current", handleRegisterCurrentDevice(deps))
 	api.Patch("/devices/:id", handleRenameDevice(deps))
+	api.Post("/devices/:id/enable", RequireOwner(), handleEnableAlexaDevice(deps))
 	api.Delete("/devices/:id", handleRevokeDevice(deps))
 
 	api.Get("/admin/allowlist", RequireOwner(), handleListAllowlist(deps))
@@ -158,7 +159,7 @@ func handleListDevices(deps *Deps) fiber.Handler {
 
 		out := make([]fiber.Map, 0, len(devices))
 		for _, d := range devices {
-			if d.Surface == store.SurfacePhone {
+			if d.Surface == store.SurfacePhone || store.IsManagedSettingsDevice(userID, d.DeviceID) {
 				continue
 			}
 			out = append(out, deviceResponse(d, d.DeviceID == currentID))
@@ -185,8 +186,8 @@ func handleRevokeDevice(deps *Deps) fiber.Handler {
 			return errorJSON(c, fiber.StatusNotFound, "not_found", "Device not found.")
 		}
 
-		if d.Surface == store.SurfacePhone {
-			return apiBadRequest(c, "Phone calls is a server-managed settings target")
+		if d.Surface == store.SurfacePhone || store.IsManagedSettingsDevice(userID, deviceID) {
+			return apiBadRequest(c, "This settings target is managed by the server")
 		}
 
 		// The status flip is the revocation barrier. Registration/rebind
@@ -314,11 +315,14 @@ type brokerRequest struct {
 	Capabilities  []string `json:"capabilities,omitempty"`
 	// Role is the caller's verified role, for the broker's agentcore-memory
 	// rollout gate (REMEMBERED preload, AGENTCORE_MEMORY_MODE).
-	Role string `json:"role,omitempty"`
+	Role       string `json:"role,omitempty"`
+	AlexaTurn  string `json:"alexaTurn,omitempty"`
+	AlexaRound int    `json:"alexaRound,omitempty"`
 }
 
 // brokerResponse mirrors cmd/realtime-broker's Response.
 type brokerResponse struct {
+	Search *tools.WebResearchResult `json:"search,omitempty"`
 	// TxID echoes the transaction correlation id the broker resolved
 	// (reused from Request.TxID, or minted fresh when that was empty).
 	TxID string `json:"txId,omitempty"`
@@ -368,32 +372,25 @@ type brokerResponse struct {
 	// here (the web function holds the tool-side IAM) and re-invokes.
 	Text        string               `json:"text,omitempty"`
 	ToolCalls   []brokerChatToolCall `json:"toolCalls,omitempty"`
+	Usage       *realtime.TextUsage  `json:"usage,omitempty"`
+	ModelMs     int64                `json:"modelMs,omitempty"`
 	AudioBase64 string               `json:"audioBase64,omitempty"`
 	ContentType string               `json:"contentType,omitempty"`
 }
 
 // brokerChatToolCall mirrors realtime.ChatToolCall (broker wire contract):
 // one model-requested function call, arguments as the raw JSON string.
-type brokerChatToolCall struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-}
+type brokerChatToolCall = realtime.ChatToolCall
 
 // brokerChatMessage mirrors realtime.ChatMessage: one turn in the
 // fallback tool loop's conversation (user text, an assistant message
 // carrying tool calls, or a tool-result message paired by toolCallId).
-type brokerChatMessage struct {
-	Role       string               `json:"role"`
-	Content    string               `json:"content"`
-	ToolCalls  []brokerChatToolCall `json:"toolCalls,omitempty"`
-	ToolCallID string               `json:"toolCallId,omitempty"`
-}
+type brokerChatMessage = realtime.ChatMessage
 
 // invokeRealtimeBroker invokes the realtime-broker Lambda (BrokerFn) via
 // direct Lambda:Invoke — the web function never holds the OpenAI key
 // itself (that isolation is the whole point of the broker split).
-func invokeRealtimeBroker(ctx context.Context, deps *Deps, req brokerRequest) (*brokerResponse, error) {
+func invokeRealtimeBroker(ctx context.Context, deps *Deps, req brokerRequest, options ...func(*lambda.Options)) (*brokerResponse, error) {
 	if deps.Lambda == nil || deps.BrokerFn == "" {
 		return nil, errors.New("realtime broker is not configured (BROKER_FUNCTION_NAME / Lambda client)")
 	}
@@ -406,7 +403,7 @@ func invokeRealtimeBroker(ctx context.Context, deps *Deps, req brokerRequest) (*
 	out, err := deps.Lambda.Invoke(ctx, &lambda.InvokeInput{
 		FunctionName: aws.String(deps.BrokerFn),
 		Payload:      payload,
-	})
+	}, options...)
 	if err != nil {
 		return nil, fmt.Errorf("invoke broker: %w", err)
 	}
@@ -629,6 +626,7 @@ func buildAPIToolsRegistry(deps *Deps) *tools.Registry {
 		deps.Log.Error("Owner phone configuration invalid")
 	}
 	toolDeps := &tools.Deps{
+		WebResearch:           webResearchThroughBroker(deps),
 		Phone:                 phone,
 		Store:                 deps.Store,
 		DDB:                   dynamodb.NewFromConfig(awsCfg),
@@ -835,7 +833,8 @@ func handleToolsInvoke(deps *Deps, registry *tools.Registry) fiber.Handler {
 			Role: Role(c),
 			// Verified token scope: a phone-scoped owner call executes
 			// PhoneDirect tools after spoken confirmation.
-			Scope: Scope(c),
+			Scope:        Scope(c),
+			Capabilities: parseClientCapabilities(c.Get("X-LN-Capabilities")),
 		})
 		return c.Status(res.StatusCode()).JSON(res)
 	}
@@ -1147,47 +1146,25 @@ func handleFallbackTurn(deps *Deps, registry *tools.Registry) fiber.Handler {
 		// idempotency, audit — confirm-before-send for send_email included);
 		// append the results as tool messages and re-invoke, capped at
 		// maxFallbackToolIterations.
-		messages := []brokerChatMessage{{Role: "user", Content: body.Text}}
-		executed := make([]*tools.Result, 0, 4)
-		for iter := 0; iter < maxFallbackToolIterations; iter++ {
-			resp, err := invokeTurn(map[string]any{"messages": messages})
-			if err != nil {
-				deps.Log.Error("api: fallback turn failed", slog.String("error", err.Error()), slog.String("userId", userID))
-				return errorJSON(c, fiber.StatusBadGateway, "broker_unavailable", "The fallback turn request failed.")
-			}
-			if resp.Error != "" {
-				return apiRespondBrokerError(c, resp)
-			}
-			if len(resp.ToolCalls) == 0 {
-				return c.JSON(fiber.Map{"text": resp.Text, "toolCalls": executed})
-			}
-
-			messages = append(messages, brokerChatMessage{
-				Role: "assistant", Content: resp.Text, ToolCalls: resp.ToolCalls,
+		result, err := runTextTurn(c.Context(), []brokerChatMessage{{Role: "user", Content: body.Text}},
+			func(_ context.Context, messages []brokerChatMessage) (*brokerResponse, error) {
+				return invokeTurn(map[string]any{"messages": messages})
+			},
+			func(_ context.Context, tc brokerChatToolCall, iter, idx int) *tools.Result {
+				return executeFallbackToolCall(c, registry, tc, iter, idx, userID, sessionID, surface, deviceID)
 			})
-			for i, tc := range resp.ToolCalls {
-				res := executeFallbackToolCall(c, registry, tc, iter, i, userID, sessionID, surface, deviceID)
-				executed = append(executed, res)
-				out, merr := json.Marshal(res)
-				if merr != nil {
-					// tools.Result is plain data — this cannot realistically
-					// fail, but the model must still get *an* output per call.
-					out = []byte(`{"ok":false,"error":{"code":"internal_error","message":"the tool result could not be serialized"}}`)
-				}
-				messages = append(messages, brokerChatMessage{
-					Role: "tool", ToolCallID: tc.ID, Content: string(out),
-				})
-			}
+		if err != nil {
+			return errorJSON(c, fiber.StatusBadGateway, "broker_unavailable", "The fallback turn request failed.")
 		}
-
-		deps.Log.Warn("api: fallback turn hit the tool-iteration cap",
-			slog.String("userId", userID), slog.Int("executed", len(executed)),
-			slog.Int("cap", maxFallbackToolIterations))
-		return c.JSON(fiber.Map{
-			"text":             fallbackToolLimitText,
-			"toolCalls":        executed,
-			"toolLimitReached": true,
-		})
+		if result.Failure != nil {
+			return apiRespondBrokerError(c, result.Failure)
+		}
+		out := fiber.Map{"text": result.Text, "toolCalls": result.Calls}
+		if result.Limited {
+			out["toolLimitReached"] = true
+			deps.Log.Warn("api: fallback turn hit the tool-iteration cap", slog.String("userId", userID), slog.Int("executed", len(result.Calls)), slog.Int("cap", maxFallbackToolIterations))
+		}
+		return c.JSON(out)
 	}
 }
 

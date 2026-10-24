@@ -1,0 +1,25 @@
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "live ninja",
+      "intents": [
+        {"name": "ChatIntent", "slots": [{"name": "query", "type": "AMAZON.SearchQuery", "samples": ["{query}"]}], "samples": ["chat about {query}", "tell me about {query}", "ask about {query}", "my question is {query}", "please answer {query}", "help me with {query}"]},
+        {"name": "StatusIntent", "samples": ["status", "check status", "get my answer", "is my answer ready"]},
+        {"name": "MoreIntent", "samples": ["more", "tell me more", "next part"]},
+        {"name": "ResumeIntent", "samples": ["resume", "resume conversation", "continue conversation"]},
+        {"name": "NewConversationIntent", "samples": ["new conversation", "start over", "start a new conversation"]},
+        {"name": "AMAZON.HelpIntent", "samples": []},
+        {"name": "AMAZON.StopIntent", "samples": []},
+        {"name": "AMAZON.CancelIntent", "samples": []},
+        {"name": "AMAZON.RepeatIntent", "samples": []},
+        {"name": "AMAZON.FallbackIntent", "samples": []}
+      ],
+      "types": []
+    },
+    "dialog": {
+      "delegationStrategy": "SKILL_RESPONSE",
+      "intents": [{"name": "ChatIntent", "confirmationRequired": false, "slots": [{"name": "query", "type": "AMAZON.SearchQuery", "elicitationRequired": true, "confirmationRequired": false, "prompts": {"elicitation": "Elicit.Query"}}]}]
+    },
+    "prompts": [{"id": "Elicit.Query", "variations": [{"type": "PlainText", "value": "What would you like to ask?"}]}]
+  }
+}

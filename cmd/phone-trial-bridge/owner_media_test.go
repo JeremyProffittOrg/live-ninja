@@ -102,6 +102,71 @@ func TestOwnerLoopHangupStaysLocal(t *testing.T) {
 	}
 }
 
+func TestOwnerLoopCorrelatesHarmlessCancelErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name, kind, want string
+		correlated       bool
+	}{
+		{"cancel race", "invalid_request_error", "remote_hangup", true},
+		{"unrelated request error", "invalid_request_error", "azure_error", false},
+		{"server error", "server_error", "azure_error", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logFile, err := os.CreateTemp(t.TempDir(), "owner-error-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldWriter := log.Writer()
+			log.SetOutput(logFile)
+			defer func() { log.SetOutput(oldWriter); logFile.Close() }()
+			s, _ := fixture()
+			b := ownerFixture(t)
+			tw, phone := wsPair(t)
+			az, model := wsPair(t)
+			events := make(chan wireEvent, 6)
+			done := make(chan string, 1)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			go func() { done <- s.ownerLoop(ctx, &b, tw, az, "MZtest", "capability", events) }()
+			events <- wireEvent{Source: "azure", Data: map[string]any{"type": "session.updated"}}
+			if readOwnerEvent(t, model)["type"] != "response.create" {
+				t.Fatal("initial response was not requested")
+			}
+			events <- wireEvent{Source: "azure", Data: map[string]any{"type": "response.created", "response": map[string]any{"id": "response-one"}}}
+			events <- wireEvent{Source: "azure", Data: map[string]any{"type": "input_audio_buffer.speech_started"}}
+			cancelEvent := readOwnerEvent(t, model)
+			if cancelEvent["type"] != "response.cancel" || readOwnerEvent(t, phone)["event"] != "clear" {
+				t.Fatal("interruption was not forwarded")
+			}
+			id := stringAt(cancelEvent, "event_id")
+			if !tc.correlated {
+				id = "unrelated-event"
+			}
+			events <- wireEvent{Source: "azure", Data: map[string]any{"type": "error", "error": map[string]any{
+				"type": tc.kind, "event_id": id, "code": "synthetic_error", "message": "DO_NOT_LOG_PROVIDER_PAYLOAD"}}}
+			if tc.want == "remote_hangup" && id != "" {
+				events <- wireEvent{Source: "azure", Data: map[string]any{"type": "response.done", "response": map[string]any{
+					"id": "response-one", "usage": map[string]any{"input_tokens": float64(0), "output_tokens": float64(0)}}}}
+				events <- wireEvent{Source: "azure", Data: map[string]any{"type": "input_audio_buffer.committed"}}
+				if readOwnerEvent(t, model)["type"] != "response.create" {
+					t.Fatal("conversation did not continue after the rejected cancellation")
+				}
+			}
+			events <- wireEvent{Source: "twilio", Data: map[string]any{"event": "stop"}}
+			if got := <-done; got != tc.want {
+				t.Fatalf("call ended with %s; want %s", got, tc.want)
+			}
+			if stringAt(cancelEvent, "event_id") == "" {
+				t.Fatal("cancellation must carry a correlation ID")
+			}
+			output, err := os.ReadFile(logFile.Name())
+			if err != nil || strings.Contains(string(output), "DO_NOT_LOG_PROVIDER_PAYLOAD") {
+				t.Fatal("provider error payload was logged", err)
+			}
+		})
+	}
+}
+
 func TestOwnerLoopInactivityEndsCallAndSpeechRestartsWait(t *testing.T) {
 	if ownerIdleTimeout != 120*time.Second {
 		t.Fatalf("phone inactivity timeout=%s; want 2 minutes", ownerIdleTimeout)
@@ -135,6 +200,48 @@ func TestOwnerLoopInactivityEndsCallAndSpeechRestartsWait(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("inactivity did not end call")
+	}
+}
+
+func TestOwnerLoopWebSearchAllocationPrecedesSpendAndDeduplicates(t *testing.T) {
+	for _, tc := range []struct {
+		name, cap string
+		wantCalls int
+		wantCost  float64
+	}{
+		{"admitted", "1.00", 1, 0.03},
+		{"cap exhausted", "0.01", 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := fixture()
+			b := ownerFixture(t)
+			setOwnerCap(t, &b, tc.cap)
+			b.SessionConfig["tools"] = []any{map[string]any{"type": "function", "name": "web_research"}}
+			calls := 0
+			s.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Path != "/api/v1/tools/invoke" {
+					t.Fatalf("unexpected request: %s", req.URL.Path)
+				}
+				if req.Header.Get("X-LN-Capabilities") != "paid-web-search-v2" {
+					t.Fatal("search reservation capability missing")
+				}
+				calls++
+				return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"tool":"web_research","ok":true,"output":{"summary":"Evidence","sources":[{"title":"Source","url":"https://news.example/report"}]}}`))}, nil
+			})}
+			tw, _ := wsPair(t)
+			az, _ := wsPair(t)
+			events := make(chan wireEvent, 3)
+			for range 2 {
+				events <- wireEvent{Source: "azure", Data: map[string]any{"type": "response.function_call_arguments.done", "name": "web_research", "call_id": "search-once", "arguments": `{"query":"local bank robbery November 2025"}`}}
+			}
+			events <- wireEvent{Source: "twilio", Data: map[string]any{"event": "stop"}}
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			s.ownerLoop(ctx, &b, tw, az, "MZtest", "capability", events)
+			if calls != tc.wantCalls || math.Abs(b.CostUSD-tc.wantCost) > 1e-9 {
+				t.Fatalf("calls=%d cost=%f; want %d/%f", calls, b.CostUSD, tc.wantCalls, tc.wantCost)
+			}
+		})
 	}
 }
 
@@ -376,6 +483,115 @@ func TestOwnerLoopCancelStaleAudioToolsAndTranscriptWire(t *testing.T) {
 	}
 	if b.InputTokens != 220 || b.OutputTokens != 50 || b.AudioTokens != 90 {
 		t.Fatal("model usage lost")
+	}
+}
+
+// A barge-in that cuts off the reply carrying a tool result, or arrives before
+// a tool call, must not leave the model unaware that the owner is still owed
+// the answer (2026-10-23 AI-news and weather calls).
+func TestOwnerLoopRemindsModelOfUnspokenToolWork(t *testing.T) {
+	s, _ := fixture()
+	b := ownerFixture(t)
+	requests := make(chan map[string]any, 8)
+	s.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		body["path"] = req.URL.Path
+		requests <- body
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"ok":true,"data":{"matches":[]}}`)), Header: http.Header{}}, nil
+	})}
+	tw, twPeer := wsPair(t)
+	az, azPeer := wsPair(t)
+	events := make(chan wireEvent, 64)
+	done := make(chan string, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() { done <- s.ownerLoop(ctx, &b, tw, az, "MZtest", "capability", events) }()
+	emit := func(kind string, fields map[string]any) {
+		fields["type"] = kind
+		events <- wireEvent{Source: "azure", Data: fields}
+	}
+	usage := map[string]any{"input_tokens": float64(10), "output_tokens": float64(5)}
+	finish := func(id, status string) {
+		emit("response.done", map[string]any{"response": map[string]any{"id": id, "status": status, "usage": usage}})
+	}
+	want := func(kind string) map[string]any {
+		t.Helper()
+		got := readOwnerEvent(t, azPeer)
+		if got["type"] != kind {
+			t.Fatalf("want %s, got %#v", kind, got)
+		}
+		return got
+	}
+	bargeIn := func() {
+		t.Helper()
+		emit("input_audio_buffer.speech_started", map[string]any{})
+		want("response.cancel")
+		if readOwnerEvent(t, twPeer)["event"] != "clear" {
+			t.Fatal("playback not cleared")
+		}
+	}
+	reminder := func() string {
+		t.Helper()
+		item := objectAt(want("conversation.item.create"), "item")
+		if item["role"] != "system" {
+			t.Fatalf("reminder is not a system note: %#v", item)
+		}
+		return stringAt(item["content"].([]any)[0].(map[string]any), "text")
+	}
+
+	emit("session.updated", map[string]any{})
+	want("response.create")
+	emit("response.created", map[string]any{"response": map[string]any{"id": "greeting"}})
+	finish("greeting", "completed")
+
+	// The reply that carries a tool result is cut off by the next fragment of speech.
+	emit("input_audio_buffer.committed", map[string]any{})
+	want("response.create")
+	emit("response.created", map[string]any{"response": map[string]any{"id": "call"}})
+	emit("response.function_call_arguments.done", map[string]any{"response_id": "call", "name": "memory_search", "call_id": "tool-one", "arguments": `{"query":"news"}`})
+	if (<-requests)["tool"] != "memory_search" {
+		t.Fatal("tool did not run")
+	}
+	want("conversation.item.create")
+	finish("call", "completed")
+	want("response.create") // the follow-up that speaks the result; no reminder is owed yet
+	emit("response.created", map[string]any{"response": map[string]any{"id": "followup"}})
+	bargeIn()
+	finish("followup", "cancelled")
+	emit("input_audio_buffer.committed", map[string]any{})
+	if note := reminder(); !strings.Contains(note, "memory_search") || !strings.Contains(note, "may not have heard") {
+		t.Fatalf("result reminder missing the tool: %q", note)
+	}
+	want("response.create")
+	emit("response.created", map[string]any{"response": map[string]any{"id": "spoken"}})
+	finish("spoken", "completed")
+
+	// Once a reply has completed, nothing is owed any more.
+	emit("input_audio_buffer.committed", map[string]any{})
+	want("response.create")
+	emit("response.created", map[string]any{"response": map[string]any{"id": "plain"}})
+
+	// A tool call that arrives after the owner has already spoken is dropped, and the model is told.
+	bargeIn()
+	emit("response.function_call_arguments.done", map[string]any{"response_id": "plain", "name": "memory_search", "call_id": "tool-two", "arguments": `{}`})
+	emit("response.function_call_arguments.done", map[string]any{"response_id": "plain", "name": "memory_search", "call_id": "tool-two", "arguments": `{}`})
+	finish("plain", "cancelled")
+	emit("input_audio_buffer.committed", map[string]any{})
+	if note := reminder(); !strings.Contains(note, "memory_search") || !strings.Contains(note, "did not run") {
+		t.Fatalf("dropped-call reminder missing the tool: %q", note)
+	}
+	want("response.create") // exactly one reminder for the duplicated event
+	select {
+	case body := <-requests:
+		t.Fatalf("a dropped tool call must not run: %#v", body)
+	default:
+	}
+	events <- wireEvent{Source: "twilio", Data: map[string]any{"event": "stop"}}
+	if reason := <-done; reason != "remote_hangup" {
+		t.Fatal(reason)
 	}
 }
 

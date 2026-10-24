@@ -130,6 +130,43 @@ func TestMCPOAuthBrowserConsentAndTokenFlow(t *testing.T) {
 		t.Fatal("code replay")
 	}
 }
+func TestAlexaOAuthTokenRequiresSecretAndCannotAccessMCP(t *testing.T) {
+	app, a, cookie := mcpOAuthTestApp(t)
+	a.service.AlexaClient = &mcpauth.Client{ID: strings.Repeat("a", 43), Name: "Live Ninja Alexa", Scope: "alexa:chat", Resource: mcpauth.AlexaResource, SecretHash: mcpauth.Hash("alexa-test-secret"), RedirectURIs: []string{"https://pitangui.amazon.com/api/skill/link/test"}}
+	verifier := strings.Repeat("v", 43)
+	req := mcpauth.Authorization{ClientID: a.service.AlexaClient.ID, RedirectURI: a.service.AlexaClient.RedirectURIs[0], Scope: "alexa:chat", Challenge: mcpauth.Challenge(verifier), State: "alexa-state"}
+	cookie, csrf := mcpBeginConsent(t, app, req, cookie)
+	resp, body := mcpOAuthRequest(t, app, "POST", "/oauth/authorize", url.Values{"decision": {"approve"}, "csrf": {csrf}}.Encode(), cookie, mcpauth.Issuer, "")
+	if resp.StatusCode != 200 {
+		t.Fatalf("consent %d %s", resp.StatusCode, body)
+	}
+	codeMatch := regexp.MustCompile(`code=([^&"<]+)`).FindStringSubmatch(html.UnescapeString(body))
+	if len(codeMatch) < 2 {
+		t.Fatal("no authorization code")
+	}
+	form := url.Values{"grant_type": {"authorization_code"}, "code": {codeMatch[1]}, "client_id": {req.ClientID}, "redirect_uri": {req.RedirectURI}, "code_verifier": {verifier}}
+	resp, _ = mcpOAuthRequest(t, app, "POST", "/oauth/token", form.Encode(), "", "", "")
+	if resp.StatusCode != 400 {
+		t.Fatal("missing secret accepted")
+	}
+	form.Set("client_secret", "alexa-test-secret")
+	resp, body = mcpOAuthRequest(t, app, "POST", "/oauth/token", form.Encode(), "", "", "")
+	if resp.StatusCode != 200 {
+		t.Fatalf("Alexa token %d %s", resp.StatusCode, body)
+	}
+	var tokens mcpauth.Tokens
+	if err := json.Unmarshal([]byte(body), &tokens); err != nil {
+		t.Fatal(err)
+	}
+	resp, _ = mcpOAuthRequest(t, app, "POST", "/mcp", "", "", "", "Bearer "+tokens.AccessToken)
+	if resp.StatusCode != 401 {
+		t.Fatal("Alexa credential became MCP access")
+	}
+	if _, err := a.service.VerifyAlexa(t.Context(), tokens.AccessToken); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMCPOAuthConsentRejectsForgery(t *testing.T) {
 	for _, kind := range []string{"wrong_origin", "missing_origin", "missing_cookie", "wrong_csrf", "duplicate_csrf"} {
 		t.Run(kind, func(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Account actions on owner calls routinely refuse (confirmation_required,
@@ -42,6 +43,37 @@ func TestOwnerToolReturnsRegistryRefusalsAndRejectsOthers(t *testing.T) {
 			}
 			if tc.ok && string(got) != tc.body {
 				t.Fatalf("result = %s", got)
+			}
+		})
+	}
+}
+
+func TestOwnerToolOutlivesControlTimeoutWithoutRetrying(t *testing.T) {
+	for _, cancelRequest := range []bool{false, true} {
+		t.Run(map[bool]string{false: "slow lookup", true: "caller cancelled"}[cancelRequest], func(t *testing.T) {
+			s, _ := fixture()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls := 0
+			controlTimeout := 40 * time.Millisecond
+			s.client = &http.Client{Timeout: controlTimeout, Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				if cancelRequest {
+					cancel()
+				}
+				select {
+				case <-req.Context().Done():
+					return nil, req.Context().Err()
+				case <-time.After(100 * time.Millisecond):
+					return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"tool":"web_research","ok":true}`)), Header: http.Header{}}, nil
+				}
+			})}
+			_, err := s.ownerTool(ctx, "token", "web_research", map[string]any{"tool": "web_research"})
+			if (err != nil) != cancelRequest {
+				t.Fatalf("tool request error=%v, caller cancellation=%v", err, cancelRequest)
+			}
+			if calls != 1 || s.client.Timeout != controlTimeout {
+				t.Fatalf("calls=%d control timeout=%s; one request and the original control timeout must be preserved", calls, s.client.Timeout)
 			}
 		})
 	}

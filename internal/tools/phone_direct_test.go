@@ -9,6 +9,7 @@ import (
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/jobs"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
+	"github.com/JeremyProffittOrg/live-ninja/internal/websearch"
 )
 
 func phoneInvocation(tool string, args map[string]any, call string) Invocation {
@@ -16,27 +17,23 @@ func phoneInvocation(tool string, args map[string]any, call string) Invocation {
 	inv.Surface, inv.Scope, inv.Role = "phone", PhoneScope, store.RoleOwner
 	inv.SessionID, inv.CallID = "phone-session-1", call
 	inv.IdempotencyKey = inv.SessionID + ":" + call
+	inv.Capabilities = []string{websearch.BudgetCapability}
 	return inv
 }
 
-func TestPhoneToolSetExcludesDeviceControlsAndOutgoingCalls(t *testing.T) {
-	for _, name := range []string{"call_message", "device_control", "set_volume", "take_photo", "record_video", "play_media",
-		"stop_listening", "start_new_conversation", "code_update_start", "profile_suggest", "web_research", "web_lookup",
-		"file_create", "deliverable_create", "code_update_repos", "plan_upsert"} {
+func TestPhoneToolSetMatchesServerCatalog(t *testing.T) {
+	for _, name := range []string{"set_volume", "take_photo", "record_video", "play_media",
+		"stop_listening", "start_new_conversation", "unknown", " memory_search", "MEMORY_SEARCH"} {
 		require.False(t, PhoneToolAllowed(name), name)
 	}
 	for _, name := range []string{"memory_write", "send_email", "set_reminder", "job_create", "job_pause", "rule_save", "rule_delete",
-		"ghost_nodes", "ghost_sessions", "ghost_session_summary", "ghost_run_status", "ghost_run_start", "ghost_session_command"} {
+		"ghost_nodes", "ghost_sessions", "ghost_session_summary", "ghost_run_status", "ghost_run_start", "ghost_session_command",
+		"web_lookup", "web_research", "file_create", "deliverable_create", "code_update_repos", "code_update_start", "plan_upsert",
+		"profile_suggest", "call_message", "device_control"} {
 		require.True(t, PhoneToolAllowed(name), name)
 	}
-	byName := map[string]*Definition{}
 	for _, def := range definitions() {
-		byName[def.Name] = def
-	}
-	for name := range phoneTools {
-		def, ok := byName[name]
-		require.True(t, ok, name)
-		require.False(t, def.DeviceLocal, name)
+		require.Equal(t, !def.DeviceLocal, PhoneToolAllowed(def.Name), def.Name)
 	}
 }
 
@@ -53,12 +50,45 @@ func TestPhoneScopeIsOwnerOnlyAndLimitedToPhoneTools(t *testing.T) {
 	wrongSurface.Surface = "web"
 	require.Equal(t, CodeForbidden, r.Invoke(ctx, wrongSurface).Error.Code)
 
-	for _, tool := range []string{"call_message", "device_control"} {
+	for _, tool := range []string{"set_volume", "take_photo"} {
 		res := r.Invoke(ctx, phoneInvocation(tool, map[string]any{"message": "hi", "action": "on", "device": "lamp"}, "x-"+tool))
 		require.NotNil(t, res.Error, tool)
 		require.Equal(t, CodeForbidden, res.Error.Code, tool)
 	}
 	require.True(t, r.Invoke(ctx, phoneInvocation("job_list", nil, "read")).OK)
+}
+
+func TestPhoneWebSearchExecutesThroughOwnerCallScope(t *testing.T) {
+	fx := newResearchFixture(t)
+	d := newTestDeps()
+	d.WebResearch = fx.search
+	r := newTestRegistry(t, d)
+	for _, name := range []string{"web_lookup", "web_research"} {
+		t.Run(name, func(t *testing.T) {
+			res := r.Invoke(t.Context(), phoneInvocation(name, map[string]any{"query": "recent security breach"}, name))
+			require.True(t, res.OK, "%s must execute on an owner call: %+v", name, res.Error)
+			if name == "web_lookup" {
+				require.NotEmpty(t, res.Output["summary"])
+				require.NotEmpty(t, res.Output["source"])
+			} else {
+				require.Len(t, res.Output["sources"], 2)
+				require.Equal(t, "recent security breach", fx.lastQuery)
+			}
+		})
+	}
+}
+
+func TestOldPhoneBridgeCannotStartAnUnreservedPaidSearch(t *testing.T) {
+	fx := newResearchFixture(t)
+	d := newTestDeps()
+	d.WebResearch = fx.search
+	r := newTestRegistry(t, d)
+	inv := phoneInvocation("web_research", map[string]any{"query": "news"}, "old-bridge")
+	inv.Capabilities = nil
+	result := r.Invoke(t.Context(), inv)
+	require.False(t, result.OK)
+	require.Equal(t, CodeForbidden, result.Error.Code)
+	require.Empty(t, fx.lastQuery, "the old bridge must not incur a search charge")
 }
 
 func TestPhoneJobCreateNeedsSpokenConfirmationThenExecutesOnce(t *testing.T) {
@@ -209,52 +239,13 @@ func TestPhoneGhostToolsReadFreelyAndManageOnlyThroughAProposal(t *testing.T) {
 	require.Equal(t, "launched", res.Output["status"])
 	require.Len(t, f.callsTo("POST", "/schedule"), 1)
 
-	// code_update_start stays off the call: ghost_run_start is its launch path.
-	res = r.Invoke(ctx, phoneInvocation("code_update_start", map[string]any{"repo": "JeremyProffittOrg/live-ninja", "instructions": "tighten the retry logic", "confirm": true}, "cu"))
-	requireToolError(t, res, CodeForbidden)
 }
 
-func TestPhoneManifestIsCompactAndMarksDirectActions(t *testing.T) {
+func TestPhoneManifestSharesCompleteServerToolSchemas(t *testing.T) {
 	manifest := CatalogManifestForPhone()
-	require.Len(t, manifest, len(phoneTools))
+	require.Equal(t, CatalogManifestForServerExecution(), manifest)
 	for _, tool := range manifest {
 		name := tool["name"].(string)
-		description := tool["description"].(string)
 		require.True(t, PhoneToolAllowed(name), name)
-		require.LessOrEqual(t, len(description), 260, name)
-		params := tool["parameters"].(map[string]any)
-		props, _ := params["properties"].(map[string]any)
-		_, hasConfirm := props["confirm"]
-		_, hasProposal := props["proposalId"]
-		var def *Definition
-		for _, candidate := range definitions() {
-			if candidate.Name == name {
-				def = candidate
-			}
-		}
-		require.NotNil(t, def, name)
-		// confirm is carried by the PhoneDirect tools (spoken confirmation of a
-		// review proposal) and by the ghost manage tools, whose confirmation is
-		// server-issued: confirm=true counts only with the proposalId the owner
-		// heard read back (ghost_confirm.go). Nothing else carries it.
-		require.Equal(t, def.PhoneDirect || hasProposal, hasConfirm, name)
-		if def.PhoneDirect {
-			require.False(t, hasProposal, name)
-			require.Contains(t, description, "confirm=true", name)
-		}
-		if hasProposal {
-			require.True(t, def.SideEffecting, name)
-			require.False(t, def.PhoneDirect, "%s confirms through its proposal on every surface", name)
-			require.Contains(t, description, "confirm=true", name)
-			require.Contains(t, description, "proposalId", name)
-		}
 	}
-	for _, name := range []string{"ghost_run_start", "ghost_session_command"} {
-		var found bool
-		for _, tool := range manifest {
-			found = found || tool["name"] == name
-		}
-		require.True(t, found, name)
-	}
-	require.Equal(t, "Absolute fire time, RFC3339 with offset, e.g. 2026-07-18T09:00:00-04:00.", firstSentence("Absolute fire time, RFC3339 with offset, e.g. 2026-07-18T09:00:00-04:00. More."))
 }

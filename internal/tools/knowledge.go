@@ -164,7 +164,7 @@ func knowledgeSearchDefinition() *Definition {
 		Params: []ParamSpec{
 			{Name: "query", Type: "string", Required: true, MinLen: 1, MaxLen: knowledgeMaxQueryChars,
 				Description: "What to look for, in natural words, e.g. 'retry logic in the Bedrock client'."},
-			{Name: "sources", Type: "string_array",
+			{Name: "sources", Type: "string_array", Enum: append([]string{"document"}, knowledgeSources...),
 				Description: "Optionally restrict to these sources: document, session, session_summary, email, " +
 					"page, note, gh_commit, gh_pr, gh_issue, gh_doc, gh_repo, digest. Omit to search everything."},
 			{Name: "repo", Type: "string", MaxLen: 200,

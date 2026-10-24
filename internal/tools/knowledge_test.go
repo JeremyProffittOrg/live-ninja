@@ -338,6 +338,16 @@ func TestKnowledgeSearchRejectsUnknownSource(t *testing.T) {
 	assert.Contains(t, res.Error.Message, "bogus")
 	assert.Empty(t, q.bodies)
 
+	// The RCA's exact phone arguments remain invalid, rather than being
+	// silently remapped to a different source or sent to the private relay.
+	res = r.Invoke(t.Context(), phoneInvocation("knowledge_search", map[string]any{
+		"query": "recent security breach", "sources": []any{"news", "page"},
+	}, "news-source"))
+	require.False(t, res.OK)
+	assert.Equal(t, CodeInvalidArgs, res.Error.Code)
+	assert.Contains(t, res.Error.Message, `unknown source "news"`)
+	assert.Empty(t, q.bodies)
+
 	// knowledge_recent's source is an enum at the schema gate.
 	res = r.Invoke(context.Background(), ownerInvocation("knowledge_recent", map[string]any{"source": "bogus"}))
 	require.False(t, res.OK)
@@ -808,6 +818,11 @@ func TestKnowledgeToolsAreInTheCatalog(t *testing.T) {
 	assert.Equal(t, []string{"query"}, params["required"])
 	props := params["properties"].(map[string]any)
 	assert.Equal(t, float64(knowledgeMaxK), props["k"].(map[string]any)["maximum"])
+	sources := props["sources"].(map[string]any)
+	assert.NotContains(t, sources, "enum", "allowed values constrain each source, not the whole array")
+	items := sources["items"].(map[string]any)
+	require.Contains(t, items, "enum", "the model must see the supported knowledge sources")
+	assert.ElementsMatch(t, append([]string{"document"}, knowledgeSources...), items["enum"])
 	assert.Contains(t, search["description"], "<user_data>")
 
 	recent, ok := byName["knowledge_recent"]

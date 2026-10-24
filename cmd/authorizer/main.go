@@ -62,6 +62,7 @@ var (
 		"/oauth/revoke":          true,
 		"/":                      true, // Fiber-rendered landing/login page
 		"/healthz":               true,
+		"/privacy":               true,
 		"/v1/app/android/latest": true,
 		"/v1/compat":             true,
 

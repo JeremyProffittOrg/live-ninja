@@ -114,6 +114,20 @@ func TestFinishEnqueuesOnErrorOutcome(t *testing.T) {
 	assert.Empty(t, f.Engine)
 }
 
+func TestAlexaPrivateToolFailureDoesNotEnqueueContent(t *testing.T) {
+	deps, enq := newRCADeps()
+	r := newTestRegistry(t, deps)
+	registerFailingTool(t, r, CodeUpstreamError)
+	inv := invocation("failing_tool", map[string]any{"value": "private Alexa request"})
+	inv.Surface, inv.Scope, inv.OmitTranscript = "alexa", "alexa:chat", true
+	res := r.Invoke(t.Context(), inv)
+	require.False(t, res.OK)
+	require.Empty(t, enq.calls())
+	rows, err := deps.Store.QuerySessionLog(t.Context(), inv.UserID, inv.SessionID)
+	require.NoError(t, err)
+	require.Empty(t, rows)
+}
+
 func TestFinishDoesNotEnqueueOnSuccess(t *testing.T) {
 	deps, enq := newRCADeps()
 	r := newTestRegistry(t, deps)

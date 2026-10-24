@@ -34,6 +34,7 @@ func TestRenderAllPages(t *testing.T) {
 		bind     interface{}
 		contains []string
 	}{
+		{name: "pages/privacy", contains: []string{"Privacy", "Amazon", "15 minutes", "transcript", "jeremy@jeremy.ninja"}},
 		{
 			name: "pages/landing",
 			bind: nil,

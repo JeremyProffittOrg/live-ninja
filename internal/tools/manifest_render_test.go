@@ -60,6 +60,7 @@ func TestRenderManifestSurfacesEveryConstraintKind(t *testing.T) {
 				Name:        "tags",
 				Type:        "string_array",
 				Description: "array param",
+				Enum:        []string{"email", "page"},
 			},
 			{
 				Name:        "flag",
@@ -131,7 +132,8 @@ func TestRenderManifestSurfacesEveryConstraintKind(t *testing.T) {
 	tags, ok := props["tags"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, "array", tags["type"], "string_array must render as JSON-schema array")
-	assert.Equal(t, map[string]any{"type": "string"}, tags["items"])
+	assert.Equal(t, map[string]any{"type": "string", "enum": []string{"email", "page"}}, tags["items"])
+	assert.NotContains(t, tags, "enum", "the enum constrains array items, not the whole array")
 
 	flag, ok := props["flag"].(map[string]any)
 	require.True(t, ok)

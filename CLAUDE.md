@@ -12,6 +12,17 @@ Agent configuration is shared with [agents.md](agents.md); keep the two consiste
 - No stubs or placeholder implementations; ask when blocked.
 - No `Co-Authored-By: Claude` trailers in commit messages.
 
+## Transcript remediation runs
+
+For an explicit request such as "Remediate live-ninja issues in ghost", or a
+Ghost daily transcript-remediation run, read and execute
+[autoremediate-prompt.md](autoremediate-prompt.md). It owns review coverage,
+persona delegation, the three-attempt repair ceiling, production text replay,
+HTML SES reports and the root result.txt handoff. Questions about the run do
+not start it. Use Ghost task `live-ninja-autoremediate` for a manual Ghost run;
+reuse its existing schedule and active run. Do not launch a second copy from
+inside a running task. The same pointer is in agents.md.
+
 ## Help section maintenance
 
 Live Ninja ships an in-product Help slide-out (the `?` tab above Settings on

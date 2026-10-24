@@ -427,6 +427,11 @@ test('a scope write disables every section so settings PATCHes cannot overlap', 
           capabilities: ['aboutYou', 'persona', 'privacy'], inherited: true,
           settings: section === 'privacy' ? { privacy: { storeTranscripts: true } } : {},
         },
+        {
+          deviceId: 'alexa-settings-id', name: 'Alexa', surface: 'alexa',
+          capabilities: ['aboutYou', 'persona', 'privacy'], inherited: true,
+          settings: section === 'privacy' ? { privacy: { storeTranscripts: true } } : {},
+        },
       ],
     });
     window.__apiJSON = async (path, options = {}) => {
@@ -484,6 +489,10 @@ test('a scope write disables every section so settings PATCHes cannot overlap', 
   await expect(page.locator('[data-device-settings-all]').nth(1)).toBeEnabled();
   await expect(page.locator('[data-device-settings-root="appearance"] [data-device-target][value="phone-id"]')).toBeDisabled();
   await expect(page.getByText('Not used for phone calls')).toBeVisible();
+  await expect(page.locator('[data-device-settings-root="appearance"] [data-device-target][value="alexa-settings-id"]')).toBeDisabled();
+  await expect(page.locator('[data-device-settings-root="privacy"] [data-device-target][value="alexa-settings-id"]')).toBeEnabled();
+  await expect(page.locator('[data-device-settings-root="privacy"]').getByText(/All Echoes/)).toBeVisible();
+  await expect(page.getByText('Not used by Alexa')).toBeVisible();
 
   await page.evaluate(() => {
     const actions = [...document.querySelectorAll('[data-device-settings-all]')];

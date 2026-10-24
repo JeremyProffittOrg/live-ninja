@@ -1,0 +1,16 @@
+{{define "head"}}{{end}}
+{{define "body"}}
+<main class="ln-container" style="max-width:52rem;margin:2rem auto;padding:1rem">
+  <h1>Privacy</h1>
+  <p>Updated October 22, 2026. Live Ninja is a private assistant operated by Jeremy Proffitt. Contact <a href="mailto:jeremy@jeremy.ninja">jeremy@jeremy.ninja</a> about access, your data, or this notice.</p>
+  <h2>Information used by the assistant</h2>
+  <p>Live Ninja uses your linked account, device settings, messages, saved profile, memory, and the results of tools you request to produce replies. Requests and relevant context are sent to the configured model provider, which can include OpenAI, Microsoft Azure, or Google. Application data is stored using AWS services. Requested tools may send the necessary request to their service provider.</p>
+  <h2>Alexa</h2>
+  <p>When a linked Alexa skill is enabled, Amazon recognizes your speech and speaks the assistant's text reply. Live Ninja receives the recognized text and an account-linked device request. It uses an internal device identifier to apply that Echo's settings. Alexa controls its spoken voice; Live Ninja's persona controls the reply style.</p>
+  <p>Alexa conversations need temporary server context, including when transcript storage is off. Recovery context expires after 15 minutes of inactivity. Expired context is rejected immediately; storage cleanup can occur later. Stop or new conversation clears the recoverable context. Amazon's voice history is separate and is managed in the Alexa app.</p>
+  <h2>History and controls</h2>
+  <p>Use Privacy in Live Ninja settings to control transcript storage and retention. When transcript storage is off, Alexa exchanges are not saved to permanent Live Ninja conversation history or sent for automatic memory extraction. Data explicitly saved by a requested tool, such as a note, remains until you delete it. Saved phone recordings have their own controls and retention.</p>
+  <p>Use the account export and deletion controls for account data. Device revocation and Log out everywhere stop future authorized use; you must link Alexa again after its account grant expires. Operational logs use seven-day retention. Access controls and encryption protect stored application data, but this notice does not promise that no provider or operator can access data needed to run the service.</p>
+  <p><a href="/">Return to Live Ninja</a></p>
+</main>
+{{end}}

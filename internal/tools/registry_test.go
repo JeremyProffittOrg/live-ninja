@@ -68,6 +68,36 @@ func TestInvokeUnknownTool(t *testing.T) {
 	assert.Equal(t, 404, res.StatusCode())
 }
 
+func TestAlexaPrivateTurnDoesNotCreateTranscriptButExplicitNoteStillSaves(t *testing.T) {
+	d := newTestDeps()
+	r := newTestRegistry(t, d)
+	inv := invocation("remember_note", map[string]any{"text": "an explicitly saved private note"})
+	inv.IdempotencyKey = "alexa-private-note"
+	inv.Surface = "alexa"
+	inv.OmitTranscript = true
+	res := r.Invoke(t.Context(), inv)
+	require.True(t, res.OK, "%+v", res.Error)
+	turns, err := d.Store.QuerySessionLog(t.Context(), inv.UserID, inv.SessionID)
+	require.NoError(t, err)
+	require.Empty(t, turns)
+	notes, err := d.Store.QueryNotes(t.Context(), inv.UserID, "")
+	require.NoError(t, err)
+	require.Len(t, notes, 1)
+}
+
+func TestAlexaToolAuditUsesDeviceRetention(t *testing.T) {
+	d := newTestDeps()
+	r := newTestRegistry(t, d)
+	inv := invocation("recall_note", map[string]any{"query": "tea"})
+	inv.Surface = "alexa"
+	inv.TranscriptExpiresAt = time.Now().Add(7 * 24 * time.Hour)
+	_ = r.Invoke(t.Context(), inv)
+	items, err := d.Store.QueryUserPartition(t.Context(), inv.UserID)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.EqualValues(t, inv.TranscriptExpiresAt.Unix(), items[0]["ttl"])
+}
+
 func TestInvokeRequiresUserContext(t *testing.T) {
 	r := newTestRegistry(t, newTestDeps())
 	inv := invocation("get_weather", map[string]any{"location": "Austin"})

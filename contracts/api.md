@@ -1,5 +1,22 @@
 # `/v1` API Route Inventory (all milestones)
 
+## Alexa private development contract
+
+`GET /privacy` is public, serves the privacy notice, and uses `Cache-Control: no-cache`.
+Alexa delivery/acceptance is tracked in `alexa-plan.md`; a backend deployment alone does not enable a skill.
+
+The existing `/oauth/authorize`, `/oauth/token` and `/oauth/revoke` paths additionally support one explicitly configured confidential Alexa client. It uses PKCE S256, an exact Amazon redirect allowlist, 15-minute access credentials and a 30-day grant. Its sole scope is `alexa:chat`, with resource `https://live.jeremy.ninja/alexa`. This URI identifies a credential audience; it is not a public chat endpoint. Missing resource is resolved only for that registered client. Client secrets are accepted only for it. Dynamic/public MCP clients cannot acquire this scope, and Alexa credentials are rejected by `/mcp` and ordinary app routes.
+
+Native ASK Lambda requests must match the configured skill ID and en-US locale. Verified linked identity and the physical Echo ID determine an internal owned `alexa` device. A browser/header/model cannot register or select an Alexa identity. Revocation is enforced on ingress and every worker boundary. Only explicit owner website re-enable can revive the same entry.
+
+Each chat request has an owner/device/request-bound receipt. The single SQS worker path handles fast and slow replies, with a 30-second serialized downstream deadline and at most five tool/model rounds. The adapter responds within 6.5 seconds, with the result or an honest pending receipt; status/repeat/more do not create new paid turns. Queue delivery never repeats uncertain side effects. Stop/new conversation cancel pending work at its next boundary and clear recoverable context. Natural Alexa listening expiry allows explicit same-device resume for 15 minutes.
+
+Transient `ALEXA#` records stay in the owner's existing table partition, with immediate logical expiry and eventual TTL cleanup. Context is bounded to 12 messages/24 KiB, preserving tool/result pairs. Transcript privacy controls permanent history and automatic memory extraction; it does not eliminate the disclosed short-lived context. Account export/purge must include these prefixes. Saved Alexa settings are About you, Persona and Privacy; Alexa owns recognition and spoken voice. No phone direct-action permission is inherited.
+
+The owner has one managed `Alexa` settings target, separate from native Echo identities. All Alexa model prompts, profile-aware tools and transcript privacy use this shared target's effective settings. Physical Echoes remain independently named and revocable in device management; settings pickers omit them. Existing per-Echo overrides are preserved but no longer selected by Alexa. The shared target cannot become a client identity, be renamed, revoked or enabled as an Echo. Normal mode exposes the same 48 server/account tool names as Phone calls, retaining website approvals where required. `ALEXA_TRIAL_MODE=true` explicitly pauses tool execution; normal deployment defaults to false.
+
+Shared conversation instructions keep an internal checklist of unanswered requests in the current context. Adding a topic does not cancel an earlier request. A completed lookup still needs an answer; explicit cancellation or a new conversation ends the relevant pending requests. This is conversation context, not a durable Job or cross-conversation task store. Alexa resume uses the same bounded context and expiry.
+
 > **Deployed path prefix (2026-07-19):** every `/v1/...` row below is actually served under
 > **`/api/v1/...`** (`internal/webapp/api_routes.go` mounts the group at `/api/v1`); the
 > unversioned `/auth/*`, `/.well-known/*`, `/healthz` routes are exactly as written. The bare
@@ -332,7 +349,12 @@ number routing, grant spending permission, or release the owner's call stop.
   in (0, 10.00]. A cap at or below zero refuses the call (`daily_allowance_used` or
   `monthly_cap_reached`). The bridge's finish reports `modelCostUSD` (decimal string, six
   places); settlement replaces the reservation with the telephone estimate for the
-  actual duration (never below the provider's measured price) plus that model cost. A
+  actual duration (never below the provider's measured price) plus that model cost.
+  `modelCostUSD` includes the conservatively priced Azure usage and a $0.03
+  allocation for each bounded paid web search. The bridge reserves that allocation
+  before forwarding a search, refuses it when the call cap cannot cover search and
+  the reply/goodbye, and does not charge duplicate tool IDs twice. A known
+  validation/quota refusal releases it; unknown completion retains it. A
   call the bridge never redeemed (provider cap failure, bootstrap failure, connect
   expiry, revocation, or a hangup during the announcement) has a known model cost of
   zero and settles at the telephone estimate; a redeemed call whose finish carries no
@@ -352,21 +374,24 @@ number routing, grant spending permission, or release the owner's call stop.
 - The Azure `/owner-media` WebSocket requires a valid provider signature and a one-use,
   call-bound recorder bootstrap. No owner bearer token appears in TwiML or a URL.
 - A phone token permits only `POST /api/v1/tools/invoke` and
-  `POST /api/v1/transcript` for that live session. The allowed tools are the
-  phone set in `internal/tools/phone_direct.go`: the read tools `memory_search`,
-  `entity_get`, `knowledge_search`, `knowledge_recent`, `recall_note`, `rule_list`,
-  `rule_load`, `job_list`, `job_status`, `get_weather`, `phone_message_status`,
-  `ghost_nodes`, `ghost_sessions`, `ghost_session_summary` and `ghost_run_status`;
-  the account actions `memory_write`, `forget`, `remember_note`, `set_timer`,
-  `set_reminder`, `set_current_location` and `send_email`; the job and rule
-  changes `job_create`, `job_start`, `job_pause`, `job_resume`, `job_cancel`,
-  `job_retry`, `job_command`, `rule_save` and `rule_delete`, which execute after
-  the owner's spoken yes (`confirm=true`, owner decision 2026-10-19); and the ghost
-  manage tools `ghost_run_start` and `ghost_session_command`, which execute only
-  with `confirm=true` plus the server-issued `proposalId` of the proposal read back
-  on the call (ghost-phone-access, owner decision 2026-10-19 "read and control").
-  Saved instructions cannot expand this list. Outgoing calls, device controls,
-  `code_update_start` and the review-only tools remain unavailable on this path.
+  `POST /api/v1/transcript` for that live session. Owner decision 2026-10-22 gives
+  calls the complete `CatalogManifestForServerExecution()` tool set, including
+  web lookup/research, files/deliverables, device_control, call_message and coding
+  proposals. Device-local camera, volume, playback and session controls require
+  a client and remain excluded. The registry rechecks the owner, tool arguments,
+  authorization and normal per-tool confirmation/idempotency constraints.
+  Job and rule changes retain spoken confirmation (`confirm=true`); ghost manage
+  tools retain the server-issued, single-use `proposalId` plus `confirm=true`.
+  Profile and coding proposals retain their normal review behavior. The phone
+  prompt uses the shared operational core with call-specific Job/rule directions.
+  `web_lookup` uses Wikipedia; `web_research` uses general public-web search via
+  broker mode `web-search`, with a cited summary and `sources` title/URL entries.
+  Phone requests require the bridge's `paid-web-search-v2` capability so an older
+  bridge cannot start unreserved paid searches during the independent rollouts.
+  Its optional `days` is omitted for historical queries; there is no default
+  30-day filter. Direct OpenAI/Anthropic page fetches retain their allow-list.
+  `knowledge_search` searches saved owner material, and its `sources.items.enum`
+  includes `document` plus the relay's supported source names; `news` is invalid.
 - Transcript persistence follows the owner's existing privacy settings. Authorized
   recordings use the existing private S3 ingestion and owner recording APIs. Existing
   web and Android sessions keep their original permissions and behavior.
