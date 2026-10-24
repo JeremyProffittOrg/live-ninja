@@ -85,8 +85,24 @@ func runAlexaTurn(ctx context.Context, deps *Deps, registry *tools.Registry, wor
 		}
 		return response, err
 	}, func(ctx context.Context, call brokerChatToolCall, iter, index int) *tools.Result {
+		// One identifier-only line per tool call: the tool name and error code,
+		// never its arguments or output. Alexa writes no tool transcript rows, so
+		// without this a failed lookup (2026-10-24 weather) cannot be diagnosed.
+		logTool := func(res *tools.Result) *tools.Result {
+			code := ""
+			if res != nil && res.Error != nil {
+				code = res.Error.Code
+			}
+			attrs := []any{slog.String("receipt", work.Receipt), slog.String("tool", call.Name), slog.Bool("ok", code == ""), slog.String("errorCode", code)}
+			if code == "" {
+				deps.Log.Info("Alexa tool completed", attrs...)
+			} else {
+				deps.Log.Warn("Alexa tool failed", attrs...)
+			}
+			return res
+		}
 		failure := func(code, message string) *tools.Result {
-			return &tools.Result{Tool: call.Name, CallID: call.ID, TxID: work.Receipt, Error: &tools.ToolError{Code: code, Message: message, TxID: work.Receipt}}
+			return logTool(&tools.Result{Tool: call.Name, CallID: call.ID, TxID: work.Receipt, Error: &tools.ToolError{Code: code, Message: message, TxID: work.Receipt}})
 		}
 		if work.Check(ctx) != nil {
 			return failure(tools.CodeForbidden, "Alexa access or settings changed. No new action was started.")
@@ -101,8 +117,8 @@ func runAlexaTurn(ctx context.Context, deps *Deps, registry *tools.Registry, wor
 		if strings.TrimSpace(call.Arguments) != "" && json.Unmarshal([]byte(call.Arguments), &args) != nil {
 			return failure(tools.CodeInvalidArgs, "The function arguments were not valid JSON.")
 		}
-		return registry.Invoke(ctx, tools.Invocation{Tool: call.Name, Args: args, IdempotencyKey: fmt.Sprintf("%s#alexa%d-%d#%s", work.Receipt, iter, index, call.ID), CallID: call.ID, TxID: work.Receipt,
-			UserID: work.Identity.Owner, DeviceID: work.Identity.Device, SessionID: work.SessionID, Surface: store.SurfaceAlexa, Role: store.RoleOwner, Scope: "alexa:chat", OmitTranscript: !work.Settings.KeepTranscript, TranscriptExpiresAt: time.Now().Add(time.Duration(work.Settings.RetentionDays) * 24 * time.Hour), ConfirmationContext: confirmationContext, ConfirmationTurn: work.Receipt, ConfirmedByUser: confirmedByUser})
+		return logTool(registry.Invoke(ctx, tools.Invocation{Tool: call.Name, Args: args, IdempotencyKey: fmt.Sprintf("%s#alexa%d-%d#%s", work.Receipt, iter, index, call.ID), CallID: call.ID, TxID: work.Receipt,
+			UserID: work.Identity.Owner, DeviceID: work.Identity.Device, SessionID: work.SessionID, Surface: store.SurfaceAlexa, Role: store.RoleOwner, Scope: "alexa:chat", OmitTranscript: !work.Settings.KeepTranscript, TranscriptExpiresAt: time.Now().Add(time.Duration(work.Settings.RetentionDays) * 24 * time.Hour), ConfirmationContext: confirmationContext, ConfirmationTurn: work.Receipt, ConfirmedByUser: confirmedByUser}))
 	})
 	if err != nil {
 		return alexa.RunResult{}, err

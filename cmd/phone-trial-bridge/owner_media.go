@@ -376,6 +376,15 @@ func (s *server) ownerLoopWithTiming(ctx context.Context, b *ownerBootstrap, tw,
 	activeResponse := ""
 	staleResponses := map[string]bool{}
 	cancelEvents := map[string]bool{}
+	// A barge-in can cut off the reply that carries a tool result, or arrive
+	// before a tool call does. Either way the model never learns that the owner
+	// missed the answer, so it moves on to the next fragment of speech.
+	// owed names the tool whose result still has to be spoken, owedResponse is
+	// the reply that was meant to speak it, and reminders are system notes sent
+	// before the next reply.
+	owed, owedResponse := "", ""
+	var reminders []string
+	droppedCalls := map[string]bool{}
 	allowed := map[string]bool{}
 	if list, ok := b.SessionConfig["tools"].([]any); ok {
 		for _, v := range list {
@@ -421,6 +430,13 @@ func (s *server) ownerLoopWithTiming(ctx context.Context, b *ownerBootstrap, tw,
 			return true
 		}
 		pending = true
+		for _, note := range reminders {
+			if sendWS(az, map[string]any{"type": "conversation.item.create", "item": map[string]any{"type": "message", "role": "system",
+				"content": []any{map[string]any{"type": "input_text", "text": note}}}}) != nil {
+				return false
+			}
+		}
+		reminders = nil
 		return sendWS(az, map[string]any{"type": "response.create", "response": map[string]any{"max_output_tokens": ownerReplyMaxTokens}}) == nil
 	}
 	var item string
@@ -479,6 +495,10 @@ func (s *server) ownerLoopWithTiming(ctx context.Context, b *ownerBootstrap, tw,
 				}
 				if interrupted && activeResponse != "" {
 					staleResponses[activeResponse] = true
+				}
+				if owed != "" && owedResponse == "" && !interrupted {
+					// The first reply after a tool output is the one meant to speak it.
+					owedResponse = activeResponse
 				}
 			case "session.updated":
 				if !configured {
@@ -568,6 +588,13 @@ func (s *server) ownerLoopWithTiming(ctx context.Context, b *ownerBootstrap, tw,
 				}
 			case "response.function_call_arguments.done":
 				if interrupted || staleResponses[stringAt(m, "response_id")] {
+					name, id := stringAt(m, "name"), stringAt(m, "call_id")
+					if allowed[name] && name != ownerEndCallTool && id != "" && !droppedCalls[id] {
+						// Identifier-only log: neither arguments nor speech text.
+						droppedCalls[id] = true
+						log.Printf("owner tool call dropped after barge-in: call=%s tool=%s", b.CallSID, name)
+						reminders = append(reminders, "Your "+name+" call was cut off when the owner spoke, so it did not run. Call it again now if the owner still wants it, then answer. Do not say you have checked until its result arrives.")
+					}
 					continue
 				}
 				name, id := stringAt(m, "name"), stringAt(m, "call_id")
@@ -616,6 +643,7 @@ func (s *server) ownerLoopWithTiming(ctx context.Context, b *ownerBootstrap, tw,
 						b.CostUSD -= toolAllocation
 					}
 				}
+				owed, owedResponse = name, ""
 				if sendWS(az, map[string]any{"type": "conversation.item.create", "item": map[string]any{"type": "function_call_output", "call_id": id, "output": string(result)}}) != nil || !request() {
 					return "tool_reply_failed"
 				}
@@ -648,6 +676,16 @@ func (s *server) ownerLoopWithTiming(ctx context.Context, b *ownerBootstrap, tw,
 				}
 				if b.AudioTokens > input+output {
 					return "invalid_usage"
+				}
+				if owed != "" && (id == owedResponse || owedResponse == "") {
+					// An unassigned reply is the one that carried the tool call, or a
+					// follow-up cancelled before its creation event arrived.
+					if interrupted || staleResponses[id] || stringAt(res, "status") == "cancelled" {
+						reminders = append(reminders, "The owner spoke over the end of your last "+owed+" reply, so they may not have heard its result. Give that result now in one or two short sentences, unless they have since cancelled or replaced that request.")
+						owedResponse = ""
+					} else if owedResponse != "" {
+						owed, owedResponse = "", ""
+					}
 				}
 				pending = false
 				interrupted = false

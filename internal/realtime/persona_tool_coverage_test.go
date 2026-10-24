@@ -121,3 +121,16 @@ func requireNonEmptyManifest(t *testing.T) {
 		t.Fatal("toolManifest is empty — cannot assert persona coverage over zero tools")
 	}
 }
+
+// A "was it deployed" question must be looked up, not answered by asking the
+// owner for a run id (phone call, 2026-10-23 "Windows application was deployed").
+func TestGhostInstructionsSearchBeforeAskingForRunIDs(t *testing.T) {
+	for name, instructions := range map[string]string{
+		"core":  coreInstructions,
+		"phone": PhoneInstructions(ResolvePersona("default")),
+	} {
+		assert.Contains(t, instructions, "Never ask the owner for a run id, event id or request id", name)
+		assert.Contains(t, instructions, "ghost_run_status with no arguments", name)
+		assert.Contains(t, instructions, "ghost_session_summary for the time window", name)
+	}
+}
