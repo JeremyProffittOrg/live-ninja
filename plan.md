@@ -1,7 +1,7 @@
 # Plan
 
 ## alexa-answer-queue — deliver every accepted request's answer
-Status: implementation in progress, 2026-10-24. Checkout C:\dev\live-ninja-alexa, main.
+Status: deployed and native replay verified, 2026-10-24. Release a2bc077e08d9569ad03ddd6fc6c29bb7ecc30c1c. Checkout C:\dev\live-ninja-alexa, main.
 Outcome: retain multiple unanswered Alexa results in the current conversation and deliver them in request order through status/more; repeat replays only speech. A newer request cannot replace an older result waiting to be heard.
 Non-goals: persistent Jobs, parallel side effects, new infrastructure, changing owner/approval/spending gates or the one-active-execution limit. Stop/new conversation still clears transient context; the existing resume window remains.
 Files: internal/alexa service/speech/handler and existing tests; Help, Alexa contract and this plan.
@@ -18,7 +18,7 @@ Proof: reproduce three completed requests followed by status/status in the exist
 
 ### queued-answer-delivery — retain and drain unanswered results
 - [x] answer-queue-regression — the test first returned AI news where Office PC was expected. It now returns all three in order after model-history trimming, preserves a partly spoken answer across another completed request, keeps repeat side-effect-free, clears private queued/last-speech text on reset, enforces eight replies/128 KiB, migrates old sessions, and survives an interleaved speech/worker commit without rerunning work.
-- [~] answer-queue-release — focused tests, Help check and vet pass; push main and monitor the required workflow to terminal success; validate three distinct retained answers through native Alexa without repeating tool actions.
+- [x] answer-queue-release — workflow 40129413202 completed SUCCESS including browser quality. The native replay reproduced three initially pending requests, then returned Office PC, world news and AI news results in order. Repeat matched the first selected answer. Each accepted receipt had exactly one execution claim, and status/more/repeat submitted zero new work. After the third answer, more reported no waiting answers. Physical playback was not observed; the native ASK responses and server correlation were verified.
 
 ### Stop conditions (only these)
 Missing credentials/resources; unapproved destructive or material scope change; required EC2; three corrected delivery failures. No outgoing calls or vehicle actions are used as probes. Local checks have five-minute limits; deployment watchers have 60-minute limits and include failure/cancellation/timeout.
@@ -26,6 +26,7 @@ Missing credentials/resources; unapproved destructive or material scope change; 
 ### Execution log
 - 2026-10-24 — read deployed/source state, the latest owner's transcript and tool rows, and corresponding adapter diagnostics. Identified a delivery defect rather than three missing executions. No schedule activation was authorized by this new request; the three-hour schedule remains pending its separate confirmation.
 - 2026-10-24 — `go test ./internal/alexa -run TestAlexaDeliversThree -count=1 -timeout=2m` reproduced expected "Office PC summary." versus actual "AI news summary.". After correction, `go test ./internal/alexa ./internal/webapp ./cmd/alexa-chat-worker ./cmd/realtime-broker -count=1 -timeout=5m` and matching go vet passed. The collector's eight tests passed, including recognition of the new answer-selection metadata. Diff whitespace checks passed. Speech selection is logged separately from execution; it is not claimed as physical playback confirmation.
+- 2026-10-24 — code a2bc077 deployed through 40129413202; watcher 86125 exited 0. Evidence: C:\dev\live-ninja-test-evidence\answer-queue\2026-10-24\native-replay.json and native-delivery-proof.json. Three accepted receipts were selected in the same order; execution claims were 1/1/1; retrieval started zero work. The native replay's initial log-query field-name error was corrected, and checkpoint resume was verified without resubmitting accepted tasks. A wording-sensitive label assertion was replaced by server receipt matching; that verifier was executed successfully against the recorded run. Completion HTML email was accepted by SES as 010001a16fa7a072-836df747-bff9-4574-8dd7-376c515e9cfe-000000, with parent verification of mail-complete/receipt.json. No telephone or vehicle operation was used as a probe. The separate three-hour schedule remains uncreated pending its exact approval.
 
 ## cloudwatch-remediation — diagnose requests and review production errors every three hours
 Status: code deployed and verified; exact schedule activation approval pending, 2026-10-24. Release a223d46d79dffebb326adeba386ba01002191548. Checkout: C:\dev\live-ninja-alexa, main.
