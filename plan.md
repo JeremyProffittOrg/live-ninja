@@ -1,5 +1,34 @@
 # Plan
 
+## alexa-device-launch — diagnose the device-specific refusal
+Status: native skill launch and account-tool execution verified; the reported device refusal is not yet reproduced, 2026-10-24.
+Outcome: open the private Live Ninja skill on the operator's reported Alexa device without the "not supported on this device" response.
+Non-goals: changing account linking, resetting hardware, renaming the skill, changing supported locales, or changing working server code without a failing reproduction.
+Files: this plan and private evidence under C:\dev\live-ninja-test-evidence\reliability\2026-10-24. No application code changes are indicated yet.
+Proof: a launch on the actual reported device reaches Live Ninja and returns the normal greeting; current native SMAPI launch and read-only Jobs proofs establish the server boundary independently.
+
+### Locked decisions (user-confirmed; do not revisit)
+- 2026-10-24 — "I get I\"m sorry live ninja is not supported on this device"
+
+### Verified facts
+- The deployed custom-skill manifest has interfaces=[], locale en-US, country US and the expected live-ninja-alexa-skill Lambda endpoint. ASK enablement returned HTTP 204. Lambda is Active/Successful at 3c1627db3be0d6cf1245a50f0b576117848c2a14 with ALEXA_ENABLED=true.
+- Before these synthetic checks, CloudWatch showed zero adapter invocations/errors/throttles from 2026-10-24T08:10:01Z through 10:10:01Z. No adapter logs were present for that window.
+- Native simulation 09f2195e-03c4-4b40-9d3a-7b6866320779, "open live ninja skill", succeeded in 703 ms. Plain "open live ninja" also succeeded in 117 ms (a9a4355c-29d0-4190-a1f4-87ec676a40a3). Both returned "A new Live Ninja conversation is ready. What would you like to ask?". Therefore adding "skill" is a valid disambiguation option, not a proven cause or fix for this device report.
+- A read-only Jobs-count request succeeded through native Alexa in 6261 ms (fd967c18-f82d-4ec4-840a-f6944f88a680). Worker logs independently report `Alexa tool completed`, tool=job_list, ok=true, errorCode="". Recorded model cost delta was $0.00141103. No job was created or changed.
+- Evidence: explicit-skill-launch.json, plain-launch-comparison.json, alexa-job-read.json and alexa-job-read-proof.json in the evidence directory. The earlier generic simulator failure is no longer reproduced by these calls; physical device acceptance remains distinct.
+- Amazon documents matching the development account and en-US locale for testing: https://developer.amazon.com/en-US/docs/alexa/test/test-your-skill-overview.html . For Alexa mobile-app name collisions, Amazon recommends appending "skill" to the invocation: https://developer.amazon.com/en-US/docs/alexa/custom-skills/understanding-how-users-invoke-custom-skills.html . Neither establishes this device's cause without its identity and exact utterance.
+
+### alexa-device-refusal-replay — establish the failing device path
+- [!] alexa-device-context — Jeremy must supply the device type/model and exact spoken command. The chat question is pending. Server launch and tool execution are already verified; do not repeat credential setup or patch the backend based only on the refusal phrase.
+- [x] alexa-native-read-proof — the two native launches and the actual job_list execution above succeeded. This closes the earlier inability to perform a native read-only Alexa verification, but not the physical Echo acceptance gate.
+
+### Stop conditions (only these)
+The device/utterance required to reproduce this refusal is unavailable; missing credentials/resources; material scope change or unapproved destructive action; required EC2 creation/start. Continue independent read-only checks; do not guess a hardware reset or account replacement.
+
+### Execution log
+- 2026-10-24 — read deploy.md, diagnosing-bugs, deployed skill metadata, handler and request validation. No CONTEXT.md or ADR was found in the checkout. Queried native skill enablement, manifest, resource status, Lambda state and the bounded CloudWatch window. Ran two bounded native launch comparisons, then one read-only Jobs request and matched its worker outcome. Application code and deployment settings were not changed.
+- 2026-10-24 — delegated HTML blocker/update accepted by SES as 010001a16d726c5f-793f804b-f256-48b2-aeda-cc6a8b075bdd-000000; parent verified mail-device-support/receipt.json. It reports the now-successful native tests and asks only for the actual device and utterance, not account re-linking or credential setup.
+
 ## alexa-account-parity — use account tools and one shared Alexa settings group
 Status: code deployed and automated checks verified, 2026-10-23; physical Echo retest pending. Release 478197841edb5edc1cc68506c4393358fb71463a. Working directory: C:\dev\live-ninja-alexa on main. Evidence: C:\dev\live-ninja-test-evidence\reliability\2026-10-23.
 Outcome: linked Alexa requests expose the same server/account tool names as Phone calls; all Echoes use one Alexa About you, Persona and Privacy target. Keep each Echo's native identity and revocation independent.
