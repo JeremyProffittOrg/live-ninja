@@ -1,10 +1,10 @@
 # Alexa text chat and website device settings
 
-Status: private skill publishing and enabled-runtime verification are complete. Conversation and Echo acceptance await Jeremy enabling the skill and linking the owner account in the Alexa app. Authorized and created 2026-10-22.
+Status: private skill publishing, account linking and enabled-runtime verification are complete. Jeremy confirmed linking on 2026-10-23 and used Alexa. Shared settings and account-tool parity are being completed under plan.md's alexa-account-parity; formal timed Echo acceptance is not yet recorded. Authorized and created 2026-10-22.
 
 ## Outcome and scope
 
-Build a private Alexa Skills Kit custom skill that sends recognized text to Live Ninja and speaks Live Ninja's text replies. Follow-up questions use the same conversation context. Each Echo used with the skill appears as an Alexa device on the Live Ninja website. The owner can configure its profile, persona, and transcript privacy with the existing device settings controls.
+Build a private Alexa Skills Kit custom skill that sends recognized text to Live Ninja and speaks Live Ninja's text replies. Follow-up questions use the same conversation context. Each Echo used with the skill appears as an Alexa device on the Live Ninja website for naming and access control. One shared Alexa settings target controls profile, persona and transcript privacy for all Echoes.
 
 The user requested this file by name. `C:\dev\live-ninja\alexa-plan.md` is the feature plan. Preserve the existing `plan.md`, `backlog.md`, and unrelated work during planning. When implementation starts, add a pointer from the execution checkout's `plan.md`; keep the detailed Alexa status here rather than duplicating it.
 
@@ -13,6 +13,11 @@ Non-goals: telephone integration, Alexa+ partner/MCP integration, raw microphone
 Implementation files and command-based checks are listed under each workstream. The deployed backend is not proof that the private skill or a physical Echo works; those remain separate acceptance gates.
 
 ## Locked decisions (user-confirmed; do not revisit)
+
+- 2026-10-23 — "Linked successfully" confirms actual Alexa account linking after the header fix.
+- 2026-10-23 — "One shared Alexa group (Recommended)" supersedes per-Echo settings overrides. Native device identity and revocation remain distinct.
+- 2026-10-23 — "Current conversation only (Recommended)" sets the unfinished-request lifetime, including Alexa resume. New conversations start fresh.
+- 2026-10-23 — the owner requested that Alexa inherit signed-in account tools like Phone calls. Normal tool execution is authorized now; the earlier setup-trial-until-Echo-gate default is superseded. Existing tool approvals remain. Automated acceptance still uses bounded read-only/synthetic cases.
 
 - 2026-10-22 — "implement alexa-plan.md". This starts the implementation and supersedes the planning-only stop condition. The private development delivery, existing-identity configuration and initial bounded acceptance trial in this plan are in scope. Keep the initial model trial within $1, with no paid tool actions.
 - 2026-10-22 — "Yes, test when ready" in response to: "The plan ends with a five-minute test on a real Echo. Will you be available to link the private skill in the Alexa app and test an Echo after the build is ready? I'll continue implementation now."
@@ -46,12 +51,12 @@ Read on 2026-10-22. Repository sources were fetched from remote `main`, includin
 These are engineering defaults, not additional user-confirmed decisions:
 
 - Distribution: private development skill, owner account only, `en-US`, invocation name `live ninja` if Amazon accepts it. Public certification and additional users/locales are separate work.
-- Devices: one entry per physical Echo, registered after its first authenticated request. Use existing account defaults until the owner saves an override. Default display name `Alexa`; the website permits a room name such as `Kitchen Alexa`. Do not add a second group-settings database.
+- Devices: one entry per physical Echo for naming/revocation after its first authenticated request. One shared managed Alexa target, offered before first use, controls About you, Persona and Privacy through the existing deviceOverrides document. Use account defaults until that shared target is customized. Preserve historical per-Echo data without continuing a second settings path.
 - Conversation: a new launch starts a new Alexa conversation. An explicit `resume` can recover an unexpired conversation on the same owned Echo. It never joins an active browser or phone session automatically.
 - Voice: Alexa performs recognition and speech synthesis. Live Ninja selects the reply content and persona style. No Live Ninja audio model or telephone service runs for this surface.
 - Text model candidate: `gpt-6-luna`, standard processing, `reasoning_effort=none` when using the existing Chat Completions tool format. The official model page supports that combination. Validate availability and response time before accepting it. Configure this only for Alexa; preserve existing fallback and voice model selection. `gpt-4o-mini` is deprecated with a published 2027-01-14 shutdown, so do not make it the new skill's permanent default.
 - Bounds: adapter response budget 6.5 seconds; normal-answer target p95 below 6 seconds; worker deadline 30 seconds; at most five tool/model rounds and 512 output tokens per model response. Keep spoken chunks at most 600 characters and offer `more`. These are application choices, not claims about Amazon limits.
-- Initial acceptance uses `ALEXA_TRIAL_MODE=true`. The ordinary model/tool manifest stays in the request, but the worker denies tool execution so test utterances cannot start paid actions. Each model request is capped at 128 KiB; five requests at the recorded Luna rates fit the conservative $0.07 per-turn allowance. The test helper checks the actual numeric usage ledger before each new request and stops when less than $0.07 of the $1 total remains, or any usage is unknown. Change the repository variable to `false` only after provider and Echo acceptance, then deliver through GitHub. This is an implementation control for the already authorized bounded trial.
+- Initial acceptance used `ALEXA_TRIAL_MODE=true`. The 2026-10-23 owner request enables normal tools; deployment defaults are now false. The optional trial switch and guarded bulk acceptance helper remain available, and a completed bulk/latency gate must not be claimed without evidence. Model requests retain the 128 KiB, five-round and 512-token bounds. Automated tests remain within the initial $1 model allowance with no paid tool actions.
 - Keep at most 12 recent conversational messages and 24 KiB of conversational text per Alexa session, excluding the separately bounded server prompt/tool manifest. Preserve tool-call/result pairs when trimming. Session recovery expires after 15 minutes of inactivity. Explicit `new conversation` or `stop` invalidates the old context and pending confirmations.
 - Reuse existing account quota enforcement. Allow one active Alexa turn per owner. Do not treat the phone's $100 monthly budget as an Alexa budget. Record actual token usage and model identity for every completed/failed turn that reports usage.
 
@@ -102,7 +107,7 @@ alexa-device-contract — make website configuration effective and honest
 
 Add `SurfaceAlexa = "alexa"` to the existing device model. Register real Echo entries through the trusted adapter path, not `PUT /api/v1/devices/current`. Preserve owner checks, customized names, active/revoked state, device limits, and unknown settings fields.
 
-Reuse Device settings under About you, Persona, and Privacy. Alexa entries support those three sections. Reuse the current selected-device, account-default, inheritance, reset, and version-conflict behavior. Label the surface `Alexa` and explain that changes apply to the next Alexa turn.
+Reuse Device settings under About you, Persona, and Privacy through one shared Alexa target. Native Echo entries remain in device management only. Reuse the current selected-target, account-default, inheritance, reset, and version-conflict behavior. Label the target `Alexa` and explain that changes apply to every Echo's next turn.
 
 Persona controls change Live Ninja's writing style/personality. Existing voice/accent fields may remain round-trippable in the section document for compatibility, but the Alexa summary must say Alexa controls the spoken voice. Do not advertise Voice engine, Microphone, Wake word, Turn detection, or Appearance as settings that control an Echo. Unsupported Alexa sections must not break apply-to-all for eligible web/Android devices.
 

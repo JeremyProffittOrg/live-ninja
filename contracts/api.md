@@ -13,6 +13,10 @@ Each chat request has an owner/device/request-bound receipt. The single SQS work
 
 Transient `ALEXA#` records stay in the owner's existing table partition, with immediate logical expiry and eventual TTL cleanup. Context is bounded to 12 messages/24 KiB, preserving tool/result pairs. Transcript privacy controls permanent history and automatic memory extraction; it does not eliminate the disclosed short-lived context. Account export/purge must include these prefixes. Saved Alexa settings are About you, Persona and Privacy; Alexa owns recognition and spoken voice. No phone direct-action permission is inherited.
 
+The owner has one managed `Alexa` settings target, separate from native Echo identities. All Alexa model prompts, profile-aware tools and transcript privacy use this shared target's effective settings. Physical Echoes remain independently named and revocable in device management; settings pickers omit them. Existing per-Echo overrides are preserved but no longer selected by Alexa. The shared target cannot become a client identity, be renamed, revoked or enabled as an Echo. Normal mode exposes the same 48 server/account tool names as Phone calls, retaining website approvals where required. `ALEXA_TRIAL_MODE=true` explicitly pauses tool execution; normal deployment defaults to false.
+
+Shared conversation instructions keep an internal checklist of unanswered requests in the current context. Adding a topic does not cancel an earlier request. A completed lookup still needs an answer; explicit cancellation or a new conversation ends the relevant pending requests. This is conversation context, not a durable Job or cross-conversation task store. Alexa resume uses the same bounded context and expiry.
+
 > **Deployed path prefix (2026-07-19):** every `/v1/...` row below is actually served under
 > **`/api/v1/...`** (`internal/webapp/api_routes.go` mounts the group at `/api/v1`); the
 > unversioned `/auth/*`, `/.well-known/*`, `/healthz` routes are exactly as written. The bare

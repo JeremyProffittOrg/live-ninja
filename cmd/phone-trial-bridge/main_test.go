@@ -487,50 +487,67 @@ func TestFinalEventBeforeHangup(t *testing.T) {
 	}
 }
 func TestProbeRequiresPCMUAndGeneratedAudio(t *testing.T) {
-	for _, audio := range []bool{false, true} {
-		t.Run(fmt.Sprint(audio), func(t *testing.T) {
-			c, peer := wsPair(t)
-			c.SetReadDeadline(time.Now().Add(time.Second))
-			done := make(chan error, 1)
-			go func() { done <- probeSession(c) }()
-			cfg := receive(t, peer)
-			sess := objectAt(cfg, "session")
-			if sess["max_output_tokens"] != float64(512) {
-				t.Fatal(sess)
-			}
-			peer.WriteJSON(map[string]any{"type": "session.updated", "session": sess})
-			receive(t, peer)
-			if audio {
-				peer.WriteJSON(map[string]any{"type": "response.output_audio.delta", "delta": strings.Repeat("AAAA", 100)})
-				peer.WriteJSON(map[string]any{"type": "response.output_audio_transcript.done", "transcript": "Hello."})
-			}
-			status := "incomplete"
-			if audio {
-				status = "completed"
-			}
-			peer.WriteJSON(map[string]any{"type": "response.done", "response": map[string]any{"status": status, "status_details": map[string]any{"reason": "max_output_tokens"}}})
-			if e := <-done; (e == nil) != audio {
-				t.Fatalf("audio=%v error=%v", audio, e)
-			} else if !audio && !strings.Contains(e.Error(), "max_output_tokens") {
-				t.Fatalf("missing safe diagnostic: %v", e)
-			}
-		})
+	for _, cancelled := range []bool{false, true} {
+		for _, audio := range []bool{false, true} {
+			t.Run(fmt.Sprint(cancelled, audio), func(t *testing.T) {
+				c, peer := wsPair(t)
+				c.SetReadDeadline(time.Now().Add(time.Second))
+				done := make(chan error, 1)
+				go func() { done <- probeSession(c, cancelled) }()
+				cfg := receive(t, peer)
+				sess := objectAt(cfg, "session")
+				if sess["max_output_tokens"] != float64(512) {
+					t.Fatal(sess)
+				}
+				peer.WriteJSON(map[string]any{"type": "session.updated", "session": sess})
+				for range probeConversation(cancelled) {
+					receive(t, peer)
+				}
+				receive(t, peer)
+				if audio {
+					peer.WriteJSON(map[string]any{"type": "response.output_audio.delta", "delta": strings.Repeat("AAAA", 100)})
+					transcript := "A robot planted an orchard, and a ferry route opened."
+					if cancelled {
+						transcript = "A ferry route opened."
+					}
+					peer.WriteJSON(map[string]any{"type": "response.output_audio_transcript.done", "transcript": transcript})
+				}
+				status := "incomplete"
+				if audio {
+					status = "completed"
+				}
+				peer.WriteJSON(map[string]any{"type": "response.done", "response": map[string]any{"status": status, "status_details": map[string]any{"reason": "max_output_tokens"}}})
+				if e := <-done; (e == nil) != audio {
+					t.Fatalf("audio=%v error=%v", audio, e)
+				} else if !audio && !strings.Contains(e.Error(), "max_output_tokens") {
+					t.Fatalf("missing safe diagnostic: %v", e)
+				}
+			})
+		}
 	}
 }
 
 func TestProbeRejectsSilenceIncompleteAndMissingTranscript(t *testing.T) {
-	for _, tc := range []struct{ name, payload, transcript, status string }{
-		{"silence", strings.Repeat("////", 100), "Hello.", "completed"},
-		{"incomplete", strings.Repeat("AAAA", 100), "Hello.", "incomplete"},
-		{"no-transcript", strings.Repeat("AAAA", 100), "", "completed"},
+	for _, tc := range []struct {
+		name, payload, transcript, status string
+		cancelled                         bool
+	}{
+		{"silence", strings.Repeat("////", 100), "orchard and ferry", "completed", false},
+		{"incomplete", strings.Repeat("AAAA", 100), "orchard and ferry", "incomplete", false},
+		{"no-transcript", strings.Repeat("AAAA", 100), "", "completed", false},
+		{"lost-earlier-answer", strings.Repeat("AAAA", 100), "A ferry route opened.", "completed", false},
+		{"ignored-cancellation", strings.Repeat("AAAA", 100), "An orchard was planted and a ferry route opened.", "completed", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, peer := wsPair(t)
 			c.SetReadDeadline(time.Now().Add(time.Second))
 			done := make(chan error, 1)
-			go func() { done <- probeSession(c) }()
+			go func() { done <- probeSession(c, tc.cancelled) }()
 			sess := objectAt(receive(t, peer), "session")
 			peer.WriteJSON(map[string]any{"type": "session.updated", "session": sess})
+			for range probeConversation(tc.cancelled) {
+				receive(t, peer)
+			}
 			receive(t, peer)
 			peer.WriteJSON(map[string]any{"type": "response.output_audio.delta", "delta": tc.payload})
 			peer.WriteJSON(map[string]any{"type": "response.output_audio_transcript.done", "transcript": tc.transcript})
@@ -575,7 +592,7 @@ func TestProbeAPIFailure(t *testing.T) {
 	c, peer := wsPair(t)
 	c.SetReadDeadline(time.Now().Add(time.Second))
 	done := make(chan error, 1)
-	go func() { done <- probeSession(c) }()
+	go func() { done <- probeSession(c, false) }()
 	receive(t, peer)
 	peer.WriteJSON(map[string]any{"type": "error", "error": map[string]any{"code": "invalid_value", "type": "invalid_request_error", "param": "session.audio"}})
 	if e := <-done; e == nil || !strings.Contains(e.Error(), "invalid_value") {

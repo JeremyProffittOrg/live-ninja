@@ -476,7 +476,7 @@ jobs:
           NOVA_IMAGE_READY: ${{ steps.nova.outputs.imageReady }}
           GHOST_FUNCTION: ${{ vars.GHOST_COMMAND_FUNCTION_ARN || 'arn:aws:lambda:us-east-1:759775734231:function:ghost-cli-command' }}
           ALEXA_ENABLED: ${{ vars.ALEXA_ENABLED || 'true' }}
-          ALEXA_TRIAL_MODE: ${{ vars.ALEXA_TRIAL_MODE || 'true' }}
+          ALEXA_TRIAL_MODE: ${{ vars.ALEXA_TRIAL_MODE || 'false' }}
         run: |
           sam validate --lint --template-file template.yaml
           bash scripts/deploy-stack.sh
@@ -509,7 +509,7 @@ jobs:
           NOVA_IMAGE_READY: ${{ steps.nova.outputs.imageReady }}
           GHOST_FUNCTION: ${{ vars.GHOST_COMMAND_FUNCTION_ARN || 'arn:aws:lambda:us-east-1:759775734231:function:ghost-cli-command' }}
           ALEXA_ENABLED: ${{ vars.ALEXA_ENABLED || 'true' }}
-          ALEXA_TRIAL_MODE: ${{ vars.ALEXA_TRIAL_MODE || 'true' }}
+          ALEXA_TRIAL_MODE: ${{ vars.ALEXA_TRIAL_MODE || 'false' }}
           ALEXA_SMAPI_CLIENT_ID: ${{ vars.ALEXA_SMAPI_CLIENT_ID }}
           ALEXA_SMAPI_CLIENT_SECRET: ${{ secrets.ALEXA_SMAPI_CLIENT_SECRET }}
           ALEXA_SMAPI_REFRESH_TOKEN: ${{ secrets.ALEXA_SMAPI_REFRESH_TOKEN }}

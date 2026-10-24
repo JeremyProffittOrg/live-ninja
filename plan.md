@@ -1,7 +1,55 @@
 # Plan
 
-## linking-and-call-reliability — repair Alexa linking and premature owner-call disconnects
+## alexa-account-parity — use account tools and one shared Alexa settings group
 Status: in progress, 2026-10-23. Working directory: C:\dev\live-ninja-alexa on main. Evidence: C:\dev\live-ninja-test-evidence\reliability\2026-10-23.
+Outcome: linked Alexa requests expose the same server/account tool names as Phone calls; all Echoes use one Alexa About you, Persona and Privacy target. Keep each Echo's native identity and revocation independent.
+Non-goals: device-only camera/media controls; new approval bypasses, services, dependencies, schedules or EC2; changes to phone limits or outbound calls.
+Files: existing store device/settings helpers and tests; web settings/device routes and tests; Alexa runtime and broker settings consumers; realtime Alexa/tool capability code and tests; existing deployment defaults; Help and settings copy; this plan and alexa-plan.md.
+
+### Locked decisions (user-confirmed; do not revisit)
+- 2026-10-23 — "when I connected via alexa, it should have acteed like when I call into live ninja, but didn't.  Alexa needsx to inhert all the tools like I'm loggewdx in and should haveq it own settings group like the phone does in settings."
+- 2026-10-23 — "One shared Alexa group (Recommended)"
+- 2026-10-23 — "Also, look at my last conversation, I think we need to add task list support because I asked about ai news, then world news and it never came back to ai news"
+- 2026-10-23 — "Current conversation only (Recommended)"
+- 2026-10-23 — "Linked successfully" and "It completed normally" confirm the deployed linking and phone reliability fixes.
+- Full account-tool use supersedes the earlier setup-only trial default. Existing owner, approval, quota and spending checks remain. Deployment is pre-authorized through main; no local deployment.
+
+### Verified facts
+- Latest conversation 086270d1d8b417d1c9e0695a38b6a43f: AI web_research succeeded at 2026-10-24T00:56:05.314Z; user added world news "as well"; world web_research succeeded at 00:56:18.475Z. Only world news was answered until the user reminded the assistant at 00:56:45.458Z. Evidence: latest-conversation-redacted.json in the evidence directory.
+- internal/realtime/jobs_capability_test.go reproduced nine absent job_* tools: Alexa had 39 account tools, Phone 48. The new parity test passes after restoring server-side catalog availability. Normal proposal approvals remain.
+- internal/alexa/runtime.go and cmd/realtime-broker/alexa_turn.go currently read settings by native Echo ID. internal/store/devices.go already supplies an owner-only managed Phone calls target suitable for reuse.
+- e52ed97caee8a3ccf5b17d3150288b8795254f46 deployed successfully in main workflow 40045488976 and phone workflow 40045488977. The phone workflow's real Azure audio probe passed. User retries succeeded.
+
+### alexa-account-tools — expose authorized tools outside setup trial
+- [x] alexa-catalog-parity — same 48 account tool names in the model request and worker allowlist; explicit trial mode remains available. Full realtime/webapp package tests passed on 2026-10-23. Gate: `go test ./internal/realtime ./internal/webapp -run 'Alexa|JobsCapability|MediaCapability' -count=1 -timeout=5m` exits 0.
+
+### alexa-shared-settings — apply one target to all Echoes
+- [x] alexa-shared-target — one owner-only target appears before the first Alexa request; native Echoes remain manageable but are not separate settings choices. Shared Persona, About you and Privacy reach runtime, broker and profile-aware tools; browser identities and independent device revocation stay intact. Full affected package tests passed. Gate: `go test ./internal/store ./internal/webapp ./internal/alexa ./cmd/realtime-broker -run 'Alexa|PhoneSettings|SettingsTarget|HelpDrawer' -count=1 -timeout=5m` exits 0.
+
+## conversation-request-continuity — finish earlier requests after an added topic
+depends on: alexa-account-parity for combined delivery only; implementation is independent.
+Outcome: keep a conversation-local checklist of unanswered requests. A successful lookup alone is not completion; report its result even when another topic is added. Respect explicit cancellation and existing action approvals. Alexa resume retains the same context; new conversations start fresh.
+Non-goals: persistent jobs/todos, a new task-list page, cross-conversation carryover or new infrastructure.
+Files: shared operational instructions, their existing tests, the existing bounded Azure probe and its tests/build inputs if needed for a real replay; Help.
+
+### request-continuity-replay — reproduce the AI/world-news omission
+- [x] request-checklist-policy — all conversation prompts carry the same pending/answered/cancelled rule and reuse completed lookup results. Existing realtime and bridge package tests pass. This is an instruction policy over the existing bounded context, not a new durable task store.
+- [~] request-replay-proof — the existing Azure probe now replays synthetic AI-news then world-news lookup results; both must be reported without a reminder. A separate new session verifies explicit cancellation. Each session retains the 20-second/512-output-token ceiling and audible PCMU validation; total command ceiling is 40 seconds (65 seconds including Go startup in CI). Actual model output awaits deployment; local fixtures reject an omitted earlier answer and ignored cancellation. No telephone call or external tool is invoked by the probe.
+
+### alexa-parity-delivery — deploy and verify the requested behavior
+depends on: alexa-account-tools, alexa-shared-settings, request-continuity-replay.
+- [~] parity-release — full affected-package tests, Help drift test, vet, JavaScript syntax and diff checks pass; commit only necessary files, push main and monitor all triggered workflows to terminal success. Confirm deployed trial mode is false and record remaining Echo-only acceptance plainly.
+
+## Stop conditions (only these)
+Missing credentials or an operator-only test resource; an unapproved destructive action or material scope change; EC2 creation/start; three corrected delivery failures. Continue independent work when one check is blocked.
+Restart policy: local tests have five-minute ceilings. Each GitHub watcher observes success, failure, cancellation and timeout, with a 60-minute ceiling. At most three corrected delivery attempts; classify failure and fix deterministic causes before retrying. No new local scheduled automation or outbound calls.
+
+## Execution log
+- 2026-10-23 — `go test ./internal/store ./internal/webapp ./internal/alexa ./internal/tools ./internal/realtime ./cmd/realtime-broker ./cmd/phone-trial-bridge -count=1 -timeout=5m` passed all seven packages; corresponding `go vet` exited 0. `node --check web/static/js/device-settings.mjs` and `git -c core.whitespace=cr-at-eol -c core.safecrlf=false diff --check` exited 0. Evidence: account-parity-checks.json. New shared-target tests first failed because the target was absent and the broker ignored its persona. Read-only production preflight found one linked Echo and zero existing Echo overrides, so changing to shared settings loses no existing per-Echo preference; no settings data was edited. Repository variable ALEXA_TRIAL_MODE is absent, so the versioned false default governs the next deployment.
+- 2026-10-23 — confirmed both user choices above. Read deployment, runtime, device and settings code directly. `go test ./internal/realtime -run 'Alexa|JobsCapability|MediaCapability' -count=1 -timeout=3m` passed (2.545s). The catalog regression ran red before the fix. No new release has been pushed yet.
+
+## linking-and-call-reliability — repair Alexa linking and premature owner-call disconnects
+Status: delivered and user-verified, 2026-10-23. Main workflow 40045488976 and phone workflow 40045488977 succeeded at e52ed97caee8a3ccf5b17d3150288b8795254f46. Jeremy confirmed "Linked successfully" and "It completed normally". Working directory: C:\dev\live-ninja-alexa on main. Evidence: C:\dev\live-ninja-test-evidence\reliability\2026-10-23.
 Outcome: accept valid account-link requests within the upstream request-size budget and fix the cause of the two reported premature phone disconnects.
 Non-goals: changing authentication checks, call limits or budgets; placing outbound calls; new dependencies, infrastructure, or local schedules; EC2 creation/start.
 Files: cmd/web/main.go and cmd/web/main_test.go for header parsing; cmd/phone-trial-bridge/owner_media.go and its existing owner_tool_test.go/owner_media_test.go for bounded tool waits and correlated cancellation errors; web/templates/pages/conversation.html for phone troubleshooting; this plan.

@@ -21,7 +21,8 @@ func (c *FallbackClient) AlexaTurn(ctx context.Context, persona Persona, message
 	if model != AlexaTextModel {
 		return nil, fmt.Errorf("Alexa model has not passed its configured compatibility gate")
 	}
-	directives += "\nALEXA: Answer concisely for speech. Keep the first answer under 600 characters when possible. Use the conversation context for follow-up references. Alexa controls its voice. Do not claim perpetual listening or completed actions without tool evidence. If a tool requires website approval, direct the user to Live Ninja; do not treat spoken yes as website approval. Never speak tokens, credentials, raw tool JSON, code dumps, or long URLs.\n"
+	ctx = serverToolContext(ctx)
+	directives += "\nALEXA: You are serving the authenticated Live Ninja owner. Use the provided account tools with their normal access, approval and spending checks. Answer concisely for speech. Keep the first answer under 600 characters when possible. Use the conversation context for follow-up references. Alexa controls its voice. Do not claim perpetual listening or completed actions without tool evidence. If a tool requires website approval, direct the user to Live Ninja; do not treat spoken yes as website approval. Never speak tokens, credentials, raw tool JSON, code dumps, or long URLs.\n"
 	persona.Instructions = ComposeCustomInstructions(persona.Style)
 	body, err := buildToolTurnRequestForPersona(ctx, persona, messages, directives)
 	if err != nil {

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/conversation"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -25,6 +27,18 @@ import (
 var deliberatelyUnmentionedTools = map[string]string{
 	// (none — D4 named all 20 tools in coreInstructions; M16 added the 21st,
 	// profile_suggest, to the same clause list)
+}
+
+func TestConversationRequestsSurviveSurfacePromptRendering(t *testing.T) {
+	p := ResolvePersona("default")
+	for name, instructions := range map[string]string{
+		"web":    p.Instructions,
+		"phone":  PhoneInstructions(p),
+		"server": InstructionsForServerExecution(p),
+		"custom": ComposeCustomInstructions("Speak warmly."),
+	} {
+		assert.Contains(t, instructions, conversation.RequestContinuityInstructions, name)
+	}
 }
 
 // TestEveryManifestToolIsDiscoverableFromPersonaPrompt is D5.

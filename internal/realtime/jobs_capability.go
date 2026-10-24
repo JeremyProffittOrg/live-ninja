@@ -63,6 +63,13 @@ func androidMediaEnabled(ctx context.Context) bool {
 	return enabled
 }
 
+// Server conversations can expose account tools whose proposals are reviewed
+// on the website. This is catalog availability, not approval or identity.
+func serverToolContext(ctx context.Context) context.Context {
+	ctx = context.WithValue(ctx, jobsReviewContextKey{}, true)
+	return context.WithValue(ctx, androidMediaContextKey{}, false)
+}
+
 // FilterJobsTools handles flat realtime declarations and wrapped fallback ones.
 // The catalog remains immutable; callers receive a separate filtered slice.
 func FilterJobsTools(manifest []map[string]any, enabled bool) []map[string]any {
@@ -139,6 +146,9 @@ func ToolManifestJSONForClient(ctx context.Context, surface string, serverExecut
 	manifest := toolManifestForSurface(surface)
 	if serverExecution {
 		manifest = toolManifestForServerExecution()
+		if surface == "alexa" {
+			ctx = serverToolContext(ctx)
+		}
 	}
 	b, err := json.Marshal(FilterClientTools(ctx, manifest))
 	if err != nil {

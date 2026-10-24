@@ -36,5 +36,5 @@ sam deploy \
     "GhostCommandFunctionArn=$GHOST_FUNCTION" \
     "$skill_override" \
     "AlexaEnabled=$enabled" \
-    "AlexaTrialMode=${ALEXA_TRIAL_MODE:-true}" \
+    "AlexaTrialMode=${ALEXA_TRIAL_MODE:-false}" \
     "AlexaDeployCommit=$GITHUB_SHA"

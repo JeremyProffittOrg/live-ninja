@@ -18,7 +18,7 @@ Parameters:
     Description: Admit linked private Alexa conversations; false is the reversible kill switch.
   AlexaTrialMode:
     Type: String
-    Default: 'true'
+    Default: 'false'
     AllowedValues: ['true', 'false']
     Description: Block tool actions during the bounded initial conversation acceptance trial.
   AlexaDeployCommit:

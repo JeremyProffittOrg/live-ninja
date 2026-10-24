@@ -21,9 +21,26 @@ func PhoneSettingsDeviceID(userID string) string {
 	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("live-ninja/phone-settings/"+userID)).String()
 }
 
+// AlexaSettingsDeviceID is shared by all linked Echoes, never a native identity.
+func AlexaSettingsDeviceID(userID string) string {
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("live-ninja/alexa-settings/"+userID)).String()
+}
+
+func IsManagedSettingsDevice(userID, deviceID string) bool {
+	return deviceID == PhoneSettingsDeviceID(userID) || deviceID == AlexaSettingsDeviceID(userID)
+}
+
 // EnsurePhoneSettingsDevice offers one persistent target before the first call.
 // Nonowners have no target. Existing revoked or conflicting rows are never replaced.
 func (s *Store) EnsurePhoneSettingsDevice(ctx context.Context, userID string) (*Device, error) {
+	return s.ensureSettingsDevice(ctx, userID, PhoneSettingsDeviceID(userID), "Phone calls", SurfacePhone)
+}
+
+func (s *Store) EnsureAlexaSettingsDevice(ctx context.Context, userID string) (*Device, error) {
+	return s.ensureSettingsDevice(ctx, userID, AlexaSettingsDeviceID(userID), "Alexa", SurfaceAlexa)
+}
+
+func (s *Store) ensureSettingsDevice(ctx context.Context, userID, id, name, surface string) (*Device, error) {
 	ownerRow, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{TableName: aws.String(s.table), Key: keyOf(pkConfig, skOwner), ConsistentRead: aws.Bool(true)})
 	if err != nil {
 		return nil, err
@@ -42,7 +59,6 @@ func (s *Store) EnsurePhoneSettingsDevice(ctx context.Context, userID string) (*
 	if user == nil || user.Role != RoleOwner || user.Status != UserStatusActive {
 		return nil, nil
 	}
-	id := PhoneSettingsDeviceID(userID)
 	validate := func(d *Device) (*Device, error) {
 		if d == nil || d.UserID != userID {
 			return nil, ErrDeviceOwnership
@@ -50,7 +66,7 @@ func (s *Store) EnsurePhoneSettingsDevice(ctx context.Context, userID string) (*
 		if d.Status != DeviceStatusActive {
 			return nil, ErrDeviceRevoked
 		}
-		if d.Surface != SurfacePhone || d.DeviceID != id || d.FamilyID != "" || d.ThingName != "" || d.CertID != "" || d.CertArn != "" {
+		if d.Surface != surface || d.DeviceID != id || d.FamilyID != "" || d.ThingName != "" || d.CertID != "" || d.CertArn != "" || d.AlexaGeneration != "" {
 			return nil, ErrDeviceBindingConflict
 		}
 		return d, nil
@@ -63,7 +79,7 @@ func (s *Store) EnsurePhoneSettingsDevice(ctx context.Context, userID string) (*
 		return validate(existing)
 	}
 	now := time.Now().UTC()
-	d := Device{DeviceID: id, UserID: userID, Name: "Phone calls", Surface: SurfacePhone, Status: DeviceStatusActive,
+	d := Device{DeviceID: id, UserID: userID, Name: name, Surface: surface, Status: DeviceStatusActive,
 		Capabilities: []string{SettingsSectionAboutYou, SettingsSectionPersona, SettingsSectionPrivacy},
 		Metadata:     map[string]string{"managedBy": "server"}, CreatedAt: now.Unix(), UpdatedAt: now.Unix(), LastSeenAt: now.Unix()}
 	av, err := attributevalue.MarshalMap(deviceItem{PK: devicePK(id), SK: skMeta, Gsi2PK: gsi2pkDevSeen, Gsi2SK: now.Format(time.RFC3339), Device: d})
@@ -189,7 +205,7 @@ func (s *Store) upsertClientDevice(ctx context.Context, proposed *Device, attemp
 	if proposed == nil || proposed.DeviceID == "" || proposed.UserID == "" {
 		return nil, errors.New("store: deviceID and userID are required")
 	}
-	if proposed.DeviceID == PhoneSettingsDeviceID(proposed.UserID) {
+	if IsManagedSettingsDevice(proposed.UserID, proposed.DeviceID) {
 		return nil, ErrDeviceBindingConflict
 	}
 	// Reserve the canonical owner's target even before its first settings read.
@@ -202,7 +218,7 @@ func (s *Store) upsertClientDevice(ctx context.Context, proposed *Device, attemp
 	if err = attributevalue.UnmarshalMap(ownerRow.Item, &owner); err != nil {
 		return nil, err
 	}
-	if owner.UserID != "" && proposed.DeviceID == PhoneSettingsDeviceID(owner.UserID) {
+	if owner.UserID != "" && IsManagedSettingsDevice(owner.UserID, proposed.DeviceID) {
 		return nil, ErrDeviceBindingConflict
 	}
 	if proposed.Surface != SurfaceWeb && proposed.Surface != SurfaceAndroid {

@@ -156,7 +156,7 @@ func handleListDevices(deps *Deps) fiber.Handler {
 
 		out := make([]fiber.Map, 0, len(devices))
 		for _, d := range devices {
-			if d.Surface == store.SurfacePhone {
+			if d.Surface == store.SurfacePhone || store.IsManagedSettingsDevice(userID, d.DeviceID) {
 				continue
 			}
 			out = append(out, deviceResponse(d, d.DeviceID == currentID))
@@ -183,8 +183,8 @@ func handleRevokeDevice(deps *Deps) fiber.Handler {
 			return errorJSON(c, fiber.StatusNotFound, "not_found", "Device not found.")
 		}
 
-		if d.Surface == store.SurfacePhone {
-			return apiBadRequest(c, "Phone calls is a server-managed settings target")
+		if d.Surface == store.SurfacePhone || store.IsManagedSettingsDevice(userID, deviceID) {
+			return apiBadRequest(c, "This settings target is managed by the server")
 		}
 
 		// The status flip is the revocation barrier. Registration/rebind

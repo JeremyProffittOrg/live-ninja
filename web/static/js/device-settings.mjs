@@ -210,7 +210,7 @@ function make(tag, className, text) {
 }
 
 function hostSummary(device) {
-	if (device?.surface === 'alexa') return 'Alexa · Changes apply to the next turn; Alexa controls the spoken voice';
+	if (device?.surface === 'alexa') return 'Alexa · Uses shared Alexa settings; Alexa controls the spoken voice';
   if (device?.surface === 'phone') return 'Profile and voice apply to your next phone call';
   const metadata = device?.metadata || {};
   if (metadata.browser && metadata.platform) return `${metadata.browser} on ${metadata.platform}`;
@@ -474,7 +474,7 @@ export function initDeviceSettingsControls({
       if (device.isCurrent) title.append(' ', make('span', 'ln-badge ln-badge--teal', 'This device'));
       body.append(
         title,
-        make('span', 'set-device-row__meta', hostSummary(device)),
+        make('span', 'set-device-row__meta', (device.surface === 'alexa' ? 'All Echoes · ' : '') + hostSummary(device)),
         make(
           'span',
           'set-device-row__state',

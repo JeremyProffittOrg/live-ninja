@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -91,25 +92,65 @@ func deviceSettingsRequest(t *testing.T, app *fiber.App, method, path, deviceID,
 	return resp, out
 }
 
-func TestAlexaSettingsKeepEchoesIsolatedAndCannotImpersonateAClient(t *testing.T) {
-	app, _, st := newDeviceSettingsApp(t, "")
+func TestAlexaSettingsShareOneTargetAndKeepNativeDeviceControls(t *testing.T) {
+	app, deps, st := newDeviceSettingsApp(t, "")
+	app.Delete("/api/v1/devices/:id", handleRevokeDevice(deps))
 	interceptShadowPublish(t)
 	require.NoError(t, st.BindOwner(t.Context(), "amazon-owner", "user-1"))
 	require.NoError(t, st.CreateUser(t.Context(), &store.User{UserID: "user-1", AmazonUserID: "amazon-owner", Role: store.RoleOwner, Status: store.UserStatusActive}))
+	id := store.AlexaSettingsDeviceID("user-1")
+	resp, out := deviceSettingsRequest(t, app, http.MethodGet, "/api/v1/settings/sections/persona", "", "", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Contains(t, fmt.Sprint(out["devices"]), id, "shared target exists before an Echo connects")
 	one, err := st.EnsureAlexaDevice(t.Context(), "user-1", "skill", "kitchen")
 	require.NoError(t, err)
 	two, err := st.EnsureAlexaDevice(t.Context(), "user-1", "skill", "office")
 	require.NoError(t, err)
 	seedClientDevice(t, st, "user-1", testDeviceOne, "Browser")
-	resp, _ := deviceSettingsRequest(t, app, http.MethodGet, "/api/v1/settings/sections/persona", one.DeviceID, "", nil)
+	resp, _ = deviceSettingsRequest(t, app, http.MethodGet, "/api/v1/settings/sections/persona", one.DeviceID, "", nil)
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
-	body := map[string]any{"version": 1, "operation": "set", "target": map[string]any{"mode": "selected", "deviceIds": []string{one.DeviceID}}, "settings": map[string]any{"persona": map[string]any{"presetId": "custom", "systemInstructions": "Reply warmly and briefly."}}}
+	resp, out = deviceSettingsRequest(t, app, http.MethodGet, "/api/v1/settings/sections/persona", "", "", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var alexaIDs []string
+	for _, raw := range out["devices"].([]any) {
+		row := raw.(map[string]any)
+		if row["surface"] == store.SurfaceAlexa {
+			alexaIDs = append(alexaIDs, row["deviceId"].(string))
+			assert.Equal(t, "Alexa", row["name"])
+		}
+	}
+	require.Equal(t, []string{id}, alexaIDs)
+	body := map[string]any{"version": 1, "operation": "set", "target": map[string]any{"mode": "selected", "deviceIds": []string{id}}, "settings": map[string]any{"persona": map[string]any{"presetId": "custom", "systemInstructions": "Reply warmly and briefly."}}}
 	resp, _ = deviceSettingsRequest(t, app, http.MethodPatch, "/api/v1/settings/sections/persona", "", "", body)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	doc, err := st.GetSettings(t.Context(), "user-1")
 	require.NoError(t, err)
-	assert.NotEqual(t, store.EffectiveSettings(doc, one.DeviceID)["persona"], store.EffectiveSettings(doc, two.DeviceID)["persona"])
-	resp, out := deviceSettingsRequest(t, app, http.MethodGet, "/api/v1/settings/sections/wakeWord", "", "", nil)
+	assert.Contains(t, fmt.Sprint(store.EffectiveSettings(doc, id)["persona"]), "Reply warmly and briefly.")
+	assert.Equal(t, doc["persona"], store.EffectiveSettings(doc, testDeviceOne)["persona"])
+	body["version"] = 2
+	body["target"] = map[string]any{"mode": "selected", "deviceIds": []string{one.DeviceID}}
+	resp, _ = deviceSettingsRequest(t, app, http.MethodPatch, "/api/v1/settings/sections/persona", "", "", body)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "per-Echo overrides are no longer writable")
+	for _, method := range []string{http.MethodPatch, http.MethodDelete, http.MethodPost} {
+		path := "/api/v1/devices/" + id
+		if method == http.MethodPost {
+			path += "/enable"
+		}
+		resp, _ = deviceSettingsRequest(t, app, method, path, "", "", map[string]any{"name": "Spoofed"})
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode, method)
+	}
+	resp, _ = deviceSettingsRequest(t, app, http.MethodPut, "/api/v1/devices/current", "", "", map[string]any{"deviceId": id})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	resp, _ = deviceSettingsRequest(t, app, http.MethodGet, "/api/v1/settings/sections/persona", id, "", nil)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	resp, out = deviceSettingsRequest(t, app, http.MethodGet, "/api/v1/devices", "", "", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var nativeIDs []string
+	for _, raw := range out["devices"].([]any) {
+		nativeIDs = append(nativeIDs, raw.(map[string]any)["deviceId"].(string))
+	}
+	assert.ElementsMatch(t, []string{one.DeviceID, two.DeviceID, testDeviceOne}, nativeIDs)
+	resp, out = deviceSettingsRequest(t, app, http.MethodGet, "/api/v1/settings/sections/wakeWord", "", "", nil)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Len(t, out["devices"].([]any), 1)
 	body = map[string]any{"version": 2, "operation": "set", "target": map[string]any{"mode": "all", "deviceIds": []string{}}, "settings": map[string]any{"wakeWord": "computer"}}

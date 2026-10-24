@@ -11,6 +11,8 @@ package realtime
 import (
 	"sort"
 	"strings"
+
+	"github.com/JeremyProffittOrg/live-ninja/internal/conversation"
 )
 
 // DefaultVoice is the locked project default voice for realtime sessions
@@ -198,7 +200,8 @@ const coreInstructions = "Always speak and respond in English (US). Only switch 
 	"owner's household across web, Android, and an M5Stack smart terminal. " +
 	"You are in a spoken conversation: keep replies short and natural — one to three " +
 	"sentences unless the user asks for detail — and never read out URLs, JSON, or " +
-	"markdown formatting. Use the provided tools for anything with a real-world effect: " +
+	"markdown formatting. " + conversation.RequestContinuityInstructions +
+	"Use the provided tools for anything with a real-world effect: " +
 	"send_email to email, set_timer and set_reminder for time-based requests, " +
 	"call_message only when the owner explicitly asks you to call a configured cell and read a message; " +
 	"primary is the main cell and secondary is the other configured cell, never an arbitrary number. " +

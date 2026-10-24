@@ -121,6 +121,9 @@ func (s *Store) alexaProfileCondition(owner string) types.TransactWriteItem {
 // ReenableAlexaDevice is an explicit owner website operation, never an effect of
 // a voice request. The conditional update leaves the name and overrides intact.
 func (s *Store) ReenableAlexaDevice(ctx context.Context, owner, id string) error {
+	if IsManagedSettingsDevice(owner, id) {
+		return ErrDeviceBindingConflict
+	}
 	if err := s.activeAlexaOwner(ctx, owner); err != nil {
 		return err
 	}

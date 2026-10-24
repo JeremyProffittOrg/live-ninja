@@ -56,7 +56,9 @@ func TestAlexaBrokerUsesStoredAuthorityPersonaAndReportsUsage(t *testing.T) {
 	b, _ := newPhoneTestBroker(t)
 	doc, err := b.phoneStore.GetSettings(t.Context(), "owner")
 	require.NoError(t, err)
-	require.NoError(t, store.ApplySettingsSection(doc, store.SettingsSectionPersona, map[string]any{"persona": map[string]any{"presetId": "custom", "systemInstructions": "Be a patient astronomy teacher."}}, nil, true, false, time.Now()))
+	id := store.AlexaSettingsDeviceID("owner")
+	require.NoError(t, store.ApplySettingsSection(doc, store.SettingsSectionPersona, map[string]any{"persona": map[string]any{"presetId": "custom", "systemInstructions": "Be a patient astronomy teacher."}}, []string{id}, false, false, time.Now()))
+	require.NoError(t, store.ApplySettingsSection(doc, store.SettingsSectionAboutYou, map[string]any{"profile": map[string]any{"displayName": "Shared Alexa Owner"}}, []string{id}, false, false, time.Now()))
 	_, err = b.phoneStore.PutSettings(t.Context(), "owner", doc, 1)
 	require.NoError(t, err)
 	allowed := true
@@ -70,6 +72,7 @@ func TestAlexaBrokerUsesStoredAuthorityPersonaAndReportsUsage(t *testing.T) {
 	b.alexaCall = func(ctx context.Context, p realtime.Persona, messages []realtime.ChatMessage, directives, model string) (*realtime.TurnResult, error) {
 		calls++
 		require.Contains(t, p.Style, "astronomy teacher")
+		require.Contains(t, directives, "Shared Alexa Owner")
 		require.Len(t, messages, 1)
 		require.Equal(t, realtime.AlexaTextModel, model)
 		deadline, ok := ctx.Deadline()

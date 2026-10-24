@@ -55,33 +55,13 @@ func NewRuntime(ctx context.Context) (*Runtime, error) {
 		if e != nil {
 			return e
 		}
-		if device == nil || device.UserID != id.Owner || device.Surface != store.SurfaceAlexa || device.Status != store.DeviceStatusActive || device.AlexaGeneration != id.Generation {
+		if device == nil || device.UserID != id.Owner || device.Surface != store.SurfaceAlexa || device.Status != store.DeviceStatusActive || device.AlexaGeneration == "" || device.AlexaGeneration != id.Generation {
 			return ErrUnauthorized
 		}
 		return nil
 	}
 	service.Settings = func(ctx context.Context, id Identity) (Settings, error) {
-		doc, e := st.GetSettings(ctx, id.Owner)
-		if e != nil {
-			return Settings{}, e
-		}
-		effective := store.EffectiveSettings(doc, id.Device)
-		rawVersion, _ := json.Marshal(doc["version"])
-		var version int64
-		if json.Unmarshal(rawVersion, &version) != nil {
-			return Settings{}, errors.New("invalid settings version")
-		}
-		result := Settings{Version: version, KeepTranscript: false, RetentionDays: 0}
-		if persona, ok := effective["persona"].(map[string]any); ok {
-			result.Persona, _ = persona["presetId"].(string)
-		}
-		if privacy, ok := effective["privacy"].(map[string]any); ok {
-			keep, _ := privacy["storeTranscripts"].(bool)
-			encoded, _ := json.Marshal(privacy["retentionDays"])
-			_ = json.Unmarshal(encoded, &result.RetentionDays)
-			result.KeepTranscript = keep && result.RetentionDays > 0
-		}
-		return result, nil
+		return loadSettings(ctx, st, id.Owner)
 	}
 	queueClient := sqs.NewFromConfig(cfg, func(o *sqs.Options) { o.RetryMaxAttempts = 1 })
 	service.Publish = func(ctx context.Context, job Job) error {
@@ -108,4 +88,28 @@ func NewRuntime(ctx context.Context) (*Runtime, error) {
 		return Identity{Owner: linked.UserID, Device: device.DeviceID, Grant: linked.GrantID, Generation: device.AlexaGeneration}, nil
 	}
 	return &Runtime{Service: service, Handler: handler, Store: st, Auth: auth}, nil
+}
+
+func loadSettings(ctx context.Context, st *store.Store, owner string) (Settings, error) {
+	doc, err := st.GetSettings(ctx, owner)
+	if err != nil {
+		return Settings{}, err
+	}
+	effective := store.EffectiveSettings(doc, store.AlexaSettingsDeviceID(owner))
+	rawVersion, _ := json.Marshal(doc["version"])
+	var version int64
+	if json.Unmarshal(rawVersion, &version) != nil {
+		return Settings{}, errors.New("invalid settings version")
+	}
+	result := Settings{Version: version}
+	if persona, ok := effective["persona"].(map[string]any); ok {
+		result.Persona, _ = persona["presetId"].(string)
+	}
+	if privacy, ok := effective["privacy"].(map[string]any); ok {
+		keep, _ := privacy["storeTranscripts"].(bool)
+		encoded, _ := json.Marshal(privacy["retentionDays"])
+		_ = json.Unmarshal(encoded, &result.RetentionDays)
+		result.KeepTranscript = keep && result.RetentionDays > 0
+	}
+	return result, nil
 }

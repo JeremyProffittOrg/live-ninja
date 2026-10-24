@@ -74,6 +74,34 @@ func TestContractDurableTurnReplayAndFollowup(t *testing.T) {
 	require.ErrorIs(t, err, ErrExpired)
 }
 
+func TestAlexaRuntimeUsesSharedPersonaAndPrivacy(t *testing.T) {
+	st := store.NewWithClient(testutil.NewFakeDynamo(), "test")
+	doc := store.DefaultSettings()
+	id := store.AlexaSettingsDeviceID("owner")
+	require.NoError(t, store.ApplySettingsSection(doc, store.SettingsSectionPersona,
+		map[string]any{"persona": map[string]any{"presetId": "friendly"}}, []string{id}, false, false, time.Now()))
+	require.NoError(t, store.ApplySettingsSection(doc, store.SettingsSectionPrivacy,
+		map[string]any{"privacy": map[string]any{"storeTranscripts": false, "retentionDays": 0}}, []string{id}, false, false, time.Now()))
+	_, err := st.PutSettings(t.Context(), "owner", doc, 1)
+	require.NoError(t, err)
+	settings, err := loadSettings(t.Context(), st, "owner")
+	require.NoError(t, err)
+	require.Equal(t, "friendly", settings.Persona)
+	require.False(t, settings.KeepTranscript)
+	require.Zero(t, settings.RetentionDays)
+	require.EqualValues(t, 2, settings.Version)
+	// A shared edit must change the version that invalidates pending work on any Echo.
+	require.NoError(t, store.ApplySettingsSection(doc, store.SettingsSectionPrivacy,
+		map[string]any{"privacy": map[string]any{"storeTranscripts": true, "retentionDays": 7}}, []string{id}, false, false, time.Now()))
+	_, err = st.PutSettings(t.Context(), "owner", doc, 2)
+	require.NoError(t, err)
+	settings, err = loadSettings(t.Context(), st, "owner")
+	require.NoError(t, err)
+	require.True(t, settings.KeepTranscript)
+	require.Equal(t, 7, settings.RetentionDays)
+	require.EqualValues(t, 3, settings.Version)
+}
+
 func TestAlexaBrokerAuthorityRequiresRunningReceipt(t *testing.T) {
 	s, id, _, _, _ := serviceFixture(t)
 	v, err := s.Submit(t.Context(), id, "request", "session", "Hello")

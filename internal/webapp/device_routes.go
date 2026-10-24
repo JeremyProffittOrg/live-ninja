@@ -184,8 +184,8 @@ func handleRegisterCurrentDevice(deps *Deps) fiber.Handler {
 			return apiBadRequest(c, "X-LN-Device-ID must be a UUID")
 		}
 		deviceID = parsedID.String()
-		if deviceID == store.PhoneSettingsDeviceID(UserID(c)) {
-			return apiBadRequest(c, "Phone calls is managed by the server")
+		if store.IsManagedSettingsDevice(UserID(c), deviceID) {
+			return apiBadRequest(c, "This settings target is managed by the server")
 		}
 
 		name, err := normalizeDeviceName(body.SuggestedName)
@@ -310,8 +310,8 @@ func handleRenameDevice(deps *Deps) fiber.Handler {
 		if _, err := uuid.Parse(deviceID); err != nil {
 			return apiBadRequest(c, "device id must be a UUID")
 		}
-		if deviceID == store.PhoneSettingsDeviceID(UserID(c)) {
-			return apiBadRequest(c, "Phone calls is managed by the server")
+		if store.IsManagedSettingsDevice(UserID(c), deviceID) {
+			return apiBadRequest(c, "This settings target is managed by the server")
 		}
 		var body struct {
 			Name string `json:"name"`
@@ -342,6 +342,9 @@ func handleEnableAlexaDevice(deps *Deps) fiber.Handler {
 		id := c.Params("id")
 		if _, err := uuid.Parse(id); err != nil {
 			return apiBadRequest(c, "device id must be a UUID")
+		}
+		if store.IsManagedSettingsDevice(UserID(c), id) {
+			return apiBadRequest(c, "This settings target is managed by the server")
 		}
 		device, err := deps.Store.GetDevice(c.Context(), id)
 		if err != nil {

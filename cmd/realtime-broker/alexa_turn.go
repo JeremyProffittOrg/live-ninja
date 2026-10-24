@@ -65,7 +65,8 @@ func (b *broker) handleAlexaTurn(ctx context.Context, l *slog.Logger, req Reques
 	if err != nil {
 		return internalError("Alexa quota unavailable.")
 	}
-	settings, err := b.phoneStore.GetEffectiveSettings(ctx, req.UserID, work.Identity.Device)
+	settingsID := store.AlexaSettingsDeviceID(req.UserID)
+	settings, err := b.phoneStore.GetEffectiveSettings(ctx, req.UserID, settingsID)
 	if err != nil {
 		return internalError("Alexa settings unavailable.")
 	}
@@ -78,7 +79,7 @@ func (b *broker) handleAlexaTurn(ctx context.Context, l *slog.Logger, req Reques
 		return internalError("Alexa guides unavailable.")
 	}
 	req.Role, req.DeviceID = store.RoleOwner, work.Identity.Device
-	directives := realtime.SessionDirectives + realtime.BuildBaseKnowledge(store.LoadProfileForDevice(ctx, b.settings, b.table, req.UserID, req.DeviceID), time.Now()) + realtime.GuideInstructions(guides) + b.rulesBlock(ctx, l, req) + b.rememberedBlock(ctx, l, req)
+	directives := realtime.SessionDirectives + realtime.BuildBaseKnowledge(store.LoadProfileForDevice(ctx, b.settings, b.table, req.UserID, settingsID), time.Now()) + realtime.GuideInstructions(guides) + b.rulesBlock(ctx, l, req) + b.rememberedBlock(ctx, l, req)
 	if len(directives) > 24000 {
 		return Response{Code: 413, Error: "alexa_prompt_limit"}
 	}

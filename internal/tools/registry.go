@@ -526,6 +526,9 @@ func (d *Deps) profileForInvocation(ctx context.Context, inv Invocation) store.P
 	if d == nil || inv.UserID == "" {
 		return store.Profile{}
 	}
+	if inv.Surface == store.SurfaceAlexa && d.DeviceProfile != nil {
+		return d.DeviceProfile(ctx, inv.UserID, store.AlexaSettingsDeviceID(inv.UserID))
+	}
 	if inv.DeviceID != "" && d.DeviceProfile != nil {
 		return d.DeviceProfile(ctx, inv.UserID, inv.DeviceID)
 	}
