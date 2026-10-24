@@ -22,6 +22,8 @@ func DiagnosticCode(err error) string {
 		return "expired"
 	case errors.Is(err, ErrBusy):
 		return "busy"
+	case errors.Is(err, ErrReplyQueueFull):
+		return "reply_queue_full"
 	case errors.Is(err, ErrCancelled), errors.Is(err, context.Canceled):
 		return "cancelled"
 	case errors.Is(err, context.DeadlineExceeded):

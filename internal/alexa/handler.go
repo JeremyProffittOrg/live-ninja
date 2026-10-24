@@ -3,6 +3,7 @@ package alexa
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -33,6 +34,8 @@ type Handler struct {
 	Now        func() time.Time
 	WaitBudget time.Duration
 }
+
+const pendingAnswerSpeech = "Your request is still working. Say status to hear pending answers in order."
 
 func speak(text string, end bool) Response {
 	r := Response{Version: "1.0"}
@@ -75,6 +78,7 @@ func (h *Handler) Handle(ctx context.Context, event Event) (response Response, r
 		slog.Bool("hasLinkedToken", event.Context.System.User.AccessToken != ""), slog.Int("inputBytes", len(event.Request.Intent.Slots["query"].Value)))
 	var operationErr error
 	outcome := "answered"
+	spokenReceipt := ""
 	polls := 0
 	defer func() {
 		if returnErr != nil {
@@ -85,7 +89,7 @@ func (h *Handler) Handle(ctx context.Context, event Event) (response Response, r
 		if response.Response.OutputSpeech != nil {
 			textBytes = len(response.Response.OutputSpeech.Text)
 		}
-		LogDiagnostic(ctx, logger, "response_completed", operationErr, slog.String("outcome", outcome),
+		LogDiagnostic(ctx, logger, "response_completed", operationErr, slog.String("outcome", outcome), slog.String("receipt", spokenReceipt),
 			slog.Int64("elapsedMs", time.Since(started).Milliseconds()), slog.Int("pollCount", polls),
 			slog.Int("outputBytes", textBytes), slog.Int("directiveCount", len(response.Response.Directives)), slog.Bool("endSession", response.Response.ShouldEndSession))
 	}()
@@ -162,6 +166,7 @@ func (h *Handler) Handle(ctx context.Context, event Event) (response Response, r
 			return failure(e)
 		}
 		outcome = view.State
+		spokenReceipt = view.Receipt
 		return viewResponse(view), nil
 	case "chat":
 		if request.Text == "" {
@@ -176,7 +181,7 @@ func (h *Handler) Handle(ctx context.Context, event Event) (response Response, r
 			select {
 			case <-waitCtx.Done():
 				outcome = "pending"
-				return speak("Your request is still working. Say status to hear its result without starting it again.", false), nil
+				return speak(pendingAnswerSpeech, false), nil
 			case <-time.After(150 * time.Millisecond):
 			}
 			polls++
@@ -184,16 +189,21 @@ func (h *Handler) Handle(ctx context.Context, event Event) (response Response, r
 			if e != nil {
 				if waitCtx.Err() != nil {
 					outcome = "pending"
-					return speak("Your request is still working. Say status to check its result.", false), nil
+					return speak(pendingAnswerSpeech, false), nil
 				}
 				return failure(e)
 			}
 		}
-		view, e = h.Service.speakView(waitCtx, id, view, "status")
+		requestedReceipt := view.Receipt
+		view, e = h.Service.Speech(waitCtx, id, "status")
 		if e != nil {
 			return failure(e)
 		}
+		if view.Receipt != requestedReceipt && view.Text != "" {
+			view.Text = "Earlier answer: " + view.Text
+		}
 		outcome = view.State
+		spokenReceipt = view.Receipt
 		return viewResponse(view), nil
 	}
 	return speak("Please ask a question, or say help.", false), nil
@@ -202,9 +212,9 @@ func (h *Handler) Handle(ctx context.Context, event Event) (response Response, r
 func viewResponse(view View) Response {
 	switch view.State {
 	case "pending", "running":
-		return speak("Your request is still working. Say status to check the same request.", false)
+		return speak(pendingAnswerSpeech, false)
 	case "ready":
-		return speak("No question is waiting. What would you like to ask?", false)
+		return speak("No answers are waiting. Say repeat to hear the last part again, or ask another question.", false)
 	case "expired":
 		return speak("That answer's recovery window expired. Please start a new question.", false)
 	}
@@ -214,11 +224,18 @@ func viewResponse(view View) Response {
 	}
 	if view.More {
 		text += " Say more for the next part."
+	} else if view.PendingReplies > 0 {
+		hint := fmt.Sprintf(" %d more answers are waiting. Say more.", view.PendingReplies)
+		if len([]rune(text+hint)) <= 600 {
+			text += hint
+		}
 	}
 	return speak(text, false)
 }
 func (h *Handler) failure(err error) (Response, error) {
 	switch {
+	case errors.Is(err, ErrReplyQueueFull):
+		return speak("Eight answers are waiting. Say status or more to hear them before adding another request.", false), nil
 	case errors.Is(err, ErrBusy):
 		return speak("Another Alexa request is still working. Say status on that Echo before starting another.", false), nil
 	case errors.Is(err, ErrExpired):

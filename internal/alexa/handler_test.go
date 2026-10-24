@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 	"github.com/stretchr/testify/require"
 )
 
@@ -147,4 +149,199 @@ func TestContractSpeechIsPlainBoundedAndDoesNotRepeatModelWork(t *testing.T) {
 	require.NotContains(t, speech, "https:")
 	require.NotContains(t, speech, "token123")
 	require.NotContains(t, speech, "secret code")
+}
+
+func TestAlexaDeliversThreeCompletedRequestsInOrder(t *testing.T) {
+	s, id, _, published, _ := serviceFixture(t)
+	ctx := t.Context()
+	executions := 0
+	answers := []string{"Office PC summary.", "World news summary.", "AI news summary."}
+	s.Run = func(_ context.Context, w Work) (RunResult, error) {
+		answer := answers[executions]
+		executions++
+		messages := append([]realtime.ChatMessage{}, w.Messages...)
+		for index := 0; index < 2; index++ {
+			callID := fmt.Sprintf("call_%d_%d", executions, index)
+			messages = append(messages, realtime.ChatMessage{Role: "assistant", ToolCalls: []realtime.ChatToolCall{{ID: callID, Name: "web_research", Arguments: "{}"}}}, realtime.ChatMessage{Role: "tool", ToolCallID: callID, Content: "Lookup completed."})
+		}
+		return RunResult{Text: answer, Messages: append(messages, chatAnswer(answer))}, nil
+	}
+	for _, request := range []string{"office", "world", "ai"} {
+		v, err := s.Submit(ctx, id, request, "session", request)
+		require.NoError(t, err)
+		require.NoError(t, s.Execute(ctx, Job{Owner: id.Owner, Turn: v.Receipt}))
+	}
+	var stored session
+	_, err := s.read(ctx, id.Owner, sessionKey(id), &stored)
+	require.NoError(t, err)
+	require.Len(t, stored.History, 2, "the first answer must survive model-context trimming")
+	for _, expected := range answers {
+		v, err := s.Speech(ctx, id, "status")
+		require.NoError(t, err)
+		require.Equal(t, expected, v.Text)
+		repeated, err := s.Speech(ctx, id, "repeat")
+		require.NoError(t, err)
+		require.Equal(t, expected, repeated.Text)
+	}
+	require.Equal(t, 3, executions)
+	require.Equal(t, 3, *published)
+	empty, err := s.Speech(ctx, id, "more")
+	require.NoError(t, err)
+	require.Equal(t, "ready", empty.State)
+}
+
+func TestAlexaQueueBoundAndStopClearAllAnswers(t *testing.T) {
+	s, id, _, published, _ := serviceFixture(t)
+	s.Run = func(_ context.Context, w Work) (RunResult, error) {
+		return RunResult{Text: "PRIVATE-QUEUED-ANSWER", Messages: append(w.Messages, chatAnswer("PRIVATE-QUEUED-ANSWER"))}, nil
+	}
+	for index := 0; index < MaxPendingReplies; index++ {
+		v, err := s.Submit(t.Context(), id, fmt.Sprint(index), "session", "PRIVATE-INPUT")
+		require.NoError(t, err)
+		require.NoError(t, s.Execute(t.Context(), Job{Owner: id.Owner, Turn: v.Receipt}))
+	}
+	_, err := s.Submit(t.Context(), id, "too-many", "session", "must not run")
+	require.ErrorIs(t, err, ErrReplyQueueFull)
+	require.Equal(t, MaxPendingReplies, *published)
+	_, err = s.Speech(t.Context(), id, "status")
+	require.NoError(t, err)
+	require.NoError(t, s.Reset(t.Context(), id, "fresh", true))
+	entry, err := s.Repo.Read(t.Context(), id.Owner, sessionKey(id))
+	require.NoError(t, err)
+	require.NotContains(t, string(entry.Data), "PRIVATE-")
+	view, err := s.Speech(t.Context(), id, "repeat")
+	require.NoError(t, err)
+	require.Equal(t, "ready", view.State)
+}
+
+type speechRaceRepository struct {
+	Repository
+	hook func(context.Context, []Change)
+}
+
+func (r *speechRaceRepository) Commit(ctx context.Context, changes []Change) error {
+	if r.hook != nil {
+		r.hook(ctx, changes)
+	}
+	return r.Repository.Commit(ctx, changes)
+}
+
+func TestAlexaSpeechAdvanceCannotLoseConcurrentWorkerResult(t *testing.T) {
+	s, id, _, _, _ := serviceFixture(t)
+	executions := 0
+	s.Run = func(_ context.Context, w Work) (RunResult, error) {
+		executions++
+		text := fmt.Sprintf("Answer %d", executions)
+		return RunResult{Text: text, Messages: append(w.Messages, chatAnswer(text))}, nil
+	}
+	first, err := s.Submit(t.Context(), id, "one", "session", "first")
+	require.NoError(t, err)
+	require.NoError(t, s.Execute(t.Context(), Job{Owner: id.Owner, Turn: first.Receipt}))
+	second, err := s.Submit(t.Context(), id, "two", "session", "second")
+	require.NoError(t, err)
+	race := &speechRaceRepository{Repository: s.Repo}
+	s.Repo = race
+	interleaved := false
+	race.hook = func(ctx context.Context, changes []Change) {
+		if interleaved {
+			return
+		}
+		for _, change := range changes {
+			if change.After == nil || change.After.Key != turnKey(second.Receipt) {
+				continue
+			}
+			var saved turn
+			require.NoError(t, json.Unmarshal(change.After.Data, &saved))
+			if saved.State != "complete" {
+				continue
+			}
+			interleaved = true
+			spoken, e := s.Speech(ctx, id, "status")
+			require.NoError(t, e)
+			require.Equal(t, "Answer 1", spoken.Text)
+		}
+	}
+	require.NoError(t, s.Execute(t.Context(), Job{Owner: id.Owner, Turn: second.Receipt}))
+	require.True(t, interleaved)
+	spoken, err := s.Speech(t.Context(), id, "more")
+	require.NoError(t, err)
+	require.Equal(t, "Answer 2", spoken.Text)
+	require.Equal(t, 2, executions)
+}
+
+func TestAlexaNewRequestPreservesPartlySpokenAnswer(t *testing.T) {
+	s, id, _, _, _ := serviceFixture(t)
+	count := 0
+	long := strings.Repeat("First answer sentence. ", 40)
+	s.Run = func(_ context.Context, w Work) (RunResult, error) {
+		count++
+		text := long
+		if count == 2 {
+			text = "Second answer."
+		}
+		return RunResult{Text: text, Messages: append(w.Messages, chatAnswer(text))}, nil
+	}
+	first, err := s.Submit(t.Context(), id, "one", "session", "first")
+	require.NoError(t, err)
+	require.NoError(t, s.Execute(t.Context(), Job{Owner: id.Owner, Turn: first.Receipt}))
+	part, err := s.Speech(t.Context(), id, "status")
+	require.NoError(t, err)
+	require.True(t, part.More)
+	second, err := s.Submit(t.Context(), id, "two", "session", "second")
+	require.NoError(t, err)
+	require.NoError(t, s.Execute(t.Context(), Job{Owner: id.Owner, Turn: second.Receipt}))
+	repeated, err := s.Speech(t.Context(), id, "repeat")
+	require.NoError(t, err)
+	require.Equal(t, part.Text, repeated.Text)
+	rest, err := s.Speech(t.Context(), id, "more")
+	require.NoError(t, err)
+	require.Equal(t, first.Receipt, rest.Receipt)
+	require.False(t, rest.More)
+	require.Equal(t, safeSpeech(long), part.Text+" "+rest.Text)
+	require.Equal(t, 1, rest.PendingReplies)
+	require.LessOrEqual(t, len([]rune(viewResponse(rest).Response.OutputSpeech.Text)), 600)
+	last, err := s.Speech(t.Context(), id, "more")
+	require.NoError(t, err)
+	require.Equal(t, "Second answer.", last.Text)
+	require.Equal(t, 2, count)
+}
+
+func TestAlexaAnswerQueueBoundsStoredTextAndUpgradesLegacySession(t *testing.T) {
+	t.Run("bounded text", func(t *testing.T) {
+		s, id, _, _, _ := serviceFixture(t)
+		s.Run = func(_ context.Context, w Work) (RunResult, error) {
+			text := strings.Repeat("a", MaxContextBytes-500)
+			return RunResult{Text: text, Messages: append(w.Messages, chatAnswer(text))}, nil
+		}
+		for index := 0; index < MaxPendingReplies; index++ {
+			v, err := s.Submit(t.Context(), id, fmt.Sprint(index), "session", "question")
+			require.NoError(t, err)
+			require.NoError(t, s.Execute(t.Context(), Job{Owner: id.Owner, Turn: v.Receipt}))
+		}
+		var saved session
+		_, err := s.read(t.Context(), id.Owner, sessionKey(id), &saved)
+		require.NoError(t, err)
+		encoded, err := json.Marshal(saved.Replies)
+		require.NoError(t, err)
+		require.LessOrEqual(t, len(encoded), maxReplyQueueBytes)
+		require.Len(t, saved.Replies, MaxPendingReplies)
+		require.Equal(t, "complete", saved.Replies[0].State)
+		require.Equal(t, "failed", saved.Replies[len(saved.Replies)-1].State)
+		require.Contains(t, saved.Replies[len(saved.Replies)-1].Text, "too large")
+	})
+	t.Run("legacy context", func(t *testing.T) {
+		s, id, _, _, ran := serviceFixture(t)
+		v, err := s.Submit(t.Context(), id, "legacy", "session", "question")
+		require.NoError(t, err)
+		require.NoError(t, s.Execute(t.Context(), Job{Owner: id.Owner, Turn: v.Receipt}))
+		var saved session
+		row, err := s.read(t.Context(), id.Owner, sessionKey(id), &saved)
+		require.NoError(t, err)
+		saved.Replies = nil // Stored by the previously deployed implementation.
+		require.NoError(t, s.Repo.Commit(t.Context(), []Change{changed(id.Owner, sessionKey(id), saved, row.Expires, row)}))
+		spoken, err := s.Speech(t.Context(), id, "status")
+		require.NoError(t, err)
+		require.Equal(t, "Richmond", spoken.Text)
+		require.Equal(t, 1, *ran)
+	})
 }

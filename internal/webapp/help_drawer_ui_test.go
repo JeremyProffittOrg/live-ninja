@@ -20,6 +20,8 @@ import (
 func TestHelpDrawerAlexaMatchesReleasedControls(t *testing.T) {
 	html := readAsset(t, "templates/pages/conversation.html")
 	assert.Contains(t, html, "request stages, timings and error codes for seven days")
+	assert.Contains(t, html, "up to eight answers")
+	assert.Contains(t, html, "A new question does not erase earlier answers")
 	for _, text := range []string{"{{if .AlexaEnabled}}", "{{if .AlexaTrialMode}}", "tool actions are paused", "Alexa, open live ninja", "resume conversation", "Disable Alexa", "Enable Alexa", "15 minutes", "Amazon manages its own Alexa voice history", "shared Alexa group", "Linked Alexa uses your account tools", "Keep track of requests in this conversation", "starts empty in a new conversation"} {
 		assert.Contains(t, html, text)
 	}

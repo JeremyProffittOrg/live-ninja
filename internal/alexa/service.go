@@ -15,11 +15,15 @@ import (
 )
 
 var (
-	ErrUnauthorized = errors.New("Alexa account or device is not authorized")
-	ErrExpired      = errors.New("Alexa conversation expired")
-	ErrBusy         = errors.New("another Alexa turn is still working")
-	ErrCancelled    = errors.New("Alexa turn cancelled")
+	ErrUnauthorized   = errors.New("Alexa account or device is not authorized")
+	ErrExpired        = errors.New("Alexa conversation expired")
+	ErrBusy           = errors.New("another Alexa turn is still working")
+	ErrCancelled      = errors.New("Alexa turn cancelled")
+	ErrReplyQueueFull = errors.New("Alexa answer queue is full")
 )
+
+const MaxPendingReplies = 8
+const maxReplyQueueBytes = 128 << 10
 
 type Identity struct{ Owner, Device, Grant, Generation string }
 type Settings struct {
@@ -50,17 +54,25 @@ type RunResult struct {
 type View struct {
 	State, Text, Receipt string
 	More                 bool
+	PendingReplies       int
 }
 type exchange struct {
 	Receipt  string
 	Messages []realtime.ChatMessage
 }
 type session struct {
-	ID, AskSession, Grant, Generation, LastTurn string
-	History                                     []exchange
-	SpeechStart, SpeechEnd                      int
-	StartedAt                                   int64
-	Turns                                       int
+	ID, AskSession, Grant, Generation, LastTurn    string
+	History                                        []exchange
+	SpeechStart, SpeechEnd                         int
+	StartedAt                                      int64
+	Turns                                          int
+	Replies                                        []queuedReply
+	LastSpeech, LastSpeechReceipt, LastSpeechState string
+	LastSpeechMore                                 bool
+}
+type queuedReply struct {
+	Receipt, State, Text string
+	Offset               int
 }
 type turn struct {
 	Identity                             Identity
@@ -159,6 +171,10 @@ func (s *Service) Submit(ctx context.Context, id Identity, request, askSession, 
 			return View{}, err
 		}
 	}
+	state.prepareReplies()
+	if len(state.Replies) >= MaxPendingReplies {
+		return View{}, ErrReplyQueueFull
+	}
 	var lock ownerLock
 	phase = "owner_lock"
 	lockRow, err := s.read(ctx, id.Owner, "LOCK", &lock)
@@ -190,8 +206,7 @@ func (s *Service) Submit(ctx context.Context, id Identity, request, askSession, 
 		}
 	}
 	state.LastTurn = receipt
-	state.SpeechStart = 0
-	state.SpeechEnd = 0
+	state.Replies = append(state.Replies, queuedReply{Receipt: receipt, State: "pending"})
 	changes = append(changes, changed(id.Owner, turnKey(receipt), current, now.Add(RecoveryWindow).Unix(), nil), changed(id.Owner, sessionKey(id), state, now.Add(RecoveryWindow).Unix(), stateRow), changed(id.Owner, "LOCK", ownerLock{Turn: receipt}, now.Add(WorkerBudget+5*time.Second).Unix(), lockRow))
 	phase = "receipt_commit"
 	err = s.Repo.Commit(ctx, changes)
@@ -237,7 +252,7 @@ func (s *Service) Reset(ctx context.Context, id Identity, askSession string, sta
 	if err != nil {
 		return err
 	}
-	next := session{ID: uuid.NewString(), AskSession: askSession, Grant: id.Grant, Generation: id.Generation, StartedAt: s.now().UnixMilli()}
+	next := session{ID: uuid.NewString(), AskSession: askSession, Grant: id.Grant, Generation: id.Generation, StartedAt: s.now().UnixMilli(), Replies: []queuedReply{}}
 	expires := s.now().Add(RecoveryWindow).Unix()
 	if !start {
 		expires = s.now().Unix()
@@ -335,6 +350,12 @@ func (s *Service) viewTurn(ctx context.Context, id Identity, current turn, row *
 	if !s.validSession(sessionRow, state, id) || state.ID != current.SessionID {
 		return View{}, ErrExpired
 	}
+	for _, reply := range state.Replies {
+		if reply.Receipt == current.ID && reply.State == "complete" && reply.Text != "" {
+			view.Text = reply.Text
+			return view, nil
+		}
+	}
 	for _, exchange := range state.History {
 		if exchange.Receipt == current.ID {
 			for n := len(exchange.Messages) - 1; n >= 0; n-- {
@@ -346,7 +367,7 @@ func (s *Service) viewTurn(ctx context.Context, id Identity, current turn, row *
 		}
 	}
 	if current.State == "failed" || current.State == "cancelled" {
-		view.Text = "That request did not finish. " + map[string]string{"settings_changed": "Your settings or access changed; start a new request.", "queue_unavailable": "The queue was unavailable; no automatic retry will run.", "worker_interrupted": "The worker was interrupted; check any action before repeating it.", "stopped": "You stopped this conversation.", "execution_failed": "Some work may have completed. Check Live Ninja before repeating an action."}[current.Failure]
+		view.Text = failureSpeech(current.Failure)
 	}
 	if current.State == "complete" && view.Text == "" {
 		view.Text = "That request completed, but its answer is no longer in this conversation's recovery window."
@@ -497,7 +518,19 @@ func (s *Service) Execute(ctx context.Context, job Job) (resultErr error) {
 	return s.finish(ctx, current, row, result, "complete", "")
 }
 
-func (s *Service) finish(ctx context.Context, current turn, row *Entry, result RunResult, status, reason string) (resultErr error) {
+func (s *Service) finish(ctx context.Context, current turn, row *Entry, result RunResult, status, reason string) error {
+	// Speech delivery also updates the session. Retry that state merge only;
+	// never rerun a model or tool because a listener advanced another answer.
+	for attempt := 0; attempt < 3; attempt++ {
+		err := s.finishOnce(ctx, current, row, result, status, reason)
+		if !errors.Is(err, ErrConflict) {
+			return err
+		}
+	}
+	return ErrConflict
+}
+
+func (s *Service) finishOnce(ctx context.Context, current turn, row *Entry, result RunResult, status, reason string) (resultErr error) {
 	started := time.Now()
 	applied := false
 	outcome := status
@@ -513,6 +546,25 @@ func (s *Service) finish(ctx context.Context, current turn, row *Entry, result R
 		outcome = "superseded"
 		return nil
 	}
+	state.prepareReplies()
+	for index := range state.Replies {
+		reply := &state.Replies[index]
+		if reply.Receipt != current.ID {
+			continue
+		}
+		reply.State = status
+		if status == "complete" {
+			reply.Text = safeSpeech(result.Text)
+		} else {
+			reply.Text = failureSpeech(reason)
+		}
+		encoded, _ := json.Marshal(state.Replies)
+		if len(reply.Text) > MaxContextBytes || len(encoded) > maxReplyQueueBytes {
+			status, reason, outcome = "failed", "reply_limit", "failed"
+			reply.State, reply.Text = status, failureSpeech(reason)
+		}
+		break
+	}
 	current.Input = ""
 	current.State = status
 	current.Failure = reason
@@ -521,8 +573,6 @@ func (s *Service) finish(ctx context.Context, current turn, row *Entry, result R
 		state.History = append(state.History, exchange{Receipt: current.ID, Messages: append([]realtime.ChatMessage(nil), result.Messages...)})
 		state.History = trimHistory(state.History)
 	}
-	state.SpeechStart = 0
-	state.SpeechEnd = 0
 	changes := []Change{changed(current.Identity.Owner, turnKey(current.ID), current, row.Expires, row), changed(current.Identity.Owner, sessionKey(current.Identity), state, s.now().Add(RecoveryWindow).Unix(), stateRow)}
 	var lock ownerLock
 	lockRow, err := s.read(ctx, current.Identity.Owner, "LOCK", &lock)
@@ -534,8 +584,8 @@ func (s *Service) finish(ctx context.Context, current turn, row *Entry, result R
 	}
 	err = s.Repo.Commit(ctx, changes)
 	if errors.Is(err, ErrConflict) {
-		outcome = "superseded"
-		return nil
+		outcome = "conflict"
+		return err
 	}
 	applied = err == nil
 	return err

@@ -1,5 +1,32 @@
 # Plan
 
+## alexa-answer-queue — deliver every accepted request's answer
+Status: implementation in progress, 2026-10-24. Checkout C:\dev\live-ninja-alexa, main.
+Outcome: retain multiple unanswered Alexa results in the current conversation and deliver them in request order through status/more; repeat replays only speech. A newer request cannot replace an older result waiting to be heard.
+Non-goals: persistent Jobs, parallel side effects, new infrastructure, changing owner/approval/spending gates or the one-active-execution limit. Stop/new conversation still clears transient context; the existing resume window remains.
+Files: internal/alexa service/speech/handler and existing tests; Help, Alexa contract and this plan.
+Proof: reproduce three completed requests followed by status/status in the existing service tests; deliver all three exactly once in order, with correct repeat/more, context trimming, stop/reset, bounded storage and a concurrent worker completion. Then verify through native Alexa and the existing GitHub pipeline.
+
+### Locked decisions (user-confirmed; do not revisit)
+- 2026-10-24 — "look at the last conversation, we made 3 clear asks, but only one task was actioned, we need to be able to have mutliple tasks and action them all"
+- 2026-10-23 — "Current conversation only (Recommended)" remains the task lifetime.
+
+### Verified facts
+- Latest real Alexa conversation d759507e-343d-4d72-a421-3e1e7a3c08d0 contains Office PC summary, world news and AI news requests. All three produced stored answers. The Office PC lookup reported a truthful run-status limitation; both web_research calls completed successfully.
+- Adapter logs at 19:40–19:42 UTC show all three chat responses returned pending. Two subsequent status requests returned the same 519-byte final AI answer. The earlier Office PC and world-news answers were never selected for speech.
+- internal/alexa/service.go replaces session.LastTurn on each Submit. internal/alexa/speech.go selects only LastTurn and stores one shared speech cursor. The earlier model-policy replay did not exercise this delayed delivery sequence.
+
+### queued-answer-delivery — retain and drain unanswered results
+- [x] answer-queue-regression — the test first returned AI news where Office PC was expected. It now returns all three in order after model-history trimming, preserves a partly spoken answer across another completed request, keeps repeat side-effect-free, clears private queued/last-speech text on reset, enforces eight replies/128 KiB, migrates old sessions, and survives an interleaved speech/worker commit without rerunning work.
+- [~] answer-queue-release — focused tests, Help check and vet pass; push main and monitor the required workflow to terminal success; validate three distinct retained answers through native Alexa without repeating tool actions.
+
+### Stop conditions (only these)
+Missing credentials/resources; unapproved destructive or material scope change; required EC2; three corrected delivery failures. No outgoing calls or vehicle actions are used as probes. Local checks have five-minute limits; deployment watchers have 60-minute limits and include failure/cancellation/timeout.
+
+### Execution log
+- 2026-10-24 — read deployed/source state, the latest owner's transcript and tool rows, and corresponding adapter diagnostics. Identified a delivery defect rather than three missing executions. No schedule activation was authorized by this new request; the three-hour schedule remains pending its separate confirmation.
+- 2026-10-24 — `go test ./internal/alexa -run TestAlexaDeliversThree -count=1 -timeout=2m` reproduced expected "Office PC summary." versus actual "AI news summary.". After correction, `go test ./internal/alexa ./internal/webapp ./cmd/alexa-chat-worker ./cmd/realtime-broker -count=1 -timeout=5m` and matching go vet passed. The collector's eight tests passed, including recognition of the new answer-selection metadata. Diff whitespace checks passed. Speech selection is logged separately from execution; it is not claimed as physical playback confirmation.
+
 ## cloudwatch-remediation — diagnose requests and review production errors every three hours
 Status: code deployed and verified; exact schedule activation approval pending, 2026-10-24. Release a223d46d79dffebb326adeba386ba01002191548. Checkout: C:\dev\live-ninja-alexa, main.
 Outcome: detailed structured diagnostics across Alexa ingress, authorization, queue, model and tool execution; bounded CloudWatch review every three hours for seven days, with errors recorded here, tested repairs delivered through GitHub, and a truthful result.txt handoff.
