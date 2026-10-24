@@ -102,6 +102,71 @@ func TestOwnerLoopHangupStaysLocal(t *testing.T) {
 	}
 }
 
+func TestOwnerLoopCorrelatesHarmlessCancelErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name, kind, want string
+		correlated       bool
+	}{
+		{"cancel race", "invalid_request_error", "remote_hangup", true},
+		{"unrelated request error", "invalid_request_error", "azure_error", false},
+		{"server error", "server_error", "azure_error", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logFile, err := os.CreateTemp(t.TempDir(), "owner-error-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldWriter := log.Writer()
+			log.SetOutput(logFile)
+			defer func() { log.SetOutput(oldWriter); logFile.Close() }()
+			s, _ := fixture()
+			b := ownerFixture(t)
+			tw, phone := wsPair(t)
+			az, model := wsPair(t)
+			events := make(chan wireEvent, 6)
+			done := make(chan string, 1)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			go func() { done <- s.ownerLoop(ctx, &b, tw, az, "MZtest", "capability", events) }()
+			events <- wireEvent{Source: "azure", Data: map[string]any{"type": "session.updated"}}
+			if readOwnerEvent(t, model)["type"] != "response.create" {
+				t.Fatal("initial response was not requested")
+			}
+			events <- wireEvent{Source: "azure", Data: map[string]any{"type": "response.created", "response": map[string]any{"id": "response-one"}}}
+			events <- wireEvent{Source: "azure", Data: map[string]any{"type": "input_audio_buffer.speech_started"}}
+			cancelEvent := readOwnerEvent(t, model)
+			if cancelEvent["type"] != "response.cancel" || readOwnerEvent(t, phone)["event"] != "clear" {
+				t.Fatal("interruption was not forwarded")
+			}
+			id := stringAt(cancelEvent, "event_id")
+			if !tc.correlated {
+				id = "unrelated-event"
+			}
+			events <- wireEvent{Source: "azure", Data: map[string]any{"type": "error", "error": map[string]any{
+				"type": tc.kind, "event_id": id, "code": "synthetic_error", "message": "DO_NOT_LOG_PROVIDER_PAYLOAD"}}}
+			if tc.want == "remote_hangup" && id != "" {
+				events <- wireEvent{Source: "azure", Data: map[string]any{"type": "response.done", "response": map[string]any{
+					"id": "response-one", "usage": map[string]any{"input_tokens": float64(0), "output_tokens": float64(0)}}}}
+				events <- wireEvent{Source: "azure", Data: map[string]any{"type": "input_audio_buffer.committed"}}
+				if readOwnerEvent(t, model)["type"] != "response.create" {
+					t.Fatal("conversation did not continue after the rejected cancellation")
+				}
+			}
+			events <- wireEvent{Source: "twilio", Data: map[string]any{"event": "stop"}}
+			if got := <-done; got != tc.want {
+				t.Fatalf("call ended with %s; want %s", got, tc.want)
+			}
+			if stringAt(cancelEvent, "event_id") == "" {
+				t.Fatal("cancellation must carry a correlation ID")
+			}
+			output, err := os.ReadFile(logFile.Name())
+			if err != nil || strings.Contains(string(output), "DO_NOT_LOG_PROVIDER_PAYLOAD") {
+				t.Fatal("provider error payload was logged", err)
+			}
+		})
+	}
+}
+
 func TestOwnerLoopInactivityEndsCallAndSpeechRestartsWait(t *testing.T) {
 	if ownerIdleTimeout != 120*time.Second {
 		t.Fatalf("phone inactivity timeout=%s; want 2 minutes", ownerIdleTimeout)

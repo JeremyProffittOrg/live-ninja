@@ -25,6 +25,7 @@ import (
 const ownerApp = "https://live.jeremy.ninja"
 const ownerIdleTimeout = 2 * time.Minute
 const ownerEndCallTool = "end_call"
+const ownerToolTimeout = 35 * time.Second
 
 type ownerBootstrap struct {
 	Mode, SessionID, BridgeToken, BridgeTokenExpiresAt string
@@ -123,7 +124,13 @@ func (s *server) ownerTool(ctx context.Context, token, name string, body any) ([
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-LN-Capabilities", websearch.BudgetCapability)
-	resp, err := s.client.Do(req)
+	// Tool execution can use API Gateway's 30-second integration window.
+	// Keep the existing transport and redirect policy, with transfer headroom;
+	// the request context still enforces the call deadline/cancellation.
+	// Recorder checks and transcript writes retain the fast control timeout.
+	client := *s.client
+	client.Timeout = ownerToolTimeout
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, errors.New("owner service unavailable")
 	}
@@ -368,6 +375,7 @@ func (s *server) ownerLoopWithTiming(ctx context.Context, b *ownerBootstrap, tw,
 	interrupted := false
 	activeResponse := ""
 	staleResponses := map[string]bool{}
+	cancelEvents := map[string]bool{}
 	allowed := map[string]bool{}
 	if list, ok := b.SessionConfig["tools"].([]any); ok {
 		for _, v := range list {
@@ -499,7 +507,9 @@ func (s *server) ownerLoopWithTiming(ctx context.Context, b *ownerBootstrap, tw,
 					if activeResponse != "" {
 						staleResponses[activeResponse] = true
 					}
-					if sendWS(az, map[string]any{"type": "response.cancel"}) != nil {
+					cancelID := "owner_cancel_" + strconv.Itoa(len(cancelEvents)+1)
+					cancelEvents[cancelID] = true
+					if sendWS(az, map[string]any{"type": "response.cancel", "event_id": cancelID}) != nil {
 						return "azure_write_failed"
 					}
 				}
@@ -673,6 +683,19 @@ func (s *server) ownerLoopWithTiming(ctx context.Context, b *ownerBootstrap, tw,
 					}
 				}
 			case "error":
+				failure := objectAt(m, "error")
+				code := stringAt(failure, "code")
+				if ok, _ := regexp.MatchString("^[A-Za-z0-9_]{1,80}$", code); !ok {
+					code = "unclassified"
+				}
+				// A response may finish before our cancellation reaches the model.
+				// The Realtime contract keeps that session open. Correlate only
+				// our own cancel requests; unrelated and server errors still stop.
+				cancelRace := stringAt(failure, "type") == "invalid_request_error" && cancelEvents[stringAt(failure, "event_id")]
+				log.Printf("owner realtime error: call=%s code=%s cancel_race=%t", b.CallSID, code, cancelRace)
+				if cancelRace {
+					continue
+				}
 				return "azure_error"
 			}
 		}
