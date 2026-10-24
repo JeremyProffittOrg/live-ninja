@@ -69,16 +69,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-		ErrorHandler:          webapp.ErrorHandler(),
-		Views:                 renderer,
-		// Fiber's default is 4 MiB, which cut the fallback STT upload
-		// (handleFallbackSTT reads a larger multipart body) off with a bare
-		// 413 before the handler ran. API Gateway's HTTP API payload cap is
-		// 10 MiB, so nothing larger can arrive anyway.
-		BodyLimit: 10 << 20,
-	})
+	app := newHTTPApp(renderer)
 
 	// TxnMiddleware runs first: it assigns each request its transaction id,
 	// sets the X-LN-Txn response header + Locals/context, and emits the
@@ -188,6 +179,23 @@ func main() {
 	} else {
 		logger.Info("shutdown complete")
 	}
+}
+
+func newHTTPApp(renderer fiber.Views) *fiber.App {
+	return fiber.New(fiber.Config{
+		DisableStartupMessage: true,
+		ErrorHandler:          webapp.ErrorHandler(),
+		Views:                 renderer,
+		// API Gateway accepts a 10 KiB request line/header budget. Leave
+		// headroom for proxy headers instead of rejecting valid login cookies
+		// and bearer tokens at Fiber's 4 KiB default.
+		ReadBufferSize: 16 << 10,
+		// Fiber's default is 4 MiB, which cut the fallback STT upload
+		// (handleFallbackSTT reads a larger multipart body) off with a bare
+		// 413 before the handler ran. API Gateway's HTTP API payload cap is
+		// 10 MiB, so nothing larger can arrive anyway.
+		BodyLimit: 10 << 20,
+	})
 }
 
 // buildDeps constructs every dependency the webapp route registrars need.

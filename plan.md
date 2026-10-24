@@ -1,5 +1,32 @@
 # Plan
 
+## linking-and-call-reliability — repair Alexa linking and premature owner-call disconnects
+Status: in progress, 2026-10-23. Working directory: C:\dev\live-ninja-alexa on main. Evidence: C:\dev\live-ninja-test-evidence\reliability\2026-10-23.
+Outcome: accept valid account-link requests within the upstream request-size budget and fix the cause of the two reported premature phone disconnects.
+Non-goals: changing authentication checks, call limits or budgets; placing outbound calls; new dependencies, infrastructure, or local schedules; EC2 creation/start.
+Expected files: cmd/web/main.go, cmd/web/main_test.go and this plan for the confirmed header-parser defect. Phone source/tests are limited to the failing path after the call trace identifies it.
+
+### reliability-locked-decisions — preserve the operator's scope
+- 2026-10-23 — "error signing into the alexa app - when trying to link - requewst headers too large.  Also, when I called into live ninja this morning twice, it cut me off and didn't finish my request."
+- 2026-10-23 — "live.jeremy.ninja" identifies the linking-error host. "The call disconnected" identifies the phone symptom.
+- Existing owner-call authorization remains ten minutes and $10 per call, with the existing daily/monthly limits. Diagnosis and code deployment do not authorize new telephone calls or budget changes.
+
+### linking-header-budget — preserve requests accepted by the upstream gateway
+- [x] linking-header-parser — the production Fiber constructor now uses a bounded 16 KiB read buffer. The in-memory Cookie and Authorization regressions pass; the upstream request quota and all auth checks are unchanged. Gate: `go test ./cmd/web -run TestHTTPAppAcceptsGatewaySizedHeaders -count=1 -timeout=2m` exited 0. Existing web authentication tests also passed.
+
+### owner-call-disconnect — identify and repair the call-ending failure
+- [~] owner-call-trace — the two inbound owner requests began at 2026-10-23T10:22:55Z and 10:23:49Z (6:22/6:23 AM America/New_York). They ended after approximately 34/32 seconds, before their 600-second deadlines. The first web_research request completed HTTP 200 in 9.863171021 seconds, after the bridge's shared eight-second HTTP timeout. The second call completed a tool request in 7.875733444 seconds and later ended with azure_error; the old bridge did not retain its provider error code. Transcript cleanup showed a successful finalization followed by a duplicate HTTP 401 after the session closed. Inspect only safe event metadata and the two relevant sessions; never retrieve callback capabilities, bootstrap tokens, or private telephone numbers.
+- [ ] owner-call-regression — reproduce the verified failure in the existing bridge/server tests and prove the corrected behavior. Gate: the relevant existing Go/Python test commands exit 0; no outgoing call is a probe.
+
+### reliability-delivery — verify through the existing GitHub workflows
+- [ ] reliability-main-delivery — commit only the required files, push main, and watch every triggered main/phone workflow to terminal success. Use the existing phone deployment only if its source changes; do not activate calling or bypass its dated trial guard.
+Restart/watch policy: local tests bounded to five minutes; GitHub watchers to 60 minutes, with at most three corrected attempts per failed delivery. Classify failures before retry; never skip checks. No local cloud deployment.
+Stop conditions (only these): unavailable credentials or an operator-only test resource; material scope expansion or an unapproved destructive action; EC2 creation/start; three corrected delivery failures.
+
+### reliability-execution-log — retain exact evidence as it lands
+- 2026-10-23 — the header regression passed after setting ReadBufferSize=16384. `go test ./cmd/web ./internal/webapp ./internal/mcpauth -run 'TestHTTPApp|Auth|OAuth|MCP|Alexa|Session|TestHelpDrawer' -count=1 -timeout=5m` passed all three packages. Safe phone metadata and response-timing projections are retained as morning-call-metadata.json, morning-call-events.json and morning-web-responses.json in the evidence directory. First call tool transaction FsVPigZnoAMEZMA= started at 10:23:18.195Z and returned HTTP 200 at 10:23:28.058Z, latency=9863171021 ns; the eight-second caller had already entered cleanup. This is a distinct failure from the web header-parser defect. Second-call model error details remain unverified; no live call has been placed as a probe.
+- 2026-10-23 — read deploy.md, diagnosing-bugs, current auth/phone code and persisted call metadata. A live synthetic header probe was rejected by automatic approval review with "blocked by policy"; it was not retried through another tool. The local production-config regression is the safer replacement. `go test ./cmd/web -run TestHTTPAppAcceptsGatewaySizedHeaders -count=1 -timeout=2m` failed for both synthetic Cookie and Authorization headers with `error when reading request headers: small read buffer. Increase ReadBufferSize. Buffer size=4096`. The request data is synthetic. AWS documents the HTTP API's combined request-line/header quota as 10,240 bytes: https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-quotas.html . Only the Fiber constructor was extracted to make the production parsing behavior testable; auth and route wiring stay in the existing main entry point.
+
 ## alexa-implementation — deliver the approved private Alexa skill
 Status: in progress, authorized 2026-10-22 by "implement alexa-plan.md".
 Detailed milestones, locked decisions, exact gates and execution log: [alexa-plan.md](alexa-plan.md).
