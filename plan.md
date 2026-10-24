@@ -1212,3 +1212,35 @@ depends on: ghost-session-control
 - [x] ghost-decision-phone — 2026-10-19 owner answer: read and control on PIN-verified owner calls, with spoken confirmation.
 - Note 2026-10-19 (plan-reconcile; the owner answer above is unchanged): inbound PIN verification no longer exists since the 2026-10-18 decision (owner calls are admitted by the configured owner caller number without a PIN; unknown callers are hung up), so the admission basis for ghost:manage on the phone is an open owner question. The locked decision text records only phone "Read and control" and gives no admission basis. Until the owner answers, ghost-phone-access limits the phone surface to ghost:read. Caller ID is caller-supplied and spoofable, and the spoken confirmation comes from the same caller, so it is not a second factor.
 
+# suburban-remote — Connect the owner's vehicle through remote MCP
+
+## Locked decisions (user-confirmed; do not revisit)
+
+- 2026-10-24, verbatim: "add suburban remote as a tool in live-ninja".
+- 2026-10-24, Suburban transport decision, verbatim: "HEY NO!  It needs to be a lambda with lwa oauth". Use `https://suburban.jeremy.ninja/mcp` and its browser LWA OAuth flow; no shared secret copying or local executable.
+
+## Verified facts
+
+- Active source is `JeremyProffittOrg/live-ninja`, `origin/main` at `b32935c`; existing worktrees contain unrelated changes. Isolated worktree `C:\dev\live-ninja-suburban` is based on that default-branch tip; delivery targets main.
+- `internal/tools/registry.go` owns the shared voice/web tool catalog and owner/idempotency gates. `internal/webapp/mcp_routes.go` separately filters inbound MCP tools.
+- `internal/mcpauth/store.go` already provides transactional key-based OAuth storage. `template.yaml` already supplies `AUTH_KMS_KEY_ID` and scoped Encrypt/Decrypt permissions to the web Lambda. No new service, credential, dependency or key is needed.
+- `deploy.md` and `.github/workflows/deploy.yml` require GitHub delivery; `agents.md` requires Help updates in the feature commit. The Azure rebuild was torn down; it is not this integration's deployment target.
+
+Outcome: an owner-only Suburban tool forwards to the fixed remote MCP endpoint using separately consented OAuth, encrypted grants, bounded refresh, availability checks and stable vehicle request IDs. Non-goals: general remote-server management, new infrastructure, local deployment, vehicle actuation tests or changes to unfinished Jobs/phone work. Files: new `internal/suburban` client and focused tests; existing tool/web dependency wiring, Help template and relevant tests; this plan. Proof: client OAuth/protocol tests, owner/idempotency/tool-manifest/Help checks and GitHub deployment terminal success.
+
+## suburban-integration — Add the connected vehicle capability
+
+depends on: Suburban Lambda OAuth delivery
+
+- [~] suburban-client — Durable encrypted per-owner OAuth connection and fixed-endpoint MCP calls; `go test ./internal/suburban -count=1` passes callback binding, refresh and unavailable-tool tests.
+- [ ] suburban-tool — Shared owner-only tool, connect/callback routes and Help entry; `go test ./internal/tools ./internal/webapp -count=1` passes.
+- [ ] suburban-release — Focused commit pushed to main; `gh run view <run-id> --json status,conclusion` reports completed/success. No EC2 creation/start and no vehicle commands in live tests.
+
+## Stop conditions (only these)
+
+Missing credentials/resources, required EC2 instance creation/start, unrelated destructive change, or owner browser consent for the final live connection. Finish independent implementation and synthetic checks before reporting attended-consent limits. Track each workflow by ID with `gh run watch --exit-status`; diagnose deterministic failures before at most two repair pushes. Never repeat an unknown vehicle command.
+
+## Execution log
+
+- 2026-10-24: Read deploy/agent instructions, active registry/auth/storage/wiring and workflow. Remote clone was rejected by automatic review; a local isolated worktree from the existing default-branch objects succeeded. No user-owned worktree changes were touched.
+

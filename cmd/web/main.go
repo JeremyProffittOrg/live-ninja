@@ -45,9 +45,11 @@ import (
 	"github.com/JeremyProffittOrg/live-ninja/internal/deliv"
 	"github.com/JeremyProffittOrg/live-ninja/internal/ghost"
 	"github.com/JeremyProffittOrg/live-ninja/internal/jobs"
+	"github.com/JeremyProffittOrg/live-ninja/internal/mcpauth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/memory"
 	"github.com/JeremyProffittOrg/live-ninja/internal/observ"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
+	"github.com/JeremyProffittOrg/live-ninja/internal/suburban"
 	"github.com/JeremyProffittOrg/live-ninja/internal/webapp"
 	"github.com/JeremyProffittOrg/live-ninja/web"
 )
@@ -255,6 +257,10 @@ func buildDeps(ctx context.Context, cfg config.App, logger *slog.Logger) (*webap
 		AndroidLatestKey:       os.Getenv("ANDROID_LATEST_KEY"),
 		AndroidAssetLinksKey:   os.Getenv("ANDROID_ASSETLINKS_KEY"),
 		CodeUpdateQueueURL:     os.Getenv("CODE_UPDATE_QUEUE_URL"),
+	}
+	deps.Suburban, err = suburban.New(awsCfg, &mcpauth.Dynamo{Client: ddbClient, Table: cfg.TableName}, cfg.AuthKmsKeyID)
+	if err != nil {
+		return nil, err
 	}
 	jobStore, err := jobs.NewDynamoStore(ctx, cfg.TableName)
 	if err != nil {

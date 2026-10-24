@@ -217,11 +217,12 @@ func TestMCPGhostScopesListOnlyGrantedToolsAndKeepLegacyGrantsIntact(t *testing.
 		}
 	}
 	for name, policy := range mcpPolicies {
-		if _, old := legacy[name]; old == strings.HasPrefix(policy.scope, "ghost:") {
+		newScope := strings.HasPrefix(policy.scope, "ghost:") || policy.scope == "vehicle:control"
+		if _, old := legacy[name]; old == newScope {
 			t.Fatal(name, policy, old)
 		}
 	}
-	if len(legacy) != len(mcpPolicies)-9 {
+	if len(legacy) != len(mcpPolicies)-10 {
 		t.Fatal(len(legacy), len(mcpPolicies))
 	}
 }

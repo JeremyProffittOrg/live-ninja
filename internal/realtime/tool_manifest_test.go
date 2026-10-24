@@ -16,10 +16,10 @@ import (
 // from tools.CatalogManifest(), and toolManifestJSON is a package-level
 // func() var initialised from toolManifest. Go resolves package-level
 // dependency order automatically, but this pins it: ToolManifestJSON()
-// must be non-empty and parse to the full 54-tool catalog (29 + the two
+// must be non-empty and parse to the full 55-tool catalog (29 + the two
 // knowledge_* relay tools + the four rule_* tools + set_current_location,
 // plus nine Jobs tools, the Android play_media tool, two owner phone tools
-// and the six ghost_* fleet tools), each a complete OpenAI function-tool
+// and the six ghost_* fleet tools plus Suburban Remote), each a complete OpenAI function-tool
 // declaration. Capability-based filtering
 // (Android-only / legacy clients) happens per session, not here: this is
 // the complete catalog.
@@ -29,7 +29,7 @@ func TestToolManifestJSONInitOrder(t *testing.T) {
 
 	var entries []map[string]any
 	require.NoError(t, json.Unmarshal(raw, &entries))
-	require.Len(t, entries, 54, "the full tool catalog must be bound")
+	require.Len(t, entries, 55, "the full tool catalog must be bound")
 
 	names := make([]string, 0, len(entries))
 	for i, e := range entries {

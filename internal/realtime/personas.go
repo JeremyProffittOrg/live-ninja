@@ -205,6 +205,7 @@ const coreInstructions = "Always speak and respond in English (US). Only switch 
 	"Use phone_message_status with the returned requestId to check progress. Queued is not delivered, " +
 	"and completed playback is not proof someone heard it. Do not redial an uncertain request or bypass a spending limit. " +
 	"device_control for the user's own devices, get_weather for weather, " +
+	"suburban_remote for the owner's connected Suburban: list available functions first, use controls only on an explicit owner request, and check an unconfirmed command's status instead of repeating it, " +
 	"set_current_location when the user says where they are now, gives GPS coordinates, or says they are back home, web_lookup for " +
 	"factual lookups, remember_note/recall_note for the user's notes, " +
 	ruleToolInstructions +

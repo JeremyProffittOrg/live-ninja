@@ -22,7 +22,8 @@ type mcpPolicy struct {
 }
 
 var mcpPolicies = map[string]mcpPolicy{
-	"memory_search": {"memory:read", false}, "entity_get": {"memory:read", false}, "recall_note": {"memory:read", false},
+	"suburban_remote": {"vehicle:control", true},
+	"memory_search":   {"memory:read", false}, "entity_get": {"memory:read", false}, "recall_note": {"memory:read", false},
 	"memory_write": {"memory:write", true}, "plan_upsert": {"memory:write", true}, "forget": {"memory:write", true}, "remember_note": {"memory:write", true},
 	"job_list": {"jobs:read", false}, "job_status": {"jobs:read", false},
 	"job_create": {"jobs:manage", false}, "job_start": {"jobs:manage", false}, "job_pause": {"jobs:manage", false},
@@ -41,7 +42,7 @@ var mcpPolicies = map[string]mcpPolicy{
 
 // mcpOpenWorld marks the tools whose effect leaves Live Ninja: an outgoing
 // call, or work queued to one of the owner's own computers through ghost.
-var mcpOpenWorld = map[string]bool{"call_message": true, "ghost_run_start": true, "ghost_session_command": true, "code_update_start": true}
+var mcpOpenWorld = map[string]bool{"suburban_remote": true, "call_message": true, "ghost_run_start": true, "ghost_session_command": true, "code_update_start": true}
 var mcpRequestKey = regexp.MustCompile("^[A-Za-z0-9_-]{8,128}$")
 var mcpNumericID = regexp.MustCompile("^-?[0-9]+$")
 

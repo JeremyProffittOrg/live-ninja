@@ -395,6 +395,7 @@ type FailureEnqueuer interface {
 // Deps carries everything the tool handlers need. The web function wires
 // real AWS clients; tests wire fakes against the narrow interfaces.
 type Deps struct {
+	Suburban              SuburbanClient
 	Phone                 PhoneMessages
 	Jobs                  *jobs.Service
 	JobsSchedulingEnabled bool
@@ -602,6 +603,7 @@ func NewRegistry(deps *Deps) (*Registry, error) {
 // exactly this set.
 func definitions() []*Definition {
 	return []*Definition{
+		suburbanDefinition(),
 		callMessageDefinition(), phoneMessageStatusDefinition(),
 		sendEmailDefinition(),
 		setTimerDefinition(),
