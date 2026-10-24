@@ -1509,6 +1509,43 @@ depends on: ghost-session-control
 - [x] ghost-decision-phone — 2026-10-19 owner answer: read and control on PIN-verified owner calls, with spoken confirmation.
 - Note 2026-10-19 (plan-reconcile; the owner answer above is unchanged): inbound PIN verification no longer exists since the 2026-10-18 decision (owner calls are admitted by the configured owner caller number without a PIN; unknown callers are hung up), so the admission basis for ghost:manage on the phone is an open owner question. The locked decision text records only phone "Read and control" and gives no admission basis. Until the owner answers, ghost-phone-access limits the phone surface to ghost:read. Caller ID is caller-supplied and spoofable, and the spoken confirmation comes from the same caller, so it is not a second factor.
 
+# suburban-remote — Connect the owner's vehicle through remote MCP
+
+## Locked decisions (user-confirmed; do not revisit)
+
+- 2026-10-24, verbatim: "add suburban remote as a tool in live-ninja".
+- 2026-10-24, Suburban transport decision, verbatim: "HEY NO!  It needs to be a lambda with lwa oauth". Use `https://suburban.jeremy.ninja/mcp` and its browser LWA OAuth flow; no shared secret copying or local executable.
+
+## Verified facts
+
+- Active source is `JeremyProffittOrg/live-ninja`, `origin/main` at `b32935c`; existing worktrees contain unrelated changes. Isolated worktree `C:\dev\live-ninja-suburban` is based on that default-branch tip; delivery targets main.
+- `internal/tools/registry.go` owns the shared voice/web tool catalog and owner/idempotency gates. `internal/webapp/mcp_routes.go` separately filters inbound MCP tools.
+- `internal/mcpauth/store.go` already provides transactional key-based OAuth storage. `template.yaml` already supplies `AUTH_KMS_KEY_ID` and scoped Encrypt/Decrypt permissions to the web Lambda. No new service, credential, dependency or key is needed.
+- `deploy.md` and `.github/workflows/deploy.yml` require GitHub delivery; `agents.md` requires Help updates in the feature commit. The Azure rebuild was torn down; it is not this integration's deployment target.
+
+Outcome: an owner-only Suburban tool forwards to the fixed remote MCP endpoint using separately consented OAuth, encrypted grants, bounded refresh, availability checks and stable vehicle request IDs. Non-goals: general remote-server management, new infrastructure, local deployment, vehicle actuation tests or changes to unfinished Jobs/phone work. Files: new `internal/suburban` client and focused tests; existing tool/web dependency wiring, Help template and relevant tests; this plan. Proof: client OAuth/protocol tests, owner/idempotency/tool-manifest/Help checks and GitHub deployment terminal success.
+
+## suburban-integration — Add the connected vehicle capability
+
+depends on: Suburban Lambda OAuth delivery
+
+- [x] suburban-client — Durable encrypted per-owner OAuth connection and fixed-endpoint MCP calls; callback binding, refresh and unavailable-tool tests pass. Refresh claims prevent concurrent rotation or automatic repetition after an unknown result.
+- [x] suburban-tool — Shared owner-only tool, connect/callback routes, Help entry and persona discovery are implemented. Inbound MCP clients require a fresh `vehicle:control` scope; old grants gain no controls.
+- [x] suburban-release — Commit `0a0649ecbd21069e40d6955382a8a430c5c29505` deployed through successful run `40100565919`, including tests, race checks, deployment and web-quality browser checks. No EC2 creation/start and no vehicle commands were used for verification.
+- [!] suburban-owner-connection — Jeremy must complete Help → Connect Suburban Remote in a fresh browser flow. Implementation and delivery are complete; no grant is copied from another client. Live vehicle calls remain unverified until that owner-only consent step succeeds.
+
+## Stop conditions (only these)
+
+Missing credentials/resources, required EC2 instance creation/start, unrelated destructive change, or owner browser consent for the final live connection. Finish independent implementation and synthetic checks before reporting attended-consent limits. Track each workflow by ID with `gh run watch --exit-status`; diagnose deterministic failures before at most two repair pushes. Never repeat an unknown vehicle command.
+
+## Execution log
+
+- 2026-10-24: Read deploy/agent instructions, active registry/auth/storage/wiring and workflow. Remote clone was rejected by automatic review; a local isolated worktree from the existing default-branch objects succeeded. No user-owned worktree changes were touched.
+- 2026-10-24: Focused client/tools/web/auth tests passed. Persona and manifest checks were extended for the actual added tool. The Windows checkout's CRLF-only golden-fixture differences were normalized locally to the repository's existing LF bytes; no fixture content changes were committed. Fetched current main `ad0bbb0` and merged its Alexa/shared-dependency changes, preserving both intents. The client is constructed in `internal/webapp/server_dependencies.go`; Alexa's existing worker receives the existing AuthKey identifier and scoped Encrypt/Decrypt permissions so the shared tool has a working dependency there too. No key or infrastructure service was added.
+- 2026-10-24: After the merge, `go test ./... -count=1 -timeout=180s` and `go vet ./...` both exited 0 (session13291). The focused owner, OAuth, idempotency, Help, manifest and Alexa-worker checks passed. The final diff against `origin/main` contains only the Suburban integration; upstream Alexa/remediation changes are preserved. Existing EC2 resources are not created or started by this change.
+- 2026-10-24: Pushed `034057647b6a5aaf8df52fef305c6b4f2f4e6383`, run `40099800417` (watcher31405). Tests/race checks and container build passed. Deployment stopped before CloudFormation changes because the new AuthKey environment entry matched the Web section and duplicated its existing key instead of entering the Alexa worker section. Corrected that exact location; `sam validate --lint --template-file template.yaml --region us-east-1` now reports a valid SAM Template. This is changed delivery attempt one of the two-repair ceiling; no test/check was disabled.
+- 2026-10-24: Run `40100565919` at `0a0649e` completed SUCCESS, including web-quality. Watcher65242 tracks the terminal result. The upstream Suburban browser consent issues were traced to no-referrer suppressing form Origin and self-only form-action blocking the redirect chain. Suburban run `40101452945` at `be7c280` completed SUCCESS with the two header fixes; current user consent remains attended and unverified. Fixed endpoint: `https://suburban.jeremy.ninja/mcp`; connection entry: `https://live.jeremy.ninja/auth/suburban/start`.
+
 
 ## autoremediation — daily Live Ninja transcript review and repair (state across runs)
 Prompt: autoremediate-prompt.md. Ghost task: live-ninja-autoremediate. Active run: ghost-621288193-20261024T030225Z (first run). Private evidence: C:\dev\.ghost-runs\01a16bdb-907f-7b12-8385-c0698d78b3ba-621288193\checkout\.autoremediate\ghost-621288193-20261024T030225Z (uncommitted). Result handoff: result.txt in the same checkout root.

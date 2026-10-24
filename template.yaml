@@ -1012,6 +1012,7 @@ Resources:
           ALEXA_ENABLED: !Ref AlexaEnabled
           ALEXA_QUEUE_URL: !Ref AlexaTurnQueue
           ALEXA_TRIAL_MODE: !Ref AlexaTrialMode
+          AUTH_KMS_KEY_ID: !GetAtt AuthKey.Arn
           ALEXA_DEPLOYED_COMMIT: !Ref AlexaDeployCommit
           BROKER_FUNCTION_NAME: !Ref RealtimeBrokerFunction
           EMAIL_QUEUE_URL: !Ref EmailQueue
@@ -1045,6 +1046,10 @@ Resources:
           Effect: Allow
           Action: [dynamodb:GetItem, dynamodb:BatchGetItem, dynamodb:Query, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:BatchWriteItem, dynamodb:ConditionCheckItem]
           Resource: [!GetAtt Table.Arn, !Sub '${Table.Arn}/index/*']
+        - Sid: AlexaSuburbanCrypto
+          Effect: Allow
+          Action: [kms:Encrypt, kms:Decrypt]
+          Resource: !GetAtt AuthKey.Arn
         - Sid: AlexaClientConfig
           Effect: Allow
           Action: ssm:GetParameter

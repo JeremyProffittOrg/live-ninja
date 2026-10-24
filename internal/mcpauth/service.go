@@ -21,7 +21,7 @@ const Issuer = "https://live.jeremy.ninja"
 const Resource = Issuer + "/mcp"
 const AlexaResource = Issuer + "/alexa"
 
-var Scopes = []string{"phone:send", "phone:read", "jobs:read", "jobs:manage", "memory:read", "memory:write", "ghost:read", "ghost:manage"}
+var Scopes = []string{"phone:send", "phone:read", "jobs:read", "jobs:manage", "memory:read", "memory:write", "ghost:read", "ghost:manage", "vehicle:control"}
 var ErrInvalidGrant = errors.New("invalid_grant")
 var ErrInvalidClient = errors.New("invalid_client")
 var ErrInvalidRequest = errors.New("invalid_request")

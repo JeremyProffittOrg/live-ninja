@@ -64,6 +64,9 @@ func RegisterAPIRoutes(app *fiber.App, deps *Deps) {
 	registry := buildAPIToolsRegistry(deps)
 	if mcpAuth, err := NewMCPAuth(deps); err == nil {
 		mcpAuth.Register(app)
+		if deps.Suburban != nil {
+			registerSuburbanRoutes(app, deps.Suburban, mcpAuth.browserOwner)
+		}
 		app.All("/mcp", mcpAuth.Middleware(), handleMCP(registry, "https://live.jeremy.ninja"))
 	} else {
 		deps.Log.Error("MCP authentication unavailable")
@@ -660,6 +663,9 @@ func buildAPIToolsRegistry(deps *Deps) *tools.Registry {
 	}
 	if toolDeps.KnowledgeQueueURL == "" || toolDeps.KnowledgeResultsTable == "" {
 		deps.Log.Warn("api: knowledge_search/knowledge_recent disabled (KNOWLEDGE_QUERY_QUEUE_URL or KNOWLEDGE_RESULTS_TABLE not set)")
+	}
+	if deps.Suburban != nil {
+		toolDeps.Suburban = deps.Suburban
 	}
 	if deps.Deliv != nil { // M9 deliverable_* tools (nil interface stays nil → not_configured)
 		toolDeps.Deliverables = deps.Deliv

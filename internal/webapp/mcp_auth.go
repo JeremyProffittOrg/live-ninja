@@ -342,6 +342,7 @@ func (a *MCPAuth) revoke(c *fiber.Ctx) error {
 
 func mcpScopeDescriptions(scope string) []string {
 	labels := map[string]string{"phone:send": "Send messages and start calls.", "phone:read": "Read phone history and recordings.", "jobs:read": "Read jobs and their results.", "jobs:manage": "Create and manage jobs.", "memory:read": "Read your saved memory.", "memory:write": "Add, change, or remove saved memory.", "ghost:read": "Read your ghost computers, coding sessions, session summaries and run status.", "ghost:manage": "Start coding runs on your computers and send commands to coding sessions, after your confirmation."}
+	labels["vehicle:control"] = "Read Suburban vehicle status and operate enabled vehicle controls through your connected Suburban account."
 	labels["alexa:chat"] = "Use Live Ninja chat and supported tools on your linked Echo devices. Website approval still applies. Re-link after 30 days."
 	out := []string{}
 	for _, v := range strings.Fields(scope) {

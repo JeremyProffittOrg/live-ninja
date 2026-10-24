@@ -105,6 +105,7 @@ func TestHelpDrawerIsNotASettingsAccordion(t *testing.T) {
 // the test that fails when a feature ships without its help entry.
 func TestHelpDrawerCoversTheAppsCapabilities(t *testing.T) {
 	html := readAsset(t, "templates/pages/conversation.html")
+	assert.Contains(t, html, `href="/auth/suburban/start">Connect Suburban Remote`)
 	helpAt := strings.Index(html, `id="helpDrawer"`)
 	if !assert.GreaterOrEqual(t, helpAt, 0, "help drawer is missing") {
 		return

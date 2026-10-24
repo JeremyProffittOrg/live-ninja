@@ -27,6 +27,7 @@ import (
 	"github.com/JeremyProffittOrg/live-ninja/internal/ghost"
 	"github.com/JeremyProffittOrg/live-ninja/internal/jobs"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
+	"github.com/JeremyProffittOrg/live-ninja/internal/suburban"
 )
 
 // SQSSendAPI is the subset of the SQS client the webapp needs (enqueue
@@ -61,6 +62,7 @@ type S3GetObjectAPI interface {
 // directly, so Deps carries the two real types instead of a phantom
 // wrapper.
 type Deps struct {
+	Suburban              *suburban.Service
 	CodeApprovals         *codeapproval.Service
 	Jobs                  *jobs.Service
 	JobsSchedulingEnabled bool

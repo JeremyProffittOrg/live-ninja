@@ -54,7 +54,7 @@ jobs:
           python -B -m unittest discover -s scripts -p test_remediation_lock.py
           python -B scripts/alexa-skill.py validate-local
       - name: MCP auth and shared-tool race checks
-        run: go test -race ./internal/mcpauth ./internal/webapp -count=1
+        run: go test -race ./internal/mcpauth ./internal/suburban ./internal/webapp -count=1
 
   # Path filter: the wakeword-train container image is only rebuilt when
   # containers/** changes (or on manual dispatch, as a recovery lever).

@@ -13,7 +13,9 @@ import (
 	"github.com/JeremyProffittOrg/live-ninja/internal/deliv"
 	"github.com/JeremyProffittOrg/live-ninja/internal/ghost"
 	"github.com/JeremyProffittOrg/live-ninja/internal/jobs"
+	"github.com/JeremyProffittOrg/live-ninja/internal/mcpauth"
 	"github.com/JeremyProffittOrg/live-ninja/internal/store"
+	"github.com/JeremyProffittOrg/live-ninja/internal/suburban"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/firehose"
@@ -61,6 +63,10 @@ func NewServerDependencies(ctx context.Context, cfg config.App, logger *slog.Log
 		AndroidLatestKey:       os.Getenv("ANDROID_LATEST_KEY"),
 		AndroidAssetLinksKey:   os.Getenv("ANDROID_ASSETLINKS_KEY"),
 		CodeUpdateQueueURL:     os.Getenv("CODE_UPDATE_QUEUE_URL"),
+	}
+	deps.Suburban, err = suburban.New(awsCfg, &mcpauth.Dynamo{Client: ddbClient, Table: cfg.TableName}, cfg.AuthKmsKeyID)
+	if err != nil {
+		return nil, err
 	}
 	jobStore, err := jobs.NewDynamoStore(ctx, cfg.TableName)
 	if err != nil {
