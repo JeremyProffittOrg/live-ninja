@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
@@ -195,6 +196,50 @@ func (state *session) prepareReplies() {
 	state.Replies = append(state.Replies, reply)
 }
 
+// quotaReason stores a usage-limit failure as "<name>[_after_action]:<reset
+// date>" in the existing turn Failure string, so a later status replay can
+// speak the same reset date without a schema change. A monthly reset that the
+// broker did not report is the first day of the next UTC month, which is when
+// the monthly counter rolls over.
+func quotaReason(qe *QuotaError, now time.Time) string {
+	name := "usage_limit"
+	if qe.Kind == "monthly_tokens" {
+		name = "monthly_limit"
+	}
+	if qe.ToolRan {
+		name += "_after_action"
+	}
+	reset := qe.ResetAt
+	if reset.IsZero() && qe.Kind == "monthly_tokens" {
+		n := now.UTC()
+		reset = time.Date(n.Year(), n.Month()+1, 1, 0, 0, 0, 0, time.UTC)
+	}
+	if !reset.IsZero() {
+		name += ":" + reset.UTC().Format(time.DateOnly)
+	}
+	return name
+}
+
+func limitSpeech(reason string) string {
+	name, date, _ := strings.Cut(reason, ":")
+	afterAction := strings.HasSuffix(name, "_after_action")
+	scope := map[string]string{"monthly_limit": "monthly usage limit", "usage_limit": "usage limit"}[strings.TrimSuffix(name, "_after_action")]
+	if scope == "" {
+		return ""
+	}
+	resets := ""
+	if day, err := time.Parse(time.DateOnly, date); err == nil {
+		resets = " It resets on " + day.Format("January 2") + "."
+	}
+	if afterAction {
+		return "That request did not finish. Some work may have completed. Check Live Ninja before repeating an action. Your Live Ninja " + scope + " is reached." + resets
+	}
+	return "Your Live Ninja " + scope + " is reached, so nothing was done." + resets
+}
+
 func failureSpeech(reason string) string {
+	if speech := limitSpeech(reason); speech != "" {
+		return speech
+	}
 	return "That request did not finish. " + map[string]string{"settings_changed": "Your settings or access changed; start a new request.", "queue_unavailable": "The queue was unavailable; no automatic retry will run.", "worker_interrupted": "The worker was interrupted; check any action before repeating it.", "stopped": "You stopped this conversation.", "execution_failed": "Some work may have completed. Check Live Ninja before repeating an action.", "reply_limit": "Its answer was too large to retain. Check Live Ninja before repeating an action."}[reason]
 }

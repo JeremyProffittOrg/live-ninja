@@ -172,6 +172,46 @@ func TestAlexaRunnerUsesSharedLoopAndPrivateToolContext(t *testing.T) {
 	}
 }
 
+// A 402 monthly-limit rejection must reach the Alexa service as a typed
+// quota error with its kind and reset time, not a generic broker failure,
+// and must say whether a tool already ran earlier in the same turn.
+func TestAlexaRunnerCarriesQuotaRejection(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db := testutil.NewFakeDynamo()
+	st := store.NewWithClient(db, "test")
+	quota := map[string]any{"error": "quota_exceeded", "code": 402, "kind": "monthly_tokens",
+		"message": "Monthly usage limit reached. Resets at 2026-11-01T00:00:00Z.", "used": 1200000, "limit": 1000000, "resetAt": "2026-11-01T00:00:00Z"}
+	registry, err := tools.NewRegistry(&tools.Deps{Store: st, DDB: db, TableName: "test", Log: log, Reauthorize: allowAll, Now: time.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := alexa.Work{Identity: alexa.Identity{Owner: "u1", Device: "echo"}, Receipt: "receipt", SessionID: "session", Messages: []realtime.ChatMessage{{Role: "user", Content: "Remember my tea preference"}}, Check: func(context.Context) error { return nil }}
+	for _, test := range []struct {
+		name      string
+		responses []map[string]any
+		toolRan   bool
+	}{
+		{"first round", []map[string]any{quota}, false},
+		{"after a tool", []map[string]any{{"toolCalls": []map[string]any{{"id": "c1", "name": "remember_note", "arguments": `{"text":"I prefer tea"}`}}}, quota}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &fakeBrokerLambda{responses: test.responses}
+			deps := &Deps{Store: st, Log: log, Lambda: fake, BrokerFn: "broker"}
+			_, err := runAlexaTurn(t.Context(), deps, registry, w)
+			var qe *alexa.QuotaError
+			if !errors.As(err, &qe) {
+				t.Fatalf("err = %v, want *alexa.QuotaError", err)
+			}
+			if qe.Kind != "monthly_tokens" || !qe.ResetAt.Equal(time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)) || qe.ToolRan != test.toolRan {
+				t.Fatalf("quota error = %+v", qe)
+			}
+			if len(fake.requests) != len(test.responses) {
+				t.Fatalf("model invocations = %d, want %d (no retry)", len(fake.requests), len(test.responses))
+			}
+		})
+	}
+}
+
 func TestWebResearchAdapterUsesVerifiedContextAndOneAttempt(t *testing.T) {
 	fake := &fakeBrokerLambda{responses: []map[string]any{{"search": map[string]any{"summary": "Cited evidence", "sources": []map[string]string{{"title": "News", "url": "https://news.example/report"}}}}}}
 	search := webResearchThroughBroker(&Deps{Lambda: fake, BrokerFn: "realtime-broker"})

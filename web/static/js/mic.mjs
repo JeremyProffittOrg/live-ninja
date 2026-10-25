@@ -143,6 +143,18 @@ function formatResetAt(resetAt) {
 }
 
 /**
+ * User-facing text for a 402 quota_exceeded response. The monthly token cap
+ * covers typed turns too, so only the daily voice-time limit may offer the
+ * typed fallback.
+ */
+export function quotaExceededMessage({ kind, resetAt } = {}) {
+  if (kind === 'monthly_tokens') {
+    return `Your Live Ninja monthly usage limit is reached, so voice and typed messages are paused. It resets ${formatResetAt(resetAt)}.`;
+  }
+  return `You've reached today's voice limit. It resets ${formatResetAt(resetAt)}. You can still type below.`;
+}
+
+/**
  * Events (CustomEvent, payload in `detail`):
  *   statechange    {state, prev}
  *   sessioncreated {session}   — a new RealtimeSession exists; the page and
@@ -796,10 +808,9 @@ export class MicController extends EventTarget {
       const detail = err.message || '';
       switch (err.code) {
         case 'quota_exceeded': {
-          const scope = err.kind === 'monthly_tokens' ? "this month's" : "today's";
           this.#fail({
             code: err.code,
-            message: `You've reached ${scope} voice limit. It resets ${formatResetAt(err.resetAt)}. You can still type below.`,
+            message: quotaExceededMessage(err),
             retryable: false,
             permanent: true,
             txId,

@@ -51,6 +51,18 @@ type RunResult struct {
 	Messages []realtime.ChatMessage
 	Limited  bool
 }
+
+// QuotaError reports that the broker refused a model round because a usage
+// limit is reached. ToolRan is true when a tool already ran in an earlier
+// round of the same turn, so its side effects may exist.
+type QuotaError struct {
+	Kind    string
+	ResetAt time.Time
+	ToolRan bool
+}
+
+func (e *QuotaError) Error() string { return "Alexa usage limit reached: " + e.Kind }
+
 type View struct {
 	State, Text, Receipt string
 	More                 bool
@@ -507,6 +519,10 @@ func (s *Service) Execute(ctx context.Context, job Job) (resultErr error) {
 		result.Messages = nil
 	}
 	if runErr != nil {
+		var limit *QuotaError
+		if errors.As(runErr, &limit) {
+			return s.finish(ctx, current, row, result, "failed", quotaReason(limit, s.now()))
+		}
 		return s.finish(ctx, current, row, result, "failed", "execution_failed")
 	}
 	if err = s.check(workCtx, current); err != nil {

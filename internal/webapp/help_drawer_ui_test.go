@@ -161,6 +161,17 @@ func TestHelpDrawerCoversTheAppsCapabilities(t *testing.T) {
 		assert.Containsf(t, help, want, "help panel must cover the knowledge store: %q", want)
 	}
 
+	// The monthly usage limit (broker 402 kind=monthly_tokens): the sentence
+	// Alexa and the web app say is quoted so the user can find this entry,
+	// and the entry states that typing is blocked too and when it resets.
+	for _, want := range []string{
+		"monthly usage limit is reached",
+		"typed messages",
+		"first day of the month",
+	} {
+		assert.Containsf(t, help, want, "help panel must explain the monthly usage limit: %q", want)
+	}
+
 	// Assistant rules (rule_save/rule_load tools, /api/v1/rules) and the
 	// current-location override (set_current_location). Each is pinned by the
 	// phrase a user would say, plus where rules are managed.

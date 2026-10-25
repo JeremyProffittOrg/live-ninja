@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/JeremyProffittOrg/live-ninja/internal/realtime"
 	"github.com/aws/smithy-go"
 )
 
@@ -30,6 +31,11 @@ func DiagnosticCode(err error) string {
 		return "deadline_exceeded"
 	case errors.Is(err, ErrConflict):
 		return "conflict"
+	}
+	var limit *QuotaError
+	var quota *realtime.QuotaExceededError
+	if errors.As(err, &limit) || errors.As(err, &quota) {
+		return "quota_exceeded"
 	}
 	var api smithy.APIError
 	if errors.As(err, &api) {

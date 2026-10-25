@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -103,6 +104,47 @@ func TestAlexaDiagnosticCodesDoNotLeakProviderMessages(t *testing.T) {
 	require.NotContains(t, logs.String(), "private.example")
 	require.NotContains(t, logs.String(), "token=")
 	require.Contains(t, logs.String(), `"httpStatus":503`)
+}
+
+func TestAlexaMonthlyLimitSpeechIsTruthful(t *testing.T) {
+	reset := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	require.Equal(t, "quota_exceeded", DiagnosticCode(&QuotaError{Kind: "monthly_tokens", ResetAt: reset}))
+	require.Equal(t, "quota_exceeded", DiagnosticCode(&realtime.QuotaExceededError{Kind: "monthly_tokens", ResetAt: reset}))
+	for _, test := range []struct {
+		name    string
+		toolRan bool
+		want    string
+		caution bool
+	}{
+		{"nothing ran", false, "Your Live Ninja monthly usage limit is reached, so nothing was done. It resets on November 1.", false},
+		{"tool already ran", true, "Your Live Ninja monthly usage limit is reached. It resets on November 1.", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s, id, _, _, ran := serviceFixture(t)
+			var diagnostics bytes.Buffer
+			s.Log = slog.New(slog.NewJSONHandler(&diagnostics, nil))
+			ctx := t.Context()
+			s.Run = func(_ context.Context, w Work) (RunResult, error) {
+				*ran++
+				return RunResult{Messages: w.Messages}, &QuotaError{Kind: "monthly_tokens", ResetAt: reset, ToolRan: test.toolRan}
+			}
+			view, err := s.Submit(ctx, id, "limit", "session", "What is on my calendar?")
+			require.NoError(t, err)
+			require.NoError(t, s.Execute(ctx, Job{Owner: id.Owner, Turn: view.Receipt}))
+			require.Equal(t, 1, *ran)
+			status, err := s.Status(ctx, id)
+			require.NoError(t, err)
+			require.Equal(t, "failed", status.State)
+			require.Contains(t, status.Text, test.want)
+			require.Equal(t, test.caution, strings.Contains(status.Text, "Some work may have completed"))
+			spoken, err := s.Speech(ctx, id, "status")
+			require.NoError(t, err)
+			require.Contains(t, spoken.Text, test.want)
+			require.Equal(t, test.caution, strings.Contains(spoken.Text, "Some work may have completed"))
+			require.Contains(t, diagnostics.String(), `"errorCode":"quota_exceeded"`)
+			require.Equal(t, 1, *ran, "the model must never be retried")
+		})
+	}
 }
 
 type diagnosticHTTPFailure struct{}

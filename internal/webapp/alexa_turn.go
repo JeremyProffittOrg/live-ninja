@@ -137,6 +137,12 @@ func runAlexaTurn(ctx context.Context, deps *Deps, registry *tools.Registry, wor
 		return alexa.RunResult{}, err
 	}
 	if result.Failure != nil {
+		if result.Failure.Error == "quota_exceeded" {
+			// Keep the limit kind and reset time so Alexa can say why nothing
+			// ran; the broker's 402 body is otherwise lost here.
+			resetAt, _ := time.Parse(time.RFC3339, result.Failure.ResetAt)
+			return alexa.RunResult{}, &alexa.QuotaError{Kind: result.Failure.Kind, ResetAt: resetAt, ToolRan: len(result.Calls) > 0}
+		}
 		return alexa.RunResult{}, errors.New("Alexa broker request failed")
 	}
 	if err = work.Check(ctx); err != nil {
