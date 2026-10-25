@@ -31,6 +31,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -252,14 +253,22 @@ func ghostRunStatusDefinition() *Definition {
 	return &Definition{
 		Name:      "ghost_run_status",
 		OwnerOnly: true,
-		Description: "Check a run started with ghost_run_start. Pass the eventId and runId it returned, " +
-			"or its requestId, or nothing for the owner's most recent run; the ids are optional, so never ask the owner for them. Reports the run status " +
-			"ghost records (for example queued, running, done, failed) and its summary when the " +
-			"session left one. Do not call a run finished unless the status says so.",
+		Description: "Read back the status of a coding run on the owner's computers. Call it with no " +
+			"arguments (optionally node) for the most recent run: the latest run started through Live " +
+			"Ninja when one is on record, otherwise the most recent run on the ghost schedule " +
+			"(source=ghost_schedule: scheduled tasks and runs started elsewhere), with the other " +
+			"recent scheduled runs in recentScheduledRuns so you can pick the one whose repo matches " +
+			"the question. Pass eventId and runId, or a requestId, only when you already have them; " +
+			"ids are never required, so never ask the owner for one. Reports the run status ghost " +
+			"records (for example queued, running, done, failed) and its summary when the session " +
+			"left one. A scheduled run is not matched to any coding session. Do not call a run " +
+			"finished unless the status says so.",
 		Params: []ParamSpec{
+			{Name: "node", Type: "string", MaxLen: 128,
+				Description: "Optional, with no ids: only runs on this computer (a name from ghost_nodes)."},
 			{Name: "requestId", Type: "string", MaxLen: 128, Description: "The requestId from ghost_run_start."},
-			{Name: "eventId", Type: "string", MaxLen: 128, Description: "The eventId from ghost_run_start (with runId)."},
-			{Name: "runId", Type: "string", MaxLen: 128, Description: "The runId from ghost_run_start (with eventId)."},
+			{Name: "eventId", Type: "string", MaxLen: 128, Description: "The eventId from ghost_run_start or a scheduled run (with runId)."},
+			{Name: "runId", Type: "string", MaxLen: 128, Description: "The runId from ghost_run_start or a scheduled run (with eventId)."},
 		},
 		Handler: handleGhostRunStatus,
 	}
@@ -275,26 +284,54 @@ func handleGhostRunStatus(ctx context.Context, d *Deps, inv Invocation, args map
 	eventID, runID, requestID = strings.TrimSpace(eventID), strings.TrimSpace(runID), strings.TrimSpace(requestID)
 
 	out := map[string]any{}
+	nodeFilter := ""
 	if eventID == "" || runID == "" {
-		if d.CodeUpdate == nil {
-			return nil, toolErrf(CodeInvalidArgs, "give the eventId and runId that ghost_run_start returned")
-		}
 		var (
 			rec codeupdate.Record
 			err error
 		)
 		if requestID != "" {
+			if d.CodeUpdate == nil {
+				return nil, toolErrf(CodeInvalidArgs, "give the eventId and runId that ghost_run_start returned")
+			}
 			rec, err = d.CodeUpdate.Get(ctx, inv.UserID, requestID)
+			switch {
+			case errors.Is(err, codeupdate.ErrNotFound):
+				return nil, toolErrf(CodeNotFound, "no run was found for this account")
+			case err != nil:
+				d.Log.Error("tools: ghost_run_status read failed", "error", err.Error())
+				return nil, toolErrf(CodeUpstreamError, "could not read the run record")
+			}
 		} else {
-			rec, err = d.CodeUpdate.Latest(ctx, inv.UserID)
+			// No ids: the latest Live Ninja-launched run (CODEUPD#) when
+			// there is one on this computer, else the newest run on the
+			// ghost schedule. CODEUPD# rows exist only for runs Live Ninja
+			// started, so a scheduled task's outcome lives only on the
+			// schedule.
+			if nodeArg, _ := args["node"].(string); strings.TrimSpace(nodeArg) != "" {
+				n, _, terr := ghostRequireNode(ctx, d, inv, nodeArg)
+				if terr != nil {
+					return nil, terr
+				}
+				nodeFilter = n.NodeID
+			}
+			found := false
+			if d.CodeUpdate != nil {
+				rec, err = d.CodeUpdate.Latest(ctx, inv.UserID)
+				switch {
+				case errors.Is(err, codeupdate.ErrNotFound):
+				case err != nil:
+					d.Log.Error("tools: ghost_run_status read failed", "error", err.Error())
+					return nil, toolErrf(CodeUpstreamError, "could not read the run record")
+				default:
+					found = nodeFilter == "" || strings.EqualFold(rec.Node, nodeFilter)
+				}
+			}
+			if !found {
+				return ghostLatestScheduledRun(ctx, d, inv, nodeFilter)
+			}
 		}
-		switch {
-		case errors.Is(err, codeupdate.ErrNotFound):
-			return nil, toolErrf(CodeNotFound, "no run was found for this account")
-		case err != nil:
-			d.Log.Error("tools: ghost_run_status read failed", "error", err.Error())
-			return nil, toolErrf(CodeUpstreamError, "could not read the run record")
-		}
+		out["source"] = "live_ninja"
 		out["requestId"] = rec.RequestID
 		out["recordStatus"] = rec.Status
 		out["repo"] = rec.Repo
@@ -304,6 +341,19 @@ func handleGhostRunStatus(ctx context.Context, d *Deps, inv Invocation, args map
 		out["createdAt"] = rec.CreatedAt
 		if rec.Error != "" {
 			out["error"] = rec.Error
+		}
+		if requestID == "" {
+			// The latest Live Ninja run may be older than, or a different
+			// repository from, what the owner asked about, or not launched
+			// at all: list the recent scheduled runs beside it. Read-only
+			// and best effort; a failure is reported, not hidden.
+			if events, serr := d.Ghost.ScheduledWork(ctx, ghostCorrelation(inv)); serr != nil {
+				d.Log.Warn("tools: ghost_run_status scheduled runs unavailable", "error", serr.Error())
+				out["recentScheduledRunsAvailable"] = false
+			} else {
+				out["recentScheduledRuns"] = ghostRecentRunRows(ghostRanScheduled(events, nodeFilter))
+				out["recentScheduledRunsAvailable"] = true
+			}
 		}
 		if rec.EventID == "" || rec.RunID == "" {
 			out["note"] = "this request has not been launched on ghost yet; there is no run status to read"
@@ -342,4 +392,119 @@ func handleGhostRunStatus(ctx context.Context, d *Deps, inv Invocation, args map
 	out["lastRunTs"] = ev.LastRunTs
 	out["note"] = "status is ghost's recorded run state; only a terminal status means the run ended"
 	return out, nil
+}
+
+// ghostRecentScheduledRuns bounds the recentScheduledRuns list.
+const ghostRecentScheduledRuns = 5
+
+// ghostLatestScheduledRun answers ghost_run_status with no ids when Live Ninja
+// has no run record of its own: the newest run on the ghost schedule, read
+// through ScheduledWork (which drops any event naming a computer outside the
+// owner's fleet), optionally narrowed to one computer. It is read-only and is
+// never joined to a coding session (ghost.ScheduledEvent comment).
+func ghostLatestScheduledRun(ctx context.Context, d *Deps, inv Invocation, nodeID string) (map[string]any, *ToolError) {
+	events, err := d.Ghost.ScheduledWork(ctx, ghostCorrelation(inv))
+	if err != nil {
+		return nil, ghostFleetError(err)
+	}
+	runs := ghostRanScheduled(events, nodeID)
+	if len(runs) == 0 {
+		where := ""
+		if nodeID != "" {
+			where = " on " + nodeID
+		}
+		return nil, toolErrf(CodeNotFound, "no run was found%s: Live Ninja has no run it started for this account and the ghost schedule has no recorded run", where)
+	}
+
+	newest := runs[0]
+	out := map[string]any{
+		"source":  "ghost_schedule",
+		"eventId": newest.ev.EventID,
+		"runId":   newest.ev.LastRunID,
+		"status":  newest.ev.LastRunStatus,
+		"ts":      newest.ev.LastRunTs,
+		"node":    newest.node,
+		"repo":    newest.ev.Repo,
+		"agent":   newest.ev.CLI,
+		"enabled": newest.ev.Enabled,
+	}
+	for _, r := range newest.ev.Runs {
+		if r.RunID != newest.ev.LastRunID {
+			continue
+		}
+		if r.Trigger != "" {
+			out["trigger"] = r.Trigger
+		}
+		if r.Summary != "" {
+			out["summary"] = r.Summary
+		}
+		break
+	}
+	out["recentScheduledRuns"] = ghostRecentRunRows(runs)
+	scope := "this account"
+	if nodeID != "" {
+		scope += " on " + nodeID
+	}
+	out["note"] = "Live Ninja has no run it started for " + scope +
+		", so this is the most recent run on the ghost schedule (scheduled tasks and runs started " +
+		"elsewhere); check its repo and ts match the question, and see recentScheduledRuns for " +
+		"others. It is not matched to any coding session. Status is ghost's recorded run state; " +
+		"only a terminal status means the run ended"
+	return out, nil
+}
+
+// ghostRan is one scheduled event that has run, with the computer it last ran on.
+type ghostRan struct {
+	ev    ghost.ScheduledEvent
+	node  string
+	ts    time.Time
+	dated bool
+}
+
+// ghostRanScheduled keeps the events that have a last run (on nodeID when it
+// is set) and orders them newest last-run first; undated runs go last.
+func ghostRanScheduled(events []ghost.ScheduledEvent, nodeID string) []ghostRan {
+	var runs []ghostRan
+	for _, ev := range events {
+		if ev.LastRunID == "" {
+			continue // never ran
+		}
+		node := ev.LastRunNode
+		if node == "" {
+			node = ev.Node
+		}
+		if nodeID != "" && node != nodeID {
+			continue
+		}
+		ts, dated := ghostParseTime(ev.LastRunTs)
+		runs = append(runs, ghostRan{ev: ev, node: node, ts: ts, dated: dated})
+	}
+	sort.SliceStable(runs, func(i, j int) bool {
+		a, b := runs[i], runs[j]
+		switch {
+		case a.dated && b.dated:
+			if !a.ts.Equal(b.ts) {
+				return a.ts.After(b.ts)
+			}
+		case a.dated != b.dated:
+			return a.dated
+		}
+		return a.ev.EventID < b.ev.EventID
+	})
+	return runs
+}
+
+// ghostRecentRunRows renders up to ghostRecentScheduledRuns of runs.
+func ghostRecentRunRows(runs []ghostRan) []map[string]any {
+	recent := make([]map[string]any, 0, ghostRecentScheduledRuns)
+	for _, r := range runs {
+		if len(recent) >= ghostRecentScheduledRuns {
+			break
+		}
+		recent = append(recent, map[string]any{
+			"eventId": r.ev.EventID, "runId": r.ev.LastRunID, "status": r.ev.LastRunStatus,
+			"ts": r.ev.LastRunTs, "node": r.node, "repo": r.ev.Repo,
+		})
+	}
+	return recent
 }

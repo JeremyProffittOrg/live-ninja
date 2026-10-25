@@ -132,5 +132,11 @@ func TestGhostInstructionsSearchBeforeAskingForRunIDs(t *testing.T) {
 		assert.Contains(t, instructions, "Never ask the owner for a run id, event id or request id", name)
 		assert.Contains(t, instructions, "ghost_run_status with no arguments", name)
 		assert.Contains(t, instructions, "ghost_session_summary for the time window", name)
+		// Scheduled task outcomes come from the schedule, not only Live
+		// Ninja-launched runs (2026-10-24: "couldn't verify the latest run").
+		assert.Contains(t, instructions, "most recent scheduled task run from the ghost schedule", name)
+		assert.NotContains(t, instructions, "it only sees runs started through Live Ninja", name)
+		// Recent activity is read across the whole listing, newest first.
+		assert.Contains(t, instructions, "newest first", name)
 	}
 }

@@ -3,10 +3,13 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
@@ -402,9 +405,98 @@ func TestGhostRunStatusReadsTheRunBack(t *testing.T) {
 	res = r.Invoke(context.Background(), ghostOwnerInvocation("ghost_run_status", "", map[string]any{"eventId": eventID, "runId": "run-9"}))
 	requireToolError(t, res, CodeNotFound)
 
-	// Without a store there is nothing to default to.
-	res = r.Invoke(context.Background(), ghostOwnerInvocation("ghost_run_status", "", map[string]any{}))
+	// Without a store a requestId cannot be resolved.
+	res = r.Invoke(context.Background(), ghostOwnerInvocation("ghost_run_status", "", map[string]any{"requestId": "20261019T120000Z-gabc"}))
 	requireToolError(t, res, CodeInvalidArgs)
+}
+
+// ghostScheduledRunsBody is a schedule where the newest visible run is the
+// nightly Windows app build, one event never ran, one ran on LAPTOP and one
+// names a computer outside the owner's fleet (BASEMENT), which ScheduledWork
+// must drop however recent it is.
+func ghostScheduledRunsBody() string {
+	b, _ := json.Marshal(map[string]any{"events": []map[string]any{
+		{"event_id": "voice-update-live-ninja", "node": "OFFICEPC", "repo": "JeremyProffittOrg/live-ninja", "cli": "claude", "enabled": false,
+			"last_run_id": "run-7", "last_run_status": "done", "last_run_ts": "2026-10-18T09:00:00Z", "runs": []map[string]any{}},
+		{"event_id": "nightly-windows-app", "node": "OFFICEPC", "repo": "JeremyProffittOrg/windows-app", "cli": "codex", "enabled": true,
+			"last_run_id": "run-22", "last_run_status": "succeeded", "last_run_ts": "2026-10-19T03:00:00Z", "last_run_node": "OFFICEPC",
+			"runs": []map[string]any{{"run_id": "run-22", "status": "succeeded", "ts": "2026-10-19T03:00:00Z", "node": "OFFICEPC", "trigger": "schedule", "summary": "Built and published 1.4.2."}}},
+		{"event_id": "never-ran", "node": "OFFICEPC", "repo": "JeremyProffittOrg/event", "cli": "claude", "enabled": true, "runs": []map[string]any{}},
+		{"event_id": "laptop-docs", "node": "LAPTOP", "repo": "JeremyProffittOrg/docs", "cli": "claude", "enabled": true,
+			"last_run_id": "run-30", "last_run_status": "failed", "last_run_ts": "2026-10-19T10:00:00Z", "runs": []map[string]any{}},
+		{"event_id": "secret-box", "node": "BASEMENT", "repo": "JeremyProffittOrg/secret", "cli": "claude", "enabled": true,
+			"last_run_id": "run-99", "last_run_status": "done", "last_run_ts": "2026-10-19T11:00:00Z", "runs": []map[string]any{}},
+	}})
+	return string(b)
+}
+
+func ghostScheduledRunsFake(schedule string) *ghostFake {
+	return newGhostFake().
+		static("GET", "/nodes", 200, ghostNodesBody(ghostNode("OFFICEPC", "live", true, "1.1.60"), ghostNode("LAPTOP", "offline", false, "1.1.60"))).
+		static("GET", "/schedule", 200, schedule)
+}
+
+// "Did the nightly build run?" with no ids and no Live Ninja-launched run
+// record reads the newest run on the ghost schedule instead of answering
+// not_found (production 2026-10-24: the model said it "couldn't verify").
+func TestGhostRunStatusWithoutIDsReadsTheNewestScheduledRun(t *testing.T) {
+	for name, withStore := range map[string]bool{"no store": false, "store without a record": true} {
+		t.Run(name, func(t *testing.T) {
+			f := ghostScheduledRunsFake(ghostScheduledRunsBody())
+			deps, _ := ghostDeps(f)
+			if withStore {
+				deps.CodeUpdate = codeupdate.NewStore(&cuDDB{}, "live-ninja-test", nil)
+			}
+			r := newTestRegistry(t, deps)
+			res := r.Invoke(context.Background(), ghostOwnerInvocation("ghost_run_status", "", map[string]any{}))
+			require.True(t, res.OK, "%+v", res.Error)
+			out := res.Output
+			require.Equal(t, "ghost_schedule", out["source"])
+			require.Equal(t, "laptop-docs", out["eventId"], "newest visible run across the fleet")
+			require.Equal(t, "failed", out["status"])
+			require.NotContains(t, fmt.Sprint(out), "BASEMENT", "a run on a computer outside the fleet is never shown")
+			require.NotContains(t, fmt.Sprint(out), "run-99")
+
+			// Scoped to one computer: the nightly Windows build, with its summary.
+			res = r.Invoke(context.Background(), ghostOwnerInvocation("ghost_run_status", "", map[string]any{"node": "officepc"}))
+			require.True(t, res.OK, "%+v", res.Error)
+			out = res.Output
+			require.Equal(t, "ghost_schedule", out["source"])
+			require.Equal(t, "nightly-windows-app", out["eventId"])
+			require.Equal(t, "run-22", out["runId"])
+			require.Equal(t, "succeeded", out["status"])
+			require.Equal(t, "2026-10-19T03:00:00Z", out["ts"])
+			require.Equal(t, "OFFICEPC", out["node"])
+			require.Equal(t, "JeremyProffittOrg/windows-app", out["repo"])
+			require.Equal(t, "codex", out["agent"])
+			require.Equal(t, "schedule", out["trigger"])
+			require.Equal(t, "Built and published 1.4.2.", out["summary"])
+			recent := out["recentScheduledRuns"].([]map[string]any)
+			require.Len(t, recent, 2, "only runs on OFFICEPC that actually ran")
+			require.Equal(t, "nightly-windows-app", recent[0]["eventId"])
+			require.Equal(t, "voice-update-live-ninja", recent[1]["eventId"])
+			require.Empty(t, f.callsTo("GET", "/history/sessions"), "scheduled runs are never joined to sessions")
+		})
+	}
+}
+
+func TestGhostRunStatusWithoutAnyRunIsNotFound(t *testing.T) {
+	empty, _ := json.Marshal(map[string]any{"events": []map[string]any{
+		{"event_id": "never-ran", "node": "OFFICEPC", "repo": "JeremyProffittOrg/event", "cli": "claude", "enabled": true, "runs": []map[string]any{}},
+	}})
+	f := ghostScheduledRunsFake(string(empty))
+	deps, _ := ghostDeps(f)
+	deps.CodeUpdate = codeupdate.NewStore(&cuDDB{}, "live-ninja-test", nil)
+	res := newTestRegistry(t, deps).Invoke(context.Background(), ghostOwnerInvocation("ghost_run_status", "", map[string]any{}))
+	terr := requireToolError(t, res, CodeNotFound)
+	require.Contains(t, terr.Message, "schedule")
+
+	// An unknown computer is refused, not silently widened to the fleet.
+	f2 := ghostScheduledRunsFake(ghostScheduledRunsBody())
+	deps2, _ := ghostDeps(f2)
+	res = newTestRegistry(t, deps2).Invoke(context.Background(), ghostOwnerInvocation("ghost_run_status", "", map[string]any{"node": "BASEMENT"}))
+	requireToolError(t, res, CodeNotFound)
+	require.Empty(t, f2.callsTo("GET", "/schedule"))
 }
 
 func TestGhostRunStatusResolvesARecordedRequest(t *testing.T) {
@@ -469,4 +561,56 @@ func TestGhostRunRequestIDIsTimeOrderedAndKeyBound(t *testing.T) {
 	real7, err := uuid.NewV7()
 	require.NoError(t, err)
 	require.Less(t, codeupdate.SortKey(a), codeupdate.SortKey(real7.String()), "a ghost id from 2026-10-19 sorts before a UUIDv7 minted now")
+}
+
+// cuLatestDDB answers the CODEUPD# Latest query with the one stored record.
+type cuLatestDDB struct{ *cuDDB }
+
+func (f cuLatestDDB) Query(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+	if len(f.puts) == 0 {
+		return &dynamodb.QueryOutput{}, nil
+	}
+	return &dynamodb.QueryOutput{Items: []map[string]ddbtypes.AttributeValue{f.puts[len(f.puts)-1]}}, nil
+}
+
+// With a Live Ninja run on record, the no-id call still reads it first, and
+// lists the recent scheduled runs beside it so an older or different-repo
+// record is not mistaken for the run the owner asked about.
+func TestGhostRunStatusWithoutIDsListsScheduledRunsBesideTheRecord(t *testing.T) {
+	f := ghostScheduledRunsFake(ghostScheduledRunsBody())
+	deps, _ := ghostDeps(f)
+	db := cuLatestDDB{&cuDDB{}}
+	deps.CodeUpdate = codeupdate.NewStore(db, "live-ninja-test", nil)
+	require.NoError(t, deps.CodeUpdate.Put(context.Background(), codeupdate.Record{
+		RequestID: "0192f000-0000-7000-8000-000000000001", UserID: "user-1", Status: codeupdate.StatusLaunched,
+		Repo: "JeremyProffittOrg/windows-app", Node: "OFFICEPC", CLI: "codex", Deploy: true,
+		EventID: "nightly-windows-app", RunID: "run-22",
+	}))
+	out, terr := handleGhostRunStatus(context.Background(), deps, ghostOwnerInvocation("ghost_run_status", "", nil), map[string]any{})
+	require.Nil(t, terr)
+	require.Equal(t, "live_ninja", out["source"])
+	require.Equal(t, "run-22", out["runId"])
+	require.Equal(t, "succeeded", out["status"])
+	require.Equal(t, true, out["recentScheduledRunsAvailable"])
+	recent := out["recentScheduledRuns"].([]map[string]any)
+	require.Equal(t, "laptop-docs", recent[0]["eventId"])
+	require.NotContains(t, fmt.Sprint(out), "BASEMENT")
+}
+
+// A latest record that never launched still lists the scheduled runs beside
+// its "not launched yet" note.
+func TestGhostRunStatusUnlaunchedRecordListsScheduledRuns(t *testing.T) {
+	f := ghostScheduledRunsFake(ghostScheduledRunsBody())
+	deps, _ := ghostDeps(f)
+	deps.CodeUpdate = codeupdate.NewStore(cuLatestDDB{&cuDDB{}}, "live-ninja-test", nil)
+	require.NoError(t, deps.CodeUpdate.Put(context.Background(), codeupdate.Record{
+		RequestID: "0192f000-0000-7000-8000-000000000002", UserID: "user-1", Status: codeupdate.StatusQueued,
+		Repo: "JeremyProffittOrg/windows-app", Node: "OFFICEPC", CLI: "codex",
+	}))
+	out, terr := handleGhostRunStatus(context.Background(), deps, ghostOwnerInvocation("ghost_run_status", "", nil), map[string]any{})
+	require.Nil(t, terr)
+	require.Equal(t, "live_ninja", out["source"])
+	require.Contains(t, out["note"], "not been launched")
+	require.Equal(t, true, out["recentScheduledRunsAvailable"])
+	require.Equal(t, "laptop-docs", out["recentScheduledRuns"].([]map[string]any)[0]["eventId"])
 }

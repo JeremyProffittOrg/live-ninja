@@ -3,24 +3,28 @@ package tools
 // ghost_sessions — "what is running on the office PC?" / "what sessions are
 // there anywhere?"
 //
-// Paged over ghost-cli's retained session discovery (GET /history/sessions),
-// one node at a time in node-id order when no node is named. Scheduled runs
-// (GET /schedule) are reported BESIDE the sessions on the first page, never
-// joined to them: ghost-cli has no authoritative session binding for a run.
+// Built over ghost-cli's retained session discovery (GET /history/sessions).
+// Upstream lists S3 keys in ascending upload order, about 1000 per page, so
+// its first page is the OLDEST work on a computer. This tool therefore walks
+// each computer's whole listing (ghostWalkSessions, bounded), merges the
+// computers in scope, and pages over that list newest activity first.
+// Scheduled runs (GET /schedule) are reported BESIDE the sessions on the
+// first page, never joined to them: ghost-cli has no authoritative session
+// binding for a run.
 
 import (
 	"context"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/JeremyProffittOrg/live-ninja/internal/ghost"
 )
 
 const (
 	ghostSessionsDefaultLimit = 20
-	// ghostSessionsMaxPages bounds upstream listings per call, so a node with a
-	// huge archive of empty pages cannot stall a voice turn; the cursor carries
-	// the walk forward on the next call.
-	ghostSessionsMaxPages = 3
+	// ghostSessionsMaxSince bounds the optional sinceMinutes filter (7 days).
+	ghostSessionsMaxSince = 7 * 24 * 60
 	// ghostMaxScheduledRuns bounds the sidebar.
 	ghostMaxScheduledRuns = 20
 )
@@ -30,22 +34,34 @@ func ghostSessionsDefinition() *Definition {
 		Name:      "ghost_sessions",
 		OwnerOnly: true,
 		Description: "List the coding-agent sessions ghost has retained for one computer, or for every " +
-			"computer when node is omitted, with upload date, last activity and whether each is " +
-			"active (activity in the last 30 minutes), idle, or unknown. Results are paged: follow " +
-			"nextCursor with cursor. The first page also lists the scheduled runs on those computers " +
-			"(repository and last run status) separately — a run and a session are not the same " +
-			"record and are never matched to each other. Coverage is retained uploads only: an " +
-			"empty list does not prove nothing ran.",
+			"computer when node is omitted, NEWEST ACTIVITY FIRST, with upload date, last activity and " +
+			"whether each is active (activity in the last 30 minutes), idle, or unknown. Use " +
+			"sinceMinutes to keep only sessions with an upload in that recent window. Results are " +
+			"paged: follow nextCursor with cursor. partial=true means a computer's listing was longer " +
+			"than the read bound and its newest sessions may be missing. The first page also lists " +
+			"the scheduled runs on those computers (repository and last run status) separately — a " +
+			"run and a session are not the same record and are never matched to each other. " +
+			"Coverage is retained uploads only: an empty list does not prove nothing ran.",
 		Params: []ParamSpec{
 			{Name: "node", Type: "string", MaxLen: 128,
-				Description: "Optional: one computer name from ghost_nodes. Omit to walk every computer."},
+				Description: "Optional: one computer name from ghost_nodes. Omit to list every computer."},
 			{Name: "cursor", Type: "string", MaxLen: 4096,
-				Description: "The nextCursor from an earlier ghost_sessions result."},
+				Description: "The nextCursor from an earlier ghost_sessions result, with the same node and sinceMinutes."},
 			{Name: "limit", Type: "integer", Min: floatPtr(1), Max: floatPtr(50),
 				Description: "Sessions per page, default 20."},
+			{Name: "sinceMinutes", Type: "integer", Min: floatPtr(1), Max: floatPtr(ghostSessionsMaxSince),
+				Description: "Optional: only sessions with a retained upload in the last this-many minutes."},
 		},
 		Handler: handleGhostSessions,
 	}
+}
+
+// ghostNodeSession is one listed session with the computer it belongs to.
+type ghostNodeSession struct {
+	node  string
+	s     ghost.HistorySession
+	ts    time.Time
+	dated bool
 }
 
 func handleGhostSessions(ctx context.Context, d *Deps, inv Invocation, args map[string]any) (map[string]any, *ToolError) {
@@ -55,6 +71,10 @@ func handleGhostSessions(ctx context.Context, d *Deps, inv Invocation, args map[
 	limit := ghostSessionsDefaultLimit
 	if v, ok := args["limit"].(int); ok && v > 0 {
 		limit = v
+	}
+	since := 0
+	if v, ok := args["sinceMinutes"].(int); ok && v > 0 {
+		since = v
 	}
 	nodeArg, _ := args["node"].(string)
 	nodeArg = strings.TrimSpace(nodeArg)
@@ -70,11 +90,23 @@ func handleGhostSessions(ctx context.Context, d *Deps, inv Invocation, args map[
 		ids = append(ids, n.NodeID)
 	}
 
-	// Resolve the starting state: a fresh walk, or a decoded cursor that must
-	// agree with the node argument it was issued for.
-	var state ghostCursor
-	switch {
-	case cursorArg != "":
+	// Resolve the scope, then the offset: a fresh walk, or a decoded cursor
+	// that must agree with the node and sinceMinutes it was issued for.
+	scope := ids
+	nodeID := ""
+	if nodeArg != "" {
+		if !ghost.ValidNodeID(nodeArg) {
+			return nil, toolErrf(CodeInvalidArgs, "node must be a computer name as ghost_nodes lists it")
+		}
+		n, ok := ghostFindNode(nodes, nodeArg)
+		if !ok {
+			return nil, toolErrf(CodeNotFound, "no computer named %q is in the fleet; call ghost_nodes to list them", nodeArg)
+		}
+		nodeID = n.NodeID
+		scope = []string{n.NodeID}
+	}
+	offset := 0
+	if cursorArg != "" {
 		c, ok := decodeGhostCursor(cursorArg)
 		if !ok {
 			return nil, toolErrf(CodeInvalidArgs, "cursor is not a ghost_sessions cursor; start again without one")
@@ -82,120 +114,106 @@ func handleGhostSessions(ctx context.Context, d *Deps, inv Invocation, args map[
 		if c.All != (nodeArg == "") {
 			return nil, toolErrf(CodeInvalidArgs, "cursor was issued for a different node scope; start again without one")
 		}
-		if !c.All {
-			n, ok := ghostFindNode(nodes, nodeArg)
-			if !ok {
-				return nil, toolErrf(CodeNotFound, "no computer named %q is in the fleet; call ghost_nodes to list them", nodeArg)
-			}
-			if c.N != n.NodeID {
-				return nil, toolErrf(CodeInvalidArgs, "cursor was issued for a different computer; start again without one")
-			}
+		if !c.All && c.N != nodeID {
+			return nil, toolErrf(CodeInvalidArgs, "cursor was issued for a different computer; start again without one")
 		}
-		state = c
-	case nodeArg != "":
-		n, _, terr := ghostRequireNode(ctx, d, inv, nodeArg)
-		if terr != nil {
-			return nil, terr
+		if c.S != since {
+			return nil, toolErrf(CodeInvalidArgs, "cursor was issued for a different sinceMinutes; start again without one")
 		}
-		state = ghostCursor{N: n.NodeID}
-	default:
-		if len(ids) == 0 {
-			return map[string]any{"sessions": []map[string]any{}, "nextCursor": "", "scope": "fleet",
-				"coverage": ghostCoverage, "message": "the fleet reports no computers at all"}, nil
-		}
-		state = ghostCursor{All: true, N: ids[0]}
+		offset = c.I
 	}
 
 	now := d.Now()
 	corr := ghostCorrelation(inv)
-	sessions := make([]map[string]any, 0, limit)
-	pages := 0
-	for len(sessions) < limit && pages < ghostSessionsMaxPages && state.N != "" {
-		if state.All {
-			// A node that left the fleet mid-walk: continue with the next in order.
-			if _, ok := ghostFindNode(nodes, state.N); !ok {
-				state = ghostCursor{All: true, N: nextNodeAfter(ids, state.N)}
-				continue
-			}
-		}
-		page, err := d.Ghost.HistorySessions(ctx, state.N, state.C, corr)
+	cutoff := now.Add(-time.Duration(since) * time.Minute)
+	var all []ghostNodeSession
+	partialReasons := []string{}
+	for _, id := range scope {
+		listing, err := ghostWalkSessions(ctx, d, corr, id)
 		if err != nil {
 			return nil, ghostFleetError(err)
 		}
-		pages++
-		if state.I > len(page.Sessions) {
-			// The upstream page shrank since the cursor was issued; do not skip
-			// past content that moved, just finish this page.
-			state.I = len(page.Sessions)
+		if listing.Partial {
+			partialReasons = append(partialReasons, listing.PartialReason)
 		}
-		for state.I < len(page.Sessions) && len(sessions) < limit {
-			sessions = append(sessions, ghostSessionView(now, state.N, page.Sessions[state.I]))
-			state.I++
-		}
-		if state.I < len(page.Sessions) {
-			break // more in this page; the cursor keeps (N, C, I)
-		}
-		switch {
-		case page.NextCursor != "":
-			state = ghostCursor{All: state.All, N: state.N, C: page.NextCursor}
-		case state.All:
-			state = ghostCursor{All: true, N: nextNodeAfter(ids, state.N)}
-		default:
-			state = ghostCursor{}
+		for _, s := range listing.Sessions {
+			ts, dated := ghostParseTime(s.UpdatedAt)
+			if since > 0 && (!dated || ts.Before(cutoff)) {
+				continue
+			}
+			all = append(all, ghostNodeSession{node: id, s: s, ts: ts, dated: dated})
 		}
 	}
+	sort.SliceStable(all, func(i, j int) bool {
+		a, b := all[i], all[j]
+		switch {
+		case a.dated && b.dated:
+			if !a.ts.Equal(b.ts) {
+				return a.ts.After(b.ts)
+			}
+		case a.dated != b.dated:
+			return a.dated
+		}
+		if a.node != b.node {
+			return a.node < b.node
+		}
+		return a.s.SessionID < b.s.SessionID
+	})
 
+	if offset > len(all) {
+		// The listing shrank since the cursor was issued (retention expiry):
+		// end the walk rather than invent rows.
+		offset = len(all)
+	}
+	end := offset + limit
+	if end > len(all) {
+		end = len(all)
+	}
+	sessions := make([]map[string]any, 0, end-offset)
+	for _, row := range all[offset:end] {
+		sessions = append(sessions, ghostSessionView(now, row.node, row.s))
+	}
 	next := ""
-	if state.N != "" {
-		next = encodeGhostCursor(state)
+	if end < len(all) {
+		next = encodeGhostCursor(ghostCursor{All: nodeArg == "", N: nodeID, I: end, S: since})
 	}
 	out := map[string]any{
 		"sessions":            sessions,
 		"nextCursor":          next,
+		"retainedSessions":    len(all),
 		"coverage":            ghostCoverage,
 		"activeWindowMinutes": int(ghostActiveWindow.Minutes()),
-		"note": "sessions are listed oldest upload partition first; uploadDate is the archive " +
+		"partial":             len(partialReasons) > 0,
+		"partialReasons":      partialReasons,
+		"note": "sessions are listed newest activity first; uploadDate is the archive " +
 			"partition, not the start time; an empty list only means nothing was retained",
+	}
+	if since > 0 {
+		out["sinceMinutes"] = since
 	}
 	if nodeArg != "" {
 		out["scope"] = "node"
-		out["node"] = state.N
-		if out["node"] == "" {
-			n, _ := ghostFindNode(nodes, nodeArg)
-			out["node"] = n.NodeID
-		}
+		out["node"] = nodeID
 	} else {
 		out["scope"] = "fleet"
 		out["nodes"] = ids
+		if len(ids) == 0 {
+			out["message"] = "the fleet reports no computers at all"
+		}
 	}
 
 	// First page only: the scheduled-run sidebar.
 	if cursorArg == "" {
-		scope := map[string]bool{}
-		if nodeArg != "" {
-			n, _ := ghostFindNode(nodes, nodeArg)
-			scope[n.NodeID] = true
-		} else {
-			for _, id := range ids {
-				scope[id] = true
-			}
+		inScope := map[string]bool{}
+		for _, id := range scope {
+			inScope[id] = true
 		}
-		runs, available := ghostScheduledRuns(ctx, d, corr, scope)
+		runs, available := ghostScheduledRuns(ctx, d, corr, inScope)
 		out["scheduledRuns"] = runs
 		out["scheduledRunsAvailable"] = available
 		out["scheduledRunsNote"] = "scheduled runs come from the ghost schedule and are not matched to any session above"
 	}
 	return out, nil
-}
-
-// nextNodeAfter returns the first id lexically after cur, or "" at the end.
-func nextNodeAfter(ids []string, cur string) string {
-	for _, id := range ids {
-		if id > cur {
-			return id
-		}
-	}
-	return ""
 }
 
 // ghostScheduledRuns renders the scheduled events whose node is in scope.

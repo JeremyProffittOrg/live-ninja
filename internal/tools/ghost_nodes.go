@@ -18,7 +18,8 @@ func ghostNodesDefinition() *Definition {
 		Name:      "ghost_nodes",
 		OwnerOnly: true,
 		Description: "List the owner's ghost fleet computers with online state, agent version and the " +
-			"number of coding sessions active in the last 30 minutes. Use it when the owner asks " +
+			"number of coding sessions active in the last 30 minutes, plus lastActivity (the newest " +
+			"retained session upload on that computer). Use it when the owner asks " +
 			"which computers are up, what version a machine runs, or whether anything is running " +
 			"somewhere. Session counts come from retained history uploads, so a count can lag the " +
 			"terminal by a few minutes; activeSessionsKnown=false means the count could not be read.",
@@ -71,7 +72,7 @@ func handleGhostNodes(ctx context.Context, d *Deps, inv Invocation, args map[str
 				row["activeSessionsNote"] = "not counted: more than " + itoa(ghostMaxSessionCountNodes) + " computers are online; ask about this one by name"
 			default:
 				counted++
-				page, err := d.Ghost.HistorySessions(ctx, n.NodeID, "", corr)
+				listing, err := ghostWalkSessions(ctx, d, corr, n.NodeID)
 				if err != nil {
 					d.Log.Warn("tools: ghost_nodes session count failed", "node", n.NodeID, "error", err.Error())
 					row["activeSessionsKnown"] = false
@@ -79,16 +80,23 @@ func handleGhostNodes(ctx context.Context, d *Deps, inv Invocation, args map[str
 					break
 				}
 				active := 0
-				for _, s := range page.Sessions {
+				for _, s := range listing.Sessions {
 					if activity, _ := ghostActivity(now, s.UpdatedAt); activity == ghostActivityActive {
 						active++
 					}
 				}
 				row["activeSessions"] = active
-				row["retainedSessions"] = len(page.Sessions)
-				if page.NextCursor != "" {
+				row["retainedSessions"] = len(listing.Sessions)
+				// Newest first: the first dated session is the computer's
+				// latest retained activity.
+				if len(listing.Sessions) > 0 {
+					if _, last := ghostActivity(now, listing.Sessions[0].UpdatedAt); last != "" {
+						row["lastActivity"] = last
+					}
+				}
+				if listing.Partial {
 					row["activeSessionsPartial"] = true
-					row["activeSessionsNote"] = "counted from the first page of retained sessions only"
+					row["activeSessionsNote"] = listing.PartialReason
 				}
 			}
 		}

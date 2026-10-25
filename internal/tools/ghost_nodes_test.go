@@ -130,6 +130,7 @@ func TestGhostToolsRequireOwner(t *testing.T) {
 		{"ghost_sessions", map[string]any{}},
 		{"ghost_session_summary", map[string]any{"node": "OFFICEPC"}},
 		{"ghost_run_status", map[string]any{"eventId": "e", "runId": "r"}},
+		{"ghost_run_status", map[string]any{}},
 		{"ghost_run_start", map[string]any{"repo": "JeremyProffittOrg/live-ninja", "instructions": "tighten the retry logic", "confirm": true}},
 		{"ghost_session_command", map[string]any{"node": "OFFICEPC", "sessionId": ghostSessionA, "command": "PAUSE", "confirm": true}},
 	} {
@@ -178,4 +179,22 @@ func TestGhostToolsAreRegisteredAndServerExecuted(t *testing.T) {
 			}
 		}
 	}
+}
+
+// The active count must read every page: upstream puts the newest sessions on
+// the last one, so a first-page count was always zero on a busy computer.
+func TestGhostNodesCountsActiveSessionsAcrossPages(t *testing.T) {
+	f := newGhostFake().
+		static("GET", "/nodes", 200, ghostNodesBody(ghostNode("OFFICEPC", "live", true, "1.1.60"))).
+		on("GET", "/history/sessions", ghostPagedSessions(t, "OFFICEPC",
+			[]map[string]any{ghostSession(ghostSessionA, 51*24*time.Hour), ghostSession(ghostSessionB, 50*24*time.Hour)},
+			[]map[string]any{ghostSession(ghostSessionC, 3*time.Minute), ghostSession(ghostSessionA, 2*time.Minute)}))
+	deps, _ := ghostDeps(f)
+	out, terr := handleGhostNodes(context.Background(), deps, ghostOwnerInvocation("ghost_nodes", "", nil), map[string]any{})
+	require.Nil(t, terr)
+	office := out["nodes"].([]map[string]any)[0]
+	require.Equal(t, 2, office["activeSessions"], "both page-two sessions are active; A's newer upload wins over its old one")
+	require.Equal(t, 3, office["retainedSessions"], "a session listed under two upload dates is one session")
+	require.NotContains(t, office, "activeSessionsPartial")
+	require.Equal(t, "2026-10-19T11:58:00Z", office["lastActivity"])
 }

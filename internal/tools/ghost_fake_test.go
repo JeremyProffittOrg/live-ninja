@@ -190,6 +190,39 @@ func ghostSessionsBody(node, next string, sessions ...map[string]any) string {
 	return string(b)
 }
 
+// ghostPagedSessions answers GET /history/sessions for one node the way
+// upstream does: the listing is split across pages in ascending upload order,
+// so the newest sessions are on the LAST page. The opaque cursor is "p<i>".
+func ghostPagedSessions(t *testing.T, node string, pages ...[]map[string]any) ghostResponder {
+	return func(ev ghostEvent) (int, string) {
+		require.Equal(t, node, ev.Query["node_id"])
+		i := 0
+		if c := ev.Query["cursor"]; c != "" {
+			_, err := fmt.Sscanf(c, "p%d", &i)
+			require.NoError(t, err, "cursor %q was not one upstream issued", c)
+		}
+		require.Less(t, i, len(pages), "cursor walked past the last upstream page")
+		next := ""
+		if i+1 < len(pages) {
+			next = fmt.Sprintf("p%d", i+1)
+		}
+		return 200, ghostSessionsBody(node, next, pages[i]...)
+	}
+}
+
+// ghostEndlessSessions never stops paging: every page carries one old session
+// and a next cursor, so only the walk bound can end a scan.
+func ghostEndlessSessions(node string) ghostResponder {
+	return func(ev ghostEvent) (int, string) {
+		i := 0
+		if c := ev.Query["cursor"]; c != "" {
+			_, _ = fmt.Sscanf(c, "p%d", &i)
+		}
+		old := ghostSession(fmt.Sprintf("00000000-0000-0000-0000-%012d", i), 60*24*time.Hour)
+		return 200, ghostSessionsBody(node, fmt.Sprintf("p%d", i+1), old)
+	}
+}
+
 func ghostSession(id string, updatedAgo time.Duration) map[string]any {
 	s := map[string]any{"session_id": id, "date": "2026-10-19"}
 	if updatedAgo >= 0 {

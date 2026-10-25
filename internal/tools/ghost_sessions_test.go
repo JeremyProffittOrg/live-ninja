@@ -62,18 +62,21 @@ func TestGhostSessionsPagesThroughUpstreamPages(t *testing.T) {
 		return got
 	}
 
-	// Page 1: two of the three sessions on the first upstream page.
+	// Newest activity first across both upstream pages: D (2m), A (5m),
+	// B (90m), E (3h), then C, which has no timestamp.
 	p1 := call("")
-	require.Equal(t, []string{ghostSessionA, ghostSessionB}, ids(p1))
+	require.Equal(t, []string{ghostSessionD, ghostSessionA}, ids(p1))
 	require.NotEmpty(t, p1["nextCursor"])
 	require.Equal(t, "node", p1["scope"])
 	require.Equal(t, "OFFICEPC", p1["node"])
 	require.Equal(t, "retained_only", p1["coverage"])
 	first := p1["sessions"].([]map[string]any)
 	require.Equal(t, ghostActivityActive, first[0]["activity"])
-	require.Equal(t, ghostNow.Add(-5*time.Minute).Format(time.RFC3339), first[0]["lastActivity"])
-	require.Equal(t, ghostActivityIdle, first[1]["activity"])
+	require.Equal(t, ghostNow.Add(-2*time.Minute).Format(time.RFC3339), first[0]["lastActivity"])
+	require.Equal(t, ghostActivityActive, first[1]["activity"])
 	require.Equal(t, "2026-10-19", first[0]["uploadDate"])
+	require.Equal(t, false, p1["partial"])
+	require.Equal(t, 5, p1["retainedSessions"])
 	// The first page carries the scheduled-run sidebar, scoped to this node.
 	runs := p1["scheduledRuns"].([]map[string]any)
 	require.Len(t, runs, 1)
@@ -81,26 +84,26 @@ func TestGhostSessionsPagesThroughUpstreamPages(t *testing.T) {
 	require.Equal(t, "running", runs[0]["lastRunStatus"])
 	require.Equal(t, true, p1["scheduledRunsAvailable"])
 
-	// Page 2: the rest of upstream page one, then into upstream page two.
+	// Page 2: the older idle sessions.
 	p2 := call(p1["nextCursor"].(string))
-	require.Equal(t, []string{ghostSessionC, ghostSessionD}, ids(p2))
+	require.Equal(t, []string{ghostSessionB, ghostSessionE}, ids(p2))
 	require.NotEmpty(t, p2["nextCursor"])
 	require.NotContains(t, p2, "scheduledRuns", "the sidebar is first-page only")
-	third := p2["sessions"].([]map[string]any)[0]
-	require.Equal(t, ghostActivityUnknown, third["activity"])
-	require.NotContains(t, third, "lastActivity")
+	require.Equal(t, ghostActivityIdle, p2["sessions"].([]map[string]any)[0]["activity"])
 
-	// Page 3: the tail, and the end.
+	// Page 3: the undated tail, and the end.
 	p3 := call(p2["nextCursor"].(string))
-	require.Equal(t, []string{ghostSessionE}, ids(p3))
+	require.Equal(t, []string{ghostSessionC}, ids(p3))
+	require.Equal(t, ghostActivityUnknown, p3["sessions"].([]map[string]any)[0]["activity"])
+	require.NotContains(t, p3["sessions"].([]map[string]any)[0], "lastActivity")
 	require.Equal(t, "", p3["nextCursor"])
 
-	// The upstream cursor was carried through verbatim, once per upstream page.
+	// Each call walks the whole upstream listing with upstream's own cursors.
 	var cursors []string
 	for _, ev := range f.callsTo("GET", "/history/sessions") {
 		cursors = append(cursors, ev.Query["cursor"])
 	}
-	require.Equal(t, []string{"", "", "up2", "up2"}, cursors)
+	require.Equal(t, []string{"", "up2", "", "up2", "", "up2"}, cursors)
 }
 
 func TestGhostSessionsWalksTheWholeFleet(t *testing.T) {
@@ -122,9 +125,10 @@ func TestGhostSessionsWalksTheWholeFleet(t *testing.T) {
 	require.Equal(t, "fleet", out["scope"])
 	sessions := out["sessions"].([]map[string]any)
 	require.Len(t, sessions, 2)
-	require.Equal(t, "LAPTOP", sessions[0]["node"])
-	require.Equal(t, ghostSessionA, sessions[0]["sessionId"])
-	require.Equal(t, "OFFICEPC", sessions[1]["node"])
+	require.Equal(t, "OFFICEPC", sessions[0]["node"], "newest activity first across the fleet")
+	require.Equal(t, ghostSessionB, sessions[0]["sessionId"])
+	require.Equal(t, "LAPTOP", sessions[1]["node"])
+	require.Equal(t, ghostSessionA, sessions[1]["sessionId"])
 	require.Equal(t, "", out["nextCursor"])
 	require.Len(t, out["scheduledRuns"], 2, "fleet scope lists every node's scheduled runs")
 }
@@ -165,6 +169,8 @@ func TestGhostSessionsRejectsForeignCursors(t *testing.T) {
 		"garbage":       {"node": "OFFICEPC", "cursor": "not-a-cursor!"},
 		"scope changed": {"cursor": encodeGhostCursor(ghostCursor{N: "OFFICEPC"})},
 		"other node":    {"node": "LAPTOP", "cursor": encodeGhostCursor(ghostCursor{N: "OFFICEPC"})},
+		"since changed": {"node": "OFFICEPC", "cursor": encodeGhostCursor(ghostCursor{N: "OFFICEPC", I: 2, S: 60})},
+		"version one":   {"node": "OFFICEPC", "cursor": "eyJ2IjoxLCJhbGwiOmZhbHNlLCJuIjoiT0ZGSUNFUEMiLCJjIjoidXAyIn0"},
 	} {
 		_, terr := handleGhostSessions(context.Background(), deps, inv, args)
 		require.NotNil(t, terr, name)
@@ -184,4 +190,40 @@ func TestGhostSessionsScheduledRunsFailureDoesNotFailTheListing(t *testing.T) {
 	require.Len(t, out["sessions"], 1)
 	require.Equal(t, false, out["scheduledRunsAvailable"])
 	require.Len(t, out["scheduledRuns"], 0)
+}
+
+// "What is running on OFFICEPC?" must lead with today's sessions, not the
+// oldest upload partition upstream happens to list first.
+func TestGhostSessionsListsNewestFirstAcrossPages(t *testing.T) {
+	f := newGhostFake().
+		static("GET", "/nodes", 200, ghostNodesBody(ghostNode("OFFICEPC", "live", true, "1.1.60"))).
+		static("GET", "/schedule", 200, ghostScheduleBody()).
+		on("GET", "/history/sessions", ghostPagedSessions(t, "OFFICEPC",
+			[]map[string]any{ghostSession(ghostSessionA, 51*24*time.Hour), ghostSession(ghostSessionB, 3*time.Hour)},
+			[]map[string]any{ghostSession(ghostSessionD, 20*time.Minute), ghostSession(ghostSessionA, 2*time.Minute)}))
+	deps, _ := ghostDeps(f)
+	inv := ghostOwnerInvocation("ghost_sessions", "", nil)
+	ids := func(out map[string]any) []string {
+		var got []string
+		for _, s := range out["sessions"].([]map[string]any) {
+			got = append(got, s["sessionId"].(string))
+		}
+		return got
+	}
+	p1, terr := handleGhostSessions(context.Background(), deps, inv, map[string]any{"node": "OFFICEPC", "limit": 2})
+	require.Nil(t, terr)
+	require.Equal(t, []string{ghostSessionA, ghostSessionD}, ids(p1), "newest first, one row per session")
+	require.Equal(t, ghostNow.Add(-2*time.Minute).Format(time.RFC3339), p1["sessions"].([]map[string]any)[0]["lastActivity"])
+	require.Equal(t, false, p1["partial"])
+	require.NotEmpty(t, p1["nextCursor"])
+
+	p2, terr := handleGhostSessions(context.Background(), deps, inv, map[string]any{"node": "OFFICEPC", "limit": 2, "cursor": p1["nextCursor"]})
+	require.Nil(t, terr)
+	require.Equal(t, []string{ghostSessionB}, ids(p2))
+	require.Equal(t, "", p2["nextCursor"])
+
+	// sinceMinutes keeps only sessions with an upload inside the window.
+	recent, terr := handleGhostSessions(context.Background(), deps, inv, map[string]any{"node": "OFFICEPC", "sinceMinutes": 60})
+	require.Nil(t, terr)
+	require.Equal(t, []string{ghostSessionA, ghostSessionD}, ids(recent))
 }

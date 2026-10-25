@@ -47,10 +47,29 @@ const (
 // every output so the model never presents the archive as complete.
 const ghostCoverage = "retained_only"
 
-// ghostSessionLookupPages bounds how many /history/sessions pages a tool scans
-// when it needs to find one session by id. Each page collapses up to 1000 S3
-// keys, so five pages cover thousands of sessions on one node.
-const ghostSessionLookupPages = 5
+// ghostSessionWalkPages bounds how many /history/sessions pages one walk of a
+// node's retained listing reads. Upstream lists S3 keys in ascending upload
+// order, about 1000 per page, so the NEWEST sessions are on the LAST page: a
+// walk has to reach the end to see today's work. OFFICEPC carried about 16
+// pages on 2026-10-24; 40 leaves headroom while keeping a voice turn bounded.
+// When the bound stops a walk, every caller reports partial rather than
+// implying the listing was complete.
+const ghostSessionWalkPages = 40
+
+// ghostSessionLookupPages is the same bound under the name ghost_command.go
+// quotes in its "not found within N pages" message.
+const ghostSessionLookupPages = ghostSessionWalkPages
+
+// The walk is also bounded in time, because the tools run inside a 30 s
+// budget shared with model calls (Alexa worker, web tool Lambda) and a full
+// OFFICEPC walk measured about 4.4 s on 2026-10-24. Before each page after
+// the first, the walk stops when ghostSessionWalkBudget has elapsed (by
+// d.Now, so tests inject the clock) or when the context deadline is closer
+// than ghostSessionWalkReserve, and returns what it read as partial.
+const (
+	ghostSessionWalkBudget  = 12 * time.Second
+	ghostSessionWalkReserve = 8 * time.Second
+)
 
 func requireGhost(d *Deps) *ToolError {
 	if d == nil || d.Ghost == nil || !d.Ghost.Ready() {
@@ -200,50 +219,146 @@ func ghostSessionView(now time.Time, node string, s ghost.HistorySession) map[st
 	return out
 }
 
-// ghostLookupSession scans a node's retained session listing for one id.
-// found=false with scanned=true means every page was read and the id was not
-// there; scanned=false means the page bound stopped the scan first, so the
-// absence is not proven.
-func ghostLookupSession(ctx context.Context, d *Deps, inv Invocation, node, sessionID string) (s ghost.HistorySession, found bool, scanned bool, terr *ToolError) {
-	corr := ghostCorrelation(inv)
+// ghostSessionListing is one node's retained session listing after a full
+// walk: one row per session id (a session that uploaded on several dates is
+// listed under each upload partition upstream), newest activity first.
+type ghostSessionListing struct {
+	Sessions []ghost.HistorySession
+	Pages    int
+	// Partial is true only when a bound (ghostSessionWalkPages, or the time
+	// budget) stopped the walk before upstream returned an empty next_cursor.
+	// PartialReason then says which, for the tool's partialReasons.
+	Partial       bool
+	PartialReason string
+}
+
+// ghostWalkSessions reads a node's whole retained session listing, following
+// only the opaque next_cursor upstream returned (never a forged one), up to
+// ghostSessionWalkPages pages. Duplicate session ids keep the row with the
+// newest UpdatedAt. Sessions are ordered by UpdatedAt, newest first; sessions
+// without a timestamp go last, by id, so the order is stable.
+func ghostWalkSessions(ctx context.Context, d *Deps, corr, node string) (ghostSessionListing, error) {
+	var listing ghostSessionListing
+	index := map[string]int{}
 	cursor := ""
-	for page := 0; page < ghostSessionLookupPages; page++ {
-		p, err := d.Ghost.HistorySessions(ctx, node, cursor, corr)
-		if err != nil {
-			return ghost.HistorySession{}, false, false, ghostFleetError(err)
+	started := d.Now()
+	for {
+		if listing.Pages > 0 && ghostWalkOutOfTime(ctx, d, started) {
+			listing.Partial = true
+			listing.PartialReason = "stopped after " + itoa(listing.Pages) + " pages to stay within the time limit while reading " +
+				"retained sessions on " + node + "; the newest sessions may be on later pages"
+			break
 		}
-		for _, candidate := range p.Sessions {
-			if candidate.SessionID == sessionID {
-				return candidate, true, true, nil
+		page, err := d.Ghost.HistorySessions(ctx, node, cursor, corr)
+		if err != nil {
+			return ghostSessionListing{}, err
+		}
+		listing.Pages++
+		for _, s := range page.Sessions {
+			i, seen := index[s.SessionID]
+			if !seen {
+				index[s.SessionID] = len(listing.Sessions)
+				listing.Sessions = append(listing.Sessions, s)
+				continue
+			}
+			if ghostNewerUpload(s, listing.Sessions[i]) {
+				listing.Sessions[i] = s
 			}
 		}
-		if p.NextCursor == "" {
-			return ghost.HistorySession{}, false, true, nil
+		if page.NextCursor == "" {
+			break
 		}
-		cursor = p.NextCursor
+		if listing.Pages >= ghostSessionWalkPages {
+			listing.Partial = true
+			listing.PartialReason = "only the first " + itoa(ghostSessionWalkPages) + " pages of retained sessions on " + node +
+				" were read; the newest sessions may be on later pages"
+			break
+		}
+		cursor = page.NextCursor
 	}
-	return ghost.HistorySession{}, false, false, nil
+	sort.SliceStable(listing.Sessions, func(i, j int) bool {
+		a, aok := ghostParseTime(listing.Sessions[i].UpdatedAt)
+		b, bok := ghostParseTime(listing.Sessions[j].UpdatedAt)
+		switch {
+		case aok && bok:
+			if !a.Equal(b) {
+				return a.After(b)
+			}
+		case aok != bok:
+			return aok
+		}
+		return listing.Sessions[i].SessionID < listing.Sessions[j].SessionID
+	})
+	return listing, nil
+}
+
+// ghostNewerUpload reports whether candidate carries newer activity than
+// current: a parseable time beats none, and a later time beats an earlier one.
+func ghostNewerUpload(candidate, current ghost.HistorySession) bool {
+	c, cok := ghostParseTime(candidate.UpdatedAt)
+	k, kok := ghostParseTime(current.UpdatedAt)
+	switch {
+	case !cok:
+		return false
+	case !kok:
+		return true
+	default:
+		return c.After(k)
+	}
+}
+
+// ghostWalkOutOfTime reports whether a session walk that began at started
+// must stop paging: the walk budget is spent, or the caller's deadline is too
+// close to risk another upstream call.
+func ghostWalkOutOfTime(ctx context.Context, d *Deps, started time.Time) bool {
+	if d.Now().Sub(started) >= ghostSessionWalkBudget {
+		return true
+	}
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < ghostSessionWalkReserve {
+		return true
+	}
+	return false
+}
+
+// ghostLookupSession finds one session id in a node's retained listing.
+// found=false with scanned=true means the whole listing was read and the id
+// was not there; scanned=false means the walk bound stopped the scan first,
+// so the absence is not proven.
+func ghostLookupSession(ctx context.Context, d *Deps, inv Invocation, node, sessionID string) (s ghost.HistorySession, found bool, scanned bool, terr *ToolError) {
+	listing, err := ghostWalkSessions(ctx, d, ghostCorrelation(inv), node)
+	if err != nil {
+		return ghost.HistorySession{}, false, false, ghostFleetError(err)
+	}
+	for _, candidate := range listing.Sessions {
+		if candidate.SessionID == sessionID {
+			return candidate, true, true, nil
+		}
+	}
+	return ghost.HistorySession{}, false, !listing.Partial, nil
 }
 
 // ---------------------------------------------------------------------------
 // Opaque paging cursors
 // ---------------------------------------------------------------------------
 
-// ghostCursor is the ghost_sessions paging state. It wraps ghost-cli's own
-// opaque cursor (C) with the node being paged (N), the offset into the
-// upstream page already handed out (I) and whether the walk spans the whole
-// fleet (All). It is base64url JSON on the wire: the model treats it as an
-// opaque token, and the decoder validates every field so a tampered cursor is
-// refused rather than steering the walk.
+// ghostCursor is the ghost_sessions paging state: the offset (I) into the
+// newest-first listing already handed out, the computer it was issued for (N,
+// empty for the whole fleet), whether it spans the fleet (All) and the
+// sinceMinutes filter it was issued with (S). It never carries an upstream
+// cursor: every call walks the upstream listing from its start, following
+// only the cursors upstream itself returns. It is base64url JSON on the wire:
+// the model treats it as an opaque token, and the decoder validates every
+// field so a tampered cursor is refused rather than steering the walk.
+// Version 2 replaced the upstream-order cursor; a version 1 cursor is refused.
 type ghostCursor struct {
 	V   int    `json:"v"`
 	All bool   `json:"all"`
-	N   string `json:"n"`
-	C   string `json:"c,omitempty"`
+	N   string `json:"n,omitempty"`
 	I   int    `json:"i,omitempty"`
+	S   int    `json:"s,omitempty"`
 }
 
-const ghostCursorVersion = 1
+const ghostCursorVersion = 2
 
 func encodeGhostCursor(c ghostCursor) string {
 	c.V = ghostCursorVersion
@@ -257,8 +372,9 @@ func decodeGhostCursor(s string) (ghostCursor, bool) {
 		return ghostCursor{}, false
 	}
 	var c ghostCursor
-	if json.Unmarshal(raw, &c) != nil || c.V != ghostCursorVersion || !ghost.ValidNodeID(c.N) ||
-		c.I < 0 || c.I > 100000 || len(c.C) > 2048 || strings.ContainsAny(c.C, "\x00\r\n") {
+	if json.Unmarshal(raw, &c) != nil || c.V != ghostCursorVersion ||
+		(c.All && c.N != "") || (!c.All && !ghost.ValidNodeID(c.N)) ||
+		c.I < 0 || c.I > 100000 || c.S < 0 || c.S > ghostSessionsMaxSince {
 		return ghostCursor{}, false
 	}
 	return c, true

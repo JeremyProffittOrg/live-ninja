@@ -289,3 +289,44 @@ func TestGhostSessionSummaryErrors(t *testing.T) {
 	require.NotNil(t, terr)
 	require.Equal(t, CodeNotFound, terr.Code)
 }
+
+// Upstream lists sessions oldest upload partition first, about 1000 per page,
+// so a busy computer's recent sessions are on its LAST page (production
+// 2026-10-24: "summarize what's going on on office PC" was told nothing had
+// happened since September because only page one was read).
+func TestGhostSessionSummaryFindsRecentSessionsOnLaterPages(t *testing.T) {
+	f := newGhostFake().
+		static("GET", "/nodes", 200, ghostNodesBody(ghostNode("OFFICEPC", "live", true, "1.1.60"))).
+		on("GET", "/history/sessions", ghostPagedSessions(t, "OFFICEPC",
+			[]map[string]any{ghostSession(ghostSessionA, 51*24*time.Hour)},
+			[]map[string]any{ghostSession(ghostSessionB, 10*time.Minute)})).
+		on("GET", "/history/events", func(ev ghostEvent) (int, string) {
+			require.Equal(t, ghostSessionB, ev.Query["session_id"], "only the recent session is summarized")
+			return 200, ghostEventsBody("OFFICEPC", ghostSessionB, "", ghostConversation())
+		})
+	deps, _ := ghostDeps(f)
+	out, terr := handleGhostSessionSummary(context.Background(), deps, ghostOwnerInvocation("ghost_session_summary", "", nil),
+		map[string]any{"node": "OFFICEPC", "windowMinutes": 1440})
+	require.Nil(t, terr)
+	sessions := out["sessions"].([]map[string]any)
+	require.Len(t, sessions, 1, "the session active 10 minutes ago is on page two and must be summarized")
+	require.Equal(t, ghostSessionB, sessions[0]["sessionId"])
+	require.Equal(t, false, out["partial"], "every page was read: %v", out["partialReasons"])
+	require.Equal(t, 2, out["retainedSessions"])
+	require.NotContains(t, out, "message")
+}
+
+// When the walk bound stops the scan, the summary says so instead of
+// implying the window is complete.
+func TestGhostSessionSummaryReportsTheSessionWalkBound(t *testing.T) {
+	f := newGhostFake().
+		static("GET", "/nodes", 200, ghostNodesBody(ghostNode("OFFICEPC", "live", true, "1.1.60"))).
+		on("GET", "/history/sessions", ghostEndlessSessions("OFFICEPC"))
+	deps, _ := ghostDeps(f)
+	out, terr := handleGhostSessionSummary(context.Background(), deps, ghostOwnerInvocation("ghost_session_summary", "", nil),
+		map[string]any{"node": "OFFICEPC", "windowMinutes": 60})
+	require.Nil(t, terr)
+	require.Equal(t, true, out["partial"])
+	require.Contains(t, strings.Join(out["partialReasons"].([]string), " "), "pages of retained sessions")
+	require.Len(t, f.callsTo("GET", "/history/sessions"), ghostSessionWalkPages)
+}
