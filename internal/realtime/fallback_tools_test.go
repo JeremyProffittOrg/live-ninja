@@ -190,7 +190,7 @@ func TestAlexaTurnDoesNotRetryUncertainProviderWork(t *testing.T) {
 const groundedSearchFixture = `{"status":"completed","output":[{"type":"web_search_call","status":"completed"},{"type":"message","content":[{"type":"output_text","text":"A dated public news report.","annotations":[{"type":"url_citation","title":"Public evidence","url":"https://news.example/evidence"}]}]}]}`
 
 func TestWebSearchUsesLiveSearchAndPreservesRequestedDates(t *testing.T) {
-	for _, query := range []string{"Williamsburg bank robbery November 2025", "recent India CA certificate security breach"} {
+	for _, query := range []string{"Williamsburg bank robbery November 2025", "recent India CA certificate security breach", "latest AI news"} {
 		t.Run(query, func(t *testing.T) {
 			c := newMockOpenAIClient(t, func(w http.ResponseWriter, req *http.Request) {
 				var body map[string]any
@@ -212,6 +212,11 @@ func TestWebSearchUsesLiveSearchAndPreservesRequestedDates(t *testing.T) {
 				require.Contains(t, body["instructions"], "2026-10-22")
 				require.Contains(t, body["instructions"], "Never infer that an event did not happen")
 				require.Contains(t, body["instructions"], "Do not add unrelated incidents")
+				// A "latest news" roundup is not a single-event lookup: it lists
+				// several dated items instead of collapsing to one paragraph and
+				// claiming the rest could not be verified (web-research-thin-ai-news).
+				require.Contains(t, body["instructions"], "list up to five distinct dated items")
+				require.Contains(t, body["instructions"], "Do not claim that other developments could not be verified")
 				require.NotContains(t, body["instructions"], "recency window starts")
 				_, _ = w.Write([]byte(groundedSearchFixture))
 			})

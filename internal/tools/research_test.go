@@ -92,6 +92,9 @@ func TestWebResearchReturnsGeneralSearchSources(t *testing.T) {
 	require.Len(t, res.Output["sources"], 2)
 	assert.NotContains(t, res.Output, "background")
 	assert.Contains(t, res.Output["note"], "publication dates")
+	// A latest-news roundup reports what was found instead of claiming
+	// that other developments could not be verified.
+	assert.Contains(t, res.Output["note"], "For a latest-news request, report each item found")
 }
 
 func TestWebResearchUsesGeneralSearchAndPreservesHistoricalQueries(t *testing.T) {
