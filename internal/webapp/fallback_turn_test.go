@@ -210,6 +210,17 @@ func TestAlexaRunnerCarriesQuotaRejection(t *testing.T) {
 			}
 		})
 	}
+	// Any other broker refusal stays a generic failure; it is never reported
+	// as a usage limit.
+	fake := &fakeBrokerLambda{responses: []map[string]any{{"error": "upstream_unavailable", "code": 502}}}
+	_, err = runAlexaTurn(t.Context(), &Deps{Store: st, Log: log, Lambda: fake, BrokerFn: "broker"}, registry, w)
+	var qe *alexa.QuotaError
+	if err == nil || errors.As(err, &qe) {
+		t.Fatalf("non-quota broker failure err = %v, want a generic error", err)
+	}
+	if len(fake.requests) != 1 {
+		t.Fatalf("model invocations = %d, want 1 (no retry)", len(fake.requests))
+	}
 }
 
 func TestWebResearchAdapterUsesVerifiedContextAndOneAttempt(t *testing.T) {

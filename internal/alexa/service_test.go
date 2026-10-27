@@ -112,12 +112,15 @@ func TestAlexaMonthlyLimitSpeechIsTruthful(t *testing.T) {
 	require.Equal(t, "quota_exceeded", DiagnosticCode(&realtime.QuotaExceededError{Kind: "monthly_tokens", ResetAt: reset}))
 	for _, test := range []struct {
 		name    string
-		toolRan bool
+		err     error
 		want    string
 		caution bool
 	}{
-		{"nothing ran", false, "Your Live Ninja monthly usage limit is reached, so nothing was done. It resets on November 1.", false},
-		{"tool already ran", true, "Your Live Ninja monthly usage limit is reached. It resets on November 1.", true},
+		{"nothing ran", &QuotaError{Kind: "monthly_tokens", ResetAt: reset}, "Your Live Ninja monthly usage limit is reached, so nothing was done. It resets on November 1.", false},
+		{"tool already ran", &QuotaError{Kind: "monthly_tokens", ResetAt: reset, ToolRan: true}, "Your Live Ninja monthly usage limit is reached. It resets on November 1.", true},
+		// A failure that is not a quota refusal keeps the generic wording and
+		// never mentions a usage limit.
+		{"not a quota refusal", errors.New("Alexa broker request failed"), "That request did not finish. Some work may have completed.", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			s, id, _, _, ran := serviceFixture(t)
@@ -126,7 +129,7 @@ func TestAlexaMonthlyLimitSpeechIsTruthful(t *testing.T) {
 			ctx := t.Context()
 			s.Run = func(_ context.Context, w Work) (RunResult, error) {
 				*ran++
-				return RunResult{Messages: w.Messages}, &QuotaError{Kind: "monthly_tokens", ResetAt: reset, ToolRan: test.toolRan}
+				return RunResult{Messages: w.Messages}, test.err
 			}
 			view, err := s.Submit(ctx, id, "limit", "session", "What is on my calendar?")
 			require.NoError(t, err)
@@ -141,7 +144,10 @@ func TestAlexaMonthlyLimitSpeechIsTruthful(t *testing.T) {
 			require.NoError(t, err)
 			require.Contains(t, spoken.Text, test.want)
 			require.Equal(t, test.caution, strings.Contains(spoken.Text, "Some work may have completed"))
-			require.Contains(t, diagnostics.String(), `"errorCode":"quota_exceeded"`)
+			var quota *QuotaError
+			isQuota := errors.As(test.err, &quota)
+			require.Equal(t, isQuota, strings.Contains(spoken.Text, "usage limit"))
+			require.Equal(t, isQuota, strings.Contains(diagnostics.String(), `"errorCode":"quota_exceeded"`))
 			require.Equal(t, 1, *ran, "the model must never be retried")
 		})
 	}
