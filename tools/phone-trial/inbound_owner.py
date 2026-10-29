@@ -1,5 +1,6 @@
 """Disabled-by-default inbound owner conversations. Never log callbacks or PINs."""
 import base64
+import datetime
 import hashlib
 import hmac
 import html
@@ -29,6 +30,27 @@ def xml(body):
 
 def bye():
     return xml('<Say voice="Polly.Joanna-Neural">This phone session is not available. Goodbye.</Say><Hangup/>')
+
+
+class QuotaRefused(Exception):
+    """The broker refused a fresh session on a usage limit before any model ran."""
+
+    def __init__(self, kind, reset_at):
+        super().__init__(kind)
+        self.kind, self.reset_at = kind, reset_at
+
+    def reason(self):
+        return 'quota_' + (self.kind if self.kind in {'monthly_tokens', 'daily_minutes'} else 'exceeded')
+
+    def speech(self):
+        scope = {'monthly_tokens': 'monthly usage limit', 'daily_minutes': 'daily usage limit'}.get(self.kind, 'usage limit')
+        resets = ''
+        try:
+            day = datetime.datetime.strptime(self.reset_at, '%Y-%m-%dT%H:%M:%S%z').astimezone(datetime.timezone.utc)
+            resets = ' It resets on ' + day.strftime('%B') + ' ' + str(day.day) + '.'
+        except (TypeError, ValueError):
+            pass
+        return 'Your Live Ninja ' + scope + ' is reached, so this call cannot start.' + resets + ' Goodbye.'
 
 
 def base():
@@ -206,6 +228,8 @@ def mint(item):
     if result.get('FunctionError') or len(raw) > 200000:
         raise ValueError('Broker unavailable')
     value = json.loads(raw)
+    if value.get('error') == 'quota_exceeded':
+        raise QuotaRefused(value.get('kind'), value.get('resetAt'))
     if value.get('mode') != 'phone' or not value.get('bridgeToken') or not value.get('sessionId') or not isinstance(value.get('sessionConfig'), dict):
         raise ValueError('Invalid broker bootstrap')
     return value
@@ -236,7 +260,7 @@ def number_status(data):
     if account_lifecycle.blocked({'ownerUserId': owner, 'runId': m.namespace(owner)}) or item.get('inboundState') == 'ended':
         return r.response(200)
     if data['CallStatus'] in m.TERMINAL:
-        end(item, 'provider_terminal', provider_status=data['CallStatus'])
+        end(item, item.get('refusalReason', 'provider_terminal'), provider_status=data['CallStatus'])
     return r.response(200)
 
 
@@ -274,7 +298,7 @@ def callback(path, raw, headers):
     if item.get('inboundState') == 'ended':
         return bye()
     if kind == 'ended':
-        end(item, 'provider_terminal', hangup=True, provider_status=data.get('CallStatus'))
+        end(item, item.get('refusalReason', 'provider_terminal'), hangup=True, provider_status=data.get('CallStatus'))
         return bye()
     cfg, inbound = r.get(m.CONFIG_KEY), r.get(CONFIG)
     lock = r.get(m.VOICE_KEY) or {}
@@ -329,6 +353,16 @@ def callback(path, raw, headers):
             raise ValueError('Invalid recording binding')
         r.set_recording(item['callSid'], rec['sid'], 'recording', run_id=run_id, recordingCreateState='confirmed')
         item = transition(item, inboundState='ready')
+    except QuotaRefused as refused:
+        # A provider hangup would cut the call before any reply plays. Speak the
+        # limit first; the signed ended callback then ends the call and releases the lock.
+        try:
+            item = transition(item, inboundState='refused', refusalReason=refused.reason())
+        except Exception:
+            end(item, refused.reason(), hangup=True)
+            return bye()
+        return xml('<Say voice="Polly.Joanna-Neural">' + html.escape(refused.speech()) + '</Say><Redirect method="POST">' +
+                   html.escape(base() + 'ended/' + token, quote=True) + '</Redirect><Hangup/>')
     except Exception:
         # A concurrent hangup/deletion can reject persistence after mint returns.
         # Retain that known capability only for finalizing its exact session.

@@ -779,7 +779,7 @@ def callback(path, raw, headers):
         if item.get('live') is True and status in TERMINAL:
             import inbound_owner
             item = change(key, {}, 'provider_terminal_binding', {'callSid': sid}, sid=sid)
-            inbound_owner.end(item, 'provider_terminal', provider_status=status)
+            inbound_owner.end(item, item.get('refusalReason', 'provider_terminal'), provider_status=status)
             return r.response(200)
         item = change(key, {"providerStatus": status}, "status", {"callSid": sid, "status": status, "duration": data.get("CallDuration")}, sid=sid, release=status in TERMINAL)
         if status in {"busy", "failed", "no-answer", "canceled"}:

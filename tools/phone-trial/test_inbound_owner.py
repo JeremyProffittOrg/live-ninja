@@ -587,6 +587,52 @@ class InboundTests(unittest.TestCase):
         self.broker.assert_called_once()
         self.assertEqual(self.item()['inboundState'], 'ended')
 
+    def test_quota_refusal_is_spoken_before_the_signed_end(self):
+        self.configure(); self.callback()
+        provider = Mock()
+        refusal = {'error': 'quota_exceeded', 'code': 402, 'kind': 'monthly_tokens', 'resetAt': '2026-11-01T00:00:00Z'}
+        provider.invoke.return_value = {'Payload': io.BytesIO(json.dumps(refusal).encode())}
+        with patch.dict(sys.modules, {'boto3': types.SimpleNamespace(client=Mock(return_value=provider))}):
+            with self.assertRaises(i.QuotaRefused) as raised:
+                REAL_MINT(self.item())
+        self.broker.side_effect = raised.exception
+        reply = self.callback('connect')['body']
+        self.assertIn('Your Live Ninja monthly usage limit is reached, so this call cannot start. It resets on November 1. Goodbye.', reply)
+        self.assertIn('ended/' + self.item()['callbackId'] + '</Redirect>', reply)
+        # The call stays up for the spoken reason: no provider hangup, no recording, lock held.
+        self.assertFalse(any((call.args[1:] or [{}])[0] == {'Status': 'completed'} for call in self.provider.call_args_list))
+        self.assertFalse(any('/Recordings' in call.args[0] for call in self.provider.call_args_list))
+        item = self.item()
+        self.assertEqual((item['inboundState'], item['refusalReason']), ('refused', 'quota_monthly_tokens'))
+        self.assertEqual(r.get(m.VOICE_KEY)['activeRequest'], item['lockId'])
+        self.assertNotIn('<Connect', self.callback('connect')['body'])
+        self.broker.assert_called_once()
+        self.callback('ended', CallStatus='in-progress')
+        self.assertEqual((self.item()['inboundState'], self.item()['endReason']), ('ended', 'quota_monthly_tokens'))
+        self.assertNotEqual((r.get(m.VOICE_KEY) or {}).get('activeRequest'), item['lockId'])
+        self.assertEqual(i.QuotaRefused('rate_limited', None).speech(), 'Your Live Ninja usage limit is reached, so this call cannot start. Goodbye.')
+
+    def test_quota_refusal_keeps_reason_when_caller_hangs_up_during_message(self):
+        self.configure(); self.callback()
+        self.broker.side_effect = i.QuotaRefused('monthly_tokens', '2026-11-01T00:00:00Z')
+        self.assertIn('monthly usage limit', self.callback('connect')['body'])
+        self.callback('status', CallStatus='completed')
+        self.assertEqual((self.item()['inboundState'], self.item()['endReason']), ('ended', 'quota_monthly_tokens'))
+        self.assertNotEqual((r.get(m.VOICE_KEY) or {}).get('activeRequest'), self.item()['lockId'])
+
+    def test_other_broker_errors_keep_immediate_hangup(self):
+        self.configure(); self.callback()
+        provider = Mock()
+        provider.invoke.return_value = {'Payload': io.BytesIO(json.dumps({'error': 'phone_unavailable', 'code': 503}).encode())}
+        with patch.dict(sys.modules, {'boto3': types.SimpleNamespace(client=Mock(return_value=provider))}):
+            with self.assertRaises(ValueError):
+                REAL_MINT(self.item())
+        self.broker.side_effect = ValueError('Invalid broker bootstrap')
+        reply = self.callback('connect')['body']
+        self.assertNotIn('<Redirect', reply)
+        self.assertEqual((self.item()['inboundState'], self.item()['endReason']), ('ended', 'bootstrap_failed'))
+        self.assertIn({'Status': 'completed'}, [(call.args[1:] or [{}])[0] for call in self.provider.call_args_list])
+
     def test_minted_session_finalized_when_bootstrap_persistence_loses_race(self):
         self.configure(); self.callback()
         transition = i.transition
